@@ -1,0 +1,4 @@
+[package]
+name = "shell"
+version = "0.0.1"
+authors = ["Ivan Petkov <ivanppetkov@gmail.com>"]
