@@ -1,14 +1,23 @@
 use super::token::Token;
 use super::token::Token::*;
+use self::TokenOrLiteral::*;
+
+#[derive(PartialEq, Eq, Debug)]
+enum TokenOrLiteral {
+    Tok(Token),
+    Lit(char),
+}
 
 pub struct Lexer<I: Iterator<Item = char>> {
     inner: ::std::iter::Peekable<I>,
+    peeked: Option<TokenOrLiteral>,
 }
 
 impl<I: Iterator<Item = char>> Lexer<I> {
     pub fn new(iter: I) -> Lexer<I> {
         Lexer {
             inner: iter.peekable(),
+            peeked: None,
         }
     }
 
@@ -36,7 +45,11 @@ impl<I: Iterator<Item = char>> Lexer<I> {
         s
     }
 
-    fn next_internal(&mut self) -> Option<Token> {
+    fn next_internal(&mut self) -> Option<TokenOrLiteral> {
+        if self.peeked.is_some() {
+            return self.peeked.take();
+        }
+
         let cur = match self.inner.next() {
             Some(c) => c,
             None => return None,
@@ -114,10 +127,10 @@ impl<I: Iterator<Item = char>> Lexer<I> {
             // Newlines are valid whitespace, however, we want to tokenize them separately!
             c if c.is_whitespace() =>
                 Whitespace(self.concat_matching(Some(c), |c| c.is_whitespace() && c != '\n')),
-            c => Literal(self.concat_matching(Some(c), |c| !c.is_whitespace())),
+            c => return Some(Lit(c)),
         };
 
-        Some(tok)
+        Some(Tok(tok))
     }
 }
 
@@ -125,7 +138,60 @@ impl<I: Iterator<Item = char>> Iterator for Lexer<I> {
     type Item = Token;
 
     fn next(&mut self) -> Option<Token> {
-        self.next_internal()
+        fn name_start_char(c: char) -> bool {
+            c == '_' || c.is_alphabetic()
+        }
+
+        fn name_char(c: char) -> bool {
+            c.is_digit(10) || name_start_char(c)
+        }
+
+        fn is_name(s: &String) -> bool {
+            s.chars().all(name_char)
+        }
+
+        match self.next_internal() {
+            None => None,
+            Some(Tok(t)) => Some(t),
+            Some(Lit(c)) => {
+                let maybe_name = name_start_char(c);
+                let mut word = String::new();
+                word.push(c);
+
+                loop {
+                    match self.next_internal() {
+                        // If we hit a token, delimit the current word w/o losing the token
+                        Some(Tok(t)) => {
+                            debug_assert_eq!(self.peeked, None);
+                            self.peeked = Some(Tok(t));
+                            break;
+                        },
+
+                        // If we have a name candidate and hit an '=' this is an assignment token,
+                        // and we'll let the parser figure out what the assignment value actually is
+                        // (since it may be an actual expression).
+                        Some(Lit('=')) if maybe_name && is_name(&word) => return Some(Assignment(word)),
+
+                        // Make sure we delimit valid names whenever a non-name char comes along
+                        Some(Lit(c)) if maybe_name && !name_char(c) => {
+                            debug_assert_eq!(self.peeked, None);
+                            self.peeked = Some(Lit(c));
+                            return Some(Name(word));
+                        },
+
+                        // Otherwise, keep consuming characters for the literal
+                        Some(Lit(c)) => word.push(c),
+                        None => break,
+                    }
+                }
+
+                if maybe_name && is_name(&word) {
+                    Some(Name(word))
+                } else {
+                    Some(Literal(word))
+                }
+            },
+        }
     }
 }
 
@@ -146,13 +212,12 @@ mod test {
         }
     }
 
-    macro_rules! check_greedy {
+    macro_rules! lex_str {
         ($fn_name:ident, $s:expr, $($tok:expr),+ ) => {
             #[test]
             #[allow(non_snake_case)]
             fn $fn_name() {
-                let string = $s.to_string();
-                let lex = super::Lexer::new(string.chars());
+                let lex = super::Lexer::new($s.chars());
                 let tokens: Vec<Token> = lex.collect();
                 assert_eq!(tokens, vec!( $($tok),+ ));
             }
@@ -194,16 +259,34 @@ mod test {
     check_tok!(check_ParamDollar, ParamDollar);
     check_tok!(check_ParamBang, ParamBang);
     check_tok!(check_Whitespace, Whitespace(" \t\r".to_string()));
-    check_tok!(check_Literal, Literal("abcdefg".to_string()));
+    check_tok!(check_Name, Name("abc_23_defg".to_string()));
+    check_tok!(check_Literal, Literal(",abcdefg80hijklmno-p".to_string()));
     check_tok!(check_ParamPositional, ParamPositional(9));
     check_tok!(check_Comment, Comment("This is some comment. Foo bar".to_string()));
     check_tok!(check_SingleQuoted, SingleQuoted("Hello world\nGood bye\n".to_string()));
+    check_tok!(check_Assignment, Assignment("foobar".to_string()));
 
-    check_greedy!(check_greedy_Amp,    "&&&",  AndIf, Amp);
-    check_greedy!(check_greedy_Pipe,   "|||",  OrIf, Pipe);
-    check_greedy!(check_greedy_Semi,   ";;;",  DSemi, Semi);
-    check_greedy!(check_greedy_Less,   "<<<",  DLess, Less);
-    check_greedy!(check_greedy_Great,  ">>>",  DGreat, Great);
-    check_greedy!(check_greedy_Dollar, "$$$",  ParamDollar, Dollar);
-    check_greedy!(check_greedy_Less2,  "<<<-", DLess, Less, Literal("-".to_string()));
+    lex_str!(check_greedy_Amp,    "&&&",  AndIf, Amp);
+    lex_str!(check_greedy_Pipe,   "|||",  OrIf, Pipe);
+    lex_str!(check_greedy_Semi,   ";;;",  DSemi, Semi);
+    lex_str!(check_greedy_Less,   "<<<",  DLess, Less);
+    lex_str!(check_greedy_Great,  ">>>",  DGreat, Great);
+    lex_str!(check_greedy_Dollar, "$$$",  ParamDollar, Dollar);
+    lex_str!(check_greedy_Less2,  "<<<-", DLess, Less, Literal("-".to_string()));
+
+    lex_str!(check_Assignment_and_value, "foobar=test", Assignment("foobar".to_string()), Name("test".to_string()));
+    lex_str!(check_bad_Assigmnent_and_value, "5foobar=test", Literal("5foobar=test".to_string()));
+    lex_str!(check_Literal_and_Name_combo, "hello ,asdf5_ 6world __name ^?.@abc _test2",
+             Name("hello".to_string()),
+             Whitespace(" ".to_string()),
+             Literal(",asdf5_".to_string()),
+             Whitespace(" ".to_string()),
+             Literal("6world".to_string()),
+             Whitespace(" ".to_string()),
+             Name("__name".to_string()),
+             Whitespace(" ".to_string()),
+             Literal("^?.@abc".to_string()),
+             Whitespace(" ".to_string()),
+             Name("_test2".to_string())
+     );
 }

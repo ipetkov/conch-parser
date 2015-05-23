@@ -89,6 +89,11 @@ pub enum Token {
 
     /// Any literal delimited by whitespace.
     Literal(String),
+    /// A Literal that starts with a number or an underscore.
+    Name(String),
+
+    /// A Name that was immediately followed by an equals sign, e.g. `foo=` becomes Assignment("foo").
+    Assignment(String),
 
     /// Any literal characters occuring between single quotes
     SingleQuoted(String),
@@ -132,9 +137,11 @@ impl fmt::Display for Token {
             ParamDollar         => fmt.write_str("$$"),
             ParamBang           => fmt.write_str("$!"),
             Whitespace(ref s)   => fmt.write_str(s),
+            Name(ref s)         => fmt.write_str(s),
             Literal(ref s)      => fmt.write_str(s),
             ParamPositional(p)  => write!(fmt, "${}", p),
             Comment(ref s)      => write!(fmt, "#{}", s),
+            Assignment(ref s)   => write!(fmt, "{}=", s),
             SingleQuoted(ref s) => write!(fmt, "'{}'", s),
         }
     }
