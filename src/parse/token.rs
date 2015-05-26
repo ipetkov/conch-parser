@@ -4,7 +4,7 @@ use std::fmt;
 use self::Token::*;
 
 /// The representation of (context free) shell tokens.
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub enum Token {
     /// \n
     Newline,
