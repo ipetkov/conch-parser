@@ -34,7 +34,7 @@ Example projects:
 * Extending the shell grammar with more expressive keywords or tokens, e.g. add
 a forked-pipe token which pipes the output of one command to two or more
 separate process
-* Perform analysis on shell scripts: most used commands, unhandled situations,
+* Analyze/lint shell scripts: most used commands, unhandled situations,
 lack of cleanup, etc.
 * Optimize and compile shell scripts into native code to avoid shell runtime
 overhead, or maybe even build the script into a library to be invoked from other

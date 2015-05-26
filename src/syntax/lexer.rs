@@ -1,3 +1,5 @@
+//! This module defines a lexer to recognize tokens of the shell language.
+
 use super::token::Token;
 use super::token::Token::*;
 use self::TokenOrLiteral::*;
@@ -8,12 +10,14 @@ enum TokenOrLiteral {
     Lit(char),
 }
 
+/// Converts raw characters into shell tokens.
 pub struct Lexer<I: Iterator<Item = char>> {
     inner: ::std::iter::Peekable<I>,
     peeked: Option<TokenOrLiteral>,
 }
 
 impl<I: Iterator<Item = char>> Lexer<I> {
+    /// Creates a new Lexer from any char iterator.
     pub fn new(iter: I) -> Lexer<I> {
         Lexer {
             inner: iter.peekable(),
@@ -197,8 +201,8 @@ impl<I: Iterator<Item = char>> Iterator for Lexer<I> {
 
 #[cfg(test)]
 mod test {
-    use parse::token::Token;
-    use parse::token::Token::*;
+    use syntax::token::Token;
+    use syntax::token::Token::*;
 
     macro_rules! check_tok {
         ($fn_name:ident, $tok:expr) => {

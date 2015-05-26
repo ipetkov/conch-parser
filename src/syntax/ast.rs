@@ -1,9 +1,11 @@
+//! Defines abstract representations of the shell source.
+
 /// Represents whitespace delimited text.
 #[derive(PartialEq, Eq, Debug)]
 pub enum Word {
     /// A non-special literal word, or single quoted string.
     Literal(String),
-    /// Concat of several distinct words NOT separated by whitespace.
+    /// Concat of several distinct words concatenated together.
     Concat(Vec<Word>),
     /// List of words concatenated within double quotes.
     DoubleQuoted(Vec<Word>),

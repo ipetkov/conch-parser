@@ -1,8 +1,11 @@
-use ast;
-use self::ErrorKind::*;
-use super::token::Token;
-use super::token::Token::*;
+//! The definition of a parser (and related methods) for the shell language.
 
+use self::ErrorKind::*;
+use syntax::ast;
+use syntax::token::Token;
+use syntax::token::Token::*;
+
+/// An alias over `parse::Error` to avoid writing it out each time.
 pub type Result<T> = ::std::result::Result<T, Error>;
 
 /// Specifies the exact error that occured during parsing.
@@ -156,6 +159,8 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         Ok(ast::Command::Simple { cmd: cmd, args: args })
     }
 
+    /// Parses a whitespace delimited chunk of text, honoring
+    /// quoting rules of spaces.
     pub fn word(&mut self) -> Result<Option<ast::Word>> {
         let mut words = Vec::new();
 
