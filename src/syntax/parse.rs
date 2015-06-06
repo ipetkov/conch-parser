@@ -243,14 +243,16 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         let mut words = Vec::new();
         loop {
             match self.iter.peek() {
-                Some(&Name(_))    |
-                Some(&Literal(_)) => {},
+                Some(&Name(_)) |
+                Some(&Literal(_)) |
+                Some(&SingleQuoted(_)) => {},
                 _ => break,
             }
 
             match self.iter.next() {
                 Some(Name(s))    |
-                Some(Literal(s)) => words.push(ast::Word::Literal(s)),
+                Some(Literal(s)) |
+                Some(SingleQuoted(s)) => words.push(ast::Word::Literal(s)),
                 _ => unreachable!(),
             }
         }
