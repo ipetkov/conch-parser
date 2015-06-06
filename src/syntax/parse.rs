@@ -69,7 +69,7 @@ impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
             None => return None,
         };
 
-        self.line += match next {
+        let newlines = match next {
             // Most of these should not have any newlines
             // embedded within them, but permitting external
             // tokenizers means we should sanity check anyway.
@@ -78,12 +78,13 @@ impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
             Literal(ref s)      |
             Whitespace(ref s)   |
             Assignment(ref s)   |
-            SingleQuoted(ref s) => s.lines().count() as u64,
+            SingleQuoted(ref s) => s.chars().filter(|&c| c == '\n').count() as u64,
 
             Newline => 1,
             _ => 0,
         };
 
+        self.line += newlines;
         Some(next)
     }
 }
@@ -91,7 +92,7 @@ impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
 impl<I: Iterator<Item = Token>> TokenIter<I> {
     /// Creates a new TokenIter from another Token iterator.
     fn new(iter: I) -> TokenIter<I> {
-        TokenIter { iter: iter.peekable(), line: 0 }
+        TokenIter { iter: iter.peekable(), line: 1 }
     }
 
     /// Allows the caller to peek at the next token without consuming it.
