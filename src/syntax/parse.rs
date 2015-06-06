@@ -132,14 +132,82 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         }
 
         let cmd = match self.iter.peek() {
-            Some(_) => Some(try!(self.simple_command())),
+            Some(_) => Some(try!(self.and_or())),
             None => None,
         };
 
         Ok(cmd)
     }
 
-    /// Tries to parse a `Command::Simple`.
+    /// Parses compound AND/OR commands.
+    ///
+    /// Commands are left associative. For example "foo || bar && baz"
+    /// parses to And(Or(foo, bar), baz).
+    pub fn and_or(&mut self) -> Result<ast::Command> {
+        let mut cmd = try!(self.pipeline());
+
+        loop {
+            self.linebreak();
+
+            match self.iter.peek() {
+                Some(&OrIf)  |
+                Some(&AndIf) => {},
+                _ => break,
+            }
+
+
+            let ty = self.iter.next().unwrap();
+            self.linebreak();
+            let boxed = Box::new(cmd);
+            let next = Box::new(try!(self.pipeline()));
+
+            cmd = match ty {
+                AndIf => ast::Command::And(boxed, next),
+                OrIf  => ast::Command::Or(boxed, next),
+                _ => unreachable!(),
+            };
+        }
+
+        Ok(cmd)
+    }
+
+    /// Parses either a single command or a pipeline of commands.
+    ///
+    /// For example: "[!] foo [| bar [| ...]]".
+    pub fn pipeline(&mut self) -> Result<ast::Command> {
+        let bang = match self.iter.peek() {
+            Some(&Bang) => { self.iter.next(); true }
+            _ => false,
+        };
+
+        let mut cmds = Vec::new();
+
+        loop {
+            cmds.push(try!(self.command()));
+
+            if let Some(&Pipe) = self.iter.peek() {
+                self.iter.next();
+                self.linebreak();
+            } else {
+                break;
+            }
+        }
+
+        // Command::Pipe is the only AST node which allows for a status
+        // negation, so we are forced to use it even if we have a single
+        // command. Otherwise there is no need to wrap it further.
+        if cmds.len() == 1 && !bang {
+            Ok(cmds.pop().unwrap())
+        } else {
+            Ok(ast::Command::Pipe(bang, cmds))
+        }
+    }
+
+    pub fn command(&mut self) -> Result<ast::Command> {
+        self.simple_command()
+    }
+
+    /// Tries to parse a simple command, e.g. "cmd arg1 arg2".
     ///
     /// An error will be returned if not even a command name can be found, thus
     /// caller should be expecting the presense of a simple command with certainty.
@@ -160,11 +228,19 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         Ok(ast::Command::Simple { cmd: cmd, args: args })
     }
 
-    /// Parses a whitespace delimited chunk of text, honoring
-    /// quoting rules of spaces.
+    /// Parses a whitespace delimited chunk of text, honoring space quoting rules.
+    ///
+    /// Since there are a large number of possible tokens that constitute a word,
+    /// (such as literals, paramters, variables, etc.) the caller may not know
+    /// for sure whether to expect a word, thus an optional result is returned
+    /// in the event that no word exists.
+    ///
+    /// Note that an error can still arise if partial tokens are present
+    /// (e.g. malformed parameter).
     pub fn word(&mut self) -> Result<Option<ast::Word>> {
-        let mut words = Vec::new();
+        self.skip_whitespace();
 
+        let mut words = Vec::new();
         loop {
             match self.iter.peek() {
                 Some(&Name(_))    |
@@ -193,12 +269,35 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     }
 
     /// Skips over any encountered whitespace, however,
-    /// any `Newline` or `Comment` are preserved.
+    /// any `Token::Newline`s or `Token::Comment`s are preserved.
     #[inline]
     pub fn skip_whitespace(&mut self) {
         while let Some(&Whitespace(_)) = self.iter.peek() {
             self.iter.next();
         }
+    }
+
+    /// Parses zero or more `Token::Newline`s, skipping whitespace and preserving `Token::Comment`s.
+    pub fn linebreak(&mut self) -> Vec<ast::Newline> {
+        let mut lines = Vec::new();
+
+        loop {
+            match self.iter.peek() {
+                Some(&Newline)       |
+                Some(&Comment(_))    |
+                Some(&Whitespace(_)) => {},
+                _ => break,
+            }
+
+            match self.iter.next() {
+                Some(Newline) => lines.push(ast::Newline(None)),
+                Some(Comment(s)) => lines.push(ast::Newline(Some(s))),
+                Some(Whitespace(_)) => {},
+                _ => unreachable!(),
+            }
+        }
+
+        lines
     }
 }
 
