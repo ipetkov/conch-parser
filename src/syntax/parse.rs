@@ -243,18 +243,50 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         let mut words = Vec::new();
         loop {
             match self.iter.peek() {
-                Some(&Name(_)) |
-                Some(&Literal(_)) |
-                Some(&SingleQuoted(_)) => {},
+                Some(&ParamAt)            |
+                Some(&ParamStar)          |
+                Some(&ParamPound)         |
+                Some(&ParamQuestion)      |
+                Some(&ParamDash)          |
+                Some(&ParamDollar)        |
+                Some(&ParamBang)          |
+                Some(&Dollar)             |
+                Some(&ParamPositional(_)) |
+                Some(&Name(_))            |
+                Some(&Literal(_))         |
+                Some(&SingleQuoted(_))    => {},
+
                 _ => break,
             }
 
-            match self.iter.next() {
-                Some(Name(s))    |
-                Some(Literal(s)) |
-                Some(SingleQuoted(s)) => words.push(ast::Word::Literal(s)),
+            let w = match self.iter.next().unwrap() {
+                Name(s)    |
+                Literal(s) |
+                SingleQuoted(s) => ast::Word::Literal(s),
+
+                ParamAt            => ast::Word::Param(ast::Parameter::At),
+                ParamStar          => ast::Word::Param(ast::Parameter::Star),
+                ParamPound         => ast::Word::Param(ast::Parameter::Pound),
+                ParamQuestion      => ast::Word::Param(ast::Parameter::Question),
+                ParamDash          => ast::Word::Param(ast::Parameter::Dash),
+                ParamDollar        => ast::Word::Param(ast::Parameter::Dollar),
+                ParamBang          => ast::Word::Param(ast::Parameter::Bang),
+                ParamPositional(p) => ast::Word::Param(ast::Parameter::Positional(p)),
+
+                Dollar => if let Some(&Name(_)) = self.iter.peek() {
+                    if let Some(Name(n)) = self.iter.next() {
+                        ast::Word::Param(ast::Parameter::Var(n))
+                    } else {
+                        unreachable!()
+                    }
+                } else {
+                    ast::Word::Literal("$".to_string())
+                },
+
                 _ => unreachable!(),
-            }
+            };
+
+            words.push(w);
         }
 
         let ret = if words.len() == 0 {

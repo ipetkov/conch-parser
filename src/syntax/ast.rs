@@ -1,5 +1,28 @@
 //! Defines abstract representations of the shell source.
 
+/// Represents reading a parameter (or variable) value, e.g. "$foo".
+#[derive(PartialEq, Eq, Debug)]
+pub enum Parameter {
+    /// $@
+    At,
+    /// $*
+    Star,
+    /// $#
+    Pound,
+    /// $?
+    Question,
+    /// $-
+    Dash,
+    /// $$
+    Dollar,
+    /// $!
+    Bang,
+    /// $0, $1, ..., $9
+    Positional(u8),
+    /// $foo
+    Var(String),
+}
+
 /// Represents whitespace delimited text.
 #[derive(PartialEq, Eq, Debug)]
 pub enum Word {
@@ -9,6 +32,8 @@ pub enum Word {
     Concat(Vec<Word>),
     /// List of words concatenated within double quotes.
     DoubleQuoted(Vec<Word>),
+    /// Access of a value inside a parameter, e.g. "$foo" or "$$".
+    Param(Parameter),
 
 }
 
