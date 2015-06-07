@@ -228,7 +228,8 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         Ok(ast::Command::Simple { cmd: cmd, args: args })
     }
 
-    /// Parses a whitespace delimited chunk of text, honoring space quoting rules.
+    /// Parses a whitespace delimited chunk of text, honoring space quoting rules,
+    /// and skipping leading space.
     ///
     /// Since there are a large number of possible tokens that constitute a word,
     /// (such as literals, paramters, variables, etc.) the caller may not know
@@ -236,7 +237,9 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// in the event that no word exists.
     ///
     /// Note that an error can still arise if partial tokens are present
-    /// (e.g. malformed parameter).
+    /// (e.g. malformed parameter). Also note that any `Token::Assignment` tokens
+    /// will be treated as literals, since assignments can only come before
+    /// the command or arguments, and should be handled externally.
     pub fn word(&mut self) -> Result<Option<ast::Word>> {
         self.skip_whitespace();
 
@@ -252,6 +255,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
                 Some(&ParamBang)          |
                 Some(&Dollar)             |
                 Some(&ParamPositional(_)) |
+                Some(&Assignment(_))      |
                 Some(&Name(_))            |
                 Some(&Literal(_))         |
                 Some(&SingleQuoted(_))    => {},
@@ -260,6 +264,10 @@ impl<T: Iterator<Item = Token>> Parser<T> {
             }
 
             let w = match self.iter.next().unwrap() {
+                // Assignments are only treated as such if they occur beforea command is
+                // found. Any "Assignments" afterward should be treated as literals.
+                Assignment(s) => { words.push(ast::Word::Literal(s)); ast::Word::Literal("=".to_string()) },
+
                 Name(s)    |
                 Literal(s) |
                 SingleQuoted(s) => ast::Word::Literal(s),
