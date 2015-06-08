@@ -116,20 +116,22 @@ impl<T: Iterator<Item = Token>> Iterator for Parser<T> {
 }
 
 impl<T: Iterator<Item = Token>> Parser<T> {
+    /// Construct an `Unexpected` error using the given token. If `None` specified, the next
+    /// token in the iterator will be used (or `UnexpectedEOF` if none left).
+    fn make_unexpected_err(&mut self, tok: Option<Token>) -> Error {
+        Error {
+            line: self.iter.line,
+            kind: tok.or_else(|| self.iter.next()).map_or(UnexpectedEOF, |t| Unexpected(t)),
+        }
+    }
+
     /// Creates a new Parser from a Token iterator.
     pub fn new(t: T) -> Parser<T> {
         Parser { iter: TokenIter::new(t) }
     }
 
     pub fn complete_command(&mut self) -> Result<Option<ast::Command>> {
-        loop {
-            match self.iter.peek() {
-                Some(&Newline)       |
-                Some(&Comment(_))    |
-                Some(&Whitespace(_)) => { self.iter.next(); },
-                _ => break,
-            }
-        }
+        try!(self.linebreak());
 
         let cmd = match self.iter.peek() {
             Some(_) => Some(try!(self.and_or())),
@@ -147,8 +149,6 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         let mut cmd = try!(self.pipeline());
 
         loop {
-            self.linebreak();
-
             match self.iter.peek() {
                 Some(&OrIf)  |
                 Some(&AndIf) => {},
@@ -157,7 +157,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
 
 
             let ty = self.iter.next().unwrap();
-            self.linebreak();
+            try!(self.linebreak());
             let boxed = Box::new(cmd);
             let next = Box::new(try!(self.pipeline()));
 
@@ -187,7 +187,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
 
             if let Some(&Pipe) = self.iter.peek() {
                 self.iter.next();
-                self.linebreak();
+                try!(self.linebreak());
             } else {
                 break;
             }
@@ -214,10 +214,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     pub fn simple_command(&mut self) -> Result<ast::Command> {
         let cmd = match try!(self.word()) {
             Some(w) => w,
-            None => return Err(Error {
-                line: self.iter.line,
-                kind: self.iter.peek().map_or(UnexpectedEOF, |t| Unexpected(t.clone())),
-            }),
+            None => return Err(self.make_unexpected_err(None))
         };
 
         let mut args = Vec::new();
@@ -320,7 +317,9 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     }
 
     /// Parses zero or more `Token::Newline`s, skipping whitespace and preserving `Token::Comment`s.
-    pub fn linebreak(&mut self) -> Vec<ast::Newline> {
+    ///
+    /// A newline is expected after every `Token::Comment`.
+    pub fn linebreak(&mut self) -> Result<Vec<ast::Newline>> {
         let mut lines = Vec::new();
 
         loop {
@@ -333,13 +332,164 @@ impl<T: Iterator<Item = Token>> Parser<T> {
 
             match self.iter.next() {
                 Some(Newline) => lines.push(ast::Newline(None)),
-                Some(Comment(s)) => lines.push(ast::Newline(Some(s))),
+                Some(Comment(s)) => match self.iter.next() {
+                    Some(Newline) => lines.push(ast::Newline(Some(s))),
+                    t => return Err(self.make_unexpected_err(t)),
+                },
+
                 Some(Whitespace(_)) => {},
                 _ => unreachable!(),
             }
         }
 
-        lines
+        Ok(lines)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use syntax::lexer::Lexer;
+
+    use syntax::ast::*;
+    use syntax::ast::Command::*;
+    use syntax::parse::*;
+    use syntax::token::*;
+
+    fn make_parser(src: &str) -> Parser<Lexer<::std::str::Chars>> {
+        Parser::new(Lexer::new(src.chars()))
+    }
+
+    fn make_parser_from_tokens(src: Vec<Token>) -> Parser<::std::vec::IntoIter<Token>> {
+        Parser::new(src.into_iter())
+    }
+
+    #[test]
+    fn test_linebreak_valid_with_comments_and_whitespace() {
+        let mut p = make_parser("\n\t\t\t\n # comment1\n#comment2\n   \n");
+        assert_eq!(p.linebreak().unwrap(), vec!(
+                Newline(None),
+                Newline(None),
+                Newline(Some(" comment1".to_string())),
+                Newline(Some("comment2".to_string())),
+                Newline(None)
+            )
+        );
+    }
+
+    #[test]
+    fn test_linebreak_valid_empty() {
+        let mut p = make_parser("");
+        assert_eq!(p.linebreak().unwrap(), vec!());
+    }
+
+    #[test]
+    fn test_linebreak_valid_nonnewline() {
+        let mut p = make_parser("hello world");
+        assert_eq!(p.linebreak().unwrap(), vec!());
+    }
+
+    #[test]
+    fn test_linebreak_invalid_missing_newline() {
+        let mut p = make_parser_from_tokens(vec!(Token::Comment("comment".to_string())));
+        p.linebreak().unwrap_err();
+    }
+
+    #[test]
+    fn test_skip_whitespace_preserve_newline() {
+        let mut p = make_parser("    \t\t \t \t\n   ");
+        p.skip_whitespace();
+        p.linebreak().ok().expect("Parser::skip_whitespace skips newlines");
+    }
+
+    #[test]
+    fn test_skip_whitespace_preserve_comments() {
+        let mut p = make_parser("    \t\t \t \t#comment\n   ");
+        p.skip_whitespace();
+        assert_eq!(p.linebreak().unwrap().pop().unwrap(), Newline(Some("comment".to_string())));
+    }
+
+    #[test]
+    fn test_and_or_correct_associativity() {
+        let mut p = make_parser("foo || bar && baz");
+
+        if let And(
+            box Or( box Simple { cmd: foo, .. }, box Simple { cmd: bar, .. }),
+            box Simple { cmd: baz, .. }
+        ) = p.and_or().unwrap() {
+            assert_eq!(foo, Word::Literal("foo".to_string()));
+            assert_eq!(bar, Word::Literal("bar".to_string()));
+            assert_eq!(baz, Word::Literal("baz".to_string()));
+            return;
+        }
+
+        panic!("Incorrect parse result for Parse::and_or");
+    }
+
+    #[test]
+    fn test_and_or_valid_with_newlines_after_operator() {
+        let mut p = make_parser("foo ||\n\n\n\nbar && baz");
+
+        if let And(
+            box Or( box Simple { cmd: foo, .. }, box Simple { cmd: bar, .. }),
+            box Simple { cmd: baz, .. }
+        ) = p.and_or().unwrap() {
+            assert_eq!(foo, Word::Literal("foo".to_string()));
+            assert_eq!(bar, Word::Literal("bar".to_string()));
+            assert_eq!(baz, Word::Literal("baz".to_string()));
+            return;
+        }
+
+        panic!("Incorrect parse result for Parse::and_or");
+    }
+
+    #[test]
+    fn test_and_or_invalid_with_newlines_before_operator() {
+        let mut p = make_parser("foo || bar\n\n&& baz");
+        p.and_or().unwrap();     // Successful parse Or(foo, bar)
+        p.and_or().unwrap_err(); // Fail to parse "&& baz" which is an error
+    }
+
+    #[test]
+    fn test_pipeline_valid_bang() {
+        let mut p = make_parser("! foo | bar | baz");
+        if let Pipe(true, cmds) = p.pipeline().unwrap() {
+            if let [
+                Simple { cmd: ref foo, .. },
+                Simple { cmd: ref bar, .. },
+                Simple { cmd: ref baz, .. },
+            ] = &cmds[..] {
+                assert_eq!(*foo, Word::Literal("foo".to_string()));
+                assert_eq!(*bar, Word::Literal("bar".to_string()));
+                assert_eq!(*baz, Word::Literal("baz".to_string()));
+                return;
+            }
+        }
+
+        panic!("Incorrect parse result for Parse::pipeline");
+    }
+
+    #[test]
+    fn test_pipeline_valid_bangs_in_and_or() {
+        let mut p = make_parser("! foo | bar || ! baz && ! foobar");
+        if let And(box Or(box Pipe(true, _), box Pipe(true, _)), box Pipe(true, _)) = p.and_or().unwrap() {
+            return;
+        }
+
+        panic!("Incorrect parse result for Parse::and_or with several !");
+    }
+
+    #[test]
+    fn test_pipeline_no_bang_single_cmd_optimize_wrapper_out() {
+        let mut p = make_parser("foo");
+        if let Pipe(..) = p.pipeline().unwrap() {
+            panic!("Parser::pipeline should not create a wrapper if no ! present and only a single command");
+        }
+    }
+
+    #[test]
+    fn test_pipeline_invalid_multiple_bangs_in_same_pipeline() {
+        let mut p = make_parser("! foo | bar | ! baz");
+        p.pipeline().unwrap_err();
     }
 }
 
