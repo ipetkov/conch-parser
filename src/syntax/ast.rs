@@ -1,6 +1,6 @@
 //! Defines abstract representations of the shell source.
 
-/// Represents reading a parameter (or variable) value, e.g. "$foo".
+/// Represents reading a parameter (or variable) value, e.g. `$foo`.
 #[derive(PartialEq, Eq, Debug)]
 pub enum Parameter {
     /// $@
@@ -32,7 +32,7 @@ pub enum Word {
     Concat(Vec<Word>),
     /// List of words concatenated within double quotes.
     DoubleQuoted(Vec<Word>),
-    /// Access of a value inside a parameter, e.g. "$foo" or "$$".
+    /// Access of a value inside a parameter, e.g. `$foo` or `$$`.
     Param(Parameter),
 
 }

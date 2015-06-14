@@ -157,7 +157,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
 
     /// Parses compound AND/OR commands.
     ///
-    /// Commands are left associative. For example "foo || bar && baz"
+    /// Commands are left associative. For example `foo || bar && baz`
     /// parses to And(Or(foo, bar), baz).
     pub fn and_or(&mut self) -> Result<ast::Command> {
         let mut cmd = try!(self.pipeline());
@@ -187,7 +187,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
 
     /// Parses either a single command or a pipeline of commands.
     ///
-    /// For example: "[!] foo [| bar [| ...]]".
+    /// For example `[!] foo | bar`.
     pub fn pipeline(&mut self) -> Result<ast::Command> {
         let bang = match self.iter.peek() {
             Some(&Bang) => { self.iter.next(); true }
@@ -221,7 +221,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         self.simple_command()
     }
 
-    /// Tries to parse a simple command, e.g. "cmd arg1 arg2".
+    /// Tries to parse a simple command, e.g. `cmd arg1 arg2`.
     ///
     /// An error will be returned if not even a command name can be found, thus
     /// caller should be expecting the presense of a simple command with certainty.
@@ -296,14 +296,14 @@ impl<T: Iterator<Item = Token>> Parser<T> {
                 ParamBang          => ast::Word::Param(ast::Parameter::Bang),
                 ParamPositional(p) => ast::Word::Param(ast::Parameter::Positional(p)),
 
-                Dollar => if let Some(&Name(_)) = self.iter.peek() {
+                tok@Dollar => if let Some(&Name(_)) = self.iter.peek() {
                     if let Some(Name(n)) = self.iter.next() {
                         ast::Word::Param(ast::Parameter::Var(n))
                     } else {
                         unreachable!()
                     }
                 } else {
-                    ast::Word::Literal("$".to_string())
+                    ast::Word::Literal(tok.to_string())
                 },
 
                 SingleQuote => {
@@ -409,8 +409,8 @@ mod test {
         assert_eq!(p.linebreak().unwrap(), vec!(
                 Newline(None),
                 Newline(None),
-                Newline(Some(" comment1".to_string())),
-                Newline(Some("comment2".to_string())),
+                Newline(Some(String::from(" comment1"))),
+                Newline(Some(String::from("comment2"))),
                 Newline(None)
             )
         );
@@ -431,7 +431,7 @@ mod test {
     #[test]
     fn test_linebreak_valid_eof_instead_of_newline() {
         let mut p = make_parser("#comment");
-        assert_eq!(p.linebreak().unwrap(), vec!(Newline(Some("comment".to_string()))));
+        assert_eq!(p.linebreak().unwrap(), vec!(Newline(Some(String::from("comment")))));
     }
 
 
@@ -446,7 +446,7 @@ mod test {
     fn test_skip_whitespace_preserve_comments() {
         let mut p = make_parser("    \t\t \t \t#comment\n   ");
         p.skip_whitespace();
-        assert_eq!(p.linebreak().unwrap().pop().unwrap(), Newline(Some("comment".to_string())));
+        assert_eq!(p.linebreak().unwrap().pop().unwrap(), Newline(Some(String::from("comment"))));
     }
 
     #[test]
@@ -458,9 +458,9 @@ mod test {
             box Or( box Simple { cmd: ref foo, .. }, box Simple { cmd: ref bar, .. }),
             box Simple { cmd: ref baz, .. }
         ) = parse {
-            assert_eq!(foo, &Word::Literal("foo".to_string()));
-            assert_eq!(bar, &Word::Literal("bar".to_string()));
-            assert_eq!(baz, &Word::Literal("baz".to_string()));
+            assert_eq!(foo, &Word::Literal(String::from("foo")));
+            assert_eq!(bar, &Word::Literal(String::from("bar")));
+            assert_eq!(baz, &Word::Literal(String::from("baz")));
             return;
         }
 
@@ -476,9 +476,9 @@ mod test {
             box Or( box Simple { cmd: ref foo, .. }, box Simple { cmd: ref bar, .. }),
             box Simple { cmd: ref baz, .. }
         ) = parse {
-            assert_eq!(foo, &Word::Literal("foo".to_string()));
-            assert_eq!(bar, &Word::Literal("bar".to_string()));
-            assert_eq!(baz, &Word::Literal("baz".to_string()));
+            assert_eq!(foo, &Word::Literal(String::from("foo")));
+            assert_eq!(bar, &Word::Literal(String::from("bar")));
+            assert_eq!(baz, &Word::Literal(String::from("baz")));
             return;
         }
 
@@ -502,9 +502,9 @@ mod test {
                 Simple { cmd: ref bar, .. },
                 Simple { cmd: ref baz, .. },
             ] = &cmds[..] {
-                assert_eq!(foo, &Word::Literal("foo".to_string()));
-                assert_eq!(bar, &Word::Literal("bar".to_string()));
-                assert_eq!(baz, &Word::Literal("baz".to_string()));
+                assert_eq!(foo, &Word::Literal(String::from("foo")));
+                assert_eq!(bar, &Word::Literal(String::from("bar")));
+                assert_eq!(baz, &Word::Literal(String::from("baz")));
                 return;
             }
         }
@@ -543,9 +543,9 @@ mod test {
         let mut p = make_parser("hello#world");
         let word = p.word().unwrap().expect("no valid word was discovered");
         assert_eq!(word, Word::Concat(vec!(
-                    Word::Literal("hello".to_string()),
-                    Word::Literal("#".to_string()),
-                    Word::Literal("world".to_string()),
+                    Word::Literal(String::from("hello")),
+                    Word::Literal(String::from("#")),
+                    Word::Literal(String::from("world")),
         )));
     }
 
@@ -554,7 +554,7 @@ mod test {
         let mut p = make_parser("hello #world");
         p.word().unwrap().expect("no valid word was discovered");
         let comment = p.linebreak().unwrap();
-        assert_eq!(comment, vec!(Newline(Some("world".to_string()))));
+        assert_eq!(comment, vec!(Newline(Some(String::from("world")))));
     }
 
     #[test]
@@ -567,9 +567,9 @@ mod test {
             &Job(box And(box Simple { cmd: ref foo, .. }, box Simple { cmd: ref bar, .. })),
             &Simple{ cmd: ref baz, .. }
         ) = (&cmd1, &cmd2) {
-            assert_eq!(foo, &Word::Literal("foo".to_string()));
-            assert_eq!(bar, &Word::Literal("bar".to_string()));
-            assert_eq!(baz, &Word::Literal("baz".to_string()));
+            assert_eq!(foo, &Word::Literal(String::from("foo")));
+            assert_eq!(bar, &Word::Literal(String::from("bar")));
+            assert_eq!(baz, &Word::Literal(String::from("baz")));
             return;
         }
 
@@ -585,10 +585,10 @@ mod test {
 
         if let (&And(box Simple { cmd: ref foo, .. }, box Simple { cmd: ref bar, .. }),
             &Simple { cmd: ref baz, .. }, &Simple { cmd: ref qux, .. }) = (&cmd1, &cmd2, &cmd3) {
-                assert_eq!(foo, &Word::Literal("foo".to_string()));
-                assert_eq!(bar, &Word::Literal("bar".to_string()));
-                assert_eq!(baz, &Word::Literal("baz".to_string()));
-                assert_eq!(qux, &Word::Literal("qux".to_string()));
+                assert_eq!(foo, &Word::Literal(String::from("foo")));
+                assert_eq!(bar, &Word::Literal(String::from("bar")));
+                assert_eq!(baz, &Word::Literal(String::from("baz")));
+                assert_eq!(qux, &Word::Literal(String::from("qux")));
                 return;
         }
 

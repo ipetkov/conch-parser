@@ -91,10 +91,10 @@ pub enum Token {
 
     /// Any literal delimited by whitespace.
     Literal(String),
-    /// A Literal that starts with a number or an underscore.
+    /// A Literal that contains only alphanumerics or underscores, and does not start with a digit.
     Name(String),
 
-    /// A Name that was immediately followed by an equals sign, e.g. `foo=` becomes Assignment("foo").
+    /// A `Name` that was immediately followed by an equals sign, e.g. `foo=` becomes Assignment("foo").
     Assignment(String),
 }
 

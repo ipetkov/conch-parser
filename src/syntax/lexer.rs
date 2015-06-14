@@ -259,11 +259,11 @@ mod test {
     check_tok!(check_ParamDash, ParamDash);
     check_tok!(check_ParamDollar, ParamDollar);
     check_tok!(check_ParamBang, ParamBang);
-    check_tok!(check_Whitespace, Whitespace(" \t\r".to_string()));
-    check_tok!(check_Name, Name("abc_23_defg".to_string()));
-    check_tok!(check_Literal, Literal(",abcdefg80hijklmno-p".to_string()));
+    check_tok!(check_Whitespace, Whitespace(String::from(" \t\r")));
+    check_tok!(check_Name, Name(String::from("abc_23_defg")));
+    check_tok!(check_Literal, Literal(String::from(",abcdefg80hijklmno-p")));
     check_tok!(check_ParamPositional, ParamPositional(9));
-    check_tok!(check_Assignment, Assignment("foobar".to_string()));
+    check_tok!(check_Assignment, Assignment(String::from("foobar")));
 
     lex_str!(check_greedy_Amp,    "&&&",  AndIf, Amp);
     lex_str!(check_greedy_Pipe,   "|||",  OrIf, Pipe);
@@ -271,21 +271,21 @@ mod test {
     lex_str!(check_greedy_Less,   "<<<",  DLess, Less);
     lex_str!(check_greedy_Great,  ">>>",  DGreat, Great);
     lex_str!(check_greedy_Dollar, "$$$",  ParamDollar, Dollar);
-    lex_str!(check_greedy_Less2,  "<<<-", DLess, Less, Literal("-".to_string()));
+    lex_str!(check_greedy_Less2,  "<<<-", DLess, Less, Literal(String::from("-")));
 
-    lex_str!(check_Assignment_and_value, "foobar=test", Assignment("foobar".to_string()), Name("test".to_string()));
-    lex_str!(check_bad_Assigmnent_and_value, "5foobar=test", Literal("5foobar=test".to_string()));
+    lex_str!(check_Assignment_and_value, "foobar=test", Assignment(String::from("foobar")), Name(String::from("test")));
+    lex_str!(check_bad_Assigmnent_and_value, "5foobar=test", Literal(String::from("5foobar=test")));
     lex_str!(check_Literal_and_Name_combo, "hello ,asdf5_ 6world __name ^?.@abc _test2",
-             Name("hello".to_string()),
-             Whitespace(" ".to_string()),
-             Literal(",asdf5_".to_string()),
-             Whitespace(" ".to_string()),
-             Literal("6world".to_string()),
-             Whitespace(" ".to_string()),
-             Name("__name".to_string()),
-             Whitespace(" ".to_string()),
-             Literal("^?.@abc".to_string()),
-             Whitespace(" ".to_string()),
-             Name("_test2".to_string())
+             Name(String::from("hello")),
+             Whitespace(String::from(" ")),
+             Literal(String::from(",asdf5_")),
+             Whitespace(String::from(" ")),
+             Literal(String::from("6world")),
+             Whitespace(String::from(" ")),
+             Name(String::from("__name")),
+             Whitespace(String::from(" ")),
+             Literal(String::from("^?.@abc")),
+             Whitespace(String::from(" ")),
+             Name(String::from("_test2"))
      );
 }
