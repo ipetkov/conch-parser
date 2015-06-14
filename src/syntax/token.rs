@@ -36,6 +36,8 @@ pub enum Token {
     Tilde,
     /// \#
     Pound,
+    /// '
+    SingleQuote,
     /// "
     DoubleQuote,
     /// `
@@ -94,9 +96,6 @@ pub enum Token {
 
     /// A Name that was immediately followed by an equals sign, e.g. `foo=` becomes Assignment("foo").
     Assignment(String),
-
-    /// Any literal characters occuring between single quotes
-    SingleQuoted(String),
 }
 
 impl fmt::Display for Token {
@@ -116,6 +115,7 @@ impl fmt::Display for Token {
             Pipe                => fmt.write_str("|"),
             Tilde               => fmt.write_str("~"),
             Pound               => fmt.write_str("#"),
+            SingleQuote         => fmt.write_str("\'"),
             DoubleQuote         => fmt.write_str("\""),
             Backtick            => fmt.write_str("`"),
             AndIf               => fmt.write_str("&&"),
@@ -142,7 +142,6 @@ impl fmt::Display for Token {
             Literal(ref s)      => fmt.write_str(s),
             ParamPositional(p)  => write!(fmt, "${}", p),
             Assignment(ref s)   => write!(fmt, "{}=", s),
-            SingleQuoted(ref s) => write!(fmt, "'{}'", s),
         }
     }
 }

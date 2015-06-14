@@ -61,6 +61,7 @@ impl<I: Iterator<Item = char>> Lexer<I> {
 
         let tok = match cur {
             '\n' => Newline,
+            '\'' => SingleQuote,
             '{' => CurlyOpen,
             '}' => CurlyClose,
             '!' => Bang,
@@ -120,12 +121,6 @@ impl<I: Iterator<Item = char>> Lexer<I> {
                 Clobber
             } else {
                 Great
-            },
-
-            '\'' => {
-                let quot = self.concat_matching(None, |c| c != '\'');
-                self.next_is('\''); // Make sure we consume the closing single quote
-                SingleQuoted(quot)
             },
 
             // Newlines are valid whitespace, however, we want to tokenize them separately!
@@ -268,7 +263,6 @@ mod test {
     check_tok!(check_Name, Name("abc_23_defg".to_string()));
     check_tok!(check_Literal, Literal(",abcdefg80hijklmno-p".to_string()));
     check_tok!(check_ParamPositional, ParamPositional(9));
-    check_tok!(check_SingleQuoted, SingleQuoted("Hello world\nGood bye\n".to_string()));
     check_tok!(check_Assignment, Assignment("foobar".to_string()));
 
     lex_str!(check_greedy_Amp,    "&&&",  AndIf, Amp);

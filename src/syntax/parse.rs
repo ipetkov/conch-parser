@@ -73,11 +73,10 @@ impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
             // Most of these should not have any newlines
             // embedded within them, but permitting external
             // tokenizers means we should sanity check anyway.
-            Name(ref s)         |
-            Literal(ref s)      |
-            Whitespace(ref s)   |
-            Assignment(ref s)   |
-            SingleQuoted(ref s) => s.chars().filter(|&c| c == '\n').count() as u64,
+            Name(ref s)       |
+            Literal(ref s)    |
+            Whitespace(ref s) |
+            Assignment(ref s) => s.chars().filter(|&c| c == '\n').count() as u64,
 
             Newline => 1,
             _ => 0,
@@ -242,6 +241,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         let mut words = Vec::new();
         loop {
             match self.iter.peek() {
+                Some(&SingleQuote)        |
                 Some(&ParamAt)            |
                 Some(&ParamStar)          |
                 Some(&ParamPound)         |
@@ -254,8 +254,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
                 Some(&ParamPositional(_)) |
                 Some(&Assignment(_))      |
                 Some(&Name(_))            |
-                Some(&Literal(_))         |
-                Some(&SingleQuoted(_))    => {},
+                Some(&Literal(_))         => {},
 
                 _ => break,
             }
@@ -270,8 +269,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
                 tok@Assignment(_) => ast::Word::Literal(tok.to_string()),
 
                 Name(s)    |
-                Literal(s) |
-                SingleQuoted(s) => ast::Word::Literal(s),
+                Literal(s) => ast::Word::Literal(s),
 
                 ParamAt            => ast::Word::Param(ast::Parameter::At),
                 ParamStar          => ast::Word::Param(ast::Parameter::Star),
@@ -290,6 +288,27 @@ impl<T: Iterator<Item = Token>> Parser<T> {
                     }
                 } else {
                     ast::Word::Literal("$".to_string())
+                },
+
+                SingleQuote => {
+                    // Make sure we actually find the closing quote before EOF
+                    let mut found_close_quot = false;
+                    let contents = self.iter.by_ref()
+                        .take_while(|t| if t == &SingleQuote {
+                            found_close_quot = true;
+                            false // stop collecting
+                        } else {
+                            true // keep collecting literals
+                        })
+                        .map(|t| t.to_string())
+                        .collect::<Vec<String>>()
+                        .concat();
+
+                    if found_close_quot {
+                        ast::Word::Literal(contents)
+                    } else {
+                        return Err(self.make_unexpected_err(None));
+                    }
                 },
 
                 _ => unreachable!(),
