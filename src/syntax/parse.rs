@@ -128,15 +128,31 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         Parser { iter: TokenIter::new(t) }
     }
 
+    /// Parses a single complete command.
+    ///
+    /// For example, `foo && bar; baz` will yield two complete
+    /// commands: And(foo, bar), and Simple(baz).
     pub fn complete_command(&mut self) -> Result<Option<ast::Command>> {
         try!(self.linebreak());
 
-        let cmd = match self.iter.peek() {
-            Some(_) => Some(try!(self.and_or())),
-            None => None,
-        };
+        if self.iter.peek().is_none() {
+            return Ok(None);
+        }
 
-        Ok(cmd)
+        let mut cmd = try!(self.and_or());
+
+        match self.iter.peek() {
+            Some(&Semi) => { self.iter.next(); },
+            Some(&Amp) => {
+                self.iter.next();
+                cmd = ast::Command::Job(Box::new(cmd));
+            },
+
+            _ => {},
+        }
+
+        try!(self.linebreak());
+        Ok(Some(cmd))
     }
 
     /// Parses compound AND/OR commands.
@@ -436,35 +452,37 @@ mod test {
     #[test]
     fn test_and_or_correct_associativity() {
         let mut p = make_parser("foo || bar && baz");
+        let parse = p.and_or().unwrap();
 
         if let And(
-            box Or( box Simple { cmd: foo, .. }, box Simple { cmd: bar, .. }),
-            box Simple { cmd: baz, .. }
-        ) = p.and_or().unwrap() {
-            assert_eq!(foo, Word::Literal("foo".to_string()));
-            assert_eq!(bar, Word::Literal("bar".to_string()));
-            assert_eq!(baz, Word::Literal("baz".to_string()));
+            box Or( box Simple { cmd: ref foo, .. }, box Simple { cmd: ref bar, .. }),
+            box Simple { cmd: ref baz, .. }
+        ) = parse {
+            assert_eq!(foo, &Word::Literal("foo".to_string()));
+            assert_eq!(bar, &Word::Literal("bar".to_string()));
+            assert_eq!(baz, &Word::Literal("baz".to_string()));
             return;
         }
 
-        panic!("Incorrect parse result for Parse::and_or");
+        panic!("Incorrect parse result for Parse::and_or: {:?}", parse);
     }
 
     #[test]
     fn test_and_or_valid_with_newlines_after_operator() {
         let mut p = make_parser("foo ||\n\n\n\nbar && baz");
+        let parse = p.and_or().unwrap();
 
         if let And(
-            box Or( box Simple { cmd: foo, .. }, box Simple { cmd: bar, .. }),
-            box Simple { cmd: baz, .. }
-        ) = p.and_or().unwrap() {
-            assert_eq!(foo, Word::Literal("foo".to_string()));
-            assert_eq!(bar, Word::Literal("bar".to_string()));
-            assert_eq!(baz, Word::Literal("baz".to_string()));
+            box Or( box Simple { cmd: ref foo, .. }, box Simple { cmd: ref bar, .. }),
+            box Simple { cmd: ref baz, .. }
+        ) = parse {
+            assert_eq!(foo, &Word::Literal("foo".to_string()));
+            assert_eq!(bar, &Word::Literal("bar".to_string()));
+            assert_eq!(baz, &Word::Literal("baz".to_string()));
             return;
         }
 
-        panic!("Incorrect parse result for Parse::and_or");
+        panic!("Incorrect parse result for Parse::and_or: {:?}", parse);
     }
 
     #[test]
@@ -477,36 +495,39 @@ mod test {
     #[test]
     fn test_pipeline_valid_bang() {
         let mut p = make_parser("! foo | bar | baz");
-        if let Pipe(true, cmds) = p.pipeline().unwrap() {
+        let parse = p.pipeline().unwrap();
+        if let Pipe(true, ref cmds) = parse {
             if let [
                 Simple { cmd: ref foo, .. },
                 Simple { cmd: ref bar, .. },
                 Simple { cmd: ref baz, .. },
             ] = &cmds[..] {
-                assert_eq!(*foo, Word::Literal("foo".to_string()));
-                assert_eq!(*bar, Word::Literal("bar".to_string()));
-                assert_eq!(*baz, Word::Literal("baz".to_string()));
+                assert_eq!(foo, &Word::Literal("foo".to_string()));
+                assert_eq!(bar, &Word::Literal("bar".to_string()));
+                assert_eq!(baz, &Word::Literal("baz".to_string()));
                 return;
             }
         }
 
-        panic!("Incorrect parse result for Parse::pipeline");
+        panic!("Incorrect parse result for Parse::pipeline: {:?}", parse);
     }
 
     #[test]
     fn test_pipeline_valid_bangs_in_and_or() {
         let mut p = make_parser("! foo | bar || ! baz && ! foobar");
-        if let And(box Or(box Pipe(true, _), box Pipe(true, _)), box Pipe(true, _)) = p.and_or().unwrap() {
+        let parse = p.and_or().unwrap();
+        if let And(box Or(box Pipe(true, _), box Pipe(true, _)), box Pipe(true, _)) = parse {
             return;
         }
 
-        panic!("Incorrect parse result for Parse::and_or with several !");
+        panic!("Incorrect parse result for Parse::and_or with several `!`: {:?}", parse);
     }
 
     #[test]
     fn test_pipeline_no_bang_single_cmd_optimize_wrapper_out() {
         let mut p = make_parser("foo");
-        if let Pipe(..) = p.pipeline().unwrap() {
+        let parse = p.pipeline().unwrap();
+        if let Pipe(..) = parse {
             panic!("Parser::pipeline should not create a wrapper if no ! present and only a single command");
         }
     }
@@ -534,6 +555,50 @@ mod test {
         p.word().unwrap().expect("no valid word was discovered");
         let comment = p.linebreak().unwrap();
         assert_eq!(comment, vec!(Newline(Some("world".to_string()))));
+    }
+
+    #[test]
+    fn test_complete_command_job() {
+        let mut p = make_parser("foo && bar & baz");
+        let cmd1 = p.complete_command().unwrap().expect("failed to parse first command");
+        let cmd2 = p.complete_command().unwrap().expect("failed to parse second command");
+
+        if let (
+            &Job(box And(box Simple { cmd: ref foo, .. }, box Simple { cmd: ref bar, .. })),
+            &Simple{ cmd: ref baz, .. }
+        ) = (&cmd1, &cmd2) {
+            assert_eq!(foo, &Word::Literal("foo".to_string()));
+            assert_eq!(bar, &Word::Literal("bar".to_string()));
+            assert_eq!(baz, &Word::Literal("baz".to_string()));
+            return;
+        }
+
+        panic!("Incorrect parse result for Parse::complete_command:\n{:?}\n{:?}", cmd1, cmd2);
+    }
+
+    #[test]
+    fn test_complete_command_non_eager_parse() {
+        let mut p = make_parser("foo && bar; baz\n\nqux");
+        let cmd1 = p.complete_command().unwrap().expect("failed to parse first command");
+        let cmd2 = p.complete_command().unwrap().expect("failed to parse second command");
+        let cmd3 = p.complete_command().unwrap().expect("failed to parse third command");
+
+        if let (&And(box Simple { cmd: ref foo, .. }, box Simple { cmd: ref bar, .. }),
+            &Simple { cmd: ref baz, .. }, &Simple { cmd: ref qux, .. }) = (&cmd1, &cmd2, &cmd3) {
+                assert_eq!(foo, &Word::Literal("foo".to_string()));
+                assert_eq!(bar, &Word::Literal("bar".to_string()));
+                assert_eq!(baz, &Word::Literal("baz".to_string()));
+                assert_eq!(qux, &Word::Literal("qux".to_string()));
+                return;
+        }
+
+        panic!("Incorrect parse result for Parse::complete_command: {:?}\n{:?}\n{:?}", cmd1, cmd2, cmd3);
+    }
+
+    #[test]
+    fn test_complete_command_valid_no_input() {
+        let mut p = make_parser("");
+        p.complete_command().ok().expect("no input caused an error");
     }
 }
 

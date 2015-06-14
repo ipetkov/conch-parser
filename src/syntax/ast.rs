@@ -62,6 +62,9 @@ pub enum Command {
     /// The bool indicates if a logical negation of the last command's status
     /// should be returned.
     Pipe(bool, Vec<Command>),
+    /// A command that runs asynchronously, that is, the shell will not wait
+    /// for it to exit before running the next command, e.g. `foo &`.
+    Job(Box<Command>),
 
     /// The simplest possible command: an executable with arguments.
     Simple {
