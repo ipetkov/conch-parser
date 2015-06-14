@@ -34,6 +34,8 @@ pub enum Token {
     Pipe,
     /// ~
     Tilde,
+    /// \#
+    Pound,
     /// "
     DoubleQuote,
     /// `
@@ -84,8 +86,6 @@ pub enum Token {
 
     /// Any string of whitespace characters NOT including a newline.
     Whitespace(String),
-    /// Contains the body of the comment, excluding the leading # and trailing newline.
-    Comment(String),
 
     /// Any literal delimited by whitespace.
     Literal(String),
@@ -115,6 +115,7 @@ impl fmt::Display for Token {
             Great               => fmt.write_str(">"),
             Pipe                => fmt.write_str("|"),
             Tilde               => fmt.write_str("~"),
+            Pound               => fmt.write_str("#"),
             DoubleQuote         => fmt.write_str("\""),
             Backtick            => fmt.write_str("`"),
             AndIf               => fmt.write_str("&&"),
@@ -140,7 +141,6 @@ impl fmt::Display for Token {
             Name(ref s)         => fmt.write_str(s),
             Literal(ref s)      => fmt.write_str(s),
             ParamPositional(p)  => write!(fmt, "${}", p),
-            Comment(ref s)      => write!(fmt, "#{}", s),
             Assignment(ref s)   => write!(fmt, "{}=", s),
             SingleQuoted(ref s) => write!(fmt, "'{}'", s),
         }

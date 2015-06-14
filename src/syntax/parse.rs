@@ -74,7 +74,6 @@ impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
             // embedded within them, but permitting external
             // tokenizers means we should sanity check anyway.
             Name(ref s)         |
-            Comment(ref s)      |
             Literal(ref s)      |
             Whitespace(ref s)   |
             Assignment(ref s)   |
@@ -251,6 +250,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
                 Some(&ParamDollar)        |
                 Some(&ParamBang)          |
                 Some(&Dollar)             |
+                Some(&Pound)              |
                 Some(&ParamPositional(_)) |
                 Some(&Assignment(_))      |
                 Some(&Name(_))            |
@@ -263,7 +263,11 @@ impl<T: Iterator<Item = Token>> Parser<T> {
             let w = match self.iter.next().unwrap() {
                 // Assignments are only treated as such if they occur beforea command is
                 // found. Any "Assignments" afterward should be treated as literals.
-                Assignment(s) => { words.push(ast::Word::Literal(s)); ast::Word::Literal("=".to_string()) },
+                //
+                // Also, comments are only recognized where a Newline is valid, thus '#'
+                // becomes a literal if it occurs in the middle of a word.
+                tok@Pound |
+                tok@Assignment(_) => ast::Word::Literal(tok.to_string()),
 
                 Name(s)    |
                 Literal(s) |
@@ -307,8 +311,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         Ok(ret)
     }
 
-    /// Skips over any encountered whitespace, however,
-    /// any `Token::Newline`s or `Token::Comment`s are preserved.
+    /// Skips over any encountered whitespace but preserves newlines.
     #[inline]
     pub fn skip_whitespace(&mut self) {
         while let Some(&Whitespace(_)) = self.iter.peek() {
@@ -316,30 +319,32 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         }
     }
 
-    /// Parses zero or more `Token::Newline`s, skipping whitespace and preserving `Token::Comment`s.
-    ///
-    /// A newline is expected after every `Token::Comment`.
+    /// Parses zero or more `Token::Newline`s, skipping whitespace and preserving comments.
     pub fn linebreak(&mut self) -> Result<Vec<ast::Newline>> {
         let mut lines = Vec::new();
 
         loop {
             match self.iter.peek() {
                 Some(&Newline)       |
-                Some(&Comment(_))    |
+                Some(&Pound)         |
                 Some(&Whitespace(_)) => {},
                 _ => break,
             }
 
-            match self.iter.next() {
-                Some(Newline) => lines.push(ast::Newline(None)),
-                Some(Comment(s)) => match self.iter.next() {
-                    Some(Newline) => lines.push(ast::Newline(Some(s))),
-                    t => return Err(self.make_unexpected_err(t)),
-                },
+            let comment = match self.iter.next() {
+                Some(Newline) => None,
+                Some(Pound) => Some(self.iter.by_ref()
+                        .take_while(|t| t != &Newline)
+                        .map(|t| t.to_string())
+                        .collect::<Vec<String>>()
+                        .concat()
+                ),
 
-                Some(Whitespace(_)) => {},
+                Some(Whitespace(_)) => continue,
                 _ => unreachable!(),
-            }
+            };
+
+            lines.push(ast::Newline(comment));
         }
 
         Ok(lines)
@@ -389,10 +394,11 @@ mod test {
     }
 
     #[test]
-    fn test_linebreak_invalid_missing_newline() {
-        let mut p = make_parser_from_tokens(vec!(Token::Comment("comment".to_string())));
-        p.linebreak().unwrap_err();
+    fn test_linebreak_valid_eof_instead_of_newline() {
+        let mut p = make_parser("#comment");
+        assert_eq!(p.linebreak().unwrap(), vec!(Newline(Some("comment".to_string()))));
     }
+
 
     #[test]
     fn test_skip_whitespace_preserve_newline() {
@@ -490,6 +496,25 @@ mod test {
     fn test_pipeline_invalid_multiple_bangs_in_same_pipeline() {
         let mut p = make_parser("! foo | bar | ! baz");
         p.pipeline().unwrap_err();
+    }
+
+    #[test]
+    fn test_comment_cannot_start_mid_whitespace_delimited_word() {
+        let mut p = make_parser("hello#world");
+        let word = p.word().unwrap().expect("no valid word was discovered");
+        assert_eq!(word, Word::Concat(vec!(
+                    Word::Literal("hello".to_string()),
+                    Word::Literal("#".to_string()),
+                    Word::Literal("world".to_string()),
+        )));
+    }
+
+    #[test]
+    fn test_comment_can_start_if_whitespace_before_pound() {
+        let mut p = make_parser("hello #world");
+        p.word().unwrap().expect("no valid word was discovered");
+        let comment = p.linebreak().unwrap();
+        assert_eq!(comment, vec!(Newline(Some("world".to_string()))));
     }
 }
 

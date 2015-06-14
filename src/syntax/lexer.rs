@@ -67,6 +67,7 @@ impl<I: Iterator<Item = char>> Lexer<I> {
             '~' => Tilde,
             '"' => DoubleQuote,
             '`' => Backtick,
+            '#' => Pound,
 
             ';' => if self.next_is(';') { DSemi } else { Semi },
             '&' => if self.next_is('&') { AndIf } else { Amp  },
@@ -121,7 +122,6 @@ impl<I: Iterator<Item = char>> Lexer<I> {
                 Great
             },
 
-            '#' => Comment(self.concat_matching(None, |c| c != '\n')),
             '\'' => {
                 let quot = self.concat_matching(None, |c| c != '\'');
                 self.next_is('\''); // Make sure we consume the closing single quote
@@ -185,6 +185,7 @@ impl<I: Iterator<Item = char>> Iterator for Lexer<I> {
 
                         // Otherwise, keep consuming characters for the literal
                         Some(Lit(c)) => word.push(c),
+
                         None => break,
                     }
                 }
@@ -241,6 +242,7 @@ mod test {
     check_tok!(check_Great, Great);
     check_tok!(check_Pipe, Pipe);
     check_tok!(check_Tilde, Tilde);
+    check_tok!(check_Pound, Pound);
     check_tok!(check_DoubleQuote, DoubleQuote);
     check_tok!(check_Backtick, Backtick);
     check_tok!(check_AndIf, AndIf);
@@ -266,7 +268,6 @@ mod test {
     check_tok!(check_Name, Name("abc_23_defg".to_string()));
     check_tok!(check_Literal, Literal(",abcdefg80hijklmno-p".to_string()));
     check_tok!(check_ParamPositional, ParamPositional(9));
-    check_tok!(check_Comment, Comment("This is some comment. Foo bar".to_string()));
     check_tok!(check_SingleQuoted, SingleQuoted("Hello world\nGood bye\n".to_string()));
     check_tok!(check_Assignment, Assignment("foobar".to_string()));
 
