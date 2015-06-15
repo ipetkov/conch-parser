@@ -460,6 +460,17 @@ mod test {
         assert_eq!(p.linebreak().unwrap(), vec!(Newline(Some(String::from("comment")))));
     }
 
+    #[test]
+    fn test_linebreak_single_quote_insiginificant() {
+        let mut p = make_parser("#unclosed quote ' comment");
+        assert_eq!(p.linebreak().unwrap(), vec!(Newline(Some(String::from("unclosed quote ' comment")))));
+    }
+
+    #[test]
+    fn test_linebreak_double_quote_insiginificant() {
+        let mut p = make_parser("#unclosed quote \" comment");
+        assert_eq!(p.linebreak().unwrap(), vec!(Newline(Some(String::from("unclosed quote \" comment")))));
+    }
 
     #[test]
     fn test_skip_whitespace_preserve_newline() {
