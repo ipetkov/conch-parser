@@ -287,24 +287,15 @@ impl<T: Iterator<Item = Token>> Parser<T> {
                 Name(s)    |
                 Literal(s) => ast::Word::Literal(s),
 
-                ParamAt            => ast::Word::Param(ast::Parameter::At),
-                ParamStar          => ast::Word::Param(ast::Parameter::Star),
-                ParamPound         => ast::Word::Param(ast::Parameter::Pound),
-                ParamQuestion      => ast::Word::Param(ast::Parameter::Question),
-                ParamDash          => ast::Word::Param(ast::Parameter::Dash),
-                ParamDollar        => ast::Word::Param(ast::Parameter::Dollar),
-                ParamBang          => ast::Word::Param(ast::Parameter::Bang),
-                ParamPositional(p) => ast::Word::Param(ast::Parameter::Positional(p)),
-
-                tok@Dollar => if let Some(&Name(_)) = self.iter.peek() {
-                    if let Some(Name(n)) = self.iter.next() {
-                        ast::Word::Param(ast::Parameter::Var(n))
-                    } else {
-                        unreachable!()
-                    }
-                } else {
-                    ast::Word::Literal(tok.to_string())
-                },
+                Dollar             |
+                ParamAt            |
+                ParamStar          |
+                ParamPound         |
+                ParamQuestion      |
+                ParamDash          |
+                ParamDollar        |
+                ParamBang          |
+                ParamPositional(_) => try!(self.parameter()),
 
                 SingleQuote => {
                     // Make sure we actually find the closing quote before EOF
@@ -344,6 +335,41 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         // Fastforward through any whitespace for sanity
         self.skip_whitespace();
         Ok(ret)
+    }
+
+    /// Parses a parameter such as `$$`, `$1`, `$foo`, etc.
+    ///
+    /// Since it is possible that a leading `$` is not followed by a valid
+    /// parameter, the `$` will be treated as a literal. Thus this method
+    /// returns a `ast::Word` instead of a `ast::Parameter`.
+    pub fn parameter(&mut self) -> Result<ast::Word> {
+        use syntax::ast::Parameter::*;
+        use syntax::ast::Word::{Param, Literal};
+
+        let param = match self.iter.next() {
+            Some(ParamAt)            => Param(At),
+            Some(ParamStar)          => Param(Star),
+            Some(ParamPound)         => Param(Pound),
+            Some(ParamQuestion)      => Param(Question),
+            Some(ParamDash)          => Param(Dash),
+            Some(ParamDollar)        => Param(Dollar),
+            Some(ParamBang)          => Param(Bang),
+            Some(ParamPositional(p)) => Param(Positional(p)),
+
+            Some(Token::Dollar) => if let Some(&Name(_)) = self.iter.peek() {
+                if let Some(Name(n)) = self.iter.next() {
+                    Param(Var(n))
+                } else {
+                    unreachable!()
+                }
+            } else {
+                Literal(Token::Dollar.to_string())
+            },
+
+            t => return Err(self.make_unexpected_err(t)),
+        };
+
+        Ok(param)
     }
 
     /// Skips over any encountered whitespace but preserves newlines.
@@ -599,6 +625,51 @@ mod test {
     fn test_complete_command_valid_no_input() {
         let mut p = make_parser("");
         p.complete_command().ok().expect("no input caused an error");
+    }
+
+    #[test]
+    fn test_parameters_short() {
+        let words = vec!(
+            Parameter::At,
+            Parameter::Star,
+            Parameter::Pound,
+            Parameter::Question,
+            Parameter::Dash,
+            Parameter::Dollar,
+            Parameter::Bang,
+            Parameter::Positional(3),
+        );
+
+        let mut p = make_parser("$@$*$#$?$-$$$!$3$");
+        for param in words {
+            assert_eq!(p.parameter().unwrap(), Word::Param(param));
+        }
+
+        assert_eq!(Word::Literal(String::from("$")), p.parameter().unwrap());
+        p.parameter().unwrap_err(); // Stream should be exhausted
+    }
+
+    #[test]
+    #[ignore] // FIXME: enable once implemented
+    fn test_parameters_short_in_curlies() {
+        let words = vec!(
+            Parameter::At,
+            Parameter::Star,
+            Parameter::Pound,
+            Parameter::Question,
+            Parameter::Dash,
+            Parameter::Dollar,
+            Parameter::Bang,
+            Parameter::Var(String::from("foo")),
+            // FIXME: check for positional parameters, e.g. ${3} or ${100}
+        );
+
+        let mut p = make_parser("${@}${*}${#}${?}${-}${$}${!}${foo}");
+        for param in words {
+            assert_eq!(p.parameter().unwrap(), Word::Param(param));
+        }
+
+        p.parameter().unwrap_err(); // Stream should be exhausted
     }
 }
 
