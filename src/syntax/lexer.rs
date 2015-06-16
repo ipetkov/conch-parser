@@ -141,19 +141,19 @@ impl<I: Iterator<Item = char>> Iterator for Lexer<I> {
             c == '_' || c.is_alphabetic()
         }
 
-        fn name_char(c: char) -> bool {
-            c.is_digit(10) || name_start_char(c)
+        fn is_digit(c: char) -> bool {
+            c.is_digit(10)
         }
 
-        fn is_name(s: &String) -> bool {
-            s.chars().all(name_char)
+        fn name_char(c: char) -> bool {
+            is_digit(c) || name_start_char(c)
         }
 
         match self.next_internal() {
             None => None,
             Some(Tok(t)) => Some(t),
             Some(Lit(c)) => {
-                let maybe_name = name_start_char(c);
+                let is_name = name_start_char(c);
                 let mut word = String::new();
                 word.push(c);
 
@@ -169,10 +169,10 @@ impl<I: Iterator<Item = char>> Iterator for Lexer<I> {
                         // If we have a name candidate and hit an '=' this is an assignment token,
                         // and we'll let the parser figure out what the assignment value actually is
                         // (since it may be an actual expression).
-                        Some(Lit('=')) if maybe_name && is_name(&word) => return Some(Assignment(word)),
+                        Some(Lit('=')) if is_name => return Some(Assignment(word)),
 
                         // Make sure we delimit valid names whenever a non-name char comes along
-                        Some(Lit(c)) if maybe_name && !name_char(c) => {
+                        Some(Lit(c)) if is_name && !name_char(c) => {
                             debug_assert_eq!(self.peeked, None);
                             self.peeked = Some(Lit(c));
                             return Some(Name(word));
@@ -185,7 +185,7 @@ impl<I: Iterator<Item = char>> Iterator for Lexer<I> {
                     }
                 }
 
-                if maybe_name && is_name(&word) {
+                if is_name {
                     Some(Name(word))
                 } else {
                     Some(Literal(word))
