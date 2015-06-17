@@ -139,3 +139,52 @@ impl fmt::Display for Token {
         }
     }
 }
+
+impl Token {
+    pub fn len(&self) -> usize {
+        match *self {
+            Newline     |
+            ParenOpen   |
+            ParenClose  |
+            CurlyOpen   |
+            CurlyClose  |
+            Dollar      |
+            Bang        |
+            Semi        |
+            Amp         |
+            Less        |
+            Great       |
+            Pipe        |
+            Tilde       |
+            Pound       |
+            SingleQuote |
+            DoubleQuote |
+            Backtick    => 1,
+
+            AndIf         |
+            OrIf          |
+            DSemi         |
+            DLess         |
+            DGreat        |
+            GreatAnd      |
+            LessAnd       |
+            Clobber       |
+            LessGreat     |
+            ParamAt       |
+            ParamStar     |
+            ParamPound    |
+            ParamQuestion |
+            ParamDash     |
+            ParamDollar   |
+            ParamBang     |
+            ParamPositional(_) => 2,
+
+            DLessDash => 3,
+
+            Whitespace(ref s) |
+            Literal(ref s)    |
+            Name(ref s)       |
+            Assignment(ref s) => s.len(),
+        }
+    }
+}

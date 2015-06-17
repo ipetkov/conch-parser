@@ -24,6 +24,7 @@ pub enum ErrorKind {
 pub struct Error {
     kind: ErrorKind,
     line: u64,
+    col: u64,
 }
 
 impl Error {
@@ -35,6 +36,10 @@ impl Error {
     /// The line number of the input where the error occured.
     pub fn line(&self) -> u64 {
         self.line
+    }
+
+    pub fn col(&self) -> u64 {
+        self.col
     }
 }
 
@@ -62,6 +67,7 @@ impl ::std::fmt::Display for Error {
 struct TokenIter<I: Iterator<Item = Token>> {
     iter: ::std::iter::Peekable<I>,
     line: u64,
+    col: u64,
 }
 
 impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
@@ -87,6 +93,7 @@ impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
         };
 
         self.line += newlines;
+        self.col += if newlines == 0 { next.len() as u64 } else { 0 };
         Some(next)
     }
 }
@@ -94,7 +101,7 @@ impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
 impl<I: Iterator<Item = Token>> TokenIter<I> {
     /// Creates a new TokenIter from another Token iterator.
     fn new(iter: I) -> TokenIter<I> {
-        TokenIter { iter: iter.peekable(), line: 1 }
+        TokenIter { iter: iter.peekable(), line: 1, col: 1 }
     }
 
     /// Allows the caller to peek at the next token without consuming it.
@@ -123,6 +130,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     fn make_unexpected_err(&mut self, tok: Option<Token>) -> Error {
         Error {
             line: self.iter.line,
+            col: self.iter.col,
             kind: tok.or_else(|| self.iter.next()).map_or(UnexpectedEOF, |t| Unexpected(t)),
         }
     }
@@ -130,6 +138,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     fn make_bad_fd_error(&mut self, w: ast::Word) -> Error {
         Error {
             line: self.iter.line,
+            col: self.iter.col,
             kind: BadFd(w),
         }
     }
