@@ -11,6 +11,8 @@ pub type Result<T> = ::std::result::Result<T, Error>;
 /// Specifies the exact error that occured during parsing.
 #[derive(Debug)]
 pub enum ErrorKind {
+    /// Encoutnered a word that could not be interpreted as a valid file descriptor.
+    BadFd(ast::Word),
     /// Encountered a token not appropriate for the current context.
     Unexpected(Token),
     /// Encountered the end of input while expecting additional tokens.
@@ -39,6 +41,7 @@ impl Error {
 impl ::std::error::Error for Error {
     fn description(&self) -> &str {
         match self.kind {
+            BadFd(_)      => "bad file descriptor found",
             Unexpected(_) => "unexpected token found",
             UnexpectedEOF => "unexpected end of input",
         }
@@ -48,6 +51,7 @@ impl ::std::error::Error for Error {
 impl ::std::fmt::Display for Error {
     fn fmt(&self, fmt: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
         match self.kind {
+            BadFd(ref badfd) => write!(fmt, "bad file descriptor: {}", badfd),
             Unexpected(ref t) => write!(fmt, "found unexpected token '{}' on line {}", t, self.line),
             UnexpectedEOF => fmt.write_str("unexpected end of input"),
         }
@@ -120,6 +124,13 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         Error {
             line: self.iter.line,
             kind: tok.or_else(|| self.iter.next()).map_or(UnexpectedEOF, |t| Unexpected(t)),
+        }
+    }
+
+    fn make_bad_fd_error(&mut self, w: ast::Word) -> Error {
+        Error {
+            line: self.iter.line,
+            kind: BadFd(w),
         }
     }
 
@@ -221,26 +232,173 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         self.simple_command()
     }
 
-    /// Tries to parse a simple command, e.g. `cmd arg1 arg2`.
+    /// Tries to parse a simple command, e.g. `cmd arg1 arg2 >redirect`.
     ///
-    /// An error will be returned if not even a command name can be found, thus
-    /// caller should be expecting the presense of a simple command with certainty.
+    /// A valid command is expected to have at least an executable name, or a single
+    /// variable assignment or redirection. Otherwise an error will be returned.
     pub fn simple_command(&mut self) -> Result<ast::Command> {
-        let cmd = match try!(self.word()) {
-            Some(w) => w,
-            None => return Err(self.make_unexpected_err(None))
-        };
-
+        let mut cmd: Option<ast::Word> = None;
         let mut args = Vec::new();
-        while let Some(w) = try!(self.word()) {
-            args.push(w);
+        let mut vars = Vec::new();
+        let mut io = Vec::new();
+
+        loop {
+            if let Some(&Assignment(_)) = self.iter.peek() {
+                if let Some(Assignment(var)) = self.iter.next() {
+                    let word = try!(self.word()).unwrap_or(ast::Word::Literal(String::new()));
+                    vars.push((var, word));
+                } else {
+                    unreachable!();
+                }
+
+                // Make sure we continue checking for assignments,
+                // otherwise it they can be interpreted as literal words.
+                continue;
+            }
+
+            // A fd candidate must not be separated from the redirect token by whitespace
+            let exec = match try!(self.word_preserve_trailing_whitespace()) {
+                // If we found a fd candidate, try to parse a redirect with it
+                Some(w) => match try!(self.maybe_redirect(Some(&w))) {
+                    // Looks like there was a redirect, we should keep checking
+                    Some(redirect) => { io.push(redirect); continue; },
+                    // Word was either not numeric, or no redirect following
+                    // so this word must be the executable of the command
+                    None => w,
+                },
+
+                // Otherwise if no word is present, we are probably at a redirect
+                None => match try!(self.maybe_redirect(None)) {
+                    // Looks like there was a redirect, we should keep checking
+                    Some(redirect) => { io.push(redirect); continue; },
+                    // No redirects left, we should hit the command next
+                    None => break,
+                }
+            };
+
+            // Since there are no more assignments present and the current
+            // word is not a fd candidate it must be the first real word,
+            // and thus the executable name.
+            debug_assert_eq!(cmd, None);
+            cmd = Some(exec);
+            break;
         }
 
-        Ok(ast::Command::Simple { cmd: cmd, args: args })
+        // Now that all assignments are taken care of, any other occurances of `=` will be
+        // treated as literals when we attempt to parse a word out.
+        loop {
+            // A fd candidate must not be separated from the redirect token by whitespace
+            match try!(self.word_preserve_trailing_whitespace()) {
+                Some(w) => match try!(self.maybe_redirect(Some(&w))) {
+                    Some(redirect) => io.push(redirect),
+                    None => if cmd.is_none() { cmd = Some(w); } else { args.push(w) },
+                },
+
+                None => match try!(self.maybe_redirect(None)) {
+                    Some(redirect) => io.push(redirect),
+                    None => break,
+                },
+            }
+        }
+
+        // "Blank" commands are only allowed if redirection occurs
+        // or if there is some variable assignment
+        if cmd.is_none() && vars.is_empty() && io.is_empty() {
+            return Err(self.make_unexpected_err(None));
+        }
+
+        Ok(ast::Command::Simple {
+            cmd: cmd,
+            vars: vars,
+            args: args,
+            io: io,
+        })
+    }
+
+    /// Parses a redirection token followed by a file path or descriptor as appropriate.
+    ///
+    /// For example, redirecting output `>out`, input `< in`, duplication `1>&2`,
+    /// closing `2>&-`. To avoid complicating the return signature based on checking
+    /// if a preceeding word is a valid file descriptor (and returning it if it isn't),
+    /// the caller is responsible for performing this check and supplying the descriptor
+    /// to the method.
+    pub fn redirect(&mut self, src_fd: Option<u32>) -> Result<ast::Redirect> {
+        // Sanity check that we really do have a redirect token
+        let redir_tok = match self.iter.next() {
+            Some(tok@Less)      |
+            Some(tok@Great)     |
+            Some(tok@DGreat)    |
+            Some(tok@Clobber)   |
+            Some(tok@LessAnd)   |
+            Some(tok@GreatAnd)  |
+            Some(tok@LessGreat) => tok,
+
+            t => return Err(self.make_unexpected_err(t)),
+        };
+
+        // Ensure we have a path (or fd for duplication)
+        let (dup_fd, path) = match try!(self.word()) {
+            Some(w) => (word_as_numeric(&w), w),
+            None => return Err(self.make_unexpected_err(None)),
+        };
+
+        let close = path == ast::Word::Literal(String::from("-"));
+
+        let redirect = match redir_tok {
+            Less      => ast::Redirect::Read(src_fd, path),
+            Great     => ast::Redirect::Write(src_fd, path),
+            DGreat    => ast::Redirect::Append(src_fd, path),
+            Clobber   => ast::Redirect::Clobber(src_fd, path),
+            LessGreat => ast::Redirect::ReadWrite(src_fd, path),
+
+            LessAnd   if close            => ast::Redirect::CloseRead(src_fd),
+            GreatAnd  if close            => ast::Redirect::CloseWrite(src_fd),
+            LessAnd   if dup_fd.is_some() => ast::Redirect::DupRead(src_fd, dup_fd.unwrap()),
+            GreatAnd  if dup_fd.is_some() => ast::Redirect::DupWrite(src_fd, dup_fd.unwrap()),
+
+            // Duplication fd is not valid
+            LessAnd  |
+            GreatAnd => return Err(self.make_bad_fd_error(path)),
+
+            _ => unreachable!(),
+        };
+
+        Ok(redirect)
+    }
+
+    /// Similar to `Parser::redirect`, but it accepts a word that may
+    /// be a potential file descriptor. If it can be interpreted as such,
+    /// (or no word is supplied) it is passed down to `Parser::redirect`.
+    /// Otherwise no redirection will be parsed (an no error returned).
+    fn maybe_redirect(&mut self, num: Option<&ast::Word>)
+        -> Result<Option<ast::Redirect>>
+    {
+        let fd = match num {
+            Some(n) => match word_as_numeric(n) {
+                Some(fd) => Some(fd),
+                None => return Ok(None),
+            },
+            None => None,
+        };
+
+        let redirect = match self.iter.peek() {
+            Some(&Less)      |
+            Some(&Great)     |
+            Some(&LessAnd)   |
+            Some(&GreatAnd)  |
+            Some(&DGreat)    |
+            Some(&LessGreat) |
+            Some(&Clobber)   |
+            Some(&DLess)     |
+            Some(&DLessDash) => Some(try!(self.redirect(fd))),
+            _ => None,
+        };
+
+        Ok(redirect)
     }
 
     /// Parses a whitespace delimited chunk of text, honoring space quoting rules,
-    /// and skipping leading space.
+    /// and skipping leading and trailing whitespace.
     ///
     /// Since there are a large number of possible tokens that constitute a word,
     /// (such as literals, paramters, variables, etc.) the caller may not know
@@ -252,6 +410,13 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// will be treated as literals, since assignments can only come before
     /// the command or arguments, and should be handled externally.
     pub fn word(&mut self) -> Result<Option<ast::Word>> {
+        let ret = try!(self.word_preserve_trailing_whitespace());
+        self.skip_whitespace();
+        Ok(ret)
+    }
+
+    /// Identical to `Parser::word()` but preserves trailing whitespace.
+    pub fn word_preserve_trailing_whitespace(&mut self) -> Result<Option<ast::Word>> {
         self.skip_whitespace();
 
         let mut words = Vec::new();
@@ -332,8 +497,6 @@ impl<T: Iterator<Item = Token>> Parser<T> {
             Some(ast::Word::Concat(words))
         };
 
-        // Fastforward through any whitespace for sanity
-        self.skip_whitespace();
         Ok(ret)
     }
 
@@ -412,6 +575,16 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     }
 }
 
+fn word_as_numeric(word: &ast::Word) -> Option<u32> {
+    use std::str::FromStr;
+
+    if let &ast::Word::Literal(ref s) = word {
+        u32::from_str(s).ok()
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod test {
     use syntax::lexer::Lexer;
@@ -419,14 +592,28 @@ mod test {
     use syntax::ast::*;
     use syntax::ast::Command::*;
     use syntax::parse::*;
-    use syntax::token::*;
 
     fn make_parser(src: &str) -> Parser<Lexer<::std::str::Chars>> {
         Parser::new(Lexer::new(src.chars()))
     }
 
-    fn make_parser_from_tokens(src: Vec<Token>) -> Parser<::std::vec::IntoIter<Token>> {
-        Parser::new(src.into_iter())
+    fn sample_simple_command() -> (Option<Word>, Vec<Word>, Vec<(String, Word)>, Vec<Redirect>) {
+        (
+            Some(Word::Literal(String::from("foo"))),
+            vec!(
+                Word::Literal(String::from("bar")),
+                Word::Literal(String::from("baz")),
+            ),
+            vec!(
+                (String::from("var"), Word::Literal(String::from("val"))),
+                (String::from("ENV"), Word::Literal(String::from("true"))),
+            ),
+            vec!(
+                Redirect::Clobber(Some(2),   Word::Literal(String::from("clob"))),
+                Redirect::ReadWrite(Some(3), Word::Literal(String::from("rw"))),
+                Redirect::Read(None,         Word::Literal(String::from("in"))),
+            ),
+        )
     }
 
     #[test]
@@ -495,9 +682,9 @@ mod test {
             box Or( box Simple { cmd: ref foo, .. }, box Simple { cmd: ref bar, .. }),
             box Simple { cmd: ref baz, .. }
         ) = parse {
-            assert_eq!(foo, &Word::Literal(String::from("foo")));
-            assert_eq!(bar, &Word::Literal(String::from("bar")));
-            assert_eq!(baz, &Word::Literal(String::from("baz")));
+            assert_eq!(foo.as_ref().unwrap(), &Word::Literal(String::from("foo")));
+            assert_eq!(bar.as_ref().unwrap(), &Word::Literal(String::from("bar")));
+            assert_eq!(baz.as_ref().unwrap(), &Word::Literal(String::from("baz")));
             return;
         }
 
@@ -513,9 +700,9 @@ mod test {
             box Or( box Simple { cmd: ref foo, .. }, box Simple { cmd: ref bar, .. }),
             box Simple { cmd: ref baz, .. }
         ) = parse {
-            assert_eq!(foo, &Word::Literal(String::from("foo")));
-            assert_eq!(bar, &Word::Literal(String::from("bar")));
-            assert_eq!(baz, &Word::Literal(String::from("baz")));
+            assert_eq!(foo.as_ref().unwrap(), &Word::Literal(String::from("foo")));
+            assert_eq!(bar.as_ref().unwrap(), &Word::Literal(String::from("bar")));
+            assert_eq!(baz.as_ref().unwrap(), &Word::Literal(String::from("baz")));
             return;
         }
 
@@ -539,9 +726,9 @@ mod test {
                 Simple { cmd: ref bar, .. },
                 Simple { cmd: ref baz, .. },
             ] = &cmds[..] {
-                assert_eq!(foo, &Word::Literal(String::from("foo")));
-                assert_eq!(bar, &Word::Literal(String::from("bar")));
-                assert_eq!(baz, &Word::Literal(String::from("baz")));
+                assert_eq!(foo.as_ref().unwrap(), &Word::Literal(String::from("foo")));
+                assert_eq!(bar.as_ref().unwrap(), &Word::Literal(String::from("bar")));
+                assert_eq!(baz.as_ref().unwrap(), &Word::Literal(String::from("baz")));
                 return;
             }
         }
@@ -604,9 +791,9 @@ mod test {
             &Job(box And(box Simple { cmd: ref foo, .. }, box Simple { cmd: ref bar, .. })),
             &Simple{ cmd: ref baz, .. }
         ) = (&cmd1, &cmd2) {
-            assert_eq!(foo, &Word::Literal(String::from("foo")));
-            assert_eq!(bar, &Word::Literal(String::from("bar")));
-            assert_eq!(baz, &Word::Literal(String::from("baz")));
+            assert_eq!(foo.as_ref().unwrap(), &Word::Literal(String::from("foo")));
+            assert_eq!(bar.as_ref().unwrap(), &Word::Literal(String::from("bar")));
+            assert_eq!(baz.as_ref().unwrap(), &Word::Literal(String::from("baz")));
             return;
         }
 
@@ -622,10 +809,10 @@ mod test {
 
         if let (&And(box Simple { cmd: ref foo, .. }, box Simple { cmd: ref bar, .. }),
             &Simple { cmd: ref baz, .. }, &Simple { cmd: ref qux, .. }) = (&cmd1, &cmd2, &cmd3) {
-                assert_eq!(foo, &Word::Literal(String::from("foo")));
-                assert_eq!(bar, &Word::Literal(String::from("bar")));
-                assert_eq!(baz, &Word::Literal(String::from("baz")));
-                assert_eq!(qux, &Word::Literal(String::from("qux")));
+                assert_eq!(foo.as_ref().unwrap(), &Word::Literal(String::from("foo")));
+                assert_eq!(bar.as_ref().unwrap(), &Word::Literal(String::from("bar")));
+                assert_eq!(baz.as_ref().unwrap(), &Word::Literal(String::from("baz")));
+                assert_eq!(qux.as_ref().unwrap(), &Word::Literal(String::from("qux")));
                 return;
         }
 
@@ -681,6 +868,187 @@ mod test {
         }
 
         p.parameter().unwrap_err(); // Stream should be exhausted
+    }
+
+    #[test]
+    fn test_word_preserve_trailing_whitespace() {
+        let mut p = make_parser("test       ");
+        p.word_preserve_trailing_whitespace().unwrap();
+        assert!(p.iter.next().is_some());
+    }
+
+    #[test]
+    fn test_redirect_valid_close_without_whitespace() {
+        let mut p = make_parser(">&-");
+        assert_eq!(Redirect::CloseWrite(None), p.redirect(None).unwrap());
+    }
+
+    #[test]
+    fn test_redirect_valid_close_with_whitespace() {
+        let mut p = make_parser("<&       -");
+        assert_eq!(Redirect::CloseRead(None), p.redirect(None).unwrap());
+    }
+
+    #[test]
+    fn test_redirect_invalid_close_without_whitespace() {
+        let mut p = make_parser(">&-asdf");
+        p.redirect(None).unwrap_err();
+    }
+
+    #[test]
+    fn test_redirect_invalid_close_with_whitespace() {
+        let mut p = make_parser("<&       -asdf");
+        p.redirect(None).unwrap_err();
+    }
+
+    #[test]
+    fn test_redirect_fd_immediately_preceeding_redirection() {
+        let mut p = make_parser("foo 1>>out");
+        let parsed = p.simple_command().unwrap();
+        if let &Command::Simple { io: ref redirects, .. } = &parsed {
+            assert_eq!(Redirect::Append(Some(1), Word::Literal(String::from("out"))), redirects[0]);
+        } else {
+            panic!("Incorrect parse result: {:?}", parsed);
+        }
+    }
+
+    #[test]
+    fn test_redirect_fd_must_immediately_preceed_redirection() {
+        let mut p = make_parser("foo 1 <>out");
+        let parsed = p.simple_command().unwrap();
+        if let &Command::Simple { io: ref redirects, .. } = &parsed {
+            assert_eq!(Redirect::ReadWrite(None, Word::Literal(String::from("out"))), redirects[0]);
+        } else {
+            panic!("Incorrect parse result: {:?}", parsed);
+        }
+    }
+
+    #[test]
+    fn test_redirect_valid_dup_with_fd() {
+        let mut p = make_parser("foo 1>&2");
+        let parsed = p.simple_command().unwrap();
+        if let &Command::Simple { io: ref redirects, .. } = &parsed {
+            assert_eq!(Redirect::DupWrite(Some(1), 2), redirects[0]);
+        } else {
+            panic!("Incorrect parse result: {:?}", parsed);
+        }
+    }
+
+    #[test]
+    fn test_redirect_valid_dup_without_fd() {
+        let mut p = make_parser("foo 1 <&2");
+        let parsed = p.simple_command().unwrap();
+        if let &Command::Simple { io: ref redirects, .. } = &parsed {
+            assert_eq!(Redirect::DupRead(None, 2), redirects[0]);
+        } else {
+            panic!("Incorrect parse result: {:?}", parsed);
+        }
+    }
+
+    #[test]
+    fn test_redirect_valid_dup_with_whitespace() {
+        let mut p = make_parser("foo 1<& 2");
+        let parsed = p.simple_command().unwrap();
+        if let &Command::Simple { io: ref redirects, .. } = &parsed {
+            assert_eq!(Redirect::DupRead(Some(1), 2), redirects[0]);
+        } else {
+            panic!("Incorrect parse result: {:?}", parsed);
+        }
+    }
+
+    #[test]
+    fn test_redirect_honors_arguments() {
+        let mut p = make_parser(">| file1 >>file2");
+        let correct1 = Redirect::Clobber(Some(3), Word::Literal(String::from("file1")));
+        let correct2 = Redirect::Append(None, Word::Literal(String::from("file2")));
+        assert_eq!(correct1, p.redirect(Some(3)).unwrap());
+        assert_eq!(correct2, p.redirect(None).unwrap());
+    }
+
+    #[test]
+    fn test_maybe_redirect_stops_if_argument_not_numeric() {
+        let mut p = make_parser(">file");
+        assert_eq!(None, p.maybe_redirect(Some(&Word::Literal(String::from("abc")))).unwrap());
+        p.redirect(None).unwrap();
+    }
+
+    #[test]
+    fn test_maybe_redirect_continues_if_argument_numeric() {
+        let mut p = make_parser(">file");
+        let correct = Redirect::Write(Some(123), Word::Literal(String::from("file")));
+        assert_eq!(Some(correct), p.maybe_redirect(Some(&Word::Literal(String::from("123")))).unwrap());
+    }
+
+    #[test]
+    fn test_maybe_redirect_continues_if_no_argument() {
+        let mut p = make_parser("<file");
+        let correct = Redirect::Read(None, Word::Literal(String::from("file")));
+        assert_eq!(Some(correct), p.maybe_redirect(None).unwrap());
+    }
+
+    #[test]
+    fn test_simple_command_valid_assignments_at_start_of_command() {
+        let mut p = make_parser("var=val ENV=true foo bar baz");
+        let (cmd, args, vars, _) = sample_simple_command();
+        let correct = Command::Simple { cmd: cmd, args: args, vars: vars, io: vec!() };
+        assert_eq!(correct, p.simple_command().unwrap());
+    }
+
+    #[test]
+    fn test_simple_command_assignments_after_start_of_command_should_be_args() {
+        let mut p = make_parser("var=val ENV=true foo var2=val2 bar baz var3=val3");
+        let (cmd, mut args, vars, _) = sample_simple_command();
+        args.insert(0, Word::Concat(vec!(Word::Literal(String::from("var2=")), Word::Literal(String::from("val2")))));
+        args.push(Word::Concat(vec!(Word::Literal(String::from("var3=")), Word::Literal(String::from("val3")))));
+        let correct = Command::Simple { cmd: cmd, args: args, vars: vars, io: vec!() };
+        assert_eq!(correct, p.simple_command().unwrap());
+    }
+
+    #[test]
+    fn test_simple_command_redirections_at_start_of_command() {
+        let mut p = make_parser("2>|clob 3<>rw <in var=val ENV=true foo bar baz");
+        let (cmd, args, vars, io) = sample_simple_command();
+        let correct = Command::Simple { cmd: cmd, args: args, vars: vars, io: io };
+        assert_eq!(correct, p.simple_command().unwrap());
+    }
+
+    #[test]
+    fn test_simple_command_redirections_at_end_of_command() {
+        let mut p = make_parser("var=val ENV=true foo bar baz 2>|clob 3<>rw <in");
+        let (cmd, args, vars, io) = sample_simple_command();
+        let correct = Command::Simple { cmd: cmd, args: args, vars: vars, io: io };
+        assert_eq!(correct, p.simple_command().unwrap());
+    }
+
+    #[test]
+    fn test_simple_command_redirections_throughout_the_command() {
+        let mut p = make_parser("2>|clob var=val 3<>rw ENV=true foo bar <in baz 4>&-");
+        let (cmd, args, vars, mut io) = sample_simple_command();
+        io.push(Redirect::CloseWrite(Some(4)));
+        let correct = Command::Simple { cmd: cmd, args: args, vars: vars, io: io };
+        assert_eq!(correct, p.simple_command().unwrap());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_heredoc_recognition() {
+        //let mut p = make_parser("cat <<eof1; cat <<eof2
+        //hello
+        //eof1
+        //world
+        //eof2");
+        panic!("placeholder: heredoc recognition not yet implemented");
+    }
+
+    #[test]
+    #[ignore]
+    fn test_heredoc_tab_removal_recognition() {
+        //let mut p = make_parser("cat <<eof1; cat <<eof2
+        //\t\thello
+        //eof1
+        //\t\tworld
+        //eof2");
+        panic!("placeholder: heredoc recognition not yet implemented");
     }
 }
 

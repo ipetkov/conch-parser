@@ -106,7 +106,7 @@ impl<I: Iterator<Item = char>> Lexer<I> {
             '<' => if self.next_is('<') {
                 if self.next_is('-') { DLessDash } else { DLess }
             } else if self.next_is('&') {
-                if self.next_is('-') { LessAndDash } else { LessAnd }
+                LessAnd
             } else if self.next_is('>') {
                 LessGreat
             } else {
@@ -114,7 +114,7 @@ impl<I: Iterator<Item = char>> Lexer<I> {
             },
 
             '>' => if self.next_is('&') {
-                if self.next_is('-') { GreatAndDash } else { GreatAnd }
+                GreatAnd
             } else if self.next_is('>') {
                 DGreat
             } else if self.next_is('|') {
@@ -247,8 +247,6 @@ mod test {
     check_tok!(check_DGreat, DGreat);
     check_tok!(check_GreatAnd, GreatAnd);
     check_tok!(check_LessAnd, LessAnd);
-    check_tok!(check_GreatAndDash, GreatAndDash);
-    check_tok!(check_LessAndDash, LessAndDash);
     check_tok!(check_DLessDash, DLessDash);
     check_tok!(check_Clobber, Clobber);
     check_tok!(check_LessGreat, LessGreat);

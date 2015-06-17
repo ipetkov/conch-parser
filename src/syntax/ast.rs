@@ -1,4 +1,5 @@
 //! Defines abstract representations of the shell source.
+use std::fmt::{Display, Formatter, Result};
 
 /// Represents reading a parameter (or variable) value, e.g. `$foo`.
 #[derive(PartialEq, Eq, Debug)]
@@ -23,6 +24,25 @@ pub enum Parameter {
     Var(String),
 }
 
+impl Display for Parameter {
+    fn fmt(&self, fmt: &mut Formatter) -> Result {
+        use self::Parameter::*;
+
+        match *self {
+            At       => fmt.write_str("$@"),
+            Star     => fmt.write_str("$*"),
+            Pound    => fmt.write_str("$#"),
+            Question => fmt.write_str("$?"),
+            Dash     => fmt.write_str("$-"),
+            Dollar   => fmt.write_str("$$"),
+            Bang     => fmt.write_str("$!"),
+
+            Var(ref p)    => write!(fmt, "${}", p),
+            Positional(p) => write!(fmt, "${}", p),
+        }
+    }
+}
+
 /// Represents whitespace delimited text.
 #[derive(PartialEq, Eq, Debug)]
 pub enum Word {
@@ -35,6 +55,55 @@ pub enum Word {
     /// Access of a value inside a parameter, e.g. `$foo` or `$$`.
     Param(Parameter),
 
+}
+
+impl Display for Word {
+    fn fmt(&self, fmt: &mut Formatter) -> Result {
+        use self::Word::*;
+
+        match *self {
+            Literal(ref s) => fmt.write_str(s),
+            Param(ref p) => write!(fmt, "{}", p),
+
+            DoubleQuoted(ref words) => {
+                try!(fmt.write_str("\""));
+                for w in words { try!(write!(fmt, "{}", w)); }
+                fmt.write_str("\"")
+            },
+
+            Concat(ref words) => {
+                for w in words {
+                    try!(write!(fmt, "{}", w));
+                }
+
+                Ok(())
+            },
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, Debug)]
+pub enum Redirect {
+    /// Open a file for reading, e.g. [n]< file
+    Read(Option<u32>, Word),
+    /// Open a file for writing after truncating, e.g. [n]> file
+    Write(Option<u32>, Word),
+    /// Open a file for reading and writing, e.g. [n]<> file
+    ReadWrite(Option<u32>, Word),
+    /// Open a file for writing, appending to the end, e.g. [n]>> file
+    Append(Option<u32>, Word),
+    /// Open a file for writing, failing if the `noclobber` shell option is set, e.g.[n]>| file
+    Clobber(Option<u32>, Word),
+
+    /// Duplicate a file descriptor for reading, e.g. [n]<& n
+    DupRead(Option<u32>, u32),
+    /// Duplicate a file descriptor for writing, e.g. [n]>& n
+    DupWrite(Option<u32>, u32),
+
+    /// Close a file descriptor for reading, e.g. [n]<&-
+    CloseRead(Option<u32>),
+    /// Close a file descriptor for writing, e.g. [n]>&-
+    CloseWrite(Option<u32>),
 }
 
 /// Represents a parsed newline, more specifically, the presense of a comment
@@ -68,9 +137,16 @@ pub enum Command {
 
     /// The simplest possible command: an executable with arguments.
     Simple {
-        /// Name or path of the executable.
-        cmd: Word,
+        /// Name or path of the executable. It's possible to have to have a
+        /// command that is only an assigment which would set a value in the
+        /// global environment, making the executable optional.
+        cmd: Option<Word>,
         /// Arguments supplied to the executable.
         args: Vec<Word>,
+        /// Environment variable assignments for this command, bound as
+        /// tuples of (var name, value).
+        vars: Vec<(String, Word)>,
+        /// All redirections that should be applied before running the command.
+        io: Vec<Redirect>,
     },
 }

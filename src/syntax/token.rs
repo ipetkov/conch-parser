@@ -58,10 +58,6 @@ pub enum Token {
     GreatAnd,
     /// <&
     LessAnd,
-    /// \>&-
-    GreatAndDash,
-    /// <&-
-    LessAndDash,
     /// <<-
     DLessDash,
     /// \>|
@@ -125,8 +121,6 @@ impl fmt::Display for Token {
             DGreat              => fmt.write_str(">>"),
             GreatAnd            => fmt.write_str(">&"),
             LessAnd             => fmt.write_str("<&"),
-            GreatAndDash        => fmt.write_str(">&-"),
-            LessAndDash         => fmt.write_str("<&-"),
             DLessDash           => fmt.write_str("<<-"),
             Clobber             => fmt.write_str(">|"),
             LessGreat           => fmt.write_str("<>"),
