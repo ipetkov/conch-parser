@@ -333,6 +333,8 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// the caller is responsible for performing this check and supplying the descriptor
     /// to the method.
     pub fn redirect(&mut self, src_fd: Option<u32>) -> Result<ast::Redirect> {
+        use std::str::FromStr;
+
         // Sanity check that we really do have a redirect token
         let redir_tok = match self.iter.next() {
             Some(tok@Less)      |
@@ -348,7 +350,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
 
         // Ensure we have a path (or fd for duplication)
         let (dup_fd, path) = match try!(self.word()) {
-            Some(w) => (word_as_numeric(&w), w),
+            Some(w) => (u32::from_str(&w.to_string()).ok(), w),
             None => return Err(self.make_unexpected_err(None)),
         };
 
@@ -383,8 +385,10 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     fn maybe_redirect(&mut self, num: Option<&ast::Word>)
         -> Result<Option<ast::Redirect>>
     {
+        use std::str::FromStr;
+
         let fd = match num {
-            Some(n) => match word_as_numeric(n) {
+            Some(n) => match u32::from_str(&n.to_string()).ok() {
                 Some(fd) => Some(fd),
                 None => return Ok(None),
             },
@@ -583,16 +587,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
 
         Ok(lines)
     }
-}
 
-fn word_as_numeric(word: &ast::Word) -> Option<u32> {
-    use std::str::FromStr;
-
-    if let &ast::Word::Literal(ref s) = word {
-        u32::from_str(s).ok()
-    } else {
-        None
-    }
 }
 
 #[cfg(test)]
@@ -602,9 +597,14 @@ mod test {
     use syntax::ast::*;
     use syntax::ast::Command::*;
     use syntax::parse::*;
+    use syntax::token::Token;
 
     fn make_parser(src: &str) -> Parser<Lexer<::std::str::Chars>> {
         Parser::new(Lexer::new(src.chars()))
+    }
+
+    fn make_parser_from_tokens(src: Vec<Token>) -> Parser<::std::vec::IntoIter<Token>> {
+        Parser::new(src.into_iter())
     }
 
     fn sample_simple_command() -> (Option<Word>, Vec<Word>, Vec<(String, Word)>, Vec<Redirect>) {
@@ -973,6 +973,38 @@ mod test {
         let correct2 = Redirect::Append(None, Word::Literal(String::from("file2")));
         assert_eq!(correct1, p.redirect(Some(3)).unwrap());
         assert_eq!(correct2, p.redirect(None).unwrap());
+    }
+
+    #[test]
+    fn tes_redirect_src_fd_need_not_be_single_token() {
+        let mut p = make_parser_from_tokens(vec!(
+            Token::Literal(String::from("foo")),
+            Token::Whitespace(String::from(" ")),
+            Token::Literal(String::from("12")),
+            Token::Literal(String::from("34")),
+            Token::LessAnd,
+            Token::Literal(String::from("-")),
+        ));
+
+        let parsed = p.simple_command().unwrap();
+
+        if let &Command::Simple { io: ref redirects, .. } = &parsed {
+            assert_eq!(Redirect::CloseRead(Some(1234)), redirects[0]);
+            assert_eq!(1, redirects.len());
+        } else {
+            panic!("Incorrect parse result: {:?}", parsed);
+        }
+    }
+
+    #[test]
+    fn tes_redirect_dst_fd_need_not_be_single_token() {
+        let mut p = make_parser_from_tokens(vec!(
+            Token::GreatAnd,
+            Token::Literal(String::from("12")),
+            Token::Literal(String::from("34")),
+        ));
+
+        assert_eq!(Redirect::DupWrite(None, 1234), p.redirect(None).unwrap());
     }
 
     #[test]
