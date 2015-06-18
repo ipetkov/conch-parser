@@ -38,6 +38,7 @@ impl Error {
         self.line
     }
 
+    /// The column number of the input where the error occured.
     pub fn col(&self) -> u64 {
         self.col
     }

@@ -82,6 +82,7 @@ impl Display for Word {
     }
 }
 
+/// Represents redirecting a command's file descriptors.
 #[derive(PartialEq, Eq, Debug)]
 pub enum Redirect {
     /// Open a file for reading, e.g. [n]< file

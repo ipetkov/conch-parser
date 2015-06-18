@@ -87,7 +87,8 @@ pub enum Token {
 
     /// Any literal delimited by whitespace.
     Literal(String),
-    /// A Literal that contains only alphanumerics or underscores, and does not start with a digit.
+    /// A Literal capable of being used as a variable or function name. According to the POSIX
+    /// standard it should only contain alphanumerics or underscores, and does not start with a digit.
     Name(String),
 
     /// A `Name` that was immediately followed by an equals sign, e.g. `foo=` becomes Assignment("foo").
@@ -141,6 +142,7 @@ impl fmt::Display for Token {
 }
 
 impl Token {
+    /// Returns the number of characters it took to recognize a token.
     pub fn len(&self) -> usize {
         match *self {
             Newline     |
@@ -183,8 +185,8 @@ impl Token {
 
             Whitespace(ref s) |
             Literal(ref s)    |
-            Name(ref s)       |
-            Assignment(ref s) => s.len(),
+            Name(ref s)       => s.len(),
+            Assignment(ref s) => s.len() + 1, // Don't forget the '='
         }
     }
 }
