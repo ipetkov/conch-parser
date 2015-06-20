@@ -136,18 +136,24 @@ pub enum Command {
     /// for it to exit before running the next command, e.g. `foo &`.
     Job(Box<Command>),
 
-    /// The simplest possible command: an executable with arguments.
-    Simple {
-        /// Name or path of the executable. It's possible to have to have a
-        /// command that is only an assigment which would set a value in the
-        /// global environment, making the executable optional.
-        cmd: Option<Word>,
-        /// Arguments supplied to the executable.
-        args: Vec<Word>,
-        /// Environment variable assignments for this command, bound as
-        /// tuples of (var name, value).
-        vars: Vec<(String, Word)>,
-        /// All redirections that should be applied before running the command.
-        io: Vec<Redirect>,
-    },
+    /// The simplest possible command: an executable with arguments,
+    /// environment variable assignments, and redirections.
+    Simple(Box<SimpleCommand>),
+}
+
+/// The simplest possible command: an executable with arguments,
+/// environment variable assignments, and redirections.
+#[derive(PartialEq, Eq, Debug)]
+pub struct SimpleCommand {
+    /// Name or path of the executable. It's possible to have to have a
+    /// command that is only an assigment which would set a value in the
+    /// global environment, making the executable optional.
+    pub cmd: Option<Word>,
+    /// Arguments supplied to the executable.
+    pub args: Vec<Word>,
+    /// Environment variable assignments for this command, bound as
+    /// tuples of (var name, value).
+    pub vars: Vec<(String, Word)>,
+    /// All redirections that should be applied before running the command.
+    pub io: Vec<Redirect>,
 }

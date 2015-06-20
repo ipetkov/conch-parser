@@ -239,14 +239,14 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     }
 
     pub fn command(&mut self) -> Result<ast::Command> {
-        self.simple_command()
+        Ok(ast::Command::Simple(Box::new(try!(self.simple_command()))))
     }
 
     /// Tries to parse a simple command, e.g. `cmd arg1 arg2 >redirect`.
     ///
     /// A valid command is expected to have at least an executable name, or a single
     /// variable assignment or redirection. Otherwise an error will be returned.
-    pub fn simple_command(&mut self) -> Result<ast::Command> {
+    pub fn simple_command(&mut self) -> Result<ast::SimpleCommand> {
         let mut cmd: Option<ast::Word> = None;
         let mut args = Vec::new();
         let mut vars = Vec::new();
@@ -317,7 +317,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
             return Err(self.make_unexpected_err(None));
         }
 
-        Ok(ast::Command::Simple {
+        Ok(ast::SimpleCommand {
             cmd: cmd,
             vars: vars,
             args: args,
@@ -689,12 +689,12 @@ mod test {
         let parse = p.and_or().unwrap();
 
         if let And(
-            box Or( box Simple { cmd: ref foo, .. }, box Simple { cmd: ref bar, .. }),
-            box Simple { cmd: ref baz, .. }
+            box Or( box Simple(box ref foo), box Simple(box ref bar)),
+            box Simple(box ref baz)
         ) = parse {
-            assert_eq!(foo.as_ref().unwrap(), &Word::Literal(String::from("foo")));
-            assert_eq!(bar.as_ref().unwrap(), &Word::Literal(String::from("bar")));
-            assert_eq!(baz.as_ref().unwrap(), &Word::Literal(String::from("baz")));
+            assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
+            assert_eq!(bar.cmd.as_ref().unwrap(), &Word::Literal(String::from("bar")));
+            assert_eq!(baz.cmd.as_ref().unwrap(), &Word::Literal(String::from("baz")));
             return;
         }
 
@@ -707,12 +707,12 @@ mod test {
         let parse = p.and_or().unwrap();
 
         if let And(
-            box Or( box Simple { cmd: ref foo, .. }, box Simple { cmd: ref bar, .. }),
-            box Simple { cmd: ref baz, .. }
+            box Or( box Simple(box ref foo), box Simple(box ref bar)),
+            box Simple(box ref baz)
         ) = parse {
-            assert_eq!(foo.as_ref().unwrap(), &Word::Literal(String::from("foo")));
-            assert_eq!(bar.as_ref().unwrap(), &Word::Literal(String::from("bar")));
-            assert_eq!(baz.as_ref().unwrap(), &Word::Literal(String::from("baz")));
+            assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
+            assert_eq!(bar.cmd.as_ref().unwrap(), &Word::Literal(String::from("bar")));
+            assert_eq!(baz.cmd.as_ref().unwrap(), &Word::Literal(String::from("baz")));
             return;
         }
 
@@ -732,13 +732,13 @@ mod test {
         let parse = p.pipeline().unwrap();
         if let Pipe(true, ref cmds) = parse {
             if let [
-                Simple { cmd: ref foo, .. },
-                Simple { cmd: ref bar, .. },
-                Simple { cmd: ref baz, .. },
+                Simple(box ref foo),
+                Simple(box ref bar),
+                Simple(box ref baz),
             ] = &cmds[..] {
-                assert_eq!(foo.as_ref().unwrap(), &Word::Literal(String::from("foo")));
-                assert_eq!(bar.as_ref().unwrap(), &Word::Literal(String::from("bar")));
-                assert_eq!(baz.as_ref().unwrap(), &Word::Literal(String::from("baz")));
+                assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
+                assert_eq!(bar.cmd.as_ref().unwrap(), &Word::Literal(String::from("bar")));
+                assert_eq!(baz.cmd.as_ref().unwrap(), &Word::Literal(String::from("baz")));
                 return;
             }
         }
@@ -798,12 +798,12 @@ mod test {
         let cmd2 = p.complete_command().unwrap().expect("failed to parse second command");
 
         if let (
-            &Job(box And(box Simple { cmd: ref foo, .. }, box Simple { cmd: ref bar, .. })),
-            &Simple{ cmd: ref baz, .. }
+            &Job(box And(box Simple(box ref foo), box Simple(box ref bar))),
+            &Simple(box ref baz),
         ) = (&cmd1, &cmd2) {
-            assert_eq!(foo.as_ref().unwrap(), &Word::Literal(String::from("foo")));
-            assert_eq!(bar.as_ref().unwrap(), &Word::Literal(String::from("bar")));
-            assert_eq!(baz.as_ref().unwrap(), &Word::Literal(String::from("baz")));
+            assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
+            assert_eq!(bar.cmd.as_ref().unwrap(), &Word::Literal(String::from("bar")));
+            assert_eq!(baz.cmd.as_ref().unwrap(), &Word::Literal(String::from("baz")));
             return;
         }
 
@@ -817,12 +817,12 @@ mod test {
         let cmd2 = p.complete_command().unwrap().expect("failed to parse second command");
         let cmd3 = p.complete_command().unwrap().expect("failed to parse third command");
 
-        if let (&And(box Simple { cmd: ref foo, .. }, box Simple { cmd: ref bar, .. }),
-            &Simple { cmd: ref baz, .. }, &Simple { cmd: ref qux, .. }) = (&cmd1, &cmd2, &cmd3) {
-                assert_eq!(foo.as_ref().unwrap(), &Word::Literal(String::from("foo")));
-                assert_eq!(bar.as_ref().unwrap(), &Word::Literal(String::from("bar")));
-                assert_eq!(baz.as_ref().unwrap(), &Word::Literal(String::from("baz")));
-                assert_eq!(qux.as_ref().unwrap(), &Word::Literal(String::from("qux")));
+        if let (&And(box Simple(box ref foo), box Simple(box ref bar)),
+            &Simple(box ref baz), &Simple(box ref qux)) = (&cmd1, &cmd2, &cmd3) {
+                assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
+                assert_eq!(bar.cmd.as_ref().unwrap(), &Word::Literal(String::from("bar")));
+                assert_eq!(baz.cmd.as_ref().unwrap(), &Word::Literal(String::from("baz")));
+                assert_eq!(qux.cmd.as_ref().unwrap(), &Word::Literal(String::from("qux")));
                 return;
         }
 
@@ -914,56 +914,36 @@ mod test {
     #[test]
     fn test_redirect_fd_immediately_preceeding_redirection() {
         let mut p = make_parser("foo 1>>out");
-        let parsed = p.simple_command().unwrap();
-        if let &Command::Simple { io: ref redirects, .. } = &parsed {
-            assert_eq!(Redirect::Append(Some(1), Word::Literal(String::from("out"))), redirects[0]);
-        } else {
-            panic!("Incorrect parse result: {:?}", parsed);
-        }
+        let cmd = p.simple_command().unwrap();
+        assert_eq!(vec!(Redirect::Append(Some(1), Word::Literal(String::from("out")))), cmd.io);
     }
 
     #[test]
     fn test_redirect_fd_must_immediately_preceed_redirection() {
         let mut p = make_parser("foo 1 <>out");
-        let parsed = p.simple_command().unwrap();
-        if let &Command::Simple { io: ref redirects, .. } = &parsed {
-            assert_eq!(Redirect::ReadWrite(None, Word::Literal(String::from("out"))), redirects[0]);
-        } else {
-            panic!("Incorrect parse result: {:?}", parsed);
-        }
+        let cmd = p.simple_command().unwrap();
+        assert_eq!(vec!(Redirect::ReadWrite(None, Word::Literal(String::from("out")))), cmd.io);
     }
 
     #[test]
     fn test_redirect_valid_dup_with_fd() {
         let mut p = make_parser("foo 1>&2");
-        let parsed = p.simple_command().unwrap();
-        if let &Command::Simple { io: ref redirects, .. } = &parsed {
-            assert_eq!(Redirect::DupWrite(Some(1), 2), redirects[0]);
-        } else {
-            panic!("Incorrect parse result: {:?}", parsed);
-        }
+        let cmd = p.simple_command().unwrap();
+        assert_eq!(vec!(Redirect::DupWrite(Some(1), 2)), cmd.io);
     }
 
     #[test]
     fn test_redirect_valid_dup_without_fd() {
         let mut p = make_parser("foo 1 <&2");
-        let parsed = p.simple_command().unwrap();
-        if let &Command::Simple { io: ref redirects, .. } = &parsed {
-            assert_eq!(Redirect::DupRead(None, 2), redirects[0]);
-        } else {
-            panic!("Incorrect parse result: {:?}", parsed);
-        }
+        let cmd = p.simple_command().unwrap();
+        assert_eq!(vec!(Redirect::DupRead(None, 2)), cmd.io);
     }
 
     #[test]
     fn test_redirect_valid_dup_with_whitespace() {
         let mut p = make_parser("foo 1<& 2");
-        let parsed = p.simple_command().unwrap();
-        if let &Command::Simple { io: ref redirects, .. } = &parsed {
-            assert_eq!(Redirect::DupRead(Some(1), 2), redirects[0]);
-        } else {
-            panic!("Incorrect parse result: {:?}", parsed);
-        }
+        let cmd = p.simple_command().unwrap();
+        assert_eq!(vec!(Redirect::DupRead(Some(1), 2)), cmd.io);
     }
 
     #[test]
@@ -986,14 +966,8 @@ mod test {
             Token::Literal(String::from("-")),
         ));
 
-        let parsed = p.simple_command().unwrap();
-
-        if let &Command::Simple { io: ref redirects, .. } = &parsed {
-            assert_eq!(Redirect::CloseRead(Some(1234)), redirects[0]);
-            assert_eq!(1, redirects.len());
-        } else {
-            panic!("Incorrect parse result: {:?}", parsed);
-        }
+        let cmd = p.simple_command().unwrap();
+        assert_eq!(vec!(Redirect::CloseRead(Some(1234))), cmd.io);
     }
 
     #[test]
@@ -1032,7 +1006,7 @@ mod test {
     fn test_simple_command_valid_assignments_at_start_of_command() {
         let mut p = make_parser("var=val ENV=true foo bar baz");
         let (cmd, args, vars, _) = sample_simple_command();
-        let correct = Command::Simple { cmd: cmd, args: args, vars: vars, io: vec!() };
+        let correct = SimpleCommand { cmd: cmd, args: args, vars: vars, io: vec!() };
         assert_eq!(correct, p.simple_command().unwrap());
     }
 
@@ -1042,7 +1016,7 @@ mod test {
         let (cmd, mut args, vars, _) = sample_simple_command();
         args.insert(0, Word::Concat(vec!(Word::Literal(String::from("var2=")), Word::Literal(String::from("val2")))));
         args.push(Word::Concat(vec!(Word::Literal(String::from("var3=")), Word::Literal(String::from("val3")))));
-        let correct = Command::Simple { cmd: cmd, args: args, vars: vars, io: vec!() };
+        let correct = SimpleCommand { cmd: cmd, args: args, vars: vars, io: vec!() };
         assert_eq!(correct, p.simple_command().unwrap());
     }
 
@@ -1050,7 +1024,7 @@ mod test {
     fn test_simple_command_redirections_at_start_of_command() {
         let mut p = make_parser("2>|clob 3<>rw <in var=val ENV=true foo bar baz");
         let (cmd, args, vars, io) = sample_simple_command();
-        let correct = Command::Simple { cmd: cmd, args: args, vars: vars, io: io };
+        let correct = SimpleCommand { cmd: cmd, args: args, vars: vars, io: io };
         assert_eq!(correct, p.simple_command().unwrap());
     }
 
@@ -1058,7 +1032,7 @@ mod test {
     fn test_simple_command_redirections_at_end_of_command() {
         let mut p = make_parser("var=val ENV=true foo bar baz 2>|clob 3<>rw <in");
         let (cmd, args, vars, io) = sample_simple_command();
-        let correct = Command::Simple { cmd: cmd, args: args, vars: vars, io: io };
+        let correct = SimpleCommand { cmd: cmd, args: args, vars: vars, io: io };
         assert_eq!(correct, p.simple_command().unwrap());
     }
 
@@ -1067,7 +1041,7 @@ mod test {
         let mut p = make_parser("2>|clob var=val 3<>rw ENV=true foo bar <in baz 4>&-");
         let (cmd, args, vars, mut io) = sample_simple_command();
         io.push(Redirect::CloseWrite(Some(4)));
-        let correct = Command::Simple { cmd: cmd, args: args, vars: vars, io: io };
+        let correct = SimpleCommand { cmd: cmd, args: args, vars: vars, io: io };
         assert_eq!(correct, p.simple_command().unwrap());
     }
 
