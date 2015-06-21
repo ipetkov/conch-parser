@@ -630,6 +630,21 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         }
     }
 
+    /// Parses any number of sequential commands between balanced `(` and `)`.
+    pub fn subshell(&mut self) -> Result<Vec<ast::Command>> {
+        match self.iter.next() {
+            Some(Token::ParenOpen) => {},
+            t => return Err(self.make_unexpected_err(t)),
+        }
+
+        let result = try!(self.command_list(&[&Token::ParenClose]));
+
+        match self.iter.next() {
+            Some(Token::ParenClose) => Ok(result),
+            t => Err(self.make_unexpected_err(t)),
+        }
+    }
+
     /// Parses loop commands like `while` and `until` but does not parse any
     /// redirections that may follow.
     ///
@@ -1441,6 +1456,52 @@ mod test {
         p.brace_group().unwrap_err();
         let mut p = make_parser("{ foo\nbar; baz; '}'");
         p.brace_group().unwrap_err();
+    }
+
+    #[test]
+    fn test_subshell_valid() {
+        let mut p = make_parser("( foo\nbar; baz; )");
+        let cmds = p.subshell().unwrap();
+        if let [
+            Simple(box ref foo),
+            Simple(box ref bar),
+            Simple(box ref baz),
+        ] = &cmds[..] {
+            assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
+            assert_eq!(bar.cmd.as_ref().unwrap(), &Word::Literal(String::from("bar")));
+            assert_eq!(baz.cmd.as_ref().unwrap(), &Word::Literal(String::from("baz")));
+            return;
+        }
+
+        panic!("Incorrect parse result for Parse::subshell: {:?}", cmds);
+    }
+
+    #[test]
+    fn test_subshell_valid_separator_not_needed() {
+        let mut p = make_parser("( foo )");
+        let cmds = p.subshell().unwrap();
+        if let [Simple(box ref foo)] = &cmds[..] {
+            assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
+            return;
+        }
+
+        panic!("Incorrect parse result for Parse::subshell: {:?}", cmds);
+    }
+
+    #[test]
+    fn test_subshell_invalid_missing_keyword() {
+        let mut p = make_parser("( foo\nbar; baz");
+        p.subshell().unwrap_err();
+        let mut p = make_parser("foo\nbar; baz; )");
+        p.subshell().unwrap_err();
+    }
+
+    #[test]
+    fn test_subshell_invalid_quoted() {
+        let mut p = make_parser("'(' foo\nbar; baz; )");
+        p.subshell().unwrap_err();
+        let mut p = make_parser("( foo\nbar; baz; ')'");
+        p.subshell().unwrap_err();
     }
 
     #[test]
