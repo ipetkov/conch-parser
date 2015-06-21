@@ -325,6 +325,23 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         })
     }
 
+    /// Parses a continuous list of redirections and will error if any words
+    /// that are not valid file descriptors are found. Essentially used for
+    /// parsing redirection lists after a `ast::CompoundCommand`.
+    pub fn redirect_list(&mut self) -> Result<Vec<ast::Redirect>> {
+        let mut list = Vec::new();
+        loop {
+            let word = try!(self.word_preserve_trailing_whitespace());
+            match try!(self.maybe_redirect(word.as_ref())) {
+                Some(io) => list.push(io),
+                None if word.is_some() => return Err(self.make_bad_fd_error(word.unwrap())),
+                None => break,
+            }
+        }
+
+        Ok(list)
+    }
+
     /// Parses a redirection token followed by a file path or descriptor as appropriate.
     ///
     /// For example, redirecting output `>out`, input `< in`, duplication `1>&2`,
@@ -436,6 +453,8 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         let mut words = Vec::new();
         loop {
             match self.iter.peek() {
+                Some(&CurlyOpen)          |
+                Some(&CurlyClose)         |
                 Some(&SingleQuote)        |
                 Some(&ParamAt)            |
                 Some(&ParamStar)          |
@@ -458,9 +477,14 @@ impl<T: Iterator<Item = Token>> Parser<T> {
                 // Assignments are only treated as such if they occur beforea command is
                 // found. Any "Assignments" afterward should be treated as literals.
                 //
+                // Unless we are explicitly parsing a brace group, `{` and `}` should
+                // be treated as literals.
+                //
                 // Also, comments are only recognized where a Newline is valid, thus '#'
                 // becomes a literal if it occurs in the middle of a word.
                 tok@Pound |
+                tok@CurlyOpen  |
+                tok@CurlyClose |
                 tok@Assignment(_) => ast::Word::Literal(tok.to_string()),
 
                 Name(s)    |
@@ -549,6 +573,190 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         Ok(param)
     }
 
+    /// Keeps parsing complete commands until a given delimiter (or EOF) is found,
+    /// without consuming it. Whitespace after commands is skipped, and will not
+    /// be recognized as a delimiter. Useful in parsing do-groups or curly-groups.
+    pub fn command_list(&mut self, delimiters: &[&Token]) -> Result<Vec<ast::Command>> {
+        let mut cmds = Vec::new();
+        loop {
+            match self.iter.peek() {
+                None => break,
+                Some(next) => if delimiters.iter().any(|delim| delim == &next) {
+                    break;
+                }
+            }
+
+            match try!(self.complete_command()) {
+                Some(c) => cmds.push(c),
+                None => break,
+            }
+
+            self.skip_whitespace();
+        }
+
+        return Ok(cmds);
+    }
+
+    /// Parses any number of sequential commands between the `do` and `done`
+    /// keywords. Each of the keywords must be a literal token, and cannot be
+    /// quoted or concatenated.
+    pub fn do_group(&mut self) -> Result<Vec<ast::Command>> {
+        match self.iter.next() {
+            Some(Token::Name(ref kw))    if kw == "do" => {},
+            Some(Token::Literal(ref kw)) if kw == "do" => {},
+            t => return Err(self.make_unexpected_err(t)),
+        }
+
+        let done_name = Token::Name(String::from("done"));
+        let done_lit  = Token::Literal(String::from("done"));
+        let result = try!(self.command_list(&[&done_lit, &done_name]));
+
+        match self.iter.next() {
+            Some(ref kw) if kw == &done_lit || kw == &done_name => Ok(result),
+            t => Err(self.make_unexpected_err(t)),
+        }
+    }
+
+    /// Parses any number of sequential commands between balanced `{` and `}`
+    /// keywords. Each of the keywords must be a literal token, and cannot be quoted.
+    pub fn brace_group(&mut self) -> Result<Vec<ast::Command>> {
+        match self.iter.next() {
+            Some(Token::CurlyOpen) => {},
+            t => return Err(self.make_unexpected_err(t)),
+        }
+
+        let result = try!(self.command_list(&[&Token::CurlyClose]));
+
+        match self.iter.next() {
+            Some(Token::CurlyClose) => Ok(result),
+            t => Err(self.make_unexpected_err(t)),
+        }
+    }
+
+    /// Parses loop commands like `while` and `until` but does not parse any
+    /// redirections that may follow.
+    ///
+    /// Since they are compound commands (and can have redirections applied to
+    /// the entire loop) this method returns the relevant parts of the loop command,
+    /// without constructing an AST node, it so that the caller can do so with redirections.
+    ///
+    /// Return structure is Result(is_until, guard_commands, body_commands).
+    pub fn loop_command(&mut self) -> Result<(bool, Vec<ast::Command>, Vec<ast::Command>)> {
+        let until = match self.iter.next() {
+            Some(Token::Name(ref kw))    if kw == "while" => false,
+            Some(Token::Literal(ref kw)) if kw == "while" => false,
+
+            Some(Token::Name(ref kw))    if kw == "until" => true,
+            Some(Token::Literal(ref kw)) if kw == "until" => true,
+            t => return Err(self.make_unexpected_err(t)),
+        };
+
+        let guard = try!(self.command_list(&[
+            &Token::Literal(String::from("do")),
+            &Token::Name(String::from("do"))
+        ]));
+
+        let body = try!(self.do_group());
+
+        Ok((until, guard, body))
+    }
+
+    /// Parses a single `if` command but does not parse any redirections that may follow.
+    ///
+    /// Since `if` is a compound command (and can have redirections applied to it) this
+    /// method returns the relevant parts of the `if` command, without constructing an
+    /// AST node, it so that the caller can do so with redirections.
+    ///
+    /// Return structure is Result( (condition, body)+, else_part ).
+    pub fn if_command(&mut self) -> Result<(
+        Vec<(Vec<ast::Command>, Vec<ast::Command>)>,
+        Option<Vec<ast::Command>>)>
+    {
+        match self.iter.next() {
+            Some(Token::Name(ref kw))    if kw == "if" => {},
+            Some(Token::Literal(ref kw)) if kw == "if" => {},
+            t => return Err(self.make_unexpected_err(t)),
+        }
+
+        let then_toks = [
+            &Token::Name(String::from("then")),
+            &Token::Literal(String::from("then")),
+        ];
+
+        let fi_name = Token::Name(String::from("fi"));
+        let fi_lit  = Token::Literal(String::from("fi"));
+
+        let post_body_toks = [
+            &Token::Name(String::from("else")),
+            &Token::Literal(String::from("else")),
+
+            &Token::Name(String::from("elif")),
+            &Token::Literal(String::from("elif")),
+
+            &fi_name,
+            &fi_lit,
+        ];
+
+        let post_else_toks = [
+            &fi_name,
+            &fi_lit,
+        ];
+
+        let mut branches = Vec::new();
+        loop {
+            let guard = try!(self.command_list(&then_toks));
+            // Make sure we explicitly raise an error if guard branch is empty
+            if guard.is_empty() {
+                return Err(self.make_unexpected_err(None));
+            }
+
+            match self.iter.next() {
+                Some(Token::Name(ref kw))    if kw == "then" => {},
+                Some(Token::Literal(ref kw)) if kw == "then" => {},
+                t => return Err(self.make_unexpected_err(t)),
+            }
+
+            // Make sure we explicitly raise an error if body branch is empty
+            let body = try!(self.command_list(&post_body_toks));
+            if guard.is_empty() {
+                return Err(self.make_unexpected_err(None));
+            }
+
+            branches.push((guard, body));
+
+            let els = match self.iter.next() {
+                Some(Token::Name(ref kw))    if kw == "elif" => continue,
+                Some(Token::Literal(ref kw)) if kw == "elif" => continue,
+
+                // Make sure we explicitly raise an error if else branch is empty
+                Some(Token::Name(ref kw))    if kw == "else" => {
+                    let els = try!(self.command_list(&post_else_toks));
+                    if els.is_empty() { return Err(self.make_unexpected_err(None)); } else { Some(els) }
+                },
+                Some(Token::Literal(ref kw)) if kw == "else" => {
+                    let els = try!(self.command_list(&post_else_toks));
+                    if els.is_empty() { return Err(self.make_unexpected_err(None)); } else { Some(els) }
+                }
+
+                Some(Token::Name(ref kw))    if kw == "fi"   => None,
+                Some(Token::Literal(ref kw)) if kw == "fi"   => None,
+
+                t => return Err(self.make_unexpected_err(t)),
+            };
+
+            // Make sure we consume the `fi` keyword
+            if els.is_some() {
+                match self.iter.next() {
+                    Some(Token::Name(ref kw))    if kw == "fi"   => {},
+                    Some(Token::Literal(ref kw)) if kw == "fi"   => {},
+                    t => return Err(self.make_unexpected_err(t)),
+                }
+            }
+
+            return Ok((branches, els))
+        }
+    }
+
     /// Skips over any encountered whitespace but preserves newlines.
     #[inline]
     pub fn skip_whitespace(&mut self) {
@@ -596,6 +804,7 @@ mod test {
 
     use syntax::ast::*;
     use syntax::ast::Command::*;
+    use syntax::ast::CompoundCommand::*;
     use syntax::parse::*;
     use syntax::token::Token;
 
@@ -956,7 +1165,7 @@ mod test {
     }
 
     #[test]
-    fn tes_redirect_src_fd_need_not_be_single_token() {
+    fn test_redirect_src_fd_need_not_be_single_token() {
         let mut p = make_parser_from_tokens(vec!(
             Token::Literal(String::from("foo")),
             Token::Whitespace(String::from(" ")),
@@ -971,7 +1180,7 @@ mod test {
     }
 
     #[test]
-    fn tes_redirect_dst_fd_need_not_be_single_token() {
+    fn test_redirect_dst_fd_need_not_be_single_token() {
         let mut p = make_parser_from_tokens(vec!(
             Token::GreatAnd,
             Token::Literal(String::from("12")),
@@ -1065,6 +1274,496 @@ mod test {
         //\t\tworld
         //eof2");
         panic!("placeholder: heredoc recognition not yet implemented");
+    }
+
+    #[test]
+    fn test_redirect_list_valid() {
+        let mut p = make_parser("1>>out <& 2 2>&-");
+        let io = p.redirect_list().unwrap();
+        assert_eq!(io, vec!(
+            Redirect::Append(Some(1), Word::Literal(String::from("out"))),
+            Redirect::DupRead(None, 2),
+            Redirect::CloseWrite(Some(2)),
+        ));
+    }
+
+    #[test]
+    fn test_redirect_list_rejects_non_fd_words() {
+        let mut p = make_parser("1>>out <in 2>&- abc");
+        p.redirect_list().unwrap_err();
+        let mut p = make_parser("1>>out abc<in 2>&-");
+        p.redirect_list().unwrap_err();
+    }
+
+    #[test]
+    fn test_do_group_valid() {
+        let mut p = make_parser("do foo\nbar; baz; done");
+        let cmds = p.do_group().unwrap();
+        if let [
+            Simple(box ref foo),
+            Simple(box ref bar),
+            Simple(box ref baz),
+        ] = &cmds[..] {
+            assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
+            assert_eq!(bar.cmd.as_ref().unwrap(), &Word::Literal(String::from("bar")));
+            assert_eq!(baz.cmd.as_ref().unwrap(), &Word::Literal(String::from("baz")));
+            return;
+        }
+
+        panic!("Incorrect parse result for Parse::do_group: {:?}", cmds);
+    }
+
+    #[test]
+    fn test_do_group_invalid_missing_separator() {
+        let mut p = make_parser("do foo\nbar; baz done");
+        p.do_group().unwrap_err();
+    }
+
+    #[test]
+    fn test_do_group_valid_keyword_delimited_by_separator() {
+        let mut p = make_parser("do foo done; done");
+        let cmds = p.do_group().unwrap();
+        if let [Simple(box ref foo)] = &cmds[..] {
+            assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
+            assert_eq!(foo.args[0], Word::Literal(String::from("done")));
+            return;
+        }
+
+        panic!("Incorrect parse result for Parse::do_group: {:?}", cmds);
+    }
+
+    #[test]
+    fn test_do_group_invalid_missing_keyword() {
+        let mut p = make_parser("foo\nbar; baz; done");
+        p.do_group().unwrap_err();
+        let mut p = make_parser("do foo\nbar; baz");
+        p.do_group().unwrap_err();
+    }
+
+    #[test]
+    fn test_do_group_invalid_quoted() {
+        let mut p = make_parser("'do' foo\nbar; baz; done");
+        p.do_group().unwrap_err();
+        let mut p = make_parser("do foo\nbar; baz; 'done'");
+        p.do_group().unwrap_err();
+    }
+
+    #[test]
+    fn test_do_group_invalid_concat() {
+        let mut p = make_parser_from_tokens(vec!(
+            Token::Literal(String::from("d")),
+            Token::Literal(String::from("o")),
+            Token::Newline,
+            Token::Literal(String::from("foo")),
+            Token::Newline,
+            Token::Literal(String::from("done")),
+        ));
+        p.do_group().unwrap_err();
+        let mut p = make_parser_from_tokens(vec!(
+            Token::Literal(String::from("do")),
+            Token::Newline,
+            Token::Literal(String::from("foo")),
+            Token::Newline,
+            Token::Literal(String::from("do")),
+            Token::Literal(String::from("ne")),
+        ));
+        p.do_group().unwrap_err();
+    }
+
+    #[test]
+    fn test_do_group_should_recognize_literals_and_names() {
+        for do_tok in vec!(Token::Literal(String::from("do")), Token::Name(String::from("do"))) {
+            for done_tok in vec!(Token::Literal(String::from("done")), Token::Name(String::from("done"))) {
+                let mut p = make_parser_from_tokens(vec!(
+                    do_tok.clone(),
+                    Token::Newline,
+                    Token::Literal(String::from("foo")),
+                    Token::Newline,
+                    done_tok
+                ));
+                p.do_group().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn test_brace_group_valid() {
+        let mut p = make_parser("{ foo\nbar; baz; }");
+        let cmds = p.brace_group().unwrap();
+        if let [
+            Simple(box ref foo),
+            Simple(box ref bar),
+            Simple(box ref baz),
+        ] = &cmds[..] {
+            assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
+            assert_eq!(bar.cmd.as_ref().unwrap(), &Word::Literal(String::from("bar")));
+            assert_eq!(baz.cmd.as_ref().unwrap(), &Word::Literal(String::from("baz")));
+            return;
+        }
+
+        panic!("Incorrect parse result for Parse::brace_group: {:?}", cmds);
+    }
+
+    #[test]
+    fn test_brace_group_invalid_missing_separator() {
+        let mut p = make_parser("{ foo\nbar; baz }");
+        p.brace_group().unwrap_err();
+    }
+
+    #[test]
+    fn test_brace_group_valid_keyword_delimited_by_separator() {
+        let mut p = make_parser("{ foo }; }");
+        let cmds = p.brace_group().unwrap();
+        if let [Simple(box ref foo)] = &cmds[..] {
+            assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
+            assert_eq!(foo.args[0], Word::Literal(String::from("}")));
+            return;
+        }
+
+        panic!("Incorrect parse result for Parse::brace_group: {:?}", cmds);
+    }
+
+    #[test]
+    fn test_brace_group_invalid_missing_keyword() {
+        let mut p = make_parser("{ foo\nbar; baz");
+        p.brace_group().unwrap_err();
+        let mut p = make_parser("foo\nbar; baz; }");
+        p.brace_group().unwrap_err();
+    }
+
+    #[test]
+    fn test_brace_group_invalid_quoted() {
+        let mut p = make_parser("'{' foo\nbar; baz; }");
+        p.brace_group().unwrap_err();
+        let mut p = make_parser("{ foo\nbar; baz; '}'");
+        p.brace_group().unwrap_err();
+    }
+
+    #[test]
+    fn test_loop_command_while_valid() {
+        let mut p = make_parser("while guard1; guard2; do foo\nbar; baz; done");
+        let (until, guards, cmds) = p.loop_command().unwrap();
+        assert_eq!(until, false);
+        if let [
+            Simple(box ref guard1),
+            Simple(box ref guard2),
+        ] = &guards[..] {
+            assert_eq!(guard1.cmd.as_ref().unwrap(), &Word::Literal(String::from("guard1")));
+            assert_eq!(guard2.cmd.as_ref().unwrap(), &Word::Literal(String::from("guard2")));
+
+            if let [
+                Simple(box ref foo),
+                Simple(box ref bar),
+                Simple(box ref baz),
+            ] = &cmds[..] {
+                assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
+                assert_eq!(bar.cmd.as_ref().unwrap(), &Word::Literal(String::from("bar")));
+                assert_eq!(baz.cmd.as_ref().unwrap(), &Word::Literal(String::from("baz")));
+                return;
+            }
+        }
+
+        panic!("Incorrect parse result for Parse::loop_command: {:?}", cmds);
+    }
+
+    #[test]
+    fn test_loop_command_until_valid() {
+        let mut p = make_parser("until guard1\n guard2\n do foo\nbar; baz; done");
+        let (until, guards, cmds) = p.loop_command().unwrap();
+        assert_eq!(until, true);
+        if let [
+            Simple(box ref guard1),
+            Simple(box ref guard2),
+        ] = &guards[..] {
+            assert_eq!(guard1.cmd.as_ref().unwrap(), &Word::Literal(String::from("guard1")));
+            assert_eq!(guard2.cmd.as_ref().unwrap(), &Word::Literal(String::from("guard2")));
+
+            if let [
+                Simple(box ref foo),
+                Simple(box ref bar),
+                Simple(box ref baz),
+            ] = &cmds[..] {
+                assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
+                assert_eq!(bar.cmd.as_ref().unwrap(), &Word::Literal(String::from("bar")));
+                assert_eq!(baz.cmd.as_ref().unwrap(), &Word::Literal(String::from("baz")));
+                return;
+            }
+        }
+    }
+
+    #[test]
+    fn test_loop_command_invalid_missing_separator() {
+        let mut p = make_parser("while guard do foo\nbar; baz; done");
+        p.loop_command().unwrap_err();
+        let mut p = make_parser("while guard; do foo\nbar; baz done");
+        p.loop_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_loop_command_invalid_missing_keyword() {
+        let mut p = make_parser("guard; do foo\nbar; baz; done");
+        p.loop_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_loop_command_invalid_missing_guard() {
+        // With command separator between loop and do keywords
+        let mut p = make_parser("while; do foo\nbar; baz; done");
+        p.loop_command().unwrap_err();
+        let mut p = make_parser("until; do foo\nbar; baz; done");
+        p.loop_command().unwrap_err();
+
+        // Without command separator between loop and do keywords
+        let mut p = make_parser("while do foo\nbar; baz; done");
+        p.loop_command().unwrap_err();
+        let mut p = make_parser("until do foo\nbar; baz; done");
+        p.loop_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_loop_command_invalid_quoted() {
+        let mut p = make_parser("'while' guard do foo\nbar; baz; done");
+        p.loop_command().unwrap_err();
+        let mut p = make_parser("'until' guard do foo\nbar; baz; done");
+        p.loop_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_loop_command_invalid_concat() {
+        let mut p = make_parser_from_tokens(vec!(
+            Token::Literal(String::from("whi")),
+            Token::Literal(String::from("le")),
+            Token::Newline,
+            Token::Literal(String::from("guard")),
+            Token::Newline,
+            Token::Literal(String::from("do")),
+            Token::Literal(String::from("foo")),
+            Token::Newline,
+            Token::Literal(String::from("done")),
+        ));
+        p.loop_command().unwrap_err();
+        let mut p = make_parser_from_tokens(vec!(
+            Token::Literal(String::from("un")),
+            Token::Literal(String::from("til")),
+            Token::Newline,
+            Token::Literal(String::from("guard")),
+            Token::Newline,
+            Token::Literal(String::from("do")),
+            Token::Literal(String::from("foo")),
+            Token::Newline,
+            Token::Literal(String::from("done")),
+        ));
+        p.loop_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_loop_command_should_recognize_literals_and_names() {
+        for kw in vec!(
+            Token::Literal(String::from("while")),
+            Token::Name(String::from("while")),
+            Token::Literal(String::from("until")),
+            Token::Name(String::from("until")))
+        {
+            let mut p = make_parser_from_tokens(vec!(
+                kw,
+                Token::Newline,
+                Token::Literal(String::from("guard")),
+                Token::Newline,
+                Token::Literal(String::from("do")),
+                Token::Newline,
+                Token::Literal(String::from("foo")),
+                Token::Newline,
+                Token::Literal(String::from("done")),
+            ));
+            p.loop_command().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_if_command_while_valid_with_else() {
+        let mut p = make_parser("if guard1 <in; >out guard2; then body1 >|clob\n elif guard3; then body2 2>>app; else else; fi");
+        let (branches, els) = p.if_command().unwrap();
+        if let [(ref cond1, ref body1), (ref cond2, ref body2)] = &branches[..] {
+            if let ([Simple(ref guard1), Simple(ref guard2)], [Simple(ref body1)],
+                    [Simple(ref guard3)], [Simple(ref body2)]) = (&cond1[..], &body1[..], &cond2[..], &body2[..])
+            {
+                assert_eq!(guard1.cmd.as_ref().unwrap(), &Word::Literal(String::from("guard1")));
+                assert_eq!(guard2.cmd.as_ref().unwrap(), &Word::Literal(String::from("guard2")));
+                assert_eq!(guard3.cmd.as_ref().unwrap(), &Word::Literal(String::from("guard3")));
+                assert_eq!(body1.cmd.as_ref().unwrap(),  &Word::Literal(String::from("body1")));
+                assert_eq!(body2.cmd.as_ref().unwrap(),  &Word::Literal(String::from("body2")));
+
+                assert_eq!(guard1.io, vec!(Redirect::Read(None, Word::Literal(String::from("in")))));
+                assert_eq!(guard2.io, vec!(Redirect::Write(None, Word::Literal(String::from("out")))));
+                assert_eq!(body1.io,  vec!(Redirect::Clobber(None, Word::Literal(String::from("clob")))));
+                assert_eq!(body2.io,  vec!(Redirect::Append(Some(2), Word::Literal(String::from("app")))));
+
+                let els = els.as_ref().unwrap();
+                assert_eq!(els.len(), 1);
+                if let Simple(ref els) = els[0] {
+                    assert_eq!(els.cmd.as_ref().unwrap(), &Word::Literal(String::from("else")));
+                    return;
+                }
+            }
+        }
+
+        panic!("Incorrect parse result for Parse::if_command: {:?}", (branches, els));
+    }
+
+    #[test]
+    fn test_if_command_while_valid_without_else() {
+        let mut p = make_parser("if guard1 <in; >out guard2; then body1 >|clob\n elif guard3; then body2 2>>app; fi");
+        let (branches, els) = p.if_command().unwrap();
+        if let [(ref cond1, ref body1), (ref cond2, ref body2)] = &branches[..] {
+            if let ([Simple(ref guard1), Simple(ref guard2)], [Simple(ref body1)],
+                    [Simple(ref guard3)], [Simple(ref body2)]) = (&cond1[..], &body1[..], &cond2[..], &body2[..])
+            {
+                assert_eq!(guard1.cmd.as_ref().unwrap(), &Word::Literal(String::from("guard1")));
+                assert_eq!(guard2.cmd.as_ref().unwrap(), &Word::Literal(String::from("guard2")));
+                assert_eq!(guard3.cmd.as_ref().unwrap(), &Word::Literal(String::from("guard3")));
+                assert_eq!(body1.cmd.as_ref().unwrap(),  &Word::Literal(String::from("body1")));
+                assert_eq!(body2.cmd.as_ref().unwrap(),  &Word::Literal(String::from("body2")));
+
+                assert_eq!(guard1.io, vec!(Redirect::Read(None, Word::Literal(String::from("in")))));
+                assert_eq!(guard2.io, vec!(Redirect::Write(None, Word::Literal(String::from("out")))));
+                assert_eq!(body1.io,  vec!(Redirect::Clobber(None, Word::Literal(String::from("clob")))));
+                assert_eq!(body2.io,  vec!(Redirect::Append(Some(2), Word::Literal(String::from("app")))));
+
+                assert_eq!(els, None);
+                return;
+            }
+        }
+
+        panic!("Incorrect parse result for Parse::if_command: {:?}", (branches, els));
+    }
+
+    #[test]
+    fn test_if_command_invalid_body_can_be_empty() {
+        let mut p = make_parser("if guard; then; else else part; fi");
+        p.if_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_if_command_invalid_else_part_can_be_empty() {
+        let mut p = make_parser("if guard; then body; else; fi");
+        p.if_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_if_command_invalid_missing_separator() {
+        let mut p = make_parser("if guard; then body1; elif guard2; then body2; else else fi");
+        p.if_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_if_command_invalid_missing_keyword() {
+        let mut p = make_parser("guard1; then body1; elif guard2; then body2; else else; fi");
+        p.if_command().unwrap_err();
+        let mut p = make_parser("if guard1; then body1; elif guard2; then body2; else else;");
+        p.if_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_if_command_invalid_missing_guard() {
+        let mut p = make_parser("if; then body1; elif guard2; then body2; else else; fi");
+        p.if_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_if_command_invalid_missing_body() {
+        let mut p = make_parser("if guard; then; elif guard2; then body2; else else; fi");
+        p.if_command().unwrap_err();
+        let mut p = make_parser("if guard1; then body1; elif; then body2; else else; fi");
+        p.if_command().unwrap_err();
+        let mut p = make_parser("if guard1; then body1; elif guard2; then body2; else; fi");
+        p.if_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_if_command_invalid_quoted() {
+        let mut p = make_parser("'if' guard1; then body1; elif guard2; then body2; else else; fi");
+        p.if_command().unwrap_err();
+        let mut p = make_parser("if guard1; then body1; elif guard2; then body2; else else; 'fi'");
+        p.if_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_if_command_invalid_concat() {
+        let mut p = make_parser_from_tokens(vec!(
+            Token::Literal(String::from("i")), Token::Literal(String::from("f")),
+            Token::Newline, Token::Literal(String::from("guard1")), Token::Newline,
+            Token::Literal(String::from("then")),
+            Token::Newline, Token::Literal(String::from("body1")), Token::Newline,
+            Token::Literal(String::from("elif")),
+            Token::Newline, Token::Literal(String::from("guard2")), Token::Newline,
+            Token::Literal(String::from("then")),
+            Token::Newline, Token::Literal(String::from("body2")), Token::Newline,
+            Token::Literal(String::from("else")),
+            Token::Newline, Token::Literal(String::from("else part")), Token::Newline,
+            Token::Literal(String::from("fi")),
+        ));
+        p.if_command().unwrap_err();
+
+        // Splitting up `then`, `elif`, and `else` tokens makes them
+        // get interpreted as arguments, so an explicit error may not be raised
+        // although the command will be malformed
+
+        let mut p = make_parser_from_tokens(vec!(
+            Token::Literal(String::from("if")),
+            Token::Newline, Token::Literal(String::from("guard1")), Token::Newline,
+            Token::Literal(String::from("then")),
+            Token::Newline, Token::Literal(String::from("body1")), Token::Newline,
+            Token::Literal(String::from("elif")),
+            Token::Newline, Token::Literal(String::from("guard2")), Token::Newline,
+            Token::Literal(String::from("then")),
+            Token::Newline, Token::Literal(String::from("body2")), Token::Newline,
+            Token::Literal(String::from("else")),
+            Token::Newline, Token::Literal(String::from("else part")), Token::Newline,
+            Token::Literal(String::from("f")), Token::Literal(String::from("i")),
+        ));
+        p.if_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_if_command_should_recognize_literals_and_names() {
+        for if_tok in vec!(Token::Literal(String::from("if")), Token::Name(String::from("if"))) {
+            for then_tok in vec!(Token::Literal(String::from("then")), Token::Name(String::from("then"))) {
+                for elif_tok in vec!(Token::Literal(String::from("elif")), Token::Name(String::from("elif"))) {
+                    for else_tok in vec!(Token::Literal(String::from("else")), Token::Name(String::from("else"))) {
+                        for fi_tok in vec!(Token::Literal(String::from("fi")), Token::Name(String::from("fi"))) {
+                            let mut p = make_parser_from_tokens(vec!(
+                                    if_tok.clone(),
+                                    Token::Whitespace(String::from(" ")),
+
+                                    Token::Literal(String::from("guard1")),
+                                    Token::Newline,
+                                    then_tok.clone(),
+                                    Token::Literal(String::from("body1")),
+
+                                    elif_tok.clone(),
+                                    Token::Whitespace(String::from(" ")),
+
+                                    Token::Literal(String::from("guard2")),
+                                    Token::Newline,
+                                    then_tok.clone(),
+                                    Token::Whitespace(String::from(" ")),
+                                    Token::Literal(String::from("body2")),
+
+                                    else_tok.clone(),
+                                    Token::Whitespace(String::from(" ")),
+
+                                    Token::Whitespace(String::from(" ")),
+                                    Token::Literal(String::from("else part")),
+                                    Token::Newline,
+
+                                    fi_tok,
+                            ));
+                            p.if_command().unwrap();
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

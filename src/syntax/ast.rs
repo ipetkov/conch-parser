@@ -135,10 +135,32 @@ pub enum Command {
     /// A command that runs asynchronously, that is, the shell will not wait
     /// for it to exit before running the next command, e.g. `foo &`.
     Job(Box<Command>),
-
+    /// A class of commands where redirection is applied to a command group.
+    Compound(Box<CompoundCommand>, Vec<Redirect>),
     /// The simplest possible command: an executable with arguments,
     /// environment variable assignments, and redirections.
     Simple(Box<SimpleCommand>),
+}
+
+/// A class of commands where redirection is applied to a command group.
+#[derive(PartialEq, Eq, Debug)]
+pub enum CompoundCommand {
+    /// A group of commands that should be executed in the current environment.
+    Brace(Vec<Command>),
+    /// A group of commands that should be executed in a subshell environment.
+    Subshell(Vec<Command>),
+    /// A command that represents a `while` or `until` loop, executing a body
+    /// of commands based on the exit status of another command (the guard).
+    ///
+    /// The bool indicates an `until` loop, that is, execute the loop until the guard
+    /// returns successfully, otherwise, loop while the guard exits successfully.
+    /// Variant structure: Loop(is_until, guard, body).
+    Loop(bool, Vec<Command>, Vec<Command>),
+    /// A conditional command that runs the respective command branch when a
+    /// certain of the first condition that exits successfully.
+    ///
+    /// Variant structure: If( (guard, branch)+, else_branch ).
+    If(Vec<(Vec<Command>, Vec<Command>)>, Option<Vec<Command>>),
 }
 
 /// The simplest possible command: an executable with arguments,
