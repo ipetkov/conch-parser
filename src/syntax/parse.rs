@@ -94,7 +94,7 @@ impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
         };
 
         self.line += newlines;
-        self.col += if newlines == 0 { next.len() as u64 } else { 0 };
+        self.col = if newlines == 0 { self.col + next.len() as u64 } else { 0 };
         Some(next)
     }
 }
@@ -456,6 +456,12 @@ impl<T: Iterator<Item = Token>> Parser<T> {
                 Some(&CurlyOpen)          |
                 Some(&CurlyClose)         |
                 Some(&SingleQuote)        |
+                Some(&Pound)              |
+                Some(&Assignment(_))      |
+                Some(&Name(_))            |
+                Some(&Literal(_))         => {},
+
+                Some(&Dollar)             |
                 Some(&ParamAt)            |
                 Some(&ParamStar)          |
                 Some(&ParamPound)         |
@@ -463,12 +469,14 @@ impl<T: Iterator<Item = Token>> Parser<T> {
                 Some(&ParamDash)          |
                 Some(&ParamDollar)        |
                 Some(&ParamBang)          |
-                Some(&Dollar)             |
-                Some(&Pound)              |
-                Some(&ParamPositional(_)) |
-                Some(&Assignment(_))      |
-                Some(&Name(_))            |
-                Some(&Literal(_))         => {},
+                Some(&ParamPositional(_)) => {
+                    // If no parameter found, we should treat `$` as a literal
+                    let w = try!(self.parameter())
+                        .map(ast::Word::Param)
+                        .unwrap_or(ast::Word::Literal(Dollar.to_string()));
+                    words.push(w);
+                    continue;
+                },
 
                 _ => break,
             }
@@ -489,16 +497,6 @@ impl<T: Iterator<Item = Token>> Parser<T> {
 
                 Name(s)    |
                 Literal(s) => ast::Word::Literal(s),
-
-                Dollar             |
-                ParamAt            |
-                ParamStar          |
-                ParamPound         |
-                ParamQuestion      |
-                ParamDash          |
-                ParamDollar        |
-                ParamBang          |
-                ParamPositional(_) => try!(self.parameter()),
 
                 SingleQuote => {
                     // Make sure we actually find the closing quote before EOF
@@ -542,35 +540,34 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     ///
     /// Since it is possible that a leading `$` is not followed by a valid
     /// parameter, the `$` will be treated as a literal. Thus this method
-    /// returns a `ast::Word` instead of a `ast::Parameter`.
-    pub fn parameter(&mut self) -> Result<ast::Word> {
+    /// returns an optional parameter, although it will consume the `$`.
+    pub fn parameter(&mut self) -> Result<Option<ast::Parameter>> {
         use syntax::ast::Parameter::*;
-        use syntax::ast::Word::{Param, Literal};
 
         let param = match self.iter.next() {
-            Some(ParamAt)            => Param(At),
-            Some(ParamStar)          => Param(Star),
-            Some(ParamPound)         => Param(Pound),
-            Some(ParamQuestion)      => Param(Question),
-            Some(ParamDash)          => Param(Dash),
-            Some(ParamDollar)        => Param(Dollar),
-            Some(ParamBang)          => Param(Bang),
-            Some(ParamPositional(p)) => Param(Positional(p)),
+            Some(ParamAt)            => At,
+            Some(ParamStar)          => Star,
+            Some(ParamPound)         => Pound,
+            Some(ParamQuestion)      => Question,
+            Some(ParamDash)          => Dash,
+            Some(ParamDollar)        => Dollar,
+            Some(ParamBang)          => Bang,
+            Some(ParamPositional(p)) => Positional(p),
 
             Some(Token::Dollar) => if let Some(&Name(_)) = self.iter.peek() {
                 if let Some(Name(n)) = self.iter.next() {
-                    Param(Var(n))
+                    Var(n)
                 } else {
                     unreachable!()
                 }
             } else {
-                Literal(Token::Dollar.to_string())
+                return Ok(None);
             },
 
             t => return Err(self.make_unexpected_err(t)),
         };
 
-        Ok(param)
+        Ok(Some(param))
     }
 
     /// Keeps parsing complete commands until a given delimiter (or EOF) is found,
@@ -1045,7 +1042,7 @@ mod test {
     }
 
     #[test]
-    fn test_parameters_short() {
+    fn test_parameter_short() {
         let words = vec!(
             Parameter::At,
             Parameter::Star,
@@ -1059,16 +1056,16 @@ mod test {
 
         let mut p = make_parser("$@$*$#$?$-$$$!$3$");
         for param in words {
-            assert_eq!(p.parameter().unwrap(), Word::Param(param));
+            assert_eq!(p.parameter().unwrap().unwrap(), param);
         }
 
-        assert_eq!(Word::Literal(String::from("$")), p.parameter().unwrap());
+        assert_eq!(p.parameter().unwrap(), None);
         p.parameter().unwrap_err(); // Stream should be exhausted
     }
 
     #[test]
     #[ignore] // FIXME: enable once implemented
-    fn test_parameters_short_in_curlies() {
+    fn test_parameter_short_in_curlies() {
         let words = vec!(
             Parameter::At,
             Parameter::Star,
@@ -1083,10 +1080,17 @@ mod test {
 
         let mut p = make_parser("${@}${*}${#}${?}${-}${$}${!}${foo}");
         for param in words {
-            assert_eq!(p.parameter().unwrap(), Word::Param(param));
+            assert_eq!(p.parameter().unwrap().unwrap(), param);
         }
 
         p.parameter().unwrap_err(); // Stream should be exhausted
+    }
+
+    #[test]
+    fn test_parameter_literal_dollar_if_no_param() {
+        let mut p = make_parser("$^asdf");
+        assert_eq!(p.parameter().unwrap(), None);
+        assert_eq!(p.word().unwrap().unwrap(), Word::Literal(String::from("^asdf")));
     }
 
     #[test]
