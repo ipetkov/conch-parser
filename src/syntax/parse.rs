@@ -152,7 +152,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// Parses a single complete command.
     ///
     /// For example, `foo && bar; baz` will yield two complete
-    /// commands: And(foo, bar), and Simple(baz).
+    /// commands: `And(foo, bar), and Simple(baz)`.
     pub fn complete_command(&mut self) -> Result<Option<ast::Command>> {
         try!(self.linebreak());
 
@@ -179,7 +179,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// Parses compound AND/OR commands.
     ///
     /// Commands are left associative. For example `foo || bar && baz`
-    /// parses to And(Or(foo, bar), baz).
+    /// parses to `And(Or(foo, bar), baz)`.
     pub fn and_or(&mut self) -> Result<ast::Command> {
         let mut cmd = try!(self.pipeline());
 
@@ -327,7 +327,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
 
     /// Parses a continuous list of redirections and will error if any words
     /// that are not valid file descriptors are found. Essentially used for
-    /// parsing redirection lists after a `ast::CompoundCommand`.
+    /// parsing redirection lists after a compound command like `while` or `if`.
     pub fn redirect_list(&mut self) -> Result<Vec<ast::Redirect>> {
         let mut list = Vec::new();
         loop {
@@ -539,8 +539,8 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// Parses a parameter such as `$$`, `$1`, `$foo`, etc.
     ///
     /// Since it is possible that a leading `$` is not followed by a valid
-    /// parameter, the `$` will be treated as a literal. Thus this method
-    /// returns an optional parameter, although it will consume the `$`.
+    /// parameter, the `$` should be treated as a literal. Thus this method
+    /// returns an optional parameter, although it will consume the `$` unconditionally.
     pub fn parameter(&mut self) -> Result<Option<ast::Parameter>> {
         use syntax::ast::Parameter::*;
 
@@ -595,7 +595,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     }
 
     /// Parses any number of sequential commands between the `do` and `done`
-    /// keywords. Each of the keywords must be a literal token, and cannot be
+    /// reserved words. Each of the reserved words must be a literal token, and cannot be
     /// quoted or concatenated.
     pub fn do_group(&mut self) -> Result<Vec<ast::Command>> {
         match self.iter.next() {
@@ -615,7 +615,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     }
 
     /// Parses any number of sequential commands between balanced `{` and `}`
-    /// keywords. Each of the keywords must be a literal token, and cannot be quoted.
+    /// reserved words. Each of the reserved words must be a literal token, and cannot be quoted.
     pub fn brace_group(&mut self) -> Result<Vec<ast::Command>> {
         match self.iter.next() {
             Some(Token::CurlyOpen) => {},
@@ -652,7 +652,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// the entire loop) this method returns the relevant parts of the loop command,
     /// without constructing an AST node, it so that the caller can do so with redirections.
     ///
-    /// Return structure is Result(is_until, guard_commands, body_commands).
+    /// Return structure is `Result(is_until, guard_commands, body_commands)`.
     pub fn loop_command(&mut self) -> Result<(bool, Vec<ast::Command>, Vec<ast::Command>)> {
         let until = match self.iter.next() {
             Some(Token::Name(ref kw))    if kw == "while" => false,
@@ -679,7 +679,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// method returns the relevant parts of the `if` command, without constructing an
     /// AST node, it so that the caller can do so with redirections.
     ///
-    /// Return structure is Result( (condition, body)+, else_part ).
+    /// Return structure is `Result( (condition, body)+, else_part )`.
     pub fn if_command(&mut self) -> Result<(
         Vec<(Vec<ast::Command>, Vec<ast::Command>)>,
         Option<Vec<ast::Command>>)>
@@ -777,7 +777,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         }
     }
 
-    /// Parses zero or more `Token::Newline`s, skipping whitespace and preserving comments.
+    /// Parses zero or more `Token::Newline`s, skipping whitespace but capturing comments.
     pub fn linebreak(&mut self) -> Result<Vec<ast::Newline>> {
         let mut lines = Vec::new();
 
