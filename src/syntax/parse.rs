@@ -573,6 +573,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// Keeps parsing complete commands until a given delimiter (or EOF) is found,
     /// without consuming it. Whitespace after commands is skipped, and will not
     /// be recognized as a delimiter. Useful in parsing do-groups or curly-groups.
+    /// It is considered an error if no commands are present.
     pub fn command_list(&mut self, delimiters: &[&Token]) -> Result<Vec<ast::Command>> {
         let mut cmds = Vec::new();
         loop {
@@ -591,7 +592,11 @@ impl<T: Iterator<Item = Token>> Parser<T> {
             self.skip_whitespace();
         }
 
-        return Ok(cmds);
+        if cmds.is_empty() {
+            Err(self.make_unexpected_err(None))
+        } else {
+            Ok(cmds)
+        }
     }
 
     /// Parses any number of sequential commands between the `do` and `done`
@@ -668,9 +673,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
             &Token::Name(String::from("do"))
         ]));
 
-        let body = try!(self.do_group());
-
-        Ok((until, guard, body))
+        Ok((until, guard, try!(self.do_group())))
     }
 
     /// Parses a single `if` command but does not parse any redirections that may follow.
@@ -717,10 +720,6 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         let mut branches = Vec::new();
         loop {
             let guard = try!(self.command_list(&then_toks));
-            // Make sure we explicitly raise an error if guard branch is empty
-            if guard.is_empty() {
-                return Err(self.make_unexpected_err(None));
-            }
 
             match self.iter.next() {
                 Some(Token::Name(ref kw))    if kw == "then" => {},
@@ -728,12 +727,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
                 t => return Err(self.make_unexpected_err(t)),
             }
 
-            // Make sure we explicitly raise an error if body branch is empty
             let body = try!(self.command_list(&post_body_toks));
-            if guard.is_empty() {
-                return Err(self.make_unexpected_err(None));
-            }
-
             branches.push((guard, body));
 
             let els = match self.iter.next() {
@@ -741,14 +735,8 @@ impl<T: Iterator<Item = Token>> Parser<T> {
                 Some(Token::Literal(ref kw)) if kw == "elif" => continue,
 
                 // Make sure we explicitly raise an error if else branch is empty
-                Some(Token::Name(ref kw))    if kw == "else" => {
-                    let els = try!(self.command_list(&post_else_toks));
-                    if els.is_empty() { return Err(self.make_unexpected_err(None)); } else { Some(els) }
-                },
-                Some(Token::Literal(ref kw)) if kw == "else" => {
-                    let els = try!(self.command_list(&post_else_toks));
-                    if els.is_empty() { return Err(self.make_unexpected_err(None)); } else { Some(els) }
-                }
+                Some(Token::Name(ref kw))    if kw == "else" => Some(try!(self.command_list(&post_else_toks))),
+                Some(Token::Literal(ref kw)) if kw == "else" => Some(try!(self.command_list(&post_else_toks))),
 
                 Some(Token::Name(ref kw))    if kw == "fi"   => None,
                 Some(Token::Literal(ref kw)) if kw == "fi"   => None,
@@ -1406,6 +1394,12 @@ mod test {
     }
 
     #[test]
+    fn test_do_group_invalid_missing_body() {
+        let mut p = make_parser("do\ndone");
+        p.loop_command().unwrap_err();
+    }
+
+    #[test]
     fn test_brace_group_valid() {
         let mut p = make_parser("{ foo\nbar; baz; }");
         let cmds = p.brace_group().unwrap();
@@ -1456,6 +1450,12 @@ mod test {
         p.brace_group().unwrap_err();
         let mut p = make_parser("{ foo\nbar; baz; '}'");
         p.brace_group().unwrap_err();
+    }
+
+    #[test]
+    fn test_brace_group_invalid_missing_body() {
+        let mut p = make_parser("{\n}");
+        p.loop_command().unwrap_err();
     }
 
     #[test]
