@@ -154,13 +154,18 @@ pub enum CompoundCommand {
     ///
     /// The bool indicates an `until` loop, that is, execute the loop until the guard
     /// returns successfully, otherwise, loop while the guard exits successfully.
-    /// Variant structure: Loop(is_until, guard, body).
+    /// Variant structure: `Loop(is_until, guard, body)`.
     Loop(bool, Vec<Command>, Vec<Command>),
     /// A conditional command that runs the respective command branch when a
     /// certain of the first condition that exits successfully.
     ///
-    /// Variant structure: If( (guard, branch)+, else_branch ).
+    /// Variant structure: `If( (guard, branch)+, else_branch )`.
     If(Vec<(Vec<Command>, Vec<Command>)>, Option<Vec<Command>>),
+    /// A command that binds a variable to a number of provided words and runs
+    /// its body once for each binding.
+    ///
+    /// Variant structure: `For(var_name, words, body)`.
+    For(String, Option<Vec<Word>>, Vec<Command>),
 }
 
 /// The simplest possible command: an executable with arguments,

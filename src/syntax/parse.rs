@@ -156,7 +156,7 @@ macro_rules! reserved_word {
         match reserved_word_peek!($parser, word: $($kw => $action),+) {
             None => return Err($parser.make_unexpected_err(None)),
             Some(ret) => {
-                $parser.iter.next();
+                // Capture the keyword but preserve the following token
                 $parser.iter.next();
                 ret
             },
@@ -168,7 +168,7 @@ macro_rules! reserved_word {
         match reserved_word_peek!($parser, tok: $($kw => $action),+) {
             None => return Err($parser.make_unexpected_err(None)),
             Some(ret) => {
-                $parser.iter.next();
+                // Capture the keyword but preserve the following token
                 $parser.iter.next();
                 ret
             },
@@ -220,13 +220,13 @@ impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
     type Item = Token;
 
     fn next(&mut self) -> Option<Token> {
-        if !self.peek_buf.is_empty() {
-            return Some(self.peek_buf.remove(0));
-        }
-
-        let next = match self.iter.next() {
-            Some(t) => t,
-            None => return None,
+        let next = if !self.peek_buf.is_empty() {
+            self.peek_buf.remove(0)
+        } else {
+            match self.iter.next() {
+                Some(t) => t,
+                None => return None,
+            }
         };
 
         let newlines = match next {
@@ -833,6 +833,42 @@ impl<T: Iterator<Item = Token>> Parser<T> {
 
             return Ok((branches, els))
         }
+    }
+
+    /// Parses a single `for` command but does not parse any redirections that may follow.
+    ///
+    /// Since `for` is a compound command (and can have redirections applied to it) this
+    /// method returns the relevant parts of the `for` command, without constructing an
+    /// AST node, it so that the caller can do so with redirections.
+    ///
+    /// Return structure is `Result(var_name, in_words, body)`.
+    pub fn for_command(&mut self) -> Result<(String, Option<Vec<ast::Word>>, Vec<ast::Command>)> {
+        reserved_word!(self, word: "for" => {});
+        self.skip_whitespace();
+        let var = match self.iter.next() {
+            Some(Name(v)) => v,
+            t => return Err(self.make_unexpected_err(t)),
+        };
+
+        try!(self.linebreak());
+        let words = if reserved_word_peek!(self, word: "in" => {}).is_some() {
+            reserved_word!(self, word: "in" => {});
+            let mut words = Vec::new();
+            while let Some(w) = try!(self.word()) {
+                words.push(w);
+            }
+
+            match self.iter.next() {
+                Some(Semi) |
+                Some(Newline) => Some(words),
+                t => return Err(self.make_unexpected_err(t)),
+            }
+        } else {
+            None
+        };
+
+        let body = try!(self.do_group());
+        Ok((var, words, body))
     }
 
     /// Skips over any encountered whitespace but preserves newlines.
@@ -1943,6 +1979,198 @@ mod test {
             return;
         } else {
             panic!("Parsing of {} did not yield a simple command", source);
+        }
+    }
+
+    #[test]
+    fn test_for_command_while_valid_with_words() {
+        let mut p = make_parser("for var in one two three\ndo echo $var; done");
+        let (var, words, body) = p.for_command().unwrap();
+        assert_eq!(var, "var");
+        assert_eq!(words.unwrap(), vec!(
+            Word::Literal(String::from("one")),
+            Word::Literal(String::from("two")),
+            Word::Literal(String::from("three")),
+        ));
+
+        if let [Simple(ref echo)] = &body[..] {
+            assert_eq!(echo.cmd.as_ref().unwrap(), &Word::Literal(String::from("echo")));
+            assert_eq!(echo.args, vec!(Word::Param(Parameter::Var(String::from("var")))));
+            return;
+        }
+
+        panic!("Incorrect parse result for body from Parse::for_command: {:?}", body);
+    }
+
+    #[test]
+    fn test_for_command_while_valid_without_words() {
+        let mut p = make_parser("for var do echo $var; done");
+        let (var, words, body) = p.for_command().unwrap();
+        assert_eq!(var, "var");
+        assert_eq!(words, None);
+
+        if let [Simple(ref echo)] = &body[..] {
+            assert_eq!(echo.cmd.as_ref().unwrap(), &Word::Literal(String::from("echo")));
+            assert_eq!(echo.args, vec!(Word::Param(Parameter::Var(String::from("var")))));
+            return;
+        }
+
+        panic!("Incorrect parse result for body from Parse::for_command: {:?}", body);
+    }
+
+    #[test]
+    fn test_for_command_valid_missing_words() {
+        let mut p = make_parser("for var do echo $var; done");
+        p.for_command().unwrap();
+    }
+
+    #[test]
+    fn test_for_command_valid_missing_separator_when_no_words() {
+        let mut p = make_parser("for var do echo $var; done");
+        p.for_command().unwrap();
+    }
+
+    #[test]
+    fn test_for_command_valid_with_in_but_no_words_with_separator() {
+        let mut p = make_parser("for var in\ndo echo $var; done");
+        p.for_command().unwrap();
+        let mut p = make_parser("for var in;do echo $var; done");
+        p.for_command().unwrap();
+    }
+
+    #[test]
+    fn test_for_command_valid_with_separator() {
+        let mut p = make_parser("for var in one two three\ndo echo $var; done");
+        p.for_command().unwrap();
+        let mut p = make_parser("for var in one two three;do echo $var; done");
+        p.for_command().unwrap();
+    }
+
+    #[test]
+    fn test_for_command_invalid_with_in_no_words_no_with_separator() {
+        let mut p = make_parser("for var in do echo $var; done");
+        p.for_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_for_command_invalid_missing_separator() {
+        let mut p = make_parser("for var in one two three do echo $var; done");
+        p.for_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_for_command_invalid_missing_keyword() {
+        let mut p = make_parser("var in one two three\ndo echo $var; done");
+        p.for_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_for_command_invalid_missing_var() {
+        let mut p = make_parser("for in one two three\ndo echo $var; done");
+        p.for_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_for_command_invalid_missing_body() {
+        let mut p = make_parser("for var in one two three\n");
+        p.for_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_for_command_invalid_quoted() {
+        let mut p = make_parser("'for' var in one two three\ndo echo $var; done");
+        p.for_command().unwrap_err();
+        let mut p = make_parser("for var 'in' one two three\ndo echo $var; done");
+        p.for_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_for_command_invalid_var_must_be_name() {
+        let mut p = make_parser("for 123var in one two three\ndo echo $var; done");
+        p.for_command().unwrap_err();
+        let mut p = make_parser("for 'var' in one two three\ndo echo $var; done");
+        p.for_command().unwrap_err();
+        let mut p = make_parser("for \"var\" in one two three\ndo echo $var; done");
+        p.for_command().unwrap_err();
+        let mut p = make_parser("for var&*^ in one two three\ndo echo $var; done");
+        p.for_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_for_command_invalid_concat() {
+        let mut p = make_parser_from_tokens(vec!(
+            Token::Literal(String::from("fo")), Token::Literal(String::from("r")),
+            Token::Whitespace(String::from(" ")), Token::Name(String::from("var")),
+            Token::Whitespace(String::from(" ")),
+
+            Token::Literal(String::from("in")),
+            Token::Literal(String::from("one")), Token::Whitespace(String::from(" ")),
+            Token::Literal(String::from("two")), Token::Whitespace(String::from(" ")),
+            Token::Literal(String::from("three")), Token::Whitespace(String::from(" ")),
+            Token::Newline,
+
+            Token::Literal(String::from("do")), Token::Whitespace(String::from(" ")),
+            Token::Literal(String::from("echo")), Token::Whitespace(String::from(" ")),
+            Token::Dollar, Token::Literal(String::from("var")),
+            Token::Newline,
+            Token::Literal(String::from("done")),
+        ));
+        p.for_command().unwrap_err();
+
+        let mut p = make_parser_from_tokens(vec!(
+            Token::Literal(String::from("for")),
+            Token::Whitespace(String::from(" ")), Token::Name(String::from("var")),
+            Token::Whitespace(String::from(" ")),
+
+            Token::Literal(String::from("i")), Token::Literal(String::from("n")),
+            Token::Literal(String::from("one")), Token::Whitespace(String::from(" ")),
+            Token::Literal(String::from("two")), Token::Whitespace(String::from(" ")),
+            Token::Literal(String::from("three")), Token::Whitespace(String::from(" ")),
+            Token::Newline,
+
+            Token::Literal(String::from("do")), Token::Whitespace(String::from(" ")),
+            Token::Literal(String::from("echo")), Token::Whitespace(String::from(" ")),
+            Token::Dollar, Token::Literal(String::from("var")),
+            Token::Newline,
+            Token::Literal(String::from("done")),
+        ));
+        p.for_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_for_command_should_recognize_literals_and_names() {
+        for for_tok in vec!(Token::Literal(String::from("for")), Token::Name(String::from("for"))) {
+            for in_tok in vec!(Token::Literal(String::from("in")), Token::Name(String::from("in"))) {
+                let mut p = make_parser_from_tokens(vec!(
+                    for_tok.clone(),
+                    Token::Whitespace(String::from(" ")),
+
+                    Token::Name(String::from("var")),
+                    Token::Whitespace(String::from(" ")),
+
+                    in_tok.clone(),
+                    Token::Whitespace(String::from(" ")),
+                    Token::Literal(String::from("one")),
+                    Token::Whitespace(String::from(" ")),
+                    Token::Literal(String::from("two")),
+                    Token::Whitespace(String::from(" ")),
+                    Token::Literal(String::from("three")),
+                    Token::Whitespace(String::from(" ")),
+                    Token::Newline,
+
+                    Token::Literal(String::from("do")),
+                    Token::Whitespace(String::from(" ")),
+
+                    Token::Literal(String::from("echo")),
+                    Token::Whitespace(String::from(" ")),
+                    Token::Dollar,
+                    Token::Name(String::from("var")),
+                    Token::Newline,
+
+                    Token::Literal(String::from("done")),
+                ));
+                p.for_command().unwrap();
+            }
         }
     }
 }
