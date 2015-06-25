@@ -871,6 +871,60 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         Ok((var, words, body))
     }
 
+    /// Parses a single function declaration.
+    ///
+    /// A function declaration must either begin with the `function` reserved word, or
+    /// the name of the function must be followed by `()`. Whitespace is allowed between
+    /// the name and `(`, and whitespace is allowed between `()`.
+    fn function_declaration(&mut self) -> Result<ast::Command> {
+        let found_fn = if reserved_word_peek!(self, word: "function" => {}).is_some() {
+            reserved_word!(self, word: "function" => true)
+        } else {
+            false
+        };
+
+        self.skip_whitespace();
+        let name = match self.iter.next() {
+            Some(Name(n)) => n,
+            t => return Err(self.make_unexpected_err(t)),
+        };
+
+        // There must be whitespace after the function name, UNLESS we find `()` immediately after,
+        // or we hit a newline if we have the `function` keyword (and parens are not needed).
+        match self.iter.multipeek(3) {
+            [Whitespace(_), ..]                    |
+            [ParenOpen, ParenClose, ..]            |
+            [ParenOpen, Whitespace(_), ParenClose] => {},
+            [Newline, ..] if found_fn              => {},
+
+            _ => return Err(self.make_unexpected_err(None)),
+        }
+
+        self.skip_whitespace();
+        match self.iter.multipeek(3) {
+            [ParenOpen, Whitespace(_), ParenClose] => {
+                self.iter.next();
+                self.iter.next();
+                self.iter.next();
+            },
+
+            [ParenOpen, ParenClose, _] => {
+                self.iter.next();
+                self.iter.next();
+            },
+
+            // If no `function` keyword, we must find `()`
+            _ => if !found_fn { return Err(self.make_unexpected_err(None)) },
+        }
+
+        let body = match try!(self.complete_command()) {
+            Some(c) => c,
+            None => return Err(self.make_unexpected_err(None)),
+        };
+
+        Ok(ast::Command::Function(name, Box::new(body)))
+    }
+
     /// Skips over any encountered whitespace but preserves newlines.
     #[inline]
     pub fn skip_whitespace(&mut self) {
@@ -2171,6 +2225,226 @@ mod test {
                 ));
                 p.for_command().unwrap();
             }
+        }
+    }
+
+    #[test]
+    fn test_function_declaration_valid() {
+        let correct = Command::Function(
+            String::from("foo"),
+            Box::new(Compound(
+                Box::new(CompoundCommand::Brace(vec!(Simple(Box::new(SimpleCommand {
+                    cmd: Some(Word::Literal(String::from("echo"))),
+                    args: vec!(Word::Literal(String::from("body"))),
+                    vars: vec!(),
+                    io: vec!(),
+                }))))),
+                vec!()
+            ))
+        );
+
+        assert_eq!(correct, make_parser("function foo()      { echo body; }").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("function foo ()     { echo body; }").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("function foo (    ) { echo body; }").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("function foo(    )  { echo body; }").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("function foo        { echo body; }").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("foo()               { echo body; }").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("foo ()              { echo body; }").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("foo (    )          { echo body; }").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("foo(    )           { echo body; }").function_declaration().unwrap());
+
+        assert_eq!(correct, make_parser("function foo()     \n{ echo body; }").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("function foo ()    \n{ echo body; }").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("function foo (    )\n{ echo body; }").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("function foo(    ) \n{ echo body; }").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("function foo       \n{ echo body; }").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("foo()              \n{ echo body; }").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("foo ()             \n{ echo body; }").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("foo (    )         \n{ echo body; }").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("foo(    )          \n{ echo body; }").function_declaration().unwrap());
+    }
+
+    #[test]
+    fn test_function_declaration_valid_body_need_not_be_a_compound_command() {
+        let correct = Command::Function(
+            String::from("foo"),
+            Box::new(Simple(Box::new(SimpleCommand {
+                cmd: Some(Word::Literal(String::from("echo"))),
+                args: vec!(Word::Literal(String::from("body"))),
+                vars: vec!(),
+                io: vec!(),
+            })))
+        );
+
+        assert_eq!(correct, make_parser("function foo()      echo body;").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("function foo ()     echo body;").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("function foo (    ) echo body;").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("function foo(    )  echo body;").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("function foo        echo body;").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("foo()               echo body;").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("foo ()              echo body;").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("foo (    )          echo body;").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("foo(    )           echo body;").function_declaration().unwrap());
+
+        assert_eq!(correct, make_parser("function foo()     \necho body;").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("function foo ()    \necho body;").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("function foo (    )\necho body;").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("function foo(    ) \necho body;").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("function foo       \necho body;").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("foo()              \necho body;").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("foo ()             \necho body;").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("foo (    )         \necho body;").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("foo(    )          \necho body;").function_declaration().unwrap());
+    }
+
+    #[test]
+    fn test_function_declaration_invalid_newline_in_declaration() {
+        let mut p = make_parser("function\nname() { echo body; }");
+        p.function_declaration().unwrap_err();
+        let mut p = make_parser("function name\n() { echo body; }");
+        p.function_declaration().unwrap_err();
+    }
+
+    #[test]
+    fn test_function_declaration_invalid_missing_space_after_fn_keyword_and_no_parens() {
+        let mut p = make_parser("functionname { echo body; }");
+        p.function_declaration().unwrap_err();
+    }
+
+    #[test]
+    fn test_function_declaration_invalid_missing_fn_keyword_and_parens() {
+        let mut p = make_parser("name { echo body; }");
+        p.function_declaration().unwrap_err();
+    }
+
+    #[test]
+    fn test_function_declaration_invalid_missing_space_after_name_no_parens() {
+        let mut p = make_parser("function name{ echo body; }");
+        p.function_declaration().unwrap_err();
+        let mut p = make_parser("function name( echo body; )");
+        p.function_declaration().unwrap_err();
+    }
+
+    #[test]
+    fn test_function_declaration_invalid_missing_name() {
+        let mut p = make_parser("function { echo body; }");
+        p.function_declaration().unwrap_err();
+        let mut p = make_parser("function () { echo body; }");
+        p.function_declaration().unwrap_err();
+        let mut p = make_parser("() { echo body; }");
+        p.function_declaration().unwrap_err();
+    }
+
+    #[test]
+    fn test_function_declaration_invalid_missing_body() {
+        let mut p = make_parser("function name");
+        p.function_declaration().unwrap_err();
+        let mut p = make_parser("function name()");
+        p.function_declaration().unwrap_err();
+        let mut p = make_parser("name()");
+        p.function_declaration().unwrap_err();
+    }
+
+    #[test]
+    fn test_function_declaration_invalid_quoted() {
+        let mut p = make_parser("'function' name { echo body; }");
+        p.function_declaration().unwrap_err();
+        let mut p = make_parser("function 'name'() { echo body; }");
+        p.function_declaration().unwrap_err();
+        let mut p = make_parser("name'()' { echo body; }");
+        p.function_declaration().unwrap_err();
+    }
+
+    #[test]
+    fn test_function_declaration_invalid_fn_must_be_name() {
+        let mut p = make_parser("function 123fn { echo body; }");
+        p.function_declaration().unwrap_err();
+        let mut p = make_parser("function 123fn() { echo body; }");
+        p.function_declaration().unwrap_err();
+        let mut p = make_parser("123fn() { echo body; }");
+        p.function_declaration().unwrap_err();
+    }
+
+    #[test]
+    fn test_function_declaration_invalid_fn_name_must_be_name_token() {
+        let mut p = make_parser_from_tokens(vec!(
+            Token::Literal(String::from("function")),
+            Token::Whitespace(String::from(" ")),
+
+            Token::Literal(String::from("fn_name")),
+            Token::Whitespace(String::from(" ")),
+
+            Token::ParenOpen, Token::ParenClose,
+            Token::Whitespace(String::from(" ")),
+            Token::CurlyOpen,
+            Token::Literal(String::from("echo")),
+            Token::Whitespace(String::from(" ")),
+            Token::Literal(String::from("fn body")),
+            Token::Semi,
+            Token::CurlyClose,
+        ));
+        p.function_declaration().unwrap_err();
+
+        let mut p = make_parser_from_tokens(vec!(
+            Token::Literal(String::from("function")),
+            Token::Whitespace(String::from(" ")),
+
+            Token::Name(String::from("fn_name")),
+            Token::Whitespace(String::from(" ")),
+
+            Token::ParenOpen, Token::ParenClose,
+            Token::Whitespace(String::from(" ")),
+            Token::CurlyOpen,
+            Token::Literal(String::from("echo")),
+            Token::Whitespace(String::from(" ")),
+            Token::Literal(String::from("fn body")),
+            Token::Semi,
+            Token::CurlyClose,
+        ));
+        p.function_declaration().unwrap();
+    }
+
+    #[test]
+    fn test_function_declaration_invalid_concat() {
+        let mut p = make_parser_from_tokens(vec!(
+            Token::Literal(String::from("func")), Token::Literal(String::from("tion")),
+            Token::Whitespace(String::from(" ")),
+
+            Token::Name(String::from("fn_name")),
+            Token::Whitespace(String::from(" ")),
+
+            Token::ParenOpen, Token::ParenClose,
+            Token::Whitespace(String::from(" ")),
+            Token::CurlyOpen,
+            Token::Literal(String::from("echo")),
+            Token::Whitespace(String::from(" ")),
+            Token::Literal(String::from("fn body")),
+            Token::Semi,
+            Token::CurlyClose,
+        ));
+        p.function_declaration().unwrap_err();
+    }
+
+    #[test]
+    fn test_function_declaration_should_recognize_literals_and_names_for_fn_keyword() {
+        for fn_tok in vec!(Token::Literal(String::from("function")), Token::Name(String::from("function"))) {
+            let mut p = make_parser_from_tokens(vec!(
+                fn_tok,
+                Token::Whitespace(String::from(" ")),
+
+                Token::Name(String::from("fn_name")),
+                Token::Whitespace(String::from(" ")),
+
+                Token::ParenOpen, Token::ParenClose,
+                Token::Whitespace(String::from(" ")),
+                Token::CurlyOpen,
+                Token::Literal(String::from("echo")),
+                Token::Whitespace(String::from(" ")),
+                Token::Literal(String::from("fn body")),
+                Token::Semi,
+                Token::CurlyClose,
+            ));
+            p.function_declaration().unwrap();
         }
     }
 }
