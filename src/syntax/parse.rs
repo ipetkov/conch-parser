@@ -255,7 +255,7 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
             iter: iter,
             peek_buf: Vec::new(),
             line: 1,
-            col: 1,
+            col: 0,
         }
     }
 
@@ -328,7 +328,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// For example, `foo && bar; baz` will yield two complete
     /// commands: `And(foo, bar), and Simple(baz)`.
     pub fn complete_command(&mut self) -> Result<Option<ast::Command>> {
-        try!(self.linebreak());
+        self.linebreak();
 
         if self.iter.peek().is_none() {
             return Ok(None);
@@ -346,7 +346,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
             _ => {},
         }
 
-        try!(self.linebreak());
+        self.linebreak();
         Ok(Some(cmd))
     }
 
@@ -364,9 +364,8 @@ impl<T: Iterator<Item = Token>> Parser<T> {
                 _ => break,
             }
 
-
             let ty = self.iter.next().unwrap();
-            try!(self.linebreak());
+            self.linebreak();
             let boxed = Box::new(cmd);
             let next = Box::new(try!(self.pipeline()));
 
@@ -396,7 +395,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
 
             if let Some(&Pipe) = self.iter.peek() {
                 self.iter.next();
-                try!(self.linebreak());
+                self.linebreak();
             } else {
                 break;
             }
@@ -762,18 +761,23 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     pub fn brace_group(&mut self) -> Result<Vec<ast::Command>> {
         // CurlyClose must be encountered as a stand alone word,
         // even though it is represented as its own token
-        reserved_word!(self, tok: Token::CurlyOpen => {});
-        let cmds = command_list!(self, tok: Token::CurlyClose);
-        reserved_word!(self, tok: Token::CurlyClose => {});
+        reserved_word!(self, tok: CurlyOpen => {});
+        let cmds = command_list!(self, tok: CurlyClose);
+        reserved_word!(self, tok: CurlyClose => {});
         Ok(cmds)
     }
 
     /// Parses any number of sequential commands between balanced `(` and `)`.
     pub fn subshell(&mut self) -> Result<Vec<ast::Command>> {
-        reserved_word!(self, tok: Token::ParenOpen => {});
-        let result = command_list!(self, tok: Token::ParenClose);
-        reserved_word!(self, tok: Token::ParenClose => {});
-        Ok(result)
+        match self.iter.next() {
+            Some(ParenOpen) => {},
+            t => return Err(self.make_unexpected_err(t)),
+        }
+        let result = command_list!(self, tok: ParenClose);
+        match self.iter.next() {
+            Some(ParenClose) => Ok(result),
+            t => Err(self.make_unexpected_err(t)),
+        }
     }
 
     /// Parses loop commands like `while` and `until` but does not parse any
@@ -850,7 +854,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
             t => return Err(self.make_unexpected_err(t)),
         };
 
-        try!(self.linebreak());
+        self.linebreak();
         let words = if reserved_word_peek!(self, word: "in" => {}).is_some() {
             reserved_word!(self, word: "in" => {});
             let mut words = Vec::new();
@@ -934,7 +938,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     }
 
     /// Parses zero or more `Token::Newline`s, skipping whitespace but capturing comments.
-    pub fn linebreak(&mut self) -> Result<Vec<ast::Newline>> {
+    pub fn linebreak(&mut self) -> Vec<ast::Newline> {
         let mut lines = Vec::new();
 
         loop {
@@ -961,7 +965,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
             lines.push(ast::Newline(comment));
         }
 
-        Ok(lines)
+        lines
     }
 }
 
@@ -1005,7 +1009,7 @@ mod test {
     #[test]
     fn test_linebreak_valid_with_comments_and_whitespace() {
         let mut p = make_parser("\n\t\t\t\n # comment1\n#comment2\n   \n");
-        assert_eq!(p.linebreak().unwrap(), vec!(
+        assert_eq!(p.linebreak(), vec!(
                 Newline(None),
                 Newline(None),
                 Newline(Some(String::from(" comment1"))),
@@ -1018,45 +1022,45 @@ mod test {
     #[test]
     fn test_linebreak_valid_empty() {
         let mut p = make_parser("");
-        assert_eq!(p.linebreak().unwrap(), vec!());
+        assert_eq!(p.linebreak(), vec!());
     }
 
     #[test]
     fn test_linebreak_valid_nonnewline() {
         let mut p = make_parser("hello world");
-        assert_eq!(p.linebreak().unwrap(), vec!());
+        assert_eq!(p.linebreak(), vec!());
     }
 
     #[test]
     fn test_linebreak_valid_eof_instead_of_newline() {
         let mut p = make_parser("#comment");
-        assert_eq!(p.linebreak().unwrap(), vec!(Newline(Some(String::from("comment")))));
+        assert_eq!(p.linebreak(), vec!(Newline(Some(String::from("comment")))));
     }
 
     #[test]
     fn test_linebreak_single_quote_insiginificant() {
         let mut p = make_parser("#unclosed quote ' comment");
-        assert_eq!(p.linebreak().unwrap(), vec!(Newline(Some(String::from("unclosed quote ' comment")))));
+        assert_eq!(p.linebreak(), vec!(Newline(Some(String::from("unclosed quote ' comment")))));
     }
 
     #[test]
     fn test_linebreak_double_quote_insiginificant() {
         let mut p = make_parser("#unclosed quote \" comment");
-        assert_eq!(p.linebreak().unwrap(), vec!(Newline(Some(String::from("unclosed quote \" comment")))));
+        assert_eq!(p.linebreak(), vec!(Newline(Some(String::from("unclosed quote \" comment")))));
     }
 
     #[test]
     fn test_skip_whitespace_preserve_newline() {
         let mut p = make_parser("    \t\t \t \t\n   ");
         p.skip_whitespace();
-        p.linebreak().ok().expect("Parser::skip_whitespace skips newlines");
+        assert_eq!(p.linebreak().len(), 1);
     }
 
     #[test]
     fn test_skip_whitespace_preserve_comments() {
         let mut p = make_parser("    \t\t \t \t#comment\n   ");
         p.skip_whitespace();
-        assert_eq!(p.linebreak().unwrap().pop().unwrap(), Newline(Some(String::from("comment"))));
+        assert_eq!(p.linebreak().pop().unwrap(), Newline(Some(String::from("comment"))));
     }
 
     #[test]
@@ -1163,7 +1167,7 @@ mod test {
     fn test_comment_can_start_if_whitespace_before_pound() {
         let mut p = make_parser("hello #world");
         p.word().unwrap().expect("no valid word was discovered");
-        let comment = p.linebreak().unwrap();
+        let comment = p.linebreak();
         assert_eq!(comment, vec!(Newline(Some(String::from("world")))));
     }
 
@@ -1327,6 +1331,20 @@ mod test {
         let mut p = make_parser("foo 1<& 2");
         let cmd = p.simple_command().unwrap();
         assert_eq!(vec!(Redirect::DupRead(Some(1), 2)), cmd.io);
+    }
+
+    #[test]
+    #[ignore] // FIXME: correct and unignore
+    fn test_redirect_invalid_single_quoted_fd() {
+        let mut p = make_parser("'1'>>out");
+        p.redirect_list().unwrap_err();
+    }
+
+    #[test]
+    #[ignore] // FIXME: correct and unignore
+    fn test_redirect_invalid_double_quoted_fd() {
+        let mut p = make_parser("\"1\">>out");
+        p.redirect_list().unwrap_err();
     }
 
     #[test]
@@ -1669,6 +1687,16 @@ mod test {
         }
 
         panic!("Incorrect parse result for Parse::subshell: {:?}", cmds);
+    }
+
+    #[test]
+    fn test_subshell_space_between_parens_not_needed() {
+        let mut p = make_parser("(foo )");
+        p.subshell().unwrap();
+        let mut p = make_parser("( foo)");
+        p.subshell().unwrap();
+        let mut p = make_parser("(foo)");
+        p.subshell().unwrap();
     }
 
     #[test]
@@ -2037,7 +2065,7 @@ mod test {
     }
 
     #[test]
-    fn test_for_command_while_valid_with_words() {
+    fn test_for_command_valid_with_words() {
         let mut p = make_parser("for var in one two three\ndo echo $var; done");
         let (var, words, body) = p.for_command().unwrap();
         assert_eq!(var, "var");
@@ -2057,7 +2085,7 @@ mod test {
     }
 
     #[test]
-    fn test_for_command_while_valid_without_words() {
+    fn test_for_command_valid_without_words() {
         let mut p = make_parser("for var do echo $var; done");
         let (var, words, body) = p.for_command().unwrap();
         assert_eq!(var, "var");
@@ -2109,6 +2137,12 @@ mod test {
     #[test]
     fn test_for_command_invalid_missing_separator() {
         let mut p = make_parser("for var in one two three do echo $var; done");
+        p.for_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_for_command_invalid_amp_not_valid_separator() {
+        let mut p = make_parser("for var in one two three& do echo $var; done");
         p.for_command().unwrap_err();
     }
 

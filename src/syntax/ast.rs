@@ -24,25 +24,6 @@ pub enum Parameter {
     Var(String),
 }
 
-impl Display for Parameter {
-    fn fmt(&self, fmt: &mut Formatter) -> Result {
-        use self::Parameter::*;
-
-        match *self {
-            At       => fmt.write_str("$@"),
-            Star     => fmt.write_str("$*"),
-            Pound    => fmt.write_str("$#"),
-            Question => fmt.write_str("$?"),
-            Dash     => fmt.write_str("$-"),
-            Dollar   => fmt.write_str("$$"),
-            Bang     => fmt.write_str("$!"),
-
-            Var(ref p)    => write!(fmt, "${}", p),
-            Positional(p) => write!(fmt, "${}", p),
-        }
-    }
-}
-
 /// Represents whitespace delimited text.
 #[derive(PartialEq, Eq, Debug)]
 pub enum Word {
@@ -55,31 +36,6 @@ pub enum Word {
     /// Access of a value inside a parameter, e.g. `$foo` or `$$`.
     Param(Parameter),
 
-}
-
-impl Display for Word {
-    fn fmt(&self, fmt: &mut Formatter) -> Result {
-        use self::Word::*;
-
-        match *self {
-            Literal(ref s) => fmt.write_str(s),
-            Param(ref p) => write!(fmt, "{}", p),
-
-            DoubleQuoted(ref words) => {
-                try!(fmt.write_str("\""));
-                for w in words { try!(write!(fmt, "{}", w)); }
-                fmt.write_str("\"")
-            },
-
-            Concat(ref words) => {
-                for w in words {
-                    try!(write!(fmt, "{}", w));
-                }
-
-                Ok(())
-            },
-        }
-    }
 }
 
 /// Represents redirecting a command's file descriptors.
@@ -186,4 +142,48 @@ pub struct SimpleCommand {
     pub vars: Vec<(String, Word)>,
     /// All redirections that should be applied before running the command.
     pub io: Vec<Redirect>,
+}
+
+impl Display for Parameter {
+    fn fmt(&self, fmt: &mut Formatter) -> Result {
+        use self::Parameter::*;
+
+        match *self {
+            At       => fmt.write_str("$@"),
+            Star     => fmt.write_str("$*"),
+            Pound    => fmt.write_str("$#"),
+            Question => fmt.write_str("$?"),
+            Dash     => fmt.write_str("$-"),
+            Dollar   => fmt.write_str("$$"),
+            Bang     => fmt.write_str("$!"),
+
+            Var(ref p)    => write!(fmt, "${}", p),
+            Positional(p) => write!(fmt, "${}", p),
+        }
+    }
+}
+
+impl Display for Word {
+    fn fmt(&self, fmt: &mut Formatter) -> Result {
+        use self::Word::*;
+
+        match *self {
+            Literal(ref s) => fmt.write_str(s),
+            Param(ref p) => write!(fmt, "{}", p),
+
+            DoubleQuoted(ref words) => {
+                try!(fmt.write_str("\""));
+                for w in words { try!(write!(fmt, "{}", w)); }
+                fmt.write_str("\"")
+            },
+
+            Concat(ref words) => {
+                for w in words {
+                    try!(write!(fmt, "{}", w));
+                }
+
+                Ok(())
+            },
+        }
+    }
 }

@@ -4,6 +4,5 @@
 #![feature(slice_patterns)]
 
 #![cfg_attr(test, feature(box_patterns))]
-#![cfg_attr(test, feature(slice_patterns))]
 
 pub mod syntax;
