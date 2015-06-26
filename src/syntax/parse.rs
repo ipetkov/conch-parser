@@ -73,30 +73,30 @@ macro_rules! reserved_word_peek {
         match $parser.iter.multipeek(2) {
             // All tokens that delimit a word
             // NB: Make sure this list is correct w.r.t. definition of `Parse::word`
-            [ref kw_tok]                | // Don't forget about delimiting through EOF!
-            [ref kw_tok, Newline]       |
-            [ref kw_tok, ParenOpen]     |
-            [ref kw_tok, ParenClose]    |
-            [ref kw_tok, Bang]          |
-            [ref kw_tok, Semi]          |
-            [ref kw_tok, Amp]           |
-            [ref kw_tok, Less]          |
-            [ref kw_tok, Great]         |
-            [ref kw_tok, Pipe]          |
-            [ref kw_tok, Tilde]         |
-            [ref kw_tok, DoubleQuote]   |
-            [ref kw_tok, Backtick]      |
-            [ref kw_tok, AndIf]         |
-            [ref kw_tok, OrIf]          |
-            [ref kw_tok, DSemi]         |
-            [ref kw_tok, DLess]         |
-            [ref kw_tok, DGreat]        |
-            [ref kw_tok, GreatAnd]      |
-            [ref kw_tok, LessAnd]       |
-            [ref kw_tok, DLessDash]     |
-            [ref kw_tok, Clobber]       |
-            [ref kw_tok, LessGreat]     |
-            [ref kw_tok, Whitespace(_)] => match kw_tok {
+            [ref kw_tok]                    | // Don't forget about delimiting through EOF!
+            [ref kw_tok, Newline, ..]       |
+            [ref kw_tok, ParenOpen, ..]     |
+            [ref kw_tok, ParenClose, ..]    |
+            [ref kw_tok, Bang, ..]          |
+            [ref kw_tok, Semi, ..]          |
+            [ref kw_tok, Amp, ..]           |
+            [ref kw_tok, Less, ..]          |
+            [ref kw_tok, Great, ..]         |
+            [ref kw_tok, Pipe, ..]          |
+            [ref kw_tok, Tilde, ..]         |
+            [ref kw_tok, DoubleQuote, ..]   |
+            [ref kw_tok, Backtick, ..]      |
+            [ref kw_tok, AndIf, ..]         |
+            [ref kw_tok, OrIf, ..]          |
+            [ref kw_tok, DSemi, ..]         |
+            [ref kw_tok, DLess, ..]         |
+            [ref kw_tok, DGreat, ..]        |
+            [ref kw_tok, GreatAnd, ..]      |
+            [ref kw_tok, LessAnd, ..]       |
+            [ref kw_tok, DLessDash, ..]     |
+            [ref kw_tok, Clobber, ..]       |
+            [ref kw_tok, LessGreat, ..]     |
+            [ref kw_tok, Whitespace(_), ..] => match kw_tok {
                 &Token::Name(ref kw)    |
                 &Token::Literal(ref kw) => match ::std::borrow::Borrow::borrow(kw) {
                     $($kw => Some($action)),+,
@@ -114,30 +114,30 @@ macro_rules! reserved_word_peek {
         match $parser.iter.multipeek(2) {
             // All tokens that delimit a word
             // NB: Make sure this list is correct w.r.t. definition of `Parse::word`
-            [ref kw_tok]                | // Don't forget about delimiting through EOF!
-            [ref kw_tok, Newline]       |
-            [ref kw_tok, ParenOpen]     |
-            [ref kw_tok, ParenClose]    |
-            [ref kw_tok, Bang]          |
-            [ref kw_tok, Semi]          |
-            [ref kw_tok, Amp]           |
-            [ref kw_tok, Less]          |
-            [ref kw_tok, Great]         |
-            [ref kw_tok, Pipe]          |
-            [ref kw_tok, Tilde]         |
-            [ref kw_tok, DoubleQuote]   |
-            [ref kw_tok, Backtick]      |
-            [ref kw_tok, AndIf]         |
-            [ref kw_tok, OrIf]          |
-            [ref kw_tok, DSemi]         |
-            [ref kw_tok, DLess]         |
-            [ref kw_tok, DGreat]        |
-            [ref kw_tok, GreatAnd]      |
-            [ref kw_tok, LessAnd]       |
-            [ref kw_tok, DLessDash]     |
-            [ref kw_tok, Clobber]       |
-            [ref kw_tok, LessGreat]     |
-            [ref kw_tok, Whitespace(_)] => match kw_tok {
+            [ref kw_tok]                    | // Don't forget about delimiting through EOF!
+            [ref kw_tok, Newline, ..]       |
+            [ref kw_tok, ParenOpen, ..]     |
+            [ref kw_tok, ParenClose, ..]    |
+            [ref kw_tok, Bang, ..]          |
+            [ref kw_tok, Semi, ..]          |
+            [ref kw_tok, Amp, ..]           |
+            [ref kw_tok, Less, ..]          |
+            [ref kw_tok, Great, ..]         |
+            [ref kw_tok, Pipe, ..]          |
+            [ref kw_tok, Tilde, ..]         |
+            [ref kw_tok, DoubleQuote, ..]   |
+            [ref kw_tok, Backtick, ..]      |
+            [ref kw_tok, AndIf, ..]         |
+            [ref kw_tok, OrIf, ..]          |
+            [ref kw_tok, DSemi, ..]         |
+            [ref kw_tok, DLess, ..]         |
+            [ref kw_tok, DGreat, ..]        |
+            [ref kw_tok, GreatAnd, ..]      |
+            [ref kw_tok, LessAnd, ..]       |
+            [ref kw_tok, DLessDash, ..]     |
+            [ref kw_tok, Clobber, ..]       |
+            [ref kw_tok, LessGreat, ..]     |
+            [ref kw_tok, Whitespace(_), ..] => match kw_tok {
                 $(&$kw => Some($action)),+,
                 _ => None,
             },
@@ -896,23 +896,23 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         // There must be whitespace after the function name, UNLESS we find `()` immediately after,
         // or we hit a newline if we have the `function` keyword (and parens are not needed).
         match self.iter.multipeek(3) {
-            [Whitespace(_), ..]                    |
-            [ParenOpen, ParenClose, ..]            |
-            [ParenOpen, Whitespace(_), ParenClose] => {},
-            [Newline, ..] if found_fn              => {},
+            [Whitespace(_), ..]                        |
+            [ParenOpen, ParenClose, ..]                |
+            [ParenOpen, Whitespace(_), ParenClose, ..] => {},
+            [Newline, ..] if found_fn                  => {},
 
             _ => return Err(self.make_unexpected_err(None)),
         }
 
         self.skip_whitespace();
         match self.iter.multipeek(3) {
-            [ParenOpen, Whitespace(_), ParenClose] => {
+            [ParenOpen, Whitespace(_), ParenClose, ..] => {
                 self.iter.next();
                 self.iter.next();
                 self.iter.next();
             },
 
-            [ParenOpen, ParenClose, _] => {
+            [ParenOpen, ParenClose, ..] => {
                 self.iter.next();
                 self.iter.next();
             },
