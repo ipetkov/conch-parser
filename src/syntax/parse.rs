@@ -187,7 +187,7 @@ macro_rules! command_list {
             $peek;
             match try!($parser.complete_command()) {
                 Some(c) => cmds.push(c),
-                None => return Err($parser.make_unexpected_err(None)),
+                None => break,
             }
         }
 
@@ -773,9 +773,20 @@ impl<T: Iterator<Item = Token>> Parser<T> {
             Some(ParenOpen) => {},
             t => return Err(self.make_unexpected_err(t)),
         }
-        let result = command_list!(self, tok: ParenClose);
+
+        // Paren's are always special tokens, hence they aren't
+        // reserved words, and the `command_list!` macro doesn't apply.
+        let mut cmds = Vec::new();
+        loop {
+            if let Some(&ParenClose) = self.iter.peek() { break; }
+            match try!(self.complete_command()) {
+                Some(c) => cmds.push(c),
+                None => break,
+            }
+        }
+
         match self.iter.next() {
-            Some(ParenClose) => Ok(result),
+            Some(ParenClose) => Ok(cmds),
             t => Err(self.make_unexpected_err(t)),
         }
     }
@@ -873,6 +884,78 @@ impl<T: Iterator<Item = Token>> Parser<T> {
 
         let body = try!(self.do_group());
         Ok((var, words, body))
+    }
+
+    /// Parses a single `case` command but does not parse any redirections that may follow.
+    ///
+    /// Since `case` is a compound command (and can have redirections applied to it) this
+    /// method returns the relevant parts of the `case` command, without constructing an
+    /// AST node, it so that the caller can do so with redirections.
+    ///
+    /// Return structure is `Result( word_to_match, (pattern_alternatives+, cmds_to_run_on_match)* )`.
+    pub fn case_command(&mut self) -> Result<(ast::Word, Vec<(Vec<ast::Word>, Vec<ast::Command>)>)> {
+        reserved_word!(self, word: "case" => {});
+        let case_word = match try!(self.word()) {
+            Some(w) => w,
+            None => return Err(self.make_unexpected_err(None)),
+        };
+
+        self.linebreak();
+        reserved_word!(self, word: "in" => {});
+        self.linebreak();
+
+        let mut branches = Vec::new();
+        loop {
+            reserved_word_peek!(self, word: "esac" => break);
+
+            if let Some(&ParenOpen) = self.iter.peek() {
+                self.iter.next();
+            }
+
+            let mut patterns = Vec::new();
+            loop {
+                match try!(self.word()) {
+                    Some(p) => patterns.push(p),
+                    None => return Err(self.make_unexpected_err(None)),
+                }
+
+                match self.iter.next() {
+                    Some(Pipe) => continue,
+                    Some(ParenClose) if !patterns.is_empty() => break,
+                    t => return Err(self.make_unexpected_err(t)),
+                }
+            }
+
+            self.linebreak();
+
+            // DSemi's are always special tokens, hence they aren't
+            // reserved words, and the `command_list!` macro doesn't apply.
+            let mut cmds = Vec::new();
+            loop {
+                // Make sure we check for both delimiters
+                reserved_word_peek!(self, word: "esac" => break);
+                if let Some(&DSemi) = self.iter.peek() { break; }
+
+                match try!(self.complete_command()) {
+                    Some(c) => cmds.push(c),
+                    None => break,
+                }
+            }
+
+            branches.push((patterns, cmds));
+
+            match self.iter.peek() {
+                Some(&DSemi) => {
+                    self.iter.next();
+                    self.linebreak();
+                    continue;
+                },
+                _ => break,
+            }
+        }
+        reserved_word!(self, word: "esac" => {});
+
+        Ok((case_word, branches))
     }
 
     /// Parses a single function declaration.
@@ -2479,6 +2562,210 @@ mod test {
                 Token::CurlyClose,
             ));
             p.function_declaration().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_case_command_valid() {
+        let correct_word = Word::Literal(String::from("foo"));
+        let correct_arms = vec!(
+            (
+                vec!(Word::Literal(String::from("hello")), Word::Literal(String::from("goodbye"))),
+                vec!(Simple(Box::new(SimpleCommand {
+                    cmd: Some(Word::Literal(String::from("echo"))),
+                    args: vec!(Word::Literal(String::from("greeting"))),
+                    io: vec!(),
+                    vars: vec!(),
+                }))),
+            ),
+            (
+                vec!(Word::Literal(String::from("world"))),
+                vec!(Simple(Box::new(SimpleCommand {
+                    cmd: Some(Word::Literal(String::from("echo"))),
+                    args: vec!(Word::Literal(String::from("noun"))),
+                    io: vec!(),
+                    vars: vec!(),
+                }))),
+            ),
+        );
+
+        let correct = (correct_word, correct_arms);
+
+        // `(` before pattern is optional
+        assert_eq!(correct, make_parser("case foo in  hello | goodbye) echo greeting;;  world) echo noun;; esac").case_command().unwrap());
+        assert_eq!(correct, make_parser("case foo in (hello | goodbye) echo greeting;;  world) echo noun;; esac").case_command().unwrap());
+        assert_eq!(correct, make_parser("case foo in (hello | goodbye) echo greeting;; (world) echo noun;; esac").case_command().unwrap());
+
+        // Various newlines allowed within the command
+        assert_eq!(correct, make_parser("case foo  in\n(hello | goodbye)  echo greeting;;  (world) echo noun;;  esac").case_command().unwrap());
+        assert_eq!(correct, make_parser("case foo\nin  (hello | goodbye)  echo greeting;;  (world) echo noun;;  esac").case_command().unwrap());
+        assert_eq!(correct, make_parser("case foo  in  (hello | goodbye)\necho greeting;;  (world) echo noun;;  esac").case_command().unwrap());
+        assert_eq!(correct, make_parser("case foo  in  (hello | goodbye)  echo greeting;;\n(world) echo noun;;  esac").case_command().unwrap());
+        assert_eq!(correct, make_parser("case foo  in  (hello | goodbye)  echo greeting;;  (world) echo noun;;\nesac").case_command().unwrap());
+
+        // Final `;;` is optional as long as last command is complete
+        assert_eq!(correct, make_parser("case foo in hello | goodbye) echo greeting;; world) echo noun\nesac").case_command().unwrap());
+        assert_eq!(correct, make_parser("case foo in hello | goodbye) echo greeting;; world) echo noun; esac").case_command().unwrap());
+    }
+
+    #[test]
+    fn test_case_command_word_need_not_be_simple_literal() {
+        let mut p = make_parser("case 'foo'bar$$ in foo) echo foo;; esac");
+        p.case_command().unwrap();
+    }
+
+    #[test]
+    fn test_case_command_valid_with_no_arms() {
+        let mut p = make_parser("case foo in esac");
+        p.case_command().unwrap();
+    }
+
+    #[test]
+    fn test_case_command_valid_branch_with_no_command() {
+        let mut p = make_parser("case foo in pat)\nesac");
+        p.case_command().unwrap();
+        let mut p = make_parser("case foo in pat);;esac");
+        p.case_command().unwrap();
+    }
+
+    #[test]
+    fn test_case_command_invalid_missing_keyword() {
+        let mut p = make_parser("foo in foo) echo foo;; bar) echo bar;; esac");
+        p.case_command().unwrap_err();
+        let mut p = make_parser("case foo foo) echo foo;; bar) echo bar;; esac");
+        p.case_command().unwrap_err();
+        let mut p = make_parser("case foo in foo) echo foo;; bar) echo bar;;");
+        p.case_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_case_command_invalid_missing_word() {
+        let mut p = make_parser("case in foo) echo foo;; bar) echo bar;; esac");
+        p.case_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_case_command_invalid_quoted() {
+        let mut p = make_parser("'case' foo in foo) echo foo;; bar) echo bar;; esac");
+        p.case_command().unwrap_err();
+        let mut p = make_parser("case foo 'in' foo) echo foo;; bar) echo bar;; esac");
+        p.case_command().unwrap_err();
+        let mut p = make_parser("case foo in foo) echo foo;; bar')' echo bar;; 'esac'");
+        p.case_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_case_command_invalid_newline_after_case() {
+        let mut p = make_parser("case\nfoo in foo) echo foo;; bar) echo bar;; esac");
+        p.case_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_case_command_invalid_concat() {
+        let mut p = make_parser_from_tokens(vec!(
+            Token::Literal(String::from("ca")), Token::Literal(String::from("se")),
+            Token::Whitespace(String::from(" ")),
+
+            Token::Literal(String::from("foo")),
+            Token::Literal(String::from("bar")),
+            Token::Whitespace(String::from(" ")),
+
+            Token::Literal(String::from("in")),
+            Token::Literal(String::from("foo")),
+            Token::ParenClose,
+            Token::Newline,
+            Token::Literal(String::from("echo")),
+            Token::Whitespace(String::from(" ")),
+            Token::Literal(String::from("foo")),
+            Token::Newline,
+            Token::Newline,
+            Token::DSemi,
+
+            Token::Literal(String::from("esac")),
+        ));
+        p.case_command().unwrap_err();
+
+        let mut p = make_parser_from_tokens(vec!(
+            Token::Literal(String::from("case")),
+            Token::Whitespace(String::from(" ")),
+
+            Token::Literal(String::from("foo")),
+            Token::Literal(String::from("bar")),
+            Token::Whitespace(String::from(" ")),
+
+            Token::Literal(String::from("i")), Token::Literal(String::from("n")),
+            Token::Literal(String::from("foo")),
+            Token::ParenClose,
+            Token::Newline,
+            Token::Literal(String::from("echo")),
+            Token::Whitespace(String::from(" ")),
+            Token::Literal(String::from("foo")),
+            Token::Newline,
+            Token::Newline,
+            Token::DSemi,
+
+            Token::Literal(String::from("esac")),
+        ));
+        p.case_command().unwrap_err();
+
+        let mut p = make_parser_from_tokens(vec!(
+            Token::Literal(String::from("case")),
+            Token::Whitespace(String::from(" ")),
+
+            Token::Literal(String::from("foo")),
+            Token::Literal(String::from("bar")),
+            Token::Whitespace(String::from(" ")),
+
+            Token::Literal(String::from("in")),
+            Token::Literal(String::from("foo")),
+            Token::ParenClose,
+            Token::Newline,
+            Token::Literal(String::from("echo")),
+            Token::Whitespace(String::from(" ")),
+            Token::Literal(String::from("foo")),
+            Token::Newline,
+            Token::Newline,
+            Token::DSemi,
+
+            Token::Literal(String::from("es")), Token::Literal(String::from("ac")),
+        ));
+        p.case_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_case_command_should_recognize_literals_and_names() {
+        let case_str = String::from("case");
+        let in_str   = String::from("in");
+        let esac_str = String::from("esac");
+        for case_tok in vec!(Token::Literal(case_str.clone()), Token::Name(case_str.clone())) {
+            for in_tok in vec!(Token::Literal(in_str.clone()), Token::Name(in_str.clone())) {
+                for esac_tok in vec!(Token::Literal(esac_str.clone()), Token::Name(esac_str.clone())) {
+                    let mut p = make_parser_from_tokens(vec!(
+                        case_tok.clone(),
+                        Token::Whitespace(String::from(" ")),
+
+                        Token::Literal(String::from("foo")),
+                        Token::Literal(String::from("bar")),
+
+                        Token::Whitespace(String::from(" ")),
+                        in_tok.clone(),
+                        Token::Whitespace(String::from(" ")),
+
+                        Token::Literal(String::from("foo")),
+                        Token::ParenClose,
+                        Token::Newline,
+                        Token::Literal(String::from("echo")),
+                        Token::Whitespace(String::from(" ")),
+                        Token::Literal(String::from("foo")),
+                        Token::Newline,
+                        Token::Newline,
+                        Token::DSemi,
+
+                        esac_tok
+                    ));
+                    p.case_command().unwrap();
+                }
+            }
         }
     }
 }

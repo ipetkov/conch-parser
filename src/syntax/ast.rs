@@ -125,6 +125,12 @@ pub enum CompoundCommand {
     ///
     /// Variant structure: `For(var_name, words, body)`.
     For(String, Option<Vec<Word>>, Vec<Command>),
+    /// A command that behaves much like a `match` statment in Rust, running
+    /// a branch of commands if a specified word matches another literal or
+    /// glob pattern.
+    ///
+    /// Variant structure: `Case( to_match, (pattern_alternative+, commands*)* )`
+    Case(Word, Vec<(Vec<Word>, Vec<Command>)>),
 }
 
 /// The simplest possible command: an executable with arguments,
