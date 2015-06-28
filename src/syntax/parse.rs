@@ -58,7 +58,7 @@ impl ::std::fmt::Display for Error {
     fn fmt(&self, fmt: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
         match self.kind {
             BadFd(ref badfd) => write!(fmt, "bad file descriptor: {}", badfd),
-            Unexpected(ref t) => write!(fmt, "found unexpected token '{}' on line {}", t, self.line),
+            Unexpected(ref t) => write!(fmt, "found unexpected token '{}' on line {}:{}", t, self.line, self.col),
             UnexpectedEOF => fmt.write_str("unexpected end of input"),
         }
     }
@@ -321,6 +321,8 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         }
     }
 
+    /// Construct a `BadFd` error using the given word, indicating that the word
+    /// does not respresent a valid file descriptor to be used with a redirection.
     fn make_bad_fd_error(&mut self, w: ast::Word) -> Error {
         Error {
             line: self.iter.line,
@@ -337,7 +339,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// Parses a single complete command.
     ///
     /// For example, `foo && bar; baz` will yield two complete
-    /// commands: `And(foo, bar), and Simple(baz)`.
+    /// commands: `And(foo, bar)`, and `Simple(baz)`.
     pub fn complete_command(&mut self) -> Result<Option<ast::Command>> {
         self.linebreak();
 
@@ -646,7 +648,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         Ok(ret)
     }
 
-    /// Identical to `Parser::word()` but preserves trailing whitespace.
+    /// Identical to `Parser::word()` but preserves trailing whitespace after the word.
     pub fn word_preserve_trailing_whitespace(&mut self) -> Result<Option<ast::Word>> {
         self.skip_whitespace();
 
@@ -795,6 +797,8 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     }
 
     /// Parses any number of sequential commands between balanced `(` and `)`.
+    ///
+    /// It is considered an error if no commands are present inside the subshell.
     pub fn subshell(&mut self) -> Result<Vec<ast::Command>> {
         match self.iter.next() {
             Some(ParenOpen) => {},
@@ -813,7 +817,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         }
 
         match self.iter.next() {
-            Some(ParenClose) => Ok(cmds),
+            Some(ParenClose) if !cmds.is_empty() => Ok(cmds),
             t => Err(self.make_unexpected_err(t)),
         }
     }
@@ -1047,10 +1051,9 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// the name of the function must be followed by `()`. Whitespace is allowed between
     /// the name and `(`, and whitespace is allowed between `()`.
     fn function_declaration(&mut self) -> Result<ast::Command> {
-        let found_fn = if reserved_word_peek!(self, word: "function" => {}).is_some() {
-            reserved_word!(self, word: "function" => true)
-        } else {
-            false
+        let found_fn = match reserved_word_peek!(self, word: "function" => {}) {
+            Some(_) => reserved_word!(self, word: "function" => true),
+            None => false,
         };
 
         self.skip_whitespace();
@@ -1882,6 +1885,14 @@ mod test {
     }
 
     #[test]
+    fn test_subshell_invalid_missing_body() {
+        let mut p = make_parser("(\n)");
+        p.loop_command().unwrap_err();
+        let mut p = make_parser("()");
+        p.loop_command().unwrap_err();
+    }
+
+    #[test]
     fn test_loop_command_while_valid() {
         let mut p = make_parser("while guard1; guard2; do foo\nbar; baz; done");
         let (until, guards, cmds) = p.loop_command().unwrap();
@@ -2022,7 +2033,7 @@ mod test {
     }
 
     #[test]
-    fn test_if_command_while_valid_with_else() {
+    fn test_if_command_valid_with_else() {
         let mut p = make_parser("if guard1 <in; >out guard2; then body1 >|clob\n elif guard3; then body2 2>>app; else else; fi");
         let (branches, els) = p.if_command().unwrap();
         if let [(ref cond1, ref body1), (ref cond2, ref body2)] = &branches[..] {
@@ -2053,7 +2064,7 @@ mod test {
     }
 
     #[test]
-    fn test_if_command_while_valid_without_else() {
+    fn test_if_command_valid_without_else() {
         let mut p = make_parser("if guard1 <in; >out guard2; then body1 >|clob\n elif guard3; then body2 2>>app; fi");
         let (branches, els) = p.if_command().unwrap();
         if let [(ref cond1, ref body1), (ref cond2, ref body2)] = &branches[..] {
@@ -2264,18 +2275,6 @@ mod test {
         }
 
         panic!("Incorrect parse result for body from Parse::for_command: {:?}", body);
-    }
-
-    #[test]
-    fn test_for_command_valid_missing_words() {
-        let mut p = make_parser("for var do echo $var; done");
-        p.for_command().unwrap();
-    }
-
-    #[test]
-    fn test_for_command_valid_missing_separator_when_no_words() {
-        let mut p = make_parser("for var do echo $var; done");
-        p.for_command().unwrap();
     }
 
     #[test]
