@@ -208,6 +208,17 @@ macro_rules! command_list {
     };
 }
 
+/// Used to indicate what kind of compound command could be parsed next.
+enum CompoundCmdKeyword {
+    For,
+    Case,
+    If,
+    While,
+    Until,
+    Brace,
+    Subshell,
+}
+
 /// A Token iterator that keeps track of how many lines have been read.
 struct TokenIter<I: Iterator<Item = Token>> {
     iter: I,
@@ -411,8 +422,24 @@ impl<T: Iterator<Item = Token>> Parser<T> {
         }
     }
 
+    /// Parses any command which itself is not a pipeline or an AND/OR command.
     pub fn command(&mut self) -> Result<ast::Command> {
-        Ok(ast::Command::Simple(Box::new(try!(self.simple_command()))))
+        if let Some(kw) = self.next_compound_command_type() {
+            return self.compound_command_internal(Some(kw))
+        }
+
+        if reserved_word_peek!(self, word: "function" => {}).is_some() {
+            return self.function_declaration();
+        }
+
+        match self.iter.multipeek(5) {
+            [Name(_), ParenOpen, ParenClose, ..]                               |
+            [Name(_), ParenOpen, Whitespace(_), ParenClose, ..]                |
+            [Name(_), Whitespace(_), ParenOpen, ParenClose, ..]                |
+            [Name(_), Whitespace(_), ParenOpen, Whitespace(_), ParenClose, ..] => self.function_declaration(),
+
+            _ => Ok(ast::Command::Simple(Box::new(try!(self.simple_command()))))
+        }
     }
 
     /// Tries to parse a simple command, e.g. `cmd arg1 arg2 >redirect`.
@@ -789,6 +816,62 @@ impl<T: Iterator<Item = Token>> Parser<T> {
             Some(ParenClose) => Ok(cmds),
             t => Err(self.make_unexpected_err(t)),
         }
+    }
+
+    /// Peeks at the next token (after skipping whitespace) to determine
+    /// if (and which) compound command may follow.
+    fn next_compound_command_type(&mut self) -> Option<CompoundCmdKeyword> {
+        reserved_word_peek!(self, word:
+            "for"   => CompoundCmdKeyword::For,
+            "case"  => CompoundCmdKeyword::Case,
+            "if"    => CompoundCmdKeyword::If,
+            "while" => CompoundCmdKeyword::While,
+            "until" => CompoundCmdKeyword::Until
+        ).or_else(|| reserved_word_peek!(self, tok: CurlyOpen => CompoundCmdKeyword::Brace))
+         .or_else(|| match self.iter.peek() {
+            Some(&ParenOpen) => Some(CompoundCmdKeyword::Subshell),
+            _ => None,
+        })
+    }
+
+    /// Parses compound commands like `for`, `case`, `if`, `while`, `until`,
+    /// brace groups, or subshells, including any redirection lists to be applied to them.
+    pub fn compound_command(&mut self) -> Result<ast::Command> {
+        self.compound_command_internal(None)
+    }
+
+    /// Slightly optimized version of `Parse::compound_command` that will not
+    /// check an upcoming reserved word if the caller already knows the answer.
+    fn compound_command_internal(&mut self, kw: Option<CompoundCmdKeyword>) -> Result<ast::Command> {
+        let compound = match kw.or_else(|| self.next_compound_command_type()) {
+            Some(CompoundCmdKeyword::If) => {
+                let (branches, els) = try!(self.if_command());
+                ast::CompoundCommand::If(branches, els)
+            },
+
+            Some(CompoundCmdKeyword::While) |
+            Some(CompoundCmdKeyword::Until) => {
+                let (until, guard, body) = try!(self.loop_command());
+                ast::CompoundCommand::Loop(until, guard, body)
+            },
+
+            Some(CompoundCmdKeyword::For) => {
+                let (var, words, body) = try!(self.for_command());
+                ast::CompoundCommand::For(var, words, body)
+            },
+
+            Some(CompoundCmdKeyword::Case) => {
+                let (word, branches) = try!(self.case_command());
+                ast::CompoundCommand::Case(word, branches)
+            },
+
+            Some(CompoundCmdKeyword::Brace)    => ast::CompoundCommand::Brace(try!(self.brace_group())),
+            Some(CompoundCmdKeyword::Subshell) => ast::CompoundCommand::Subshell(try!(self.subshell())),
+
+            None => return Err(self.make_unexpected_err(None)),
+        };
+
+        Ok(ast::Command::Compound(Box::new(compound), try!(self.redirect_list())))
     }
 
     /// Parses loop commands like `while` and `until` but does not parse any
@@ -2766,6 +2849,636 @@ mod test {
                     p.case_command().unwrap();
                 }
             }
+        }
+    }
+
+    #[test]
+    fn test_compound_command_delegates_valid_commands_brace() {
+        let cmd = "{ foo; }";
+        match make_parser(cmd).compound_command() {
+            Ok(Compound(box Brace(..), _)) => {},
+            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
+            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
+        }
+    }
+
+    #[test]
+    fn test_compound_command_delegates_valid_commands_subshell() {
+        let commands = [
+            "(foo)",
+            "( foo)",
+        ];
+
+        for cmd in commands.iter() {
+            match make_parser(cmd).compound_command() {
+                Ok(Compound(box Subshell(..), _)) => {},
+                Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
+                Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
+            }
+        }
+    }
+
+    #[test]
+    fn test_compound_command_delegates_valid_commands_while() {
+        let cmd = "while guard; do foo; done";
+        match make_parser(cmd).compound_command() {
+            Ok(Compound(box Loop(false, _, _), _)) => {},
+            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
+            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
+        }
+    }
+
+    #[test]
+    fn test_compound_command_delegates_valid_commands_until() {
+        let cmd = "until guard; do foo; done";
+        match make_parser(cmd).compound_command() {
+            Ok(Compound(box Loop(true, _, _), _)) => {},
+            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
+            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
+        }
+    }
+
+    #[test]
+    fn test_compound_command_delegates_valid_commands_for() {
+        let cmd = "for var in; do foo; done";
+        match make_parser(cmd).compound_command() {
+            Ok(Compound(box For(..), _)) => {},
+            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
+            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
+        }
+    }
+
+    #[test]
+    fn test_compound_command_delegates_valid_commands_if() {
+        let cmd = "if guard; then body; fi";
+        match make_parser(cmd).compound_command() {
+            Ok(Compound(box If(..), _)) => {},
+            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
+            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
+        }
+    }
+
+    #[test]
+    fn test_compound_command_delegates_valid_commands_case() {
+        let cmd = "case foo in esac";
+        match make_parser(cmd).compound_command() {
+            Ok(Compound(box Case(..), _)) => {},
+            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
+            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
+        }
+    }
+
+    #[test]
+    fn test_compound_command_errors_on_quoted_commands() {
+        let cases = [
+            "{foo; }", // { is a reserved word, thus concatenating it essentially "quotes" it
+            "'{' foo; }",
+            "'(' foo; )",
+            "'while' guard do foo; done",
+            "'until' guard do foo; done",
+            "'if' guard; then body; fi",
+            "'for' var in; do foo; done",
+            "'case' foo in esac",
+        ];
+
+        for cmd in cases.iter() {
+            match make_parser(cmd).compound_command() {
+                Err(_) => {},
+                Ok(result) =>
+                    panic!("Parse::compound_command unexpectedly succeeded parsing \"{}\" with result: {:?}",
+                           cmd, result),
+            }
+        }
+    }
+
+    #[test]
+    fn test_compound_command_captures_redirections_after_command() {
+        let cases = [
+            "{ foo; } 1>>out <& 2 2>&-",
+            "( foo; ) 1>>out <& 2 2>&-",
+            "while guard; do foo; done 1>>out <& 2 2>&-",
+            "until guard; do foo; done 1>>out <& 2 2>&-",
+            "if guard; then body; fi 1>>out <& 2 2>&-",
+            "for var in; do foo; done 1>>out <& 2 2>&-",
+            "case foo in esac 1>>out <& 2 2>&-",
+        ];
+
+        for cmd in cases.iter() {
+            match make_parser(cmd).compound_command() {
+                Ok(Compound(_, io)) => assert_eq!(io, vec!(
+                    Redirect::Append(Some(1), Word::Literal(String::from("out"))),
+                    Redirect::DupRead(None, 2),
+                    Redirect::CloseWrite(Some(2)),
+                )),
+
+                Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
+                Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
+            }
+        }
+    }
+
+    #[test]
+    fn test_compound_command_should_delegate_literals_and_names_loop() {
+        for kw in vec!(
+            Token::Literal(String::from("while")),
+            Token::Name(String::from("while")),
+            Token::Literal(String::from("until")),
+            Token::Name(String::from("until")))
+        {
+            let mut p = make_parser_from_tokens(vec!(
+                kw,
+                Token::Newline,
+                Token::Literal(String::from("guard")),
+                Token::Newline,
+                Token::Literal(String::from("do")),
+                Token::Newline,
+                Token::Literal(String::from("foo")),
+                Token::Newline,
+                Token::Literal(String::from("done")),
+            ));
+            p.compound_command().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_compound_command_should_delegate_literals_and_names_if() {
+        for if_tok in vec!(Token::Literal(String::from("if")), Token::Name(String::from("if"))) {
+            for then_tok in vec!(Token::Literal(String::from("then")), Token::Name(String::from("then"))) {
+                for elif_tok in vec!(Token::Literal(String::from("elif")), Token::Name(String::from("elif"))) {
+                    for else_tok in vec!(Token::Literal(String::from("else")), Token::Name(String::from("else"))) {
+                        for fi_tok in vec!(Token::Literal(String::from("fi")), Token::Name(String::from("fi"))) {
+                            let mut p = make_parser_from_tokens(vec!(
+                                    if_tok.clone(),
+                                    Token::Whitespace(String::from(" ")),
+
+                                    Token::Literal(String::from("guard1")),
+                                    Token::Newline,
+
+                                    then_tok.clone(),
+                                    Token::Newline,
+                                    Token::Literal(String::from("body1")),
+
+                                    elif_tok.clone(),
+                                    Token::Whitespace(String::from(" ")),
+
+                                    Token::Literal(String::from("guard2")),
+                                    Token::Newline,
+                                    then_tok.clone(),
+                                    Token::Whitespace(String::from(" ")),
+                                    Token::Literal(String::from("body2")),
+
+                                    else_tok.clone(),
+                                    Token::Whitespace(String::from(" ")),
+
+                                    Token::Whitespace(String::from(" ")),
+                                    Token::Literal(String::from("else part")),
+                                    Token::Newline,
+
+                                    fi_tok,
+                            ));
+                            p.compound_command().unwrap();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_compound_command_should_delegate_literals_and_names_for() {
+        for for_tok in vec!(Token::Literal(String::from("for")), Token::Name(String::from("for"))) {
+            for in_tok in vec!(Token::Literal(String::from("in")), Token::Name(String::from("in"))) {
+                let mut p = make_parser_from_tokens(vec!(
+                    for_tok.clone(),
+                    Token::Whitespace(String::from(" ")),
+
+                    Token::Name(String::from("var")),
+                    Token::Whitespace(String::from(" ")),
+
+                    in_tok.clone(),
+                    Token::Whitespace(String::from(" ")),
+                    Token::Literal(String::from("one")),
+                    Token::Whitespace(String::from(" ")),
+                    Token::Literal(String::from("two")),
+                    Token::Whitespace(String::from(" ")),
+                    Token::Literal(String::from("three")),
+                    Token::Whitespace(String::from(" ")),
+                    Token::Newline,
+
+                    Token::Literal(String::from("do")),
+                    Token::Whitespace(String::from(" ")),
+
+                    Token::Literal(String::from("echo")),
+                    Token::Whitespace(String::from(" ")),
+                    Token::Dollar,
+                    Token::Name(String::from("var")),
+                    Token::Newline,
+
+                    Token::Literal(String::from("done")),
+                ));
+                p.compound_command().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn test_compound_command_should_delegate_literals_and_names_case() {
+        let case_str = String::from("case");
+        let in_str   = String::from("in");
+        let esac_str = String::from("esac");
+        for case_tok in vec!(Token::Literal(case_str.clone()), Token::Name(case_str.clone())) {
+            for in_tok in vec!(Token::Literal(in_str.clone()), Token::Name(in_str.clone())) {
+                for esac_tok in vec!(Token::Literal(esac_str.clone()), Token::Name(esac_str.clone())) {
+                    let mut p = make_parser_from_tokens(vec!(
+                        case_tok.clone(),
+                        Token::Whitespace(String::from(" ")),
+
+                        Token::Literal(String::from("foo")),
+                        Token::Literal(String::from("bar")),
+
+                        Token::Whitespace(String::from(" ")),
+                        in_tok.clone(),
+                        Token::Whitespace(String::from(" ")),
+
+                        Token::Literal(String::from("foo")),
+                        Token::ParenClose,
+                        Token::Newline,
+                        Token::Literal(String::from("echo")),
+                        Token::Whitespace(String::from(" ")),
+                        Token::Literal(String::from("foo")),
+                        Token::Newline,
+                        Token::Newline,
+                        Token::DSemi,
+
+                        esac_tok
+                    ));
+                    p.compound_command().unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_command_delegates_valid_commands_brace() {
+        let cmd = "{ foo; }";
+        match make_parser(cmd).command() {
+            Ok(Compound(box Brace(..), _)) => {},
+            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
+            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
+        }
+    }
+
+    #[test]
+    fn test_command_delegates_valid_commands_subshell() {
+        let commands = [
+            "(foo)",
+            "( foo)",
+        ];
+
+        for cmd in commands.iter() {
+            match make_parser(cmd).command() {
+                Ok(Compound(box Subshell(..), _)) => {},
+                Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
+                Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
+            }
+        }
+    }
+
+    #[test]
+    fn test_command_delegates_valid_commands_while() {
+        let cmd = "while guard; do foo; done";
+        match make_parser(cmd).command() {
+            Ok(Compound(box Loop(false, _, _), _)) => {},
+            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
+            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
+        }
+    }
+
+    #[test]
+    fn test_command_delegates_valid_commands_until() {
+        let cmd = "until guard; do foo; done";
+        match make_parser(cmd).command() {
+            Ok(Compound(box Loop(true, _, _), _)) => {},
+            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
+            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
+        }
+    }
+
+    #[test]
+    fn test_command_delegates_valid_commands_for() {
+        let cmd = "for var in; do foo; done";
+        match make_parser(cmd).command() {
+            Ok(Compound(box For(..), _)) => {},
+            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
+            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
+        }
+    }
+
+    #[test]
+    fn test_command_delegates_valid_commands_if() {
+        let cmd = "if guard; then body; fi";
+        match make_parser(cmd).command() {
+            Ok(Compound(box If(..), _)) => {},
+            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
+            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
+        }
+    }
+
+    #[test]
+    fn test_command_delegates_valid_commands_case() {
+        let cmd = "case foo in esac";
+        match make_parser(cmd).command() {
+            Ok(Compound(box Case(..), _)) => {},
+            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
+            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
+        }
+    }
+
+    #[test]
+    fn test_command_delegates_valid_simple_commands() {
+        let cmd = "echo foo bar";
+        match make_parser(cmd).command() {
+            Ok(Simple(..)) => {},
+            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
+            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
+        }
+    }
+
+    #[test]
+    fn test_command_delegates_valid_commands_function() {
+        let commands = [
+            "function foo()      { echo body; }",
+            "function foo ()     { echo body; }",
+            "function foo (    ) { echo body; }",
+            "function foo(    )  { echo body; }",
+            "function foo        { echo body; }",
+            "foo()               { echo body; }",
+            "foo ()              { echo body; }",
+            "foo (    )          { echo body; }",
+            "foo(    )           { echo body; }",
+        ];
+
+        for cmd in commands.iter() {
+            match make_parser(cmd).command() {
+                Ok(Function(..)) => {},
+                Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
+                Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
+            }
+        }
+    }
+
+    #[test]
+    fn test_command_parses_quoted_compound_commands_as_simple_commands() {
+        let cases = [
+            "{foo; }", // { is a reserved word, thus concatenating it essentially "quotes" it
+            "'{' foo; }",
+            "'(' foo; )",
+            "'while' guard do foo; done",
+            "'until' guard do foo; done",
+            "'if' guard; then body; fi",
+            "'for' var in; do echo $var; done",
+            "'function' name { echo body; }",
+            "name'()' { echo body; }",
+            "123fn() { echo body; }",
+            "'case' foo in esac",
+        ];
+
+        for cmd in cases.iter() {
+            match make_parser(cmd).command() {
+                Ok(Simple(_)) => {},
+                Ok(result) =>
+                    panic!("Parse::command unexpectedly parsed \"{}\" as a non-simple command: {:?}", cmd, result),
+                Err(err) => panic!("Parse::command failed to parse \"{}\": {}", cmd, err),
+            }
+        }
+    }
+
+    #[test]
+    fn test_command_should_delegate_literals_and_names_loop() {
+        for kw in vec!(
+            Token::Literal(String::from("while")),
+            Token::Name(String::from("while")),
+            Token::Literal(String::from("until")),
+            Token::Name(String::from("until")))
+        {
+            let mut p = make_parser_from_tokens(vec!(
+                kw,
+                Token::Newline,
+                Token::Literal(String::from("guard")),
+                Token::Newline,
+                Token::Literal(String::from("do")),
+                Token::Newline,
+                Token::Literal(String::from("foo")),
+                Token::Newline,
+                Token::Literal(String::from("done")),
+            ));
+
+            match p.command() {
+                Ok(Compound(box Loop(..), _)) => {},
+                Ok(result) => panic!("Parsed an unexpected command type: {:?}", result),
+                Err(err) => panic!("Failed to parse command: {}", err),
+            }
+        }
+    }
+
+    #[test]
+    fn test_command_should_delegate_literals_and_names_if() {
+        for if_tok in vec!(Token::Literal(String::from("if")), Token::Name(String::from("if"))) {
+            for then_tok in vec!(Token::Literal(String::from("then")), Token::Name(String::from("then"))) {
+                for elif_tok in vec!(Token::Literal(String::from("elif")), Token::Name(String::from("elif"))) {
+                    for else_tok in vec!(Token::Literal(String::from("else")), Token::Name(String::from("else"))) {
+                        for fi_tok in vec!(Token::Literal(String::from("fi")), Token::Name(String::from("fi"))) {
+                            let mut p = make_parser_from_tokens(vec!(
+                                    if_tok.clone(),
+                                    Token::Whitespace(String::from(" ")),
+
+                                    Token::Literal(String::from("guard1")),
+                                    Token::Newline,
+
+                                    then_tok.clone(),
+                                    Token::Newline,
+                                    Token::Literal(String::from("body1")),
+
+                                    elif_tok.clone(),
+                                    Token::Whitespace(String::from(" ")),
+
+                                    Token::Literal(String::from("guard2")),
+                                    Token::Newline,
+                                    then_tok.clone(),
+                                    Token::Whitespace(String::from(" ")),
+                                    Token::Literal(String::from("body2")),
+
+                                    else_tok.clone(),
+                                    Token::Whitespace(String::from(" ")),
+
+                                    Token::Whitespace(String::from(" ")),
+                                    Token::Literal(String::from("else part")),
+                                    Token::Newline,
+
+                                    fi_tok,
+                            ));
+                            match p.command() {
+                                Ok(Compound(box If(..), _)) => {},
+                                Ok(result) => panic!("Parsed an unexpected command type: {:?}", result),
+                                Err(err) => panic!("Failed to parse command: {}", err),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_command_should_delegate_literals_and_names_for() {
+        for for_tok in vec!(Token::Literal(String::from("for")), Token::Name(String::from("for"))) {
+            for in_tok in vec!(Token::Literal(String::from("in")), Token::Name(String::from("in"))) {
+                let mut p = make_parser_from_tokens(vec!(
+                    for_tok.clone(),
+                    Token::Whitespace(String::from(" ")),
+
+                    Token::Name(String::from("var")),
+                    Token::Whitespace(String::from(" ")),
+
+                    in_tok.clone(),
+                    Token::Whitespace(String::from(" ")),
+                    Token::Literal(String::from("one")),
+                    Token::Whitespace(String::from(" ")),
+                    Token::Literal(String::from("two")),
+                    Token::Whitespace(String::from(" ")),
+                    Token::Literal(String::from("three")),
+                    Token::Whitespace(String::from(" ")),
+                    Token::Newline,
+
+                    Token::Literal(String::from("do")),
+                    Token::Whitespace(String::from(" ")),
+
+                    Token::Literal(String::from("echo")),
+                    Token::Whitespace(String::from(" ")),
+                    Token::Dollar,
+                    Token::Name(String::from("var")),
+                    Token::Newline,
+
+                    Token::Literal(String::from("done")),
+                ));
+                match p.command() {
+                    Ok(Compound(box For(..), _)) => {},
+                    Ok(result) => panic!("Parsed an unexpected command type: {:?}", result),
+                    Err(err) => panic!("Failed to parse command: {}", err),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_command_should_delegate_literals_and_names_case() {
+        let case_str = String::from("case");
+        let in_str   = String::from("in");
+        let esac_str = String::from("esac");
+        for case_tok in vec!(Token::Literal(case_str.clone()), Token::Name(case_str.clone())) {
+            for in_tok in vec!(Token::Literal(in_str.clone()), Token::Name(in_str.clone())) {
+                for esac_tok in vec!(Token::Literal(esac_str.clone()), Token::Name(esac_str.clone())) {
+                    let mut p = make_parser_from_tokens(vec!(
+                        case_tok.clone(),
+                        Token::Whitespace(String::from(" ")),
+
+                        Token::Literal(String::from("foo")),
+                        Token::Literal(String::from("bar")),
+
+                        Token::Whitespace(String::from(" ")),
+                        in_tok.clone(),
+                        Token::Whitespace(String::from(" ")),
+
+                        Token::Literal(String::from("foo")),
+                        Token::ParenClose,
+                        Token::Newline,
+                        Token::Literal(String::from("echo")),
+                        Token::Whitespace(String::from(" ")),
+                        Token::Literal(String::from("foo")),
+                        Token::Newline,
+                        Token::Newline,
+                        Token::DSemi,
+
+                        esac_tok
+                    ));
+                    match p.command() {
+                        Ok(Compound(box Case(..), _)) => {},
+                        Ok(result) => panic!("Parsed an unexpected command type: {:?}", result),
+                        Err(err) => panic!("Failed to parse command: {}", err),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_command_should_delegate_literals_and_names_for_function_declaration() {
+        for fn_tok in vec!(Token::Literal(String::from("function")), Token::Name(String::from("function"))) {
+            let mut p = make_parser_from_tokens(vec!(
+                fn_tok,
+                Token::Whitespace(String::from(" ")),
+
+                Token::Name(String::from("fn_name")),
+                Token::Whitespace(String::from(" ")),
+
+                Token::ParenOpen, Token::ParenClose,
+                Token::Whitespace(String::from(" ")),
+                Token::CurlyOpen,
+                Token::Literal(String::from("echo")),
+                Token::Whitespace(String::from(" ")),
+                Token::Literal(String::from("fn body")),
+                Token::Semi,
+                Token::CurlyClose,
+            ));
+            match p.command() {
+                Ok(Function(..)) => {},
+                Ok(result) => panic!("Parsed an unexpected command type: {:?}", result),
+                Err(err) => panic!("Failed to parse command: {}", err),
+            }
+        }
+    }
+
+    #[test]
+    fn test_command_do_not_delegate_functions_only_if_fn_name_is_a_literal_token() {
+        let mut p = make_parser_from_tokens(vec!(
+            Token::Literal(String::from("fn_name")),
+            Token::Whitespace(String::from(" ")),
+
+            Token::ParenOpen, Token::ParenClose,
+            Token::Whitespace(String::from(" ")),
+            Token::CurlyOpen,
+            Token::Literal(String::from("echo")),
+            Token::Whitespace(String::from(" ")),
+            Token::Literal(String::from("fn body")),
+            Token::Semi,
+            Token::CurlyClose,
+        ));
+        match p.command() {
+            Ok(Simple(..)) => {},
+            Ok(result) => panic!("Parsed an unexpected command type: {:?}", result),
+            Err(err) => panic!("Failed to parse command: {}", err),
+        }
+    }
+
+    #[test]
+    fn test_command_delegate_functions_only_if_fn_name_is_a_name_token() {
+        let mut p = make_parser_from_tokens(vec!(
+            Token::Name(String::from("fn_name")),
+            Token::Whitespace(String::from(" ")),
+
+            Token::ParenOpen, Token::ParenClose,
+            Token::Whitespace(String::from(" ")),
+            Token::CurlyOpen,
+            Token::Literal(String::from("echo")),
+            Token::Whitespace(String::from(" ")),
+            Token::Literal(String::from("fn body")),
+            Token::Semi,
+            Token::CurlyClose,
+        ));
+        match p.command() {
+            Ok(Function(..)) => {},
+            Ok(result) => panic!("Parsed an unexpected command type: {:?}", result),
+            Err(err) => panic!("Failed to parse command: {}", err),
         }
     }
 }
