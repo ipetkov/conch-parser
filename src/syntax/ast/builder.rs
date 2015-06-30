@@ -4,6 +4,11 @@
 //! representation, and frees up the library user to substitute their own.
 //! If one does not require a custom AST representation, this module offers
 //! a reasonable default builder implementation.
+//!
+//! If a custom AST representation is required you will need to implement
+//! the `Builder` trait for your AST. Otherwise check out the `CommandBuilder`
+//! trait if you wish to selectively overwrite several of the default
+//! implementations and/or return a custom error from them.
 
 use syntax::ast::{self, Command, CompoundCommand, SimpleCommand, Redirect, Word};
 
@@ -44,7 +49,7 @@ pub enum LoopKind {
 }
 
 /// A `Builder` implementation which builds shell commands using the AST definitions in the `ast` module.
-pub struct CommandBuilder;
+pub struct DefaultBuilder;
 
 /// A trait which defines an interface which the parser defined in the `parse` module
 /// uses to delegate Abstract Syntax Tree creation. The methods defined here correspond
@@ -99,14 +104,14 @@ pub trait Builder {
     /// # Arguments
     /// * env_vars: environment variables to be defined only for the command before it is run.
     /// * cmd: the name of the command to be run. This value is optional since the shell grammar
-    /// permits that a simple command be made up of only env var definitions or redirections (or both).
+    /// permits that a simple command be made up of only env var definitions or redirects (or both).
     /// * args: arguments to the command
-    /// * redirections: redirection of any file descriptors to/from other file descriptors or files.
+    /// * redirects: redirection of any file descriptors to/from other file descriptors or files.
     fn simple_command(&mut self,
                       env_vars: Vec<(String, Word)>,
                       cmd: Option<Word>,
                       args: Vec<Word>,
-                      redirections: Vec<Redirect>)
+                      redirects: Vec<Redirect>)
         -> Result<Self::Output, Self::Err>;
 
     /// Invoked when a non-zero number of commands were parsed between balanced curly braces.
@@ -114,7 +119,7 @@ pub trait Builder {
     ///
     /// # Arguments
     /// * cmds: the commands that were parsed between braces
-    /// * redirects: any redirections to be applied over the **entire** group of commands
+    /// * redirects: any redirects to be applied over the **entire** group of commands
     fn brace_group(&mut self,
                    cmds: Vec<Self::Output>,
                    redirects: Vec<Redirect>)
@@ -126,7 +131,7 @@ pub trait Builder {
     ///
     /// # Arguments
     /// * cmds: the commands that were parsed between parens
-    /// * redirects: any redirections to be applied over the **entire** group of commands
+    /// * redirects: any redirects to be applied over the **entire** group of commands
     fn subshell(&mut self,
                 cmds: Vec<Self::Output>,
                 redirects: Vec<Redirect>)
@@ -139,7 +144,7 @@ pub trait Builder {
     /// * kind: the type of the loop: `while` or `until`
     /// * guard: commands that determine how long the loop will run for
     /// * body: commands to be run every iteration of the loop
-    /// * redirects: any redirections to be applied over **all** commands part of the loop
+    /// * redirects: any redirects to be applied over **all** commands part of the loop
     fn loop_command(&mut self,
                     kind: LoopKind,
                     guard: Vec<Self::Output>,
@@ -155,7 +160,7 @@ pub trait Builder {
     /// # Arguments
     /// branches: a collection of (guard, body) command groups
     /// else_part: optional group of commands to be run if no guard exited successfully
-    /// * redirects: any redirections to be applied over **all** commands within the `if` command
+    /// * redirects: any redirects to be applied over **all** commands within the `if` command
     fn if_command(&mut self,
                   branches: Vec<(Vec<Self::Output>, Vec<Self::Output>)>,
                   else_part: Option<Vec<Self::Output>>,
@@ -171,7 +176,7 @@ pub trait Builder {
     /// var: the name of the variable to which each of the words will be bound
     /// in_words: a group of words to iterate over if present
     /// body: the body to be invoked for every iteration
-    /// * redirects: any redirections to be applied over **all** commands within the `for` command
+    /// * redirects: any redirects to be applied over **all** commands within the `for` command
     fn for_command(&mut self,
                    var: String,
                    in_words: Option<Vec<Word>>,
@@ -187,7 +192,7 @@ pub trait Builder {
     /// * arms: the various alternatives that the `case` command can take. The first part of the tuple
     /// is a list of alternative patterns which correspond to a group of commands to be run in case
     /// any of the alternative patterns is matched.
-    /// * redirects: any redirections to be applied over **all** commands part of the `case` block
+    /// * redirects: any redirects to be applied over **all** commands part of the `case` block
     fn case_command(&mut self,
                     word: Word,
                     arms: Vec<(Vec<Word>, Vec<Self::Output>)>,
@@ -207,14 +212,25 @@ pub trait Builder {
         -> Result<Self::Output, Self::Err>;
 }
 
-impl Builder for CommandBuilder {
-    type Output = Command;
-    type Err = ();
+/// A default implementation of the `Builder` trait. It allows for selectively
+/// overwriting a given method without having to reimplement the rest (as long
+/// as the output of the builder remains the `ast::Command` type, that is).
+///
+/// This implementation does not return any errors, which makes it possible
+/// for an implementor of this trait to perform checks while constructing the
+/// AST and return their own error type.
+///
+///For more indepth documentation of each method and it's arguments, see the
+/// definition of the `Builder` trait.
+pub trait CommandBuilder {
+    type Err;
 
+    /// Constructs a `Command::Job` node with the provided inputs if the command
+    /// was delimited by an ampersand or the command itself otherwise.
     fn complete_command(&mut self,
                         separator: SeparatorKind,
-                        cmd: Self::Output)
-        -> Result<Self::Output, Self::Err>
+                        cmd: Command)
+        -> Result<Command, Self::Err>
     {
         match separator {
             SeparatorKind::Semi  |
@@ -224,11 +240,12 @@ impl Builder for CommandBuilder {
         }
     }
 
+    /// Constructs a `Command::And` or `Command::Or` node with the provided inputs.
     fn and_or(&mut self,
               kind: AndOrKind,
-              first: Self::Output,
-              second: Self::Output)
-        -> Result<Self::Output, Self::Err>
+              first: Command,
+              second: Command)
+        -> Result<Command, Self::Err>
     {
         match kind {
             AndOrKind::And => Ok(Command::And(Box::new(first), Box::new(second))),
@@ -236,10 +253,12 @@ impl Builder for CommandBuilder {
         }
     }
 
+    /// Constructs a `Command::Pipe` node with the provided inputs or a `Command::Simple`
+    /// node if only a single command with no status inversion is supplied.
     fn pipeline(&mut self,
                 bang: bool,
-                mut cmds: Vec<Self::Output>)
-        -> Result<Self::Output, Self::Err>
+                mut cmds: Vec<Command>)
+        -> Result<Command, Self::Err>
     {
         debug_assert_eq!(cmds.is_empty(), false);
         cmds.shrink_to_fit();
@@ -254,51 +273,55 @@ impl Builder for CommandBuilder {
         }
     }
 
+    /// Constructs a `Command::Simple` node with the provided inputs.
     fn simple_command(&mut self,
                       mut env_vars: Vec<(String, Word)>,
                       cmd: Option<Word>,
                       mut args: Vec<Word>,
-                      mut redirections: Vec<Redirect>)
-        -> Result<Self::Output, Self::Err>
+                      mut redirects: Vec<Redirect>)
+        -> Result<Command, Self::Err>
     {
         env_vars.shrink_to_fit();
         args.shrink_to_fit();
-        redirections.shrink_to_fit();
+        redirects.shrink_to_fit();
 
         Ok(Command::Simple(Box::new(SimpleCommand {
             cmd: cmd,
             vars: env_vars,
             args: args,
-            io: redirections,
+            io: redirects,
         })))
     }
 
+    /// Constructs a `Command::Compound(Brace)` node with the provided inputs.
     fn brace_group(&mut self,
-                   mut cmds: Vec<Self::Output>,
+                   mut cmds: Vec<Command>,
                    mut redirects: Vec<Redirect>)
-        -> Result<Self::Output, Self::Err>
+        -> Result<Command, Self::Err>
     {
         cmds.shrink_to_fit();
         redirects.shrink_to_fit();
         Ok(Command::Compound(Box::new(CompoundCommand::Brace(cmds)), redirects))
     }
 
+    /// Constructs a `Command::Compound(Subshell)` node with the provided inputs.
     fn subshell(&mut self,
-                mut cmds: Vec<Self::Output>,
+                mut cmds: Vec<Command>,
                 mut redirects: Vec<Redirect>)
-        -> Result<Self::Output, Self::Err>
+        -> Result<Command, Self::Err>
     {
         cmds.shrink_to_fit();
         redirects.shrink_to_fit();
         Ok(Command::Compound(Box::new(CompoundCommand::Subshell(cmds)), redirects))
     }
 
+    /// Constructs a `Command::Compound(Loop)` node with the provided inputs.
     fn loop_command(&mut self,
                     kind: LoopKind,
-                    mut guard: Vec<Self::Output>,
-                    mut body: Vec<Self::Output>,
+                    mut guard: Vec<Command>,
+                    mut body: Vec<Command>,
                     mut redirects: Vec<Redirect>)
-        -> Result<Self::Output, Self::Err>
+        -> Result<Command, Self::Err>
     {
         guard.shrink_to_fit();
         body.shrink_to_fit();
@@ -312,11 +335,12 @@ impl Builder for CommandBuilder {
         Ok(Command::Compound(Box::new(CompoundCommand::Loop(until, guard, body)), redirects))
     }
 
+    /// Constructs a `Command::Compound(If)` node with the provided inputs.
     fn if_command(&mut self,
-                  mut branches: Vec<(Vec<Self::Output>, Vec<Self::Output>)>,
-                  mut else_part: Option<Vec<Self::Output>>,
+                  mut branches: Vec<(Vec<Command>, Vec<Command>)>,
+                  mut else_part: Option<Vec<Command>>,
                   mut redirects: Vec<Redirect>)
-        -> Result<Self::Output, Self::Err>
+        -> Result<Command, Self::Err>
     {
         for &mut (ref mut guard, ref mut body) in branches.iter_mut() {
             guard.shrink_to_fit();
@@ -329,12 +353,13 @@ impl Builder for CommandBuilder {
         Ok(Command::Compound(Box::new(CompoundCommand::If(branches, else_part)), redirects))
     }
 
+    /// Constructs a `Command::Compound(For)` node with the provided inputs.
     fn for_command(&mut self,
                    var: String,
                    mut in_words: Option<Vec<Word>>,
-                   mut body: Vec<Self::Output>,
+                   mut body: Vec<Command>,
                    mut redirects: Vec<Redirect>)
-        -> Result<Self::Output, Self::Err>
+        -> Result<Command, Self::Err>
     {
         for word in in_words.iter_mut() { word.shrink_to_fit(); }
         body.shrink_to_fit();
@@ -342,11 +367,12 @@ impl Builder for CommandBuilder {
         Ok(Command::Compound(Box::new(CompoundCommand::For(var, in_words, body)), redirects))
     }
 
+    /// Constructs a `Command::Compound(Case)` node with the provided inputs.
     fn case_command(&mut self,
                     word: Word,
-                    mut arms: Vec<(Vec<Word>, Vec<Self::Output>)>,
+                    mut arms: Vec<(Vec<Word>, Vec<Command>)>,
                     mut redirects: Vec<Redirect>)
-        -> Result<Self::Output, Self::Err>
+        -> Result<Command, Self::Err>
     {
         for &mut (ref mut pats, ref mut cmds) in arms.iter_mut() {
             pats.shrink_to_fit();
@@ -357,17 +383,124 @@ impl Builder for CommandBuilder {
         Ok(Command::Compound(Box::new(CompoundCommand::Case(word, arms)), redirects))
     }
 
+    /// Constructs a `Command::Function` node with the provided inputs.
     fn function_declaration(&mut self,
                             name: String,
-                            body: Self::Output)
-        -> Result<Self::Output, Self::Err>
+                            body: Command)
+        -> Result<Command, Self::Err>
     {
         Ok(Command::Function(name, Box::new(body)))
     }
 }
 
-impl ::std::default::Default for CommandBuilder {
-    fn default() -> CommandBuilder {
-        CommandBuilder
+impl<T: CommandBuilder> Builder for T {
+    type Output = Command;
+    type Err = T::Err;
+
+    fn complete_command(&mut self,
+                        separator: SeparatorKind,
+                        cmd: Self::Output)
+        -> Result<Self::Output, Self::Err>
+    {
+        CommandBuilder::complete_command(self, separator, cmd)
+    }
+
+    fn and_or(&mut self,
+              kind: AndOrKind,
+              first: Self::Output,
+              second: Self::Output)
+        -> Result<Self::Output, Self::Err>
+    {
+        CommandBuilder::and_or(self, kind, first, second)
+    }
+
+    fn pipeline(&mut self,
+                bang: bool,
+                cmds: Vec<Self::Output>)
+        -> Result<Self::Output, Self::Err>
+    {
+        CommandBuilder::pipeline(self, bang, cmds)
+    }
+
+    fn simple_command(&mut self,
+                      env_vars: Vec<(String, Word)>,
+                      cmd: Option<Word>,
+                      args: Vec<Word>,
+                      redirects: Vec<Redirect>)
+        -> Result<Self::Output, Self::Err>
+    {
+        CommandBuilder::simple_command(self, env_vars, cmd, args, redirects)
+    }
+
+    fn brace_group(&mut self,
+                   cmds: Vec<Self::Output>,
+                   redirects: Vec<Redirect>)
+        -> Result<Self::Output, Self::Err>
+    {
+        CommandBuilder::brace_group(self, cmds, redirects)
+    }
+
+    fn subshell(&mut self,
+                cmds: Vec<Self::Output>,
+                redirects: Vec<Redirect>)
+        -> Result<Self::Output, Self::Err>
+    {
+        CommandBuilder::subshell(self, cmds, redirects)
+    }
+
+    fn loop_command(&mut self,
+                    kind: LoopKind,
+                    guard: Vec<Self::Output>,
+                    body: Vec<Self::Output>,
+                    redirects: Vec<Redirect>)
+        -> Result<Self::Output, Self::Err>
+    {
+        CommandBuilder::loop_command(self, kind, guard, body, redirects)
+    }
+
+    fn if_command(&mut self,
+                  branches: Vec<(Vec<Self::Output>, Vec<Self::Output>)>,
+                  else_part: Option<Vec<Self::Output>>,
+                  redirects: Vec<Redirect>)
+        -> Result<Self::Output, Self::Err>
+    {
+        CommandBuilder::if_command(self, branches, else_part, redirects)
+    }
+
+    fn for_command(&mut self,
+                   var: String,
+                   in_words: Option<Vec<Word>>,
+                   body: Vec<Self::Output>,
+                   redirects: Vec<Redirect>)
+        -> Result<Self::Output, Self::Err>
+    {
+        CommandBuilder::for_command(self, var, in_words, body, redirects)
+    }
+
+    fn case_command(&mut self,
+                    word: Word,
+                    arms: Vec<(Vec<Word>, Vec<Self::Output>)>,
+                    redirects: Vec<Redirect>)
+        -> Result<Self::Output, Self::Err>
+    {
+        CommandBuilder::case_command(self, word, arms, redirects)
+    }
+
+    fn function_declaration(&mut self,
+                            name: String,
+                            body: Self::Output)
+        -> Result<Self::Output, Self::Err>
+    {
+        CommandBuilder::function_declaration(self, name, body)
+    }
+}
+
+impl CommandBuilder for DefaultBuilder {
+    type Err = ();
+}
+
+impl ::std::default::Default for DefaultBuilder {
+    fn default() -> DefaultBuilder {
+        DefaultBuilder
     }
 }

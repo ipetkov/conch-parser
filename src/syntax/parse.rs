@@ -9,7 +9,7 @@ use syntax::token::Token::*;
 
 /// A parser which will use a default AST builder implementation,
 /// yielding results in terms of types defined in the `ast` module.
-pub type DefaultParser<I> = Parser<I, ast::CommandBuilder>;
+pub type DefaultParser<I> = Parser<I, builder::DefaultBuilder>;
 
 /// Specifies the exact error that occured during parsing.
 #[derive(Debug)]
