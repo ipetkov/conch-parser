@@ -1,65 +1,80 @@
 //! The definition of a parser (and related methods) for the shell language.
 
-use self::ErrorKind::*;
+use std::any::Any;
+use std::{error, fmt};
 use syntax::ast;
+use syntax::ast::builder::{self, Builder};
 use syntax::token::Token;
 use syntax::token::Token::*;
 
-/// An alias over `parse::Error` to avoid writing it out each time.
-pub type Result<T> = ::std::result::Result<T, Error>;
+pub type DefaultParser<I> = Parser<I, ast::CommandBuilder>;
 
 /// Specifies the exact error that occured during parsing.
 #[derive(Debug)]
-pub enum ErrorKind {
+pub enum ErrorKind<T> {
     /// Encoutnered a word that could not be interpreted as a valid file descriptor.
     BadFd(ast::Word),
     /// Encountered a token not appropriate for the current context.
     Unexpected(Token),
     /// Encountered the end of input while expecting additional tokens.
     UnexpectedEOF,
+    /// An external error returned by the AST builder.
+    External(T),
 }
 
 /// The error type which is returned from parsing shell commands.
 #[derive(Debug)]
-pub struct Error {
-    kind: ErrorKind,
-    line: u64,
-    col: u64,
+pub struct Error<T> {
+    pub kind: ErrorKind<T>,
+    pub line: u64,
+    pub col: u64,
 }
 
-impl Error {
-    /// Returns the corresponding `ErrorKind` for this error.
-    pub fn kind(&self) -> &ErrorKind {
-        &self.kind
-    }
-
-    /// The line number of the input where the error occured.
-    pub fn line(&self) -> u64 {
-        self.line
-    }
-
-    /// The column number of the input where the error occured.
-    pub fn col(&self) -> u64 {
-        self.col
-    }
-}
-
-impl ::std::error::Error for Error {
+impl<T: Any + fmt::Debug + fmt::Display> error::Error for Error<T> {
     fn description(&self) -> &str {
         match self.kind {
-            BadFd(_)      => "bad file descriptor found",
-            Unexpected(_) => "unexpected token found",
-            UnexpectedEOF => "unexpected end of input",
+            ErrorKind::BadFd(_)      => "bad file descriptor found",
+            ErrorKind::Unexpected(_) => "unexpected token found",
+            ErrorKind::UnexpectedEOF => "unexpected end of input",
+            ErrorKind::External(ref e) =>
+                (e as &Any).downcast_ref::<&error::Error>().map_or("unknown error", |e| e.description()),
+        }
+    }
+
+    fn cause(&self) -> Option<&error::Error> {
+        match self.kind {
+            ErrorKind::BadFd(_)      |
+            ErrorKind::Unexpected(_) |
+            ErrorKind::UnexpectedEOF => None,
+            ErrorKind::External(ref e) => (e as &Any).downcast_ref::<&error::Error>().map(|&e| e),
         }
     }
 }
 
-impl ::std::fmt::Display for Error {
-    fn fmt(&self, fmt: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+impl<T: Any> fmt::Display for Error<T> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match self.kind {
-            BadFd(ref badfd) => write!(fmt, "bad file descriptor: {}", badfd),
-            Unexpected(ref t) => write!(fmt, "found unexpected token '{}' on line {}:{}", t, self.line, self.col),
-            UnexpectedEOF => fmt.write_str("unexpected end of input"),
+            ErrorKind::BadFd(ref badfd) => write!(fmt, "bad file descriptor: {}", badfd),
+            ErrorKind::Unexpected(ref t) => write!(fmt, "found unexpected token '{}' on line {}:{}",
+                                                   t, self.line, self.col),
+            ErrorKind::UnexpectedEOF => fmt.write_str("unexpected end of input"),
+            ErrorKind::External(ref e) => {
+                if let Some(e) = (e as &Any).downcast_ref::<&fmt::Display>() {
+                    e.fmt(fmt)
+                } else {
+                    fmt.write_str("unknown error")
+                }
+            },
+        }
+    }
+}
+
+impl<T> ::std::convert::From<T> for Error<T> {
+    fn from(err: T) -> Error<T> {
+        Error {
+            kind: ErrorKind::External(err),
+            line: 0,
+            col: 0,
         }
     }
 }
@@ -297,96 +312,118 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
     }
 }
 
-/// A parser for the shell language.
-pub struct Parser<I: Iterator<Item = Token>> {
-    iter: TokenIter<I>,
-}
-
-impl<T: Iterator<Item = Token>> Iterator for Parser<T> {
-    type Item = ast::Command;
+impl<I: Iterator<Item = Token>, B: Builder> Iterator for Parser<I, B> where B::Err: Any {
+    type Item = B::Output;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.complete_command().unwrap()
+        let res = self.complete_command();
+        match res {
+            Ok(r) => r,
+            Err(e) => match (&e as &Any).downcast_ref::<&fmt::Display>() {
+                Some(&e) => panic!("Unhandled error: {}", e),
+                None => panic!("Unhandled error"),
+            }
+        }
     }
 }
 
-impl<T: Iterator<Item = Token>> Parser<T> {
+/// A parser for the shell language.
+pub struct Parser<I: Iterator<Item = Token>, B: Builder> {
+    iter: TokenIter<I>,
+    builder: B,
+}
+
+impl<I: Iterator<Item = Token>, B: Builder + Default> Parser<I, B> {
+    /// Creates a new Parser from a Token iterator.
+    pub fn new(iter: I) -> Parser<I, B> {
+        Parser::with_builder(iter, Default::default())
+    }
+}
+
+impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Construct an `Unexpected` error using the given token. If `None` specified, the next
     /// token in the iterator will be used (or `UnexpectedEOF` if none left).
-    fn make_unexpected_err(&mut self, tok: Option<Token>) -> Error {
+    fn make_unexpected_err(&mut self, tok: Option<Token>) -> Error<B::Err> {
         Error {
             line: self.iter.line,
             col: self.iter.col,
-            kind: tok.or_else(|| self.iter.next()).map_or(UnexpectedEOF, |t| Unexpected(t)),
+            kind: tok.or_else(|| self.iter.next())
+                .map_or(ErrorKind::UnexpectedEOF, |t| ErrorKind::Unexpected(t)),
         }
     }
 
     /// Construct a `BadFd` error using the given word, indicating that the word
     /// does not respresent a valid file descriptor to be used with a redirection.
-    fn make_bad_fd_error(&mut self, w: ast::Word) -> Error {
+    fn make_bad_fd_error(&mut self, w: ast::Word) -> Error<B::Err> {
         Error {
             line: self.iter.line,
             col: self.iter.col,
-            kind: BadFd(w),
+            kind: ErrorKind::BadFd(w),
         }
     }
 
-    /// Creates a new Parser from a Token iterator.
-    pub fn new(t: T) -> Parser<T> {
-        Parser { iter: TokenIter::new(t) }
+    /// Creates a new Parser from a Token iterator and provided AST builder.
+    pub fn with_builder(iter: I, builder: B) -> Parser<I, B> {
+        Parser {
+            iter: TokenIter::new(iter),
+            builder: builder,
+        }
     }
 
     /// Parses a single complete command.
     ///
     /// For example, `foo && bar; baz` will yield two complete
     /// commands: `And(foo, bar)`, and `Simple(baz)`.
-    pub fn complete_command(&mut self) -> Result<Option<ast::Command>> {
+    pub fn complete_command(&mut self) -> Result<Option<B::Output>, Error<B::Err>> {
         self.linebreak();
 
         if self.iter.peek().is_none() {
             return Ok(None);
         }
 
-        let mut cmd = try!(self.and_or());
+        let cmd = try!(self.and_or());
 
-        match self.iter.peek() {
-            Some(&Semi) => { self.iter.next(); },
-            Some(&Amp) => {
-                self.iter.next();
-                cmd = ast::Command::Job(Box::new(cmd));
+        let sep = match self.iter.peek() {
+            Some(&Semi) => { self.iter.next(); builder::SeparatorKind::Semi },
+            Some(&Amp)  => { self.iter.next(); builder::SeparatorKind::Amp },
+
+            _ => if let Some(n) = self.newline() {
+                builder::SeparatorKind::Newline(n)
+            } else {
+                builder::SeparatorKind::EOF
             },
-
-            _ => {},
-        }
+        };
 
         self.linebreak();
-        Ok(Some(cmd))
+        Ok(Some(try!(self.builder.complete_command(sep, cmd))))
     }
 
     /// Parses compound AND/OR commands.
     ///
     /// Commands are left associative. For example `foo || bar && baz`
     /// parses to `And(Or(foo, bar), baz)`.
-    pub fn and_or(&mut self) -> Result<ast::Command> {
+    pub fn and_or(&mut self) -> Result<B::Output, Error<B::Err>> {
         let mut cmd = try!(self.pipeline());
 
         loop {
-            match self.iter.peek() {
-                Some(&OrIf)  |
-                Some(&AndIf) => {},
+            self.skip_whitespace();
+            let kind = match self.iter.peek() {
+                Some(&OrIf)  => {
+                    self.iter.next();
+                    builder::AndOrKind::Or
+                },
+
+                Some(&AndIf) => {
+                    self.iter.next();
+                    builder::AndOrKind::And
+                },
+
                 _ => break,
-            }
-
-            let ty = self.iter.next().unwrap();
-            self.linebreak();
-            let boxed = Box::new(cmd);
-            let next = Box::new(try!(self.pipeline()));
-
-            cmd = match ty {
-                AndIf => ast::Command::And(boxed, next),
-                OrIf  => ast::Command::Or(boxed, next),
-                _ => unreachable!(),
             };
+
+            self.linebreak();
+            let next = try!(self.pipeline());
+            cmd = try!(self.builder.and_or(kind, cmd, next));
         }
 
         Ok(cmd)
@@ -395,7 +432,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// Parses either a single command or a pipeline of commands.
     ///
     /// For example `[!] foo | bar`.
-    pub fn pipeline(&mut self) -> Result<ast::Command> {
+    pub fn pipeline(&mut self) -> Result<B::Output, Error<B::Err>> {
         let bang = match self.iter.peek() {
             Some(&Bang) => { self.iter.next(); true }
             _ => false,
@@ -414,18 +451,11 @@ impl<T: Iterator<Item = Token>> Parser<T> {
             }
         }
 
-        // Command::Pipe is the only AST node which allows for a status
-        // negation, so we are forced to use it even if we have a single
-        // command. Otherwise there is no need to wrap it further.
-        if cmds.len() == 1 && !bang {
-            Ok(cmds.pop().unwrap())
-        } else {
-            Ok(ast::Command::Pipe(bang, cmds))
-        }
+        Ok(try!(self.builder.pipeline(bang, cmds)))
     }
 
     /// Parses any command which itself is not a pipeline or an AND/OR command.
-    pub fn command(&mut self) -> Result<ast::Command> {
+    pub fn command(&mut self) -> Result<B::Output, Error<B::Err>> {
         if let Some(kw) = self.next_compound_command_type() {
             return self.compound_command_internal(Some(kw))
         }
@@ -440,7 +470,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
             [Name(_), Whitespace(_), ParenOpen, ParenClose, ..]                |
             [Name(_), Whitespace(_), ParenOpen, Whitespace(_), ParenClose, ..] => self.function_declaration(),
 
-            _ => Ok(ast::Command::Simple(Box::new(try!(self.simple_command()))))
+            _ => self.simple_command(),
         }
     }
 
@@ -448,7 +478,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     ///
     /// A valid command is expected to have at least an executable name, or a single
     /// variable assignment or redirection. Otherwise an error will be returned.
-    pub fn simple_command(&mut self) -> Result<ast::SimpleCommand> {
+    pub fn simple_command(&mut self) -> Result<B::Output, Error<B::Err>> {
         let mut cmd: Option<ast::Word> = None;
         let mut args = Vec::new();
         let mut vars = Vec::new();
@@ -515,22 +545,20 @@ impl<T: Iterator<Item = Token>> Parser<T> {
 
         // "Blank" commands are only allowed if redirection occurs
         // or if there is some variable assignment
-        if cmd.is_none() && vars.is_empty() && io.is_empty() {
-            return Err(self.make_unexpected_err(None));
+        if cmd.is_none() {
+            debug_assert!(args.is_empty());
+            if vars.is_empty() && io.is_empty() {
+                try!(Err(self.make_unexpected_err(None)));
+            }
         }
 
-        Ok(ast::SimpleCommand {
-            cmd: cmd,
-            vars: vars,
-            args: args,
-            io: io,
-        })
+        Ok(try!(self.builder.simple_command(vars, cmd, args, io)))
     }
 
     /// Parses a continuous list of redirections and will error if any words
     /// that are not valid file descriptors are found. Essentially used for
     /// parsing redirection lists after a compound command like `while` or `if`.
-    pub fn redirect_list(&mut self) -> Result<Vec<ast::Redirect>> {
+    pub fn redirect_list(&mut self) -> Result<Vec<ast::Redirect>, Error<B::Err>> {
         let mut list = Vec::new();
         loop {
             let word = try!(self.word_preserve_trailing_whitespace());
@@ -551,7 +579,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// if a preceeding word is a valid file descriptor (and returning it if it isn't),
     /// the caller is responsible for performing this check and supplying the descriptor
     /// to the method.
-    pub fn redirect(&mut self, src_fd: Option<u32>) -> Result<ast::Redirect> {
+    pub fn redirect(&mut self, src_fd: Option<u32>) -> Result<ast::Redirect, Error<B::Err>> {
         use std::str::FromStr;
 
         // Sanity check that we really do have a redirect token
@@ -602,7 +630,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// (or no word is supplied) it is passed down to `Parser::redirect`.
     /// Otherwise no redirection will be parsed (an no error returned).
     fn maybe_redirect(&mut self, num: Option<&ast::Word>)
-        -> Result<Option<ast::Redirect>>
+        -> Result<Option<ast::Redirect>, Error<B::Err>>
     {
         use std::str::FromStr;
 
@@ -642,14 +670,14 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// (e.g. malformed parameter). Also note that any `Token::Assignment` tokens
     /// will be treated as literals, since assignments can only come before
     /// the command or arguments, and should be handled externally.
-    pub fn word(&mut self) -> Result<Option<ast::Word>> {
+    pub fn word(&mut self) -> Result<Option<ast::Word>, Error<B::Err>> {
         let ret = try!(self.word_preserve_trailing_whitespace());
         self.skip_whitespace();
         Ok(ret)
     }
 
     /// Identical to `Parser::word()` but preserves trailing whitespace after the word.
-    pub fn word_preserve_trailing_whitespace(&mut self) -> Result<Option<ast::Word>> {
+    pub fn word_preserve_trailing_whitespace(&mut self) -> Result<Option<ast::Word>, Error<B::Err>> {
         self.skip_whitespace();
 
         let mut words = Vec::new();
@@ -746,7 +774,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// Since it is possible that a leading `$` is not followed by a valid
     /// parameter, the `$` should be treated as a literal. Thus this method
     /// returns an optional parameter, although it will consume the `$` unconditionally.
-    pub fn parameter(&mut self) -> Result<Option<ast::Parameter>> {
+    pub fn parameter(&mut self) -> Result<Option<ast::Parameter>, Error<B::Err>> {
         use syntax::ast::Parameter::*;
 
         let param = match self.iter.next() {
@@ -778,7 +806,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// Parses any number of sequential commands between the `do` and `done`
     /// reserved words. Each of the reserved words must be a literal token, and cannot be
     /// quoted or concatenated.
-    pub fn do_group(&mut self) -> Result<Vec<ast::Command>> {
+    pub fn do_group(&mut self) -> Result<Vec<B::Output>, Error<B::Err>> {
         reserved_word!(self, word: "do" => {});
         let result = command_list!(self, word: "done");
         reserved_word!(self, word: "done" => {});
@@ -787,7 +815,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
 
     /// Parses any number of sequential commands between balanced `{` and `}`
     /// reserved words. Each of the reserved words must be a literal token, and cannot be quoted.
-    pub fn brace_group(&mut self) -> Result<Vec<ast::Command>> {
+    pub fn brace_group(&mut self) -> Result<Vec<B::Output>, Error<B::Err>> {
         // CurlyClose must be encountered as a stand alone word,
         // even though it is represented as its own token
         reserved_word!(self, tok: CurlyOpen => {});
@@ -799,7 +827,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// Parses any number of sequential commands between balanced `(` and `)`.
     ///
     /// It is considered an error if no commands are present inside the subshell.
-    pub fn subshell(&mut self) -> Result<Vec<ast::Command>> {
+    pub fn subshell(&mut self) -> Result<Vec<B::Output>, Error<B::Err>> {
         match self.iter.next() {
             Some(ParenOpen) => {},
             t => return Err(self.make_unexpected_err(t)),
@@ -840,42 +868,55 @@ impl<T: Iterator<Item = Token>> Parser<T> {
 
     /// Parses compound commands like `for`, `case`, `if`, `while`, `until`,
     /// brace groups, or subshells, including any redirection lists to be applied to them.
-    pub fn compound_command(&mut self) -> Result<ast::Command> {
+    pub fn compound_command(&mut self) -> Result<B::Output, Error<B::Err>> {
         self.compound_command_internal(None)
     }
 
     /// Slightly optimized version of `Parse::compound_command` that will not
     /// check an upcoming reserved word if the caller already knows the answer.
-    fn compound_command_internal(&mut self, kw: Option<CompoundCmdKeyword>) -> Result<ast::Command> {
-        let compound = match kw.or_else(|| self.next_compound_command_type()) {
+    fn compound_command_internal(&mut self, kw: Option<CompoundCmdKeyword>) -> Result<B::Output, Error<B::Err>> {
+        let cmd = match kw.or_else(|| self.next_compound_command_type()) {
             Some(CompoundCmdKeyword::If) => {
                 let (branches, els) = try!(self.if_command());
-                ast::CompoundCommand::If(branches, els)
+                let io = try!(self.redirect_list());
+                try!(self.builder.if_command(branches, els, io))
             },
 
             Some(CompoundCmdKeyword::While) |
             Some(CompoundCmdKeyword::Until) => {
                 let (until, guard, body) = try!(self.loop_command());
-                ast::CompoundCommand::Loop(until, guard, body)
+                let io = try!(self.redirect_list());
+                try!(self.builder.loop_command(until, guard, body, io))
             },
 
             Some(CompoundCmdKeyword::For) => {
                 let (var, words, body) = try!(self.for_command());
-                ast::CompoundCommand::For(var, words, body)
+                let io = try!(self.redirect_list());
+                try!(self.builder.for_command(var, words, body, io))
             },
 
             Some(CompoundCmdKeyword::Case) => {
                 let (word, branches) = try!(self.case_command());
-                ast::CompoundCommand::Case(word, branches)
+                let io = try!(self.redirect_list());
+                try!(self.builder.case_command(word, branches, io))
             },
 
-            Some(CompoundCmdKeyword::Brace)    => ast::CompoundCommand::Brace(try!(self.brace_group())),
-            Some(CompoundCmdKeyword::Subshell) => ast::CompoundCommand::Subshell(try!(self.subshell())),
+            Some(CompoundCmdKeyword::Brace) => {
+                let cmds = try!(self.brace_group());
+                let io = try!(self.redirect_list());
+                try!(self.builder.brace_group(cmds, io))
+            },
+
+            Some(CompoundCmdKeyword::Subshell) => {
+                let cmds = try!(self.subshell());
+                let io = try!(self.redirect_list());
+                try!(self.builder.subshell(cmds, io))
+            },
 
             None => return Err(self.make_unexpected_err(None)),
         };
 
-        Ok(ast::Command::Compound(Box::new(compound), try!(self.redirect_list())))
+        Ok(cmd)
     }
 
     /// Parses loop commands like `while` and `until` but does not parse any
@@ -886,7 +927,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// without constructing an AST node, it so that the caller can do so with redirections.
     ///
     /// Return structure is `Result(is_until, guard_commands, body_commands)`.
-    pub fn loop_command(&mut self) -> Result<(bool, Vec<ast::Command>, Vec<ast::Command>)> {
+    pub fn loop_command(&mut self) -> Result<(bool, Vec<B::Output>, Vec<B::Output>), Error<B::Err>> {
         let until = reserved_word!(self, word: "while" => false, "until" => true);
         let guard = command_list!(self, word: "do");
         Ok((until, guard, try!(self.do_group())))
@@ -900,8 +941,8 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     ///
     /// Return structure is `Result( (condition, body)+, else_part )`.
     pub fn if_command(&mut self) -> Result<(
-        Vec<(Vec<ast::Command>, Vec<ast::Command>)>,
-        Option<Vec<ast::Command>>)>
+        Vec<(Vec<B::Output>, Vec<B::Output>)>,
+        Option<Vec<B::Output>>), Error<B::Err>>
     {
         reserved_word!(self, word: "if" => {});
 
@@ -944,7 +985,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// AST node, it so that the caller can do so with redirections.
     ///
     /// Return structure is `Result(var_name, in_words, body)`.
-    pub fn for_command(&mut self) -> Result<(String, Option<Vec<ast::Word>>, Vec<ast::Command>)> {
+    pub fn for_command(&mut self) -> Result<(String, Option<Vec<ast::Word>>, Vec<B::Output>), Error<B::Err>> {
         reserved_word!(self, word: "for" => {});
         self.skip_whitespace();
         let var = match self.iter.next() {
@@ -980,7 +1021,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// AST node, it so that the caller can do so with redirections.
     ///
     /// Return structure is `Result( word_to_match, (pattern_alternatives+, cmds_to_run_on_match)* )`.
-    pub fn case_command(&mut self) -> Result<(ast::Word, Vec<(Vec<ast::Word>, Vec<ast::Command>)>)> {
+    pub fn case_command(&mut self) -> Result<(ast::Word, Vec<(Vec<ast::Word>, Vec<B::Output>)>), Error<B::Err>> {
         reserved_word!(self, word: "case" => {});
         let case_word = match try!(self.word()) {
             Some(w) => w,
@@ -1050,7 +1091,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     /// A function declaration must either begin with the `function` reserved word, or
     /// the name of the function must be followed by `()`. Whitespace is allowed between
     /// the name and `(`, and whitespace is allowed between `()`.
-    fn function_declaration(&mut self) -> Result<ast::Command> {
+    fn function_declaration(&mut self) -> Result<B::Output, Error<B::Err>> {
         let found_fn = match reserved_word_peek!(self, word: "function" => {}) {
             Some(_) => reserved_word!(self, word: "function" => true),
             None => false,
@@ -1095,7 +1136,7 @@ impl<T: Iterator<Item = Token>> Parser<T> {
             None => return Err(self.make_unexpected_err(None)),
         };
 
-        Ok(ast::Command::Function(name, Box::new(body)))
+        Ok(try!(self.builder.function_declaration(name, body)))
     }
 
     /// Skips over any encountered whitespace but preserves newlines.
@@ -1107,34 +1148,38 @@ impl<T: Iterator<Item = Token>> Parser<T> {
     }
 
     /// Parses zero or more `Token::Newline`s, skipping whitespace but capturing comments.
+    #[inline]
     pub fn linebreak(&mut self) -> Vec<ast::Newline> {
         let mut lines = Vec::new();
-
-        loop {
-            match self.iter.peek() {
-                Some(&Newline)       |
-                Some(&Pound)         |
-                Some(&Whitespace(_)) => {},
-                _ => break,
-            }
-
-            let comment = match self.iter.next() {
-                Some(Newline) => None,
-                Some(Pound) => Some(self.iter.by_ref()
-                        .take_while(|t| t != &Newline)
-                        .map(|t| t.to_string())
-                        .collect::<Vec<String>>()
-                        .concat()
-                ),
-
-                Some(Whitespace(_)) => continue,
-                _ => unreachable!(),
-            };
-
-            lines.push(ast::Newline(comment));
+        while let Some(n) = self.newline() {
+            lines.push(n);
         }
-
         lines
+    }
+
+    /// Tries to parse a `Token::Newline` (or a comment) after skipping whitespace.
+    pub fn newline(&mut self) -> Option<ast::Newline> {
+        self.skip_whitespace();
+
+        match self.iter.peek() {
+            Some(&Pound) => {
+                self.iter.next();
+                let comment = self.iter.by_ref()
+                    .take_while(|t| t != &Newline)
+                    .map(|t| t.to_string())
+                    .collect::<Vec<String>>()
+                    .concat();
+
+                Some(ast::Newline(Some(comment)))
+            },
+
+            Some(&Newline) => {
+                self.iter.next();
+                Some(ast::Newline(None))
+            },
+
+            _ => return None,
+        }
     }
 }
 
@@ -1148,12 +1193,12 @@ mod test {
     use syntax::parse::*;
     use syntax::token::Token;
 
-    fn make_parser(src: &str) -> Parser<Lexer<::std::str::Chars>> {
-        Parser::new(Lexer::new(src.chars()))
+    fn make_parser(src: &str) -> DefaultParser<Lexer<::std::str::Chars>> {
+        DefaultParser::new(Lexer::new(src.chars()))
     }
 
-    fn make_parser_from_tokens(src: Vec<Token>) -> Parser<::std::vec::IntoIter<Token>> {
-        Parser::new(src.into_iter())
+    fn make_parser_from_tokens(src: Vec<Token>) -> DefaultParser<::std::vec::IntoIter<Token>> {
+        DefaultParser::new(src.into_iter())
     }
 
     fn sample_simple_command() -> (Option<Word>, Vec<Word>, Vec<(String, Word)>, Vec<Redirect>) {
@@ -1471,35 +1516,60 @@ mod test {
     fn test_redirect_fd_immediately_preceeding_redirection() {
         let mut p = make_parser("foo 1>>out");
         let cmd = p.simple_command().unwrap();
-        assert_eq!(vec!(Redirect::Append(Some(1), Word::Literal(String::from("out")))), cmd.io);
+        assert_eq!(cmd, Simple(Box::new(SimpleCommand {
+            cmd: Some(Word::Literal(String::from("foo"))),
+            args: vec!(),
+            vars: vec!(),
+            io: vec!(Redirect::Append(Some(1), Word::Literal(String::from("out")))),
+        })));
     }
 
     #[test]
     fn test_redirect_fd_must_immediately_preceed_redirection() {
         let mut p = make_parser("foo 1 <>out");
         let cmd = p.simple_command().unwrap();
-        assert_eq!(vec!(Redirect::ReadWrite(None, Word::Literal(String::from("out")))), cmd.io);
+        assert_eq!(cmd, Simple(Box::new(SimpleCommand {
+            cmd: Some(Word::Literal(String::from("foo"))),
+            args: vec!(Word::Literal(String::from("1"))),
+            vars: vec!(),
+            io: vec!(Redirect::ReadWrite(None, Word::Literal(String::from("out")))),
+        })));
     }
 
     #[test]
     fn test_redirect_valid_dup_with_fd() {
         let mut p = make_parser("foo 1>&2");
         let cmd = p.simple_command().unwrap();
-        assert_eq!(vec!(Redirect::DupWrite(Some(1), 2)), cmd.io);
+        assert_eq!(cmd, Simple(Box::new(SimpleCommand {
+            cmd: Some(Word::Literal(String::from("foo"))),
+            args: vec!(),
+            vars: vec!(),
+            io: vec!(Redirect::DupWrite(Some(1), 2)),
+        })));
     }
 
     #[test]
     fn test_redirect_valid_dup_without_fd() {
         let mut p = make_parser("foo 1 <&2");
         let cmd = p.simple_command().unwrap();
-        assert_eq!(vec!(Redirect::DupRead(None, 2)), cmd.io);
+        assert_eq!(cmd, Simple(Box::new(SimpleCommand {
+            cmd: Some(Word::Literal(String::from("foo"))),
+            args: vec!(Word::Literal(String::from("1"))),
+            vars: vec!(),
+            io: vec!(Redirect::DupRead(None, 2)),
+        })));
     }
 
     #[test]
     fn test_redirect_valid_dup_with_whitespace() {
         let mut p = make_parser("foo 1<& 2");
         let cmd = p.simple_command().unwrap();
-        assert_eq!(vec!(Redirect::DupRead(Some(1), 2)), cmd.io);
+        assert_eq!(cmd, Simple(Box::new(SimpleCommand {
+            cmd: Some(Word::Literal(String::from("foo"))),
+            args: vec!(),
+            vars: vec!(),
+            io: vec!(Redirect::DupRead(Some(1), 2)),
+        })));
     }
 
     #[test]
@@ -1537,7 +1607,12 @@ mod test {
         ));
 
         let cmd = p.simple_command().unwrap();
-        assert_eq!(vec!(Redirect::CloseRead(Some(1234))), cmd.io);
+        assert_eq!(cmd, Simple(Box::new(SimpleCommand {
+            cmd: Some(Word::Literal(String::from("foo"))),
+            args: vec!(),
+            vars: vec!(),
+            io: vec!(Redirect::CloseRead(Some(1234))),
+        })));
     }
 
     #[test]
@@ -1576,7 +1651,7 @@ mod test {
     fn test_simple_command_valid_assignments_at_start_of_command() {
         let mut p = make_parser("var=val ENV=true foo bar baz");
         let (cmd, args, vars, _) = sample_simple_command();
-        let correct = SimpleCommand { cmd: cmd, args: args, vars: vars, io: vec!() };
+        let correct = Simple(Box::new(SimpleCommand { cmd: cmd, args: args, vars: vars, io: vec!() }));
         assert_eq!(correct, p.simple_command().unwrap());
     }
 
@@ -1586,7 +1661,7 @@ mod test {
         let (cmd, mut args, vars, _) = sample_simple_command();
         args.insert(0, Word::Concat(vec!(Word::Literal(String::from("var2=")), Word::Literal(String::from("val2")))));
         args.push(Word::Concat(vec!(Word::Literal(String::from("var3=")), Word::Literal(String::from("val3")))));
-        let correct = SimpleCommand { cmd: cmd, args: args, vars: vars, io: vec!() };
+        let correct = Simple(Box::new(SimpleCommand { cmd: cmd, args: args, vars: vars, io: vec!() }));
         assert_eq!(correct, p.simple_command().unwrap());
     }
 
@@ -1594,7 +1669,7 @@ mod test {
     fn test_simple_command_redirections_at_start_of_command() {
         let mut p = make_parser("2>|clob 3<>rw <in var=val ENV=true foo bar baz");
         let (cmd, args, vars, io) = sample_simple_command();
-        let correct = SimpleCommand { cmd: cmd, args: args, vars: vars, io: io };
+        let correct = Simple(Box::new(SimpleCommand { cmd: cmd, args: args, vars: vars, io: io }));
         assert_eq!(correct, p.simple_command().unwrap());
     }
 
@@ -1602,7 +1677,7 @@ mod test {
     fn test_simple_command_redirections_at_end_of_command() {
         let mut p = make_parser("var=val ENV=true foo bar baz 2>|clob 3<>rw <in");
         let (cmd, args, vars, io) = sample_simple_command();
-        let correct = SimpleCommand { cmd: cmd, args: args, vars: vars, io: io };
+        let correct = Simple(Box::new(SimpleCommand { cmd: cmd, args: args, vars: vars, io: io }));
         assert_eq!(correct, p.simple_command().unwrap());
     }
 
@@ -1611,7 +1686,7 @@ mod test {
         let mut p = make_parser("2>|clob var=val 3<>rw ENV=true foo bar <in baz 4>&-");
         let (cmd, args, vars, mut io) = sample_simple_command();
         io.push(Redirect::CloseWrite(Some(4)));
-        let correct = SimpleCommand { cmd: cmd, args: args, vars: vars, io: io };
+        let correct = Simple(Box::new(SimpleCommand { cmd: cmd, args: args, vars: vars, io: io }));
         assert_eq!(correct, p.simple_command().unwrap());
     }
 

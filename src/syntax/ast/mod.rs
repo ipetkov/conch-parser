@@ -1,6 +1,9 @@
 //! Defines abstract representations of the shell source.
 use std::fmt::{Display, Formatter, Result};
 
+pub mod builder;
+pub use syntax::ast::builder::{Builder, CommandBuilder};
+
 /// Represents reading a parameter (or variable) value, e.g. `$foo`.
 #[derive(PartialEq, Eq, Debug)]
 pub enum Parameter {
@@ -132,7 +135,6 @@ pub enum CompoundCommand {
     /// Variant structure: `Case( to_match, (pattern_alternative+, commands*)* )`
     Case(Word, Vec<(Vec<Word>, Vec<Command>)>),
 }
-
 /// The simplest possible command: an executable with arguments,
 /// environment variable assignments, and redirections.
 #[derive(PartialEq, Eq, Debug)]
