@@ -7,6 +7,8 @@ use syntax::ast::builder::{self, Builder};
 use syntax::token::Token;
 use syntax::token::Token::*;
 
+/// A parser which will use a default AST builder implementation,
+/// yielding results in terms of types defined in the `ast` module.
 pub type DefaultParser<I> = Parser<I, ast::CommandBuilder>;
 
 /// Specifies the exact error that occured during parsing.
@@ -390,7 +392,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             _ => if let Some(n) = self.newline() {
                 builder::SeparatorKind::Newline(n)
             } else {
-                builder::SeparatorKind::EOF
+                builder::SeparatorKind::Other
             },
         };
 
@@ -926,9 +928,11 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// the entire loop) this method returns the relevant parts of the loop command,
     /// without constructing an AST node, it so that the caller can do so with redirections.
     ///
-    /// Return structure is `Result(is_until, guard_commands, body_commands)`.
-    pub fn loop_command(&mut self) -> Result<(bool, Vec<B::Output>, Vec<B::Output>), Error<B::Err>> {
-        let until = reserved_word!(self, word: "while" => false, "until" => true);
+    /// Return structure is `Result(loop_kind, guard_commands, body_commands)`.
+    pub fn loop_command(&mut self) -> Result<(builder::LoopKind, Vec<B::Output>, Vec<B::Output>), Error<B::Err>> {
+        let until = reserved_word!(self, word:
+                                   "while" => builder::LoopKind::While,
+                                   "until" => builder::LoopKind::Until);
         let guard = command_list!(self, word: "do");
         Ok((until, guard, try!(self.do_group())))
     }
@@ -1023,7 +1027,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Return structure is `Result( word_to_match, (pattern_alternatives+, cmds_to_run_on_match)* )`.
     pub fn case_command(&mut self) -> Result<(ast::Word, Vec<(Vec<ast::Word>, Vec<B::Output>)>), Error<B::Err>> {
         reserved_word!(self, word: "case" => {});
-        let case_word = match try!(self.word()) {
+        let word = match try!(self.word()) {
             Some(w) => w,
             None => return Err(self.make_unexpected_err(None)),
         };
@@ -1083,7 +1087,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         }
         reserved_word!(self, word: "esac" => {});
 
-        Ok((case_word, branches))
+        Ok((word, branches))
     }
 
     /// Parses a single function declaration.
@@ -1971,7 +1975,7 @@ mod test {
     fn test_loop_command_while_valid() {
         let mut p = make_parser("while guard1; guard2; do foo\nbar; baz; done");
         let (until, guards, cmds) = p.loop_command().unwrap();
-        assert_eq!(until, false);
+        assert_eq!(until, builder::LoopKind::While);
         if let [
             Simple(box ref guard1),
             Simple(box ref guard2),
@@ -1998,7 +2002,7 @@ mod test {
     fn test_loop_command_until_valid() {
         let mut p = make_parser("until guard1\n guard2\n do foo\nbar; baz; done");
         let (until, guards, cmds) = p.loop_command().unwrap();
-        assert_eq!(until, true);
+        assert_eq!(until, builder::LoopKind::Until);
         if let [
             Simple(box ref guard1),
             Simple(box ref guard2),
