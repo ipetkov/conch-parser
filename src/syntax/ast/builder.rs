@@ -242,6 +242,7 @@ impl Builder for CommandBuilder {
         -> Result<Self::Output, Self::Err>
     {
         debug_assert_eq!(cmds.is_empty(), false);
+        cmds.shrink_to_fit();
 
         // Command::Pipe is the only AST node which allows for a status
         // negation, so we are forced to use it even if we have a single
@@ -254,12 +255,16 @@ impl Builder for CommandBuilder {
     }
 
     fn simple_command(&mut self,
-                      env_vars: Vec<(String, Word)>,
+                      mut env_vars: Vec<(String, Word)>,
                       cmd: Option<Word>,
-                      args: Vec<Word>,
-                      redirections: Vec<Redirect>)
+                      mut args: Vec<Word>,
+                      mut redirections: Vec<Redirect>)
         -> Result<Self::Output, Self::Err>
     {
+        env_vars.shrink_to_fit();
+        args.shrink_to_fit();
+        redirections.shrink_to_fit();
+
         Ok(Command::Simple(Box::new(SimpleCommand {
             cmd: cmd,
             vars: env_vars,
@@ -269,28 +274,36 @@ impl Builder for CommandBuilder {
     }
 
     fn brace_group(&mut self,
-                   cmds: Vec<Self::Output>,
-                   redirects: Vec<Redirect>)
+                   mut cmds: Vec<Self::Output>,
+                   mut redirects: Vec<Redirect>)
         -> Result<Self::Output, Self::Err>
     {
+        cmds.shrink_to_fit();
+        redirects.shrink_to_fit();
         Ok(Command::Compound(Box::new(CompoundCommand::Brace(cmds)), redirects))
     }
 
     fn subshell(&mut self,
-                cmds: Vec<Self::Output>,
-                redirects: Vec<Redirect>)
+                mut cmds: Vec<Self::Output>,
+                mut redirects: Vec<Redirect>)
         -> Result<Self::Output, Self::Err>
     {
+        cmds.shrink_to_fit();
+        redirects.shrink_to_fit();
         Ok(Command::Compound(Box::new(CompoundCommand::Subshell(cmds)), redirects))
     }
 
     fn loop_command(&mut self,
                     kind: LoopKind,
-                    guard: Vec<Self::Output>,
-                    body: Vec<Self::Output>,
-                    redirects: Vec<Redirect>)
+                    mut guard: Vec<Self::Output>,
+                    mut body: Vec<Self::Output>,
+                    mut redirects: Vec<Redirect>)
         -> Result<Self::Output, Self::Err>
     {
+        guard.shrink_to_fit();
+        body.shrink_to_fit();
+        redirects.shrink_to_fit();
+
         let until = match kind {
             LoopKind::While => false,
             LoopKind::Until => true,
@@ -300,30 +313,47 @@ impl Builder for CommandBuilder {
     }
 
     fn if_command(&mut self,
-                  branches: Vec<(Vec<Self::Output>, Vec<Self::Output>)>,
-                  else_part: Option<Vec<Self::Output>>,
-                  redirects: Vec<Redirect>)
+                  mut branches: Vec<(Vec<Self::Output>, Vec<Self::Output>)>,
+                  mut else_part: Option<Vec<Self::Output>>,
+                  mut redirects: Vec<Redirect>)
         -> Result<Self::Output, Self::Err>
     {
+        for &mut (ref mut guard, ref mut body) in branches.iter_mut() {
+            guard.shrink_to_fit();
+            body.shrink_to_fit();
+        }
+
+        for els in else_part.iter_mut() { els.shrink_to_fit(); }
+        redirects.shrink_to_fit();
+
         Ok(Command::Compound(Box::new(CompoundCommand::If(branches, else_part)), redirects))
     }
 
     fn for_command(&mut self,
                    var: String,
-                   in_words: Option<Vec<Word>>,
-                   body: Vec<Self::Output>,
-                   redirects: Vec<Redirect>)
+                   mut in_words: Option<Vec<Word>>,
+                   mut body: Vec<Self::Output>,
+                   mut redirects: Vec<Redirect>)
         -> Result<Self::Output, Self::Err>
     {
+        for word in in_words.iter_mut() { word.shrink_to_fit(); }
+        body.shrink_to_fit();
+        redirects.shrink_to_fit();
         Ok(Command::Compound(Box::new(CompoundCommand::For(var, in_words, body)), redirects))
     }
 
     fn case_command(&mut self,
                     word: Word,
-                    arms: Vec<(Vec<Word>, Vec<Self::Output>)>,
-                    redirects: Vec<Redirect>)
+                    mut arms: Vec<(Vec<Word>, Vec<Self::Output>)>,
+                    mut redirects: Vec<Redirect>)
         -> Result<Self::Output, Self::Err>
     {
+        for &mut (ref mut pats, ref mut cmds) in arms.iter_mut() {
+            pats.shrink_to_fit();
+            cmds.shrink_to_fit();
+        }
+
+        redirects.shrink_to_fit();
         Ok(Command::Compound(Box::new(CompoundCommand::Case(word, arms)), redirects))
     }
 
