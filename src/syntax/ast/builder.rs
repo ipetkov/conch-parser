@@ -13,7 +13,7 @@
 use syntax::ast::{self, Command, CompoundCommand, SimpleCommand, Redirect, Word};
 
 /// An indicator to the builder of how complete commands are separated.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum SeparatorKind {
     /// A semicolon appears between commands, normally indicating a sequence.
     Semi,
@@ -27,7 +27,7 @@ pub enum SeparatorKind {
 }
 
 /// An indicator to the builder whether an `AND` or `OR` command was parsed.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum AndOrKind {
     /// An `AND` command was parsed, normally indicating the second should run if the first succeeds.
     /// Corresponds to the `&&` command separator.
@@ -38,7 +38,7 @@ pub enum AndOrKind {
 }
 
 /// An indicator to the builder whether a `while` or `until` command was parsed.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum LoopKind {
     /// A `while` command was parsed, normally indicating the loop's body should be run
     /// while the guard's exit status is successful.

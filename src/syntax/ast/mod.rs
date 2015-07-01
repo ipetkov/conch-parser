@@ -5,7 +5,7 @@ pub mod builder;
 pub use syntax::ast::builder::{Builder, CommandBuilder};
 
 /// Represents reading a parameter (or variable) value, e.g. `$foo`.
-#[derive(PartialEq, Eq, Debug)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Parameter {
     /// $@
     At,
@@ -28,7 +28,7 @@ pub enum Parameter {
 }
 
 /// Represents whitespace delimited text.
-#[derive(PartialEq, Eq, Debug)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Word {
     /// A non-special literal word, or single quoted string.
     Literal(String),
@@ -42,7 +42,7 @@ pub enum Word {
 }
 
 /// Represents redirecting a command's file descriptors.
-#[derive(PartialEq, Eq, Debug)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Redirect {
     /// Open a file for reading, e.g. [n]< file
     Read(Option<u32>, Word),
@@ -72,11 +72,11 @@ pub enum Redirect {
 /// Since shell comments are usually treated as a newline, they can be present
 /// anywhere a newline can be as well. Thus if it is desired to retain comments
 /// they can be optionally attached to a parsed newline.
-#[derive(PartialEq, Eq, Debug)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Newline(pub Option<String>);
 
 /// Represents any valid shell command.
-#[derive(PartialEq, Eq, Debug)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Command {
     /// A compound command which runs the second if the first succeeds,
     /// e.g. `foo && bar`.
@@ -105,7 +105,7 @@ pub enum Command {
 }
 
 /// A class of commands where redirection is applied to a command group.
-#[derive(PartialEq, Eq, Debug)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum CompoundCommand {
     /// A group of commands that should be executed in the current environment.
     Brace(Vec<Command>),
@@ -137,7 +137,7 @@ pub enum CompoundCommand {
 }
 /// The simplest possible command: an executable with arguments,
 /// environment variable assignments, and redirections.
-#[derive(PartialEq, Eq, Debug)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SimpleCommand {
     /// Name or path of the executable. It's possible to have to have a
     /// command that is only an assigment which would set a value in the
