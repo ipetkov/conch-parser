@@ -377,9 +377,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// For example, `foo && bar; baz` will yield two complete
     /// commands: `And(foo, bar)`, and `Simple(baz)`.
     pub fn complete_command(&mut self) -> Result<Option<B::Output>, Error<B::Err>> {
-        self.linebreak();
+        let pre_cmd_comments = self.linebreak();
 
         if self.iter.peek().is_none() {
+            try!(self.builder.comments(pre_cmd_comments));
             return Ok(None);
         }
 
@@ -396,8 +397,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             },
         };
 
-        self.linebreak();
-        Ok(Some(try!(self.builder.complete_command(sep, cmd))))
+        let post_cmd_comments = self.linebreak();
+        Ok(Some(try!(self.builder.complete_command(pre_cmd_comments, cmd, sep, post_cmd_comments))))
     }
 
     /// Parses compound AND/OR commands.
@@ -423,9 +424,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 _ => break,
             };
 
-            self.linebreak();
+            let post_sep_comments = self.linebreak();
             let next = try!(self.pipeline());
-            cmd = try!(self.builder.and_or(kind, cmd, next));
+            cmd = try!(self.builder.and_or(cmd, kind, post_sep_comments, next));
         }
 
         Ok(cmd)
@@ -443,12 +444,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         let mut cmds = Vec::new();
 
         loop {
-            cmds.push(try!(self.command()));
+            let cmd = try!(self.command());
 
             if let Some(&Pipe) = self.iter.peek() {
                 self.iter.next();
-                self.linebreak();
+                cmds.push((self.linebreak(), cmd));
             } else {
+                cmds.push((Vec::new(), cmd));
                 break;
             }
         }
@@ -682,6 +684,12 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     pub fn word_preserve_trailing_whitespace(&mut self) -> Result<Option<ast::Word>, Error<B::Err>> {
         self.skip_whitespace();
 
+        // Make sure we don't consume comments,
+        // e.g. if a # is at the start of a word.
+        if let Some(&Pound) = self.iter.peek() {
+            return Ok(None);
+        }
+
         let mut words = Vec::new();
         loop {
             match self.iter.peek() {
@@ -892,15 +900,15 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             },
 
             Some(CompoundCmdKeyword::For) => {
-                let (var, words, body) = try!(self.for_command());
+                let (var, post_var_comments, words, post_word_comments, body) = try!(self.for_command());
                 let io = try!(self.redirect_list());
-                try!(self.builder.for_command(var, words, body, io))
+                try!(self.builder.for_command(var, post_var_comments, words, post_word_comments, body, io))
             },
 
             Some(CompoundCmdKeyword::Case) => {
-                let (word, branches) = try!(self.case_command());
+                let (word, post_word_comments, branches, post_branch_comments) = try!(self.case_command());
                 let io = try!(self.redirect_list());
-                try!(self.builder.case_command(word, branches, io))
+                try!(self.builder.case_command(word, post_word_comments, branches, post_branch_comments, io))
             },
 
             Some(CompoundCmdKeyword::Brace) => {
@@ -988,8 +996,14 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// method returns the relevant parts of the `for` command, without constructing an
     /// AST node, it so that the caller can do so with redirections.
     ///
-    /// Return structure is `Result(var_name, in_words, body)`.
-    pub fn for_command(&mut self) -> Result<(String, Option<Vec<ast::Word>>, Vec<B::Output>), Error<B::Err>> {
+    /// Return structure is `Result(var_name, comments_after_var, in_words, comments_after_words, body)`.
+    pub fn for_command(&mut self) -> Result<(
+        String,
+        Vec<ast::Newline>,
+        Option<Vec<ast::Word>>,
+        Option<Vec<ast::Newline>>,
+        Vec<B::Output>), Error<B::Err>>
+    {
         reserved_word!(self, word: "for" => {});
         self.skip_whitespace();
         let var = match self.iter.next() {
@@ -997,25 +1011,35 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             t => return Err(self.make_unexpected_err(t)),
         };
 
-        self.linebreak();
-        let words = if reserved_word_peek!(self, word: "in" => {}).is_some() {
+        let post_var_comments = self.linebreak();
+        let (words, post_word_comments) = if reserved_word_peek!(self, word: "in" => {}).is_some() {
             reserved_word!(self, word: "in" => {});
             let mut words = Vec::new();
             while let Some(w) = try!(self.word()) {
                 words.push(w);
             }
 
-            match self.iter.next() {
-                Some(Semi) |
-                Some(Newline) => Some(words),
-                t => return Err(self.make_unexpected_err(t)),
+            let found_semi = if let Some(&Semi) = self.iter.peek() {
+                self.iter.next();
+                true
+            } else {
+                false
+            };
+
+            // We need either a newline or a ; to separate the words from the body
+            // Thus if neither is found it is considered an error
+            let post_word_comments = self.linebreak();
+            if !found_semi && post_word_comments.is_empty() {
+                return Err(self.make_unexpected_err(None));
             }
+
+            (Some(words), Some(post_word_comments))
         } else {
-            None
+            (None, None)
         };
 
         let body = try!(self.do_group());
-        Ok((var, words, body))
+        Ok((var, post_var_comments, words, post_word_comments, body))
     }
 
     /// Parses a single `case` command but does not parse any redirections that may follow.
@@ -1024,21 +1048,34 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// method returns the relevant parts of the `case` command, without constructing an
     /// AST node, it so that the caller can do so with redirections.
     ///
-    /// Return structure is `Result( word_to_match, (pattern_alternatives+, cmds_to_run_on_match)* )`.
-    pub fn case_command(&mut self) -> Result<(ast::Word, Vec<(Vec<ast::Word>, Vec<B::Output>)>), Error<B::Err>> {
+    /// Return structure is `Result( word_to_match, comments_after_word,
+    /// ( (pre_pat_comments, pattern_alternatives+, post_pat_comments), cmds_to_run_on_match)* )`.
+    pub fn case_command(&mut self) -> Result<(
+            ast::Word,
+            Vec<ast::Newline>,
+            Vec<( (Vec<ast::Newline>, Vec<ast::Word>, Vec<ast::Newline>), Vec<B::Output> )>,
+            Vec<ast::Newline>
+        ), Error<B::Err>>
+    {
         reserved_word!(self, word: "case" => {});
         let word = match try!(self.word()) {
             Some(w) => w,
             None => return Err(self.make_unexpected_err(None)),
         };
 
-        self.linebreak();
+        let post_word_comments = self.linebreak();
         reserved_word!(self, word: "in" => {});
-        self.linebreak();
+        let mut pre_esac_comments = None;
 
         let mut branches = Vec::new();
         loop {
-            reserved_word_peek!(self, word: "esac" => break);
+            let pre_pat_comments = self.linebreak();
+            reserved_word_peek!(self, word: "esac" => {
+                // Make sure we don't lose the captured comments if there are no body
+                debug_assert_eq!(pre_esac_comments, None);
+                pre_esac_comments = Some(pre_pat_comments);
+                break;
+            });
 
             if let Some(&ParenOpen) = self.iter.peek() {
                 self.iter.next();
@@ -1058,7 +1095,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 }
             }
 
-            self.linebreak();
+            // NB: we must capture linebreaks here since `reserved_word_peek!`
+            // will not consume them, and it could mistake a reserved word for a command.
+            let patterns = (pre_pat_comments, patterns, self.linebreak());
 
             // DSemi's are always special tokens, hence they aren't
             // reserved words, and the `command_list!` macro doesn't apply.
@@ -1079,15 +1118,26 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             match self.iter.peek() {
                 Some(&DSemi) => {
                     self.iter.next();
-                    self.linebreak();
                     continue;
                 },
                 _ => break,
             }
         }
+        let remaining_comments = self.linebreak();
+        let pre_esac_comments = match pre_esac_comments {
+            Some(mut comments) => {
+                comments.reserve(remaining_comments.len());
+                for c in remaining_comments {
+                    comments.push(c);
+                }
+                comments
+            },
+            None => remaining_comments,
+        };
+
         reserved_word!(self, word: "esac" => {});
 
-        Ok((word, branches))
+        Ok((word, post_word_comments, branches, pre_esac_comments))
     }
 
     /// Parses a single function declaration.
@@ -2322,14 +2372,20 @@ mod test {
 
     #[test]
     fn test_for_command_valid_with_words() {
-        let mut p = make_parser("for var in one two three\ndo echo $var; done");
-        let (var, words, body) = p.for_command().unwrap();
+        let mut p = make_parser("for var #comment1\nin one two three\n#comment2\n\ndo echo $var; done");
+        let (var, var_comment, words, word_comment, body) = p.for_command().unwrap();
         assert_eq!(var, "var");
+        assert_eq!(var_comment, vec!(Newline(Some(String::from("comment1")))));
         assert_eq!(words.unwrap(), vec!(
             Word::Literal(String::from("one")),
             Word::Literal(String::from("two")),
             Word::Literal(String::from("three")),
         ));
+        assert_eq!(word_comment, Some(vec!(
+            Newline(None),
+            Newline(Some(String::from("comment2"))),
+            Newline(None),
+        )));
 
         if let [Simple(ref echo)] = &body[..] {
             assert_eq!(echo.cmd.as_ref().unwrap(), &Word::Literal(String::from("echo")));
@@ -2342,10 +2398,12 @@ mod test {
 
     #[test]
     fn test_for_command_valid_without_words() {
-        let mut p = make_parser("for var do echo $var; done");
-        let (var, words, body) = p.for_command().unwrap();
+        let mut p = make_parser("for var #comment\ndo echo $var; done");
+        let (var, var_comment, words, word_comment, body) = p.for_command().unwrap();
         assert_eq!(var, "var");
+        assert_eq!(var_comment, vec!(Newline(Some(String::from("comment")))));
         assert_eq!(words, None);
+        assert_eq!(word_comment, None);
 
         if let [Simple(ref echo)] = &body[..] {
             assert_eq!(echo.cmd.as_ref().unwrap(), &Word::Literal(String::from("echo")));
@@ -2729,9 +2787,9 @@ mod test {
     #[test]
     fn test_case_command_valid() {
         let correct_word = Word::Literal(String::from("foo"));
-        let correct_arms = vec!(
+        let correct_branches = vec!(
             (
-                vec!(Word::Literal(String::from("hello")), Word::Literal(String::from("goodbye"))),
+                (vec!(), vec!(Word::Literal(String::from("hello")), Word::Literal(String::from("goodbye"))), vec!()),
                 vec!(Simple(Box::new(SimpleCommand {
                     cmd: Some(Word::Literal(String::from("echo"))),
                     args: vec!(Word::Literal(String::from("greeting"))),
@@ -2740,7 +2798,7 @@ mod test {
                 }))),
             ),
             (
-                vec!(Word::Literal(String::from("world"))),
+                (vec!(), vec!(Word::Literal(String::from("world"))), vec!()),
                 vec!(Simple(Box::new(SimpleCommand {
                     cmd: Some(Word::Literal(String::from("echo"))),
                     args: vec!(Word::Literal(String::from("noun"))),
@@ -2750,23 +2808,94 @@ mod test {
             ),
         );
 
-        let correct = (correct_word, correct_arms);
+        let correct = (correct_word, vec!(), correct_branches, vec!());
 
         // `(` before pattern is optional
         assert_eq!(correct, make_parser("case foo in  hello | goodbye) echo greeting;;  world) echo noun;; esac").case_command().unwrap());
         assert_eq!(correct, make_parser("case foo in (hello | goodbye) echo greeting;;  world) echo noun;; esac").case_command().unwrap());
         assert_eq!(correct, make_parser("case foo in (hello | goodbye) echo greeting;; (world) echo noun;; esac").case_command().unwrap());
 
-        // Various newlines allowed within the command
-        assert_eq!(correct, make_parser("case foo  in\n(hello | goodbye)  echo greeting;;  (world) echo noun;;  esac").case_command().unwrap());
-        assert_eq!(correct, make_parser("case foo\nin  (hello | goodbye)  echo greeting;;  (world) echo noun;;  esac").case_command().unwrap());
-        assert_eq!(correct, make_parser("case foo  in  (hello | goodbye)\necho greeting;;  (world) echo noun;;  esac").case_command().unwrap());
-        assert_eq!(correct, make_parser("case foo  in  (hello | goodbye)  echo greeting;;\n(world) echo noun;;  esac").case_command().unwrap());
-        assert_eq!(correct, make_parser("case foo  in  (hello | goodbye)  echo greeting;;  (world) echo noun;;\nesac").case_command().unwrap());
-
         // Final `;;` is optional as long as last command is complete
         assert_eq!(correct, make_parser("case foo in hello | goodbye) echo greeting;; world) echo noun\nesac").case_command().unwrap());
         assert_eq!(correct, make_parser("case foo in hello | goodbye) echo greeting;; world) echo noun; esac").case_command().unwrap());
+    }
+
+    #[test]
+    fn test_case_command_valid_with_comments() {
+        let correct_word = Word::Literal(String::from("foo"));
+        let correct_post_word = vec!(Newline(Some(String::from("post_word_a"))), Newline(Some(String::from("post_word_b"))));
+        let correct_branches = vec!(
+            (
+                (
+                    vec!(Newline(Some(String::from("pre_pat_1a"))), Newline(Some(String::from("pre_pat_1b")))),
+                    vec!(Word::Literal(String::from("hello")), Word::Literal(String::from("goodbye"))),
+                    vec!(Newline(Some(String::from("post_pat_1a"))), Newline(Some(String::from("post_pat_1b")))),
+                ),
+                vec!(Simple(Box::new(SimpleCommand {
+                    cmd: Some(Word::Literal(String::from("echo"))),
+                    args: vec!(Word::Literal(String::from("greeting"))),
+                    io: vec!(),
+                    vars: vec!(),
+                }))),
+            ),
+            (
+                (
+                    vec!(Newline(Some(String::from("pre_pat_2a"))), Newline(Some(String::from("pre_pat_2b")))),
+                    vec!(Word::Literal(String::from("world"))),
+                    vec!(Newline(Some(String::from("post_pat_2a"))), Newline(Some(String::from("post_pat_2b")))),
+                ),
+                vec!(Simple(Box::new(SimpleCommand {
+                    cmd: Some(Word::Literal(String::from("echo"))),
+                    args: vec!(Word::Literal(String::from("noun"))),
+                    io: vec!(),
+                    vars: vec!(),
+                }))),
+            ),
+        );
+        let correct_post_branch = vec!(Newline(Some(String::from("post_branch_a"))), Newline(Some(String::from("post_branch_b"))));
+
+        let correct = (correct_word, correct_post_word, correct_branches, correct_post_branch);
+
+        // Various newlines and comments allowed within the command
+        let cmd =
+            "case foo #post_word_a
+            #post_word_b
+            in #pre_pat_1a
+            #pre_pat_1b
+            (hello | goodbye) #post_pat_1a
+            #post_pat_1b
+            echo greeting #post_cmd
+            #post_cmd
+            ;; #pre_pat_2a
+            #pre_pat_2b
+            world) #post_pat_2a
+            #post_pat_2b
+            echo noun;; #post_branch_a
+            #post_branch_b
+            esac";
+
+        assert_eq!(correct, make_parser(cmd).case_command().unwrap());
+    }
+
+    #[test]
+    fn test_case_command_valid_with_comments_no_body() {
+        let correct_word = Word::Literal(String::from("foo"));
+        let correct_post_word = vec!(Newline(Some(String::from("post_word_a"))), Newline(Some(String::from("post_word_b"))));
+        let correct_branches = vec!();
+        let correct_post_branch = vec!(Newline(Some(String::from("one"))), Newline(Some(String::from("two"))), Newline(Some(String::from("three"))));
+
+        let correct = (correct_word, correct_post_word, correct_branches, correct_post_branch);
+
+        // Various newlines and comments allowed within the command
+        let cmd =
+            "case foo #post_word_a
+            #post_word_b
+            in #one
+            #two
+            #three
+            esac";
+
+        assert_eq!(correct, make_parser(cmd).case_command().unwrap());
     }
 
     #[test]
