@@ -1255,6 +1255,23 @@ mod test {
         DefaultParser::new(src.into_iter())
     }
 
+    fn cmd_args_unboxed(cmd: &str, args: &[&str]) -> Command {
+        Simple(Box::new(SimpleCommand {
+            cmd: Some(Word::Literal(String::from(cmd))),
+            args: args.iter().map(|&a| Word::Literal(String::from(a))).collect(),
+            vars: vec!(),
+            io: vec!(),
+        }))
+    }
+
+    fn cmd_unboxed(cmd: &str) -> Command {
+        cmd_args_unboxed(cmd, &[])
+    }
+
+    fn cmd(cmd: &str) -> Box<Command> {
+        Box::new(cmd_unboxed(cmd))
+    }
+
     fn sample_simple_command() -> (Option<Word>, Vec<Word>, Vec<(String, Word)>, Vec<Redirect>) {
         (
             Some(Word::Literal(String::from("foo"))),
@@ -1334,37 +1351,15 @@ mod test {
     #[test]
     fn test_and_or_correct_associativity() {
         let mut p = make_parser("foo || bar && baz");
-        let parse = p.and_or().unwrap();
-
-        if let And(
-            box Or( box Simple(box ref foo), box Simple(box ref bar)),
-            box Simple(box ref baz)
-        ) = parse {
-            assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
-            assert_eq!(bar.cmd.as_ref().unwrap(), &Word::Literal(String::from("bar")));
-            assert_eq!(baz.cmd.as_ref().unwrap(), &Word::Literal(String::from("baz")));
-            return;
-        }
-
-        panic!("Incorrect parse result for Parse::and_or: {:?}", parse);
+        let correct = And(Box::new(Or(cmd("foo"), cmd("bar"))), cmd("baz"));
+        assert_eq!(correct, p.and_or().unwrap());
     }
 
     #[test]
     fn test_and_or_valid_with_newlines_after_operator() {
         let mut p = make_parser("foo ||\n\n\n\nbar && baz");
-        let parse = p.and_or().unwrap();
-
-        if let And(
-            box Or( box Simple(box ref foo), box Simple(box ref bar)),
-            box Simple(box ref baz)
-        ) = parse {
-            assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
-            assert_eq!(bar.cmd.as_ref().unwrap(), &Word::Literal(String::from("bar")));
-            assert_eq!(baz.cmd.as_ref().unwrap(), &Word::Literal(String::from("baz")));
-            return;
-        }
-
-        panic!("Incorrect parse result for Parse::and_or: {:?}", parse);
+        let correct = And(Box::new(Or(cmd("foo"), cmd("bar"))), cmd("baz"));
+        assert_eq!(correct, p.and_or().unwrap());
     }
 
     #[test]
@@ -1377,32 +1372,18 @@ mod test {
     #[test]
     fn test_pipeline_valid_bang() {
         let mut p = make_parser("! foo | bar | baz");
-        let parse = p.pipeline().unwrap();
-        if let Pipe(true, ref cmds) = parse {
-            if let [
-                Simple(box ref foo),
-                Simple(box ref bar),
-                Simple(box ref baz),
-            ] = &cmds[..] {
-                assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
-                assert_eq!(bar.cmd.as_ref().unwrap(), &Word::Literal(String::from("bar")));
-                assert_eq!(baz.cmd.as_ref().unwrap(), &Word::Literal(String::from("baz")));
-                return;
-            }
-        }
-
-        panic!("Incorrect parse result for Parse::pipeline: {:?}", parse);
+        let correct = Pipe(true, vec!(cmd_unboxed("foo"), cmd_unboxed("bar"), cmd_unboxed("baz")));
+        assert_eq!(correct, p.and_or().unwrap());
     }
 
     #[test]
     fn test_pipeline_valid_bangs_in_and_or() {
         let mut p = make_parser("! foo | bar || ! baz && ! foobar");
-        let parse = p.and_or().unwrap();
-        if let And(box Or(box Pipe(true, _), box Pipe(true, _)), box Pipe(true, _)) = parse {
-            return;
-        }
-
-        panic!("Incorrect parse result for Parse::and_or with several `!`: {:?}", parse);
+        let correct = And(
+            Box::new(Or(Box::new(Pipe(true, vec!(cmd_unboxed("foo"), cmd_unboxed("bar")))), Box::new(Pipe(true, vec!(cmd_unboxed("baz")))))),
+            Box::new(Pipe(true, vec!(cmd_unboxed("foobar"))))
+        );
+        assert_eq!(correct, p.and_or().unwrap());
     }
 
     #[test]
@@ -1445,17 +1426,11 @@ mod test {
         let cmd1 = p.complete_command().unwrap().expect("failed to parse first command");
         let cmd2 = p.complete_command().unwrap().expect("failed to parse second command");
 
-        if let (
-            &Job(box And(box Simple(box ref foo), box Simple(box ref bar))),
-            &Simple(box ref baz),
-        ) = (&cmd1, &cmd2) {
-            assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
-            assert_eq!(bar.cmd.as_ref().unwrap(), &Word::Literal(String::from("bar")));
-            assert_eq!(baz.cmd.as_ref().unwrap(), &Word::Literal(String::from("baz")));
-            return;
-        }
+        let correct1 = Job(Box::new(And(cmd("foo"), cmd("bar"))));
+        let correct2 = cmd_unboxed("baz");
 
-        panic!("Incorrect parse result for Parse::complete_command:\n{:?}\n{:?}", cmd1, cmd2);
+        assert_eq!(correct1, cmd1);
+        assert_eq!(correct2, cmd2);
     }
 
     #[test]
@@ -1465,16 +1440,13 @@ mod test {
         let cmd2 = p.complete_command().unwrap().expect("failed to parse second command");
         let cmd3 = p.complete_command().unwrap().expect("failed to parse third command");
 
-        if let (&And(box Simple(box ref foo), box Simple(box ref bar)),
-            &Simple(box ref baz), &Simple(box ref qux)) = (&cmd1, &cmd2, &cmd3) {
-                assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
-                assert_eq!(bar.cmd.as_ref().unwrap(), &Word::Literal(String::from("bar")));
-                assert_eq!(baz.cmd.as_ref().unwrap(), &Word::Literal(String::from("baz")));
-                assert_eq!(qux.cmd.as_ref().unwrap(), &Word::Literal(String::from("qux")));
-                return;
-        }
+        let correct1 = And(cmd("foo"), cmd("bar"));
+        let correct2 = cmd_unboxed("baz");
+        let correct3 = cmd_unboxed("qux");
 
-        panic!("Incorrect parse result for Parse::complete_command: {:?}\n{:?}\n{:?}", cmd1, cmd2, cmd3);
+        assert_eq!(correct1, cmd1);
+        assert_eq!(correct2, cmd2);
+        assert_eq!(correct3, cmd3);
     }
 
     #[test]
@@ -1788,19 +1760,8 @@ mod test {
     #[test]
     fn test_do_group_valid() {
         let mut p = make_parser("do foo\nbar; baz; done");
-        let cmds = p.do_group().unwrap();
-        if let [
-            Simple(box ref foo),
-            Simple(box ref bar),
-            Simple(box ref baz),
-        ] = &cmds[..] {
-            assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
-            assert_eq!(bar.cmd.as_ref().unwrap(), &Word::Literal(String::from("bar")));
-            assert_eq!(baz.cmd.as_ref().unwrap(), &Word::Literal(String::from("baz")));
-            return;
-        }
-
-        panic!("Incorrect parse result for Parse::do_group: {:?}", cmds);
+        let correct = vec!(cmd_unboxed("foo"), cmd_unboxed("bar"), cmd_unboxed("baz"));
+        assert_eq!(correct, p.do_group().unwrap());
     }
 
     #[test]
@@ -1812,14 +1773,8 @@ mod test {
     #[test]
     fn test_do_group_valid_keyword_delimited_by_separator() {
         let mut p = make_parser("do foo done; done");
-        let cmds = p.do_group().unwrap();
-        if let [Simple(box ref foo)] = &cmds[..] {
-            assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
-            assert_eq!(foo.args[0], Word::Literal(String::from("done")));
-            return;
-        }
-
-        panic!("Incorrect parse result for Parse::do_group: {:?}", cmds);
+        let correct = vec!(cmd_args_unboxed("foo", &["done"]));
+        assert_eq!(correct, p.do_group().unwrap());
     }
 
     #[test]
@@ -1885,19 +1840,8 @@ mod test {
     #[test]
     fn test_brace_group_valid() {
         let mut p = make_parser("{ foo\nbar; baz; }");
-        let cmds = p.brace_group().unwrap();
-        if let [
-            Simple(box ref foo),
-            Simple(box ref bar),
-            Simple(box ref baz),
-        ] = &cmds[..] {
-            assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
-            assert_eq!(bar.cmd.as_ref().unwrap(), &Word::Literal(String::from("bar")));
-            assert_eq!(baz.cmd.as_ref().unwrap(), &Word::Literal(String::from("baz")));
-            return;
-        }
-
-        panic!("Incorrect parse result for Parse::brace_group: {:?}", cmds);
+        let correct = vec!(cmd_unboxed("foo"), cmd_unboxed("bar"), cmd_unboxed("baz"));
+        assert_eq!(correct, p.brace_group().unwrap());
     }
 
     #[test]
@@ -1925,14 +1869,8 @@ mod test {
     #[test]
     fn test_brace_group_valid_keyword_delimited_by_separator() {
         let mut p = make_parser("{ foo }; }");
-        let cmds = p.brace_group().unwrap();
-        if let [Simple(box ref foo)] = &cmds[..] {
-            assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
-            assert_eq!(foo.args[0], Word::Literal(String::from("}")));
-            return;
-        }
-
-        panic!("Incorrect parse result for Parse::brace_group: {:?}", cmds);
+        let correct = vec!(cmd_args_unboxed("foo", &["}"]));
+        assert_eq!(correct, p.brace_group().unwrap());
     }
 
     #[test]
@@ -1960,31 +1898,15 @@ mod test {
     #[test]
     fn test_subshell_valid() {
         let mut p = make_parser("( foo\nbar; baz; )");
-        let cmds = p.subshell().unwrap();
-        if let [
-            Simple(box ref foo),
-            Simple(box ref bar),
-            Simple(box ref baz),
-        ] = &cmds[..] {
-            assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
-            assert_eq!(bar.cmd.as_ref().unwrap(), &Word::Literal(String::from("bar")));
-            assert_eq!(baz.cmd.as_ref().unwrap(), &Word::Literal(String::from("baz")));
-            return;
-        }
-
-        panic!("Incorrect parse result for Parse::subshell: {:?}", cmds);
+        let correct = vec!(cmd_unboxed("foo"), cmd_unboxed("bar"), cmd_unboxed("baz"));
+        assert_eq!(correct, p.subshell().unwrap());
     }
 
     #[test]
     fn test_subshell_valid_separator_not_needed() {
         let mut p = make_parser("( foo )");
-        let cmds = p.subshell().unwrap();
-        if let [Simple(box ref foo)] = &cmds[..] {
-            assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
-            return;
-        }
-
-        panic!("Incorrect parse result for Parse::subshell: {:?}", cmds);
+        let correct = vec!(cmd_unboxed("foo"));
+        assert_eq!(correct, p.subshell().unwrap());
     }
 
     #[test]
@@ -2025,52 +1947,26 @@ mod test {
     fn test_loop_command_while_valid() {
         let mut p = make_parser("while guard1; guard2; do foo\nbar; baz; done");
         let (until, guards, cmds) = p.loop_command().unwrap();
+
+        let correct_guards = vec!(cmd_unboxed("guard1"), cmd_unboxed("guard2"));
+        let correct_cmds = vec!(cmd_unboxed("foo"), cmd_unboxed("bar"), cmd_unboxed("baz"));
+
         assert_eq!(until, builder::LoopKind::While);
-        if let [
-            Simple(box ref guard1),
-            Simple(box ref guard2),
-        ] = &guards[..] {
-            assert_eq!(guard1.cmd.as_ref().unwrap(), &Word::Literal(String::from("guard1")));
-            assert_eq!(guard2.cmd.as_ref().unwrap(), &Word::Literal(String::from("guard2")));
-
-            if let [
-                Simple(box ref foo),
-                Simple(box ref bar),
-                Simple(box ref baz),
-            ] = &cmds[..] {
-                assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
-                assert_eq!(bar.cmd.as_ref().unwrap(), &Word::Literal(String::from("bar")));
-                assert_eq!(baz.cmd.as_ref().unwrap(), &Word::Literal(String::from("baz")));
-                return;
-            }
-        }
-
-        panic!("Incorrect parse result for Parse::loop_command: {:?}", cmds);
+        assert_eq!(correct_guards, guards);
+        assert_eq!(correct_cmds, cmds);
     }
 
     #[test]
     fn test_loop_command_until_valid() {
         let mut p = make_parser("until guard1\n guard2\n do foo\nbar; baz; done");
         let (until, guards, cmds) = p.loop_command().unwrap();
-        assert_eq!(until, builder::LoopKind::Until);
-        if let [
-            Simple(box ref guard1),
-            Simple(box ref guard2),
-        ] = &guards[..] {
-            assert_eq!(guard1.cmd.as_ref().unwrap(), &Word::Literal(String::from("guard1")));
-            assert_eq!(guard2.cmd.as_ref().unwrap(), &Word::Literal(String::from("guard2")));
 
-            if let [
-                Simple(box ref foo),
-                Simple(box ref bar),
-                Simple(box ref baz),
-            ] = &cmds[..] {
-                assert_eq!(foo.cmd.as_ref().unwrap(), &Word::Literal(String::from("foo")));
-                assert_eq!(bar.cmd.as_ref().unwrap(), &Word::Literal(String::from("bar")));
-                assert_eq!(baz.cmd.as_ref().unwrap(), &Word::Literal(String::from("baz")));
-                return;
-            }
-        }
+        let correct_guards = vec!(cmd_unboxed("guard1"), cmd_unboxed("guard2"));
+        let correct_cmds = vec!(cmd_unboxed("foo"), cmd_unboxed("bar"), cmd_unboxed("baz"));
+
+        assert_eq!(until, builder::LoopKind::Until);
+        assert_eq!(correct_guards, guards);
+        assert_eq!(correct_cmds, cmds);
     }
 
     #[test]
@@ -3061,12 +2957,8 @@ mod test {
 
     #[test]
     fn test_compound_command_delegates_valid_commands_brace() {
-        let cmd = "{ foo; }";
-        match make_parser(cmd).compound_command() {
-            Ok(Compound(box Brace(..), _)) => {},
-            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
-            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
-        }
+        let correct = Compound(Box::new(Brace(vec!(cmd_unboxed("foo")))), vec!());
+        assert_eq!(correct, make_parser("{ foo; }").compound_command().unwrap());
     }
 
     #[test]
@@ -3076,9 +2968,11 @@ mod test {
             "( foo)",
         ];
 
+        let correct = Compound(Box::new(Subshell(vec!(cmd_unboxed("foo")))), vec!());
+
         for cmd in commands.iter() {
             match make_parser(cmd).compound_command() {
-                Ok(Compound(box Subshell(..), _)) => {},
+                Ok(ref result) if result == &correct => {},
                 Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
                 Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
             }
@@ -3087,52 +2981,32 @@ mod test {
 
     #[test]
     fn test_compound_command_delegates_valid_commands_while() {
-        let cmd = "while guard; do foo; done";
-        match make_parser(cmd).compound_command() {
-            Ok(Compound(box Loop(false, _, _), _)) => {},
-            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
-            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
-        }
+        let correct = Compound(Box::new(Loop(false, vec!(cmd_unboxed("guard")), vec!(cmd_unboxed("foo")))), vec!());
+        assert_eq!(correct, make_parser("while guard; do foo; done").compound_command().unwrap());
     }
 
     #[test]
     fn test_compound_command_delegates_valid_commands_until() {
-        let cmd = "until guard; do foo; done";
-        match make_parser(cmd).compound_command() {
-            Ok(Compound(box Loop(true, _, _), _)) => {},
-            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
-            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
-        }
+        let correct = Compound(Box::new(Loop(true, vec!(cmd_unboxed("guard")), vec!(cmd_unboxed("foo")))), vec!());
+        assert_eq!(correct, make_parser("until guard; do foo; done").compound_command().unwrap());
     }
 
     #[test]
     fn test_compound_command_delegates_valid_commands_for() {
-        let cmd = "for var in; do foo; done";
-        match make_parser(cmd).compound_command() {
-            Ok(Compound(box For(..), _)) => {},
-            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
-            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
-        }
+        let correct = Compound(Box::new(For(String::from("var"), Some(vec!()), vec!(cmd_unboxed("foo")))), vec!());
+        assert_eq!(correct, make_parser("for var in; do foo; done").compound_command().unwrap());
     }
 
     #[test]
     fn test_compound_command_delegates_valid_commands_if() {
-        let cmd = "if guard; then body; fi";
-        match make_parser(cmd).compound_command() {
-            Ok(Compound(box If(..), _)) => {},
-            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
-            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
-        }
+        let correct = Compound(Box::new(If(vec!((vec!(cmd_unboxed("guard")), vec!(cmd_unboxed("body")))), None)), vec!());
+        assert_eq!(correct, make_parser("if guard; then body; fi").compound_command().unwrap());
     }
 
     #[test]
     fn test_compound_command_delegates_valid_commands_case() {
-        let cmd = "case foo in esac";
-        match make_parser(cmd).compound_command() {
-            Ok(Compound(box Case(..), _)) => {},
-            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
-            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
-        }
+        let correct = Compound(Box::new(Case(Word::Literal(String::from("foo")), vec!())), vec!());
+        assert_eq!(correct, make_parser("case foo in esac").compound_command().unwrap());
     }
 
     #[test]
@@ -3327,12 +3201,8 @@ mod test {
 
     #[test]
     fn test_command_delegates_valid_commands_brace() {
-        let cmd = "{ foo; }";
-        match make_parser(cmd).command() {
-            Ok(Compound(box Brace(..), _)) => {},
-            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
-            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
-        }
+        let correct = Compound(Box::new(Brace(vec!(cmd_unboxed("foo")))), vec!());
+        assert_eq!(correct, make_parser("{ foo; }").command().unwrap());
     }
 
     #[test]
@@ -3342,9 +3212,11 @@ mod test {
             "( foo)",
         ];
 
+        let correct = Compound(Box::new(Subshell(vec!(cmd_unboxed("foo")))), vec!());
+
         for cmd in commands.iter() {
             match make_parser(cmd).command() {
-                Ok(Compound(box Subshell(..), _)) => {},
+                Ok(ref result) if result == &correct => {},
                 Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
                 Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
             }
@@ -3353,62 +3225,38 @@ mod test {
 
     #[test]
     fn test_command_delegates_valid_commands_while() {
-        let cmd = "while guard; do foo; done";
-        match make_parser(cmd).command() {
-            Ok(Compound(box Loop(false, _, _), _)) => {},
-            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
-            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
-        }
+        let correct = Compound(Box::new(Loop(false, vec!(cmd_unboxed("guard")), vec!(cmd_unboxed("foo")))), vec!());
+        assert_eq!(correct, make_parser("while guard; do foo; done").command().unwrap());
     }
 
     #[test]
     fn test_command_delegates_valid_commands_until() {
-        let cmd = "until guard; do foo; done";
-        match make_parser(cmd).command() {
-            Ok(Compound(box Loop(true, _, _), _)) => {},
-            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
-            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
-        }
+        let correct = Compound(Box::new(Loop(true, vec!(cmd_unboxed("guard")), vec!(cmd_unboxed("foo")))), vec!());
+        assert_eq!(correct, make_parser("until guard; do foo; done").command().unwrap());
     }
 
     #[test]
     fn test_command_delegates_valid_commands_for() {
-        let cmd = "for var in; do foo; done";
-        match make_parser(cmd).command() {
-            Ok(Compound(box For(..), _)) => {},
-            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
-            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
-        }
+        let correct = Compound(Box::new(For(String::from("var"), Some(vec!()), vec!(cmd_unboxed("foo")))), vec!());
+        assert_eq!(correct, make_parser("for var in; do foo; done").command().unwrap());
     }
 
     #[test]
     fn test_command_delegates_valid_commands_if() {
-        let cmd = "if guard; then body; fi";
-        match make_parser(cmd).command() {
-            Ok(Compound(box If(..), _)) => {},
-            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
-            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
-        }
+        let correct = Compound(Box::new(If(vec!((vec!(cmd_unboxed("guard")), vec!(cmd_unboxed("body")))), None)), vec!());
+        assert_eq!(correct, make_parser("if guard; then body; fi").command().unwrap());
     }
 
     #[test]
     fn test_command_delegates_valid_commands_case() {
-        let cmd = "case foo in esac";
-        match make_parser(cmd).command() {
-            Ok(Compound(box Case(..), _)) => {},
-            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
-            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
-        }
+        let correct = Compound(Box::new(Case(Word::Literal(String::from("foo")), vec!())), vec!());
+        assert_eq!(correct, make_parser("case foo in esac").command().unwrap());
     }
 
     #[test]
     fn test_command_delegates_valid_simple_commands() {
-        let cmd = "echo foo bar";
-        match make_parser(cmd).command() {
-            Ok(Simple(..)) => {},
-            Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
-            Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
-        }
+        let correct = cmd_args_unboxed("echo", &["foo", "bar"]);
+        assert_eq!(correct, make_parser("echo foo bar").command().unwrap());
     }
 
     #[test]
@@ -3425,9 +3273,11 @@ mod test {
             "foo(    )           { echo body; }",
         ];
 
+        let correct = Function(String::from("foo"), Box::new(Compound(Box::new(Brace(vec!(cmd_args_unboxed("echo", &["body"])))), vec!())));
+
         for cmd in commands.iter() {
             match make_parser(cmd).command() {
-                Ok(Function(..)) => {},
+                Ok(ref result) if result == &correct => {},
                 Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
                 Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
             }
@@ -3480,10 +3330,13 @@ mod test {
                 Token::Literal(String::from("done")),
             ));
 
-            match p.command() {
-                Ok(Compound(box Loop(..), _)) => {},
-                Ok(result) => panic!("Parsed an unexpected command type: {:?}", result),
-                Err(err) => panic!("Failed to parse command: {}", err),
+            let cmd = p.command().unwrap();
+            if let Compound(ref loop_cmd, _) = cmd {
+                if let Loop(..) = **loop_cmd {
+                    continue;
+                } else {
+                    panic!("Parsed an unexpected command: {:?}", cmd)
+                }
             }
         }
     }
@@ -3524,10 +3377,14 @@ mod test {
 
                                     fi_tok,
                             ));
-                            match p.command() {
-                                Ok(Compound(box If(..), _)) => {},
-                                Ok(result) => panic!("Parsed an unexpected command type: {:?}", result),
-                                Err(err) => panic!("Failed to parse command: {}", err),
+
+                            let cmd = p.command().unwrap();
+                            if let Compound(ref if_cmd, _) = cmd {
+                                if let If(..) = **if_cmd {
+                                    continue;
+                                } else {
+                                    panic!("Parsed an unexpected command: {:?}", cmd)
+                                }
                             }
                         }
                     }
@@ -3568,10 +3425,14 @@ mod test {
 
                     Token::Literal(String::from("done")),
                 ));
-                match p.command() {
-                    Ok(Compound(box For(..), _)) => {},
-                    Ok(result) => panic!("Parsed an unexpected command type: {:?}", result),
-                    Err(err) => panic!("Failed to parse command: {}", err),
+
+                let cmd = p.command().unwrap();
+                if let Compound(ref for_cmd, _) = cmd {
+                    if let For(..) = **for_cmd {
+                        continue;
+                    } else {
+                        panic!("Parsed an unexpected command: {:?}", cmd)
+                    }
                 }
             }
         }
@@ -3608,10 +3469,14 @@ mod test {
 
                         esac_tok
                     ));
-                    match p.command() {
-                        Ok(Compound(box Case(..), _)) => {},
-                        Ok(result) => panic!("Parsed an unexpected command type: {:?}", result),
-                        Err(err) => panic!("Failed to parse command: {}", err),
+
+                    let cmd = p.command().unwrap();
+                    if let Compound(ref case_cmd, _) = cmd {
+                        if let Case(..) = **case_cmd {
+                            continue;
+                        } else {
+                            panic!("Parsed an unexpected command: {:?}", cmd)
+                        }
                     }
                 }
             }
