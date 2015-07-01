@@ -34,6 +34,9 @@ pub enum Word {
     Literal(String),
     /// Concat of several distinct words concatenated together.
     Concat(Vec<Word>),
+    /// List of words concatenated within single quotes. Virtually
+    /// identical to `Literal`, but makes the distinction if needed.
+    SingleQuoted(String),
     /// List of words concatenated within double quotes.
     DoubleQuoted(Vec<Word>),
     /// Access of a value inside a parameter, e.g. `$foo` or `$$`.
@@ -178,6 +181,7 @@ impl Display for Word {
         match *self {
             Literal(ref s) => fmt.write_str(s),
             Param(ref p) => write!(fmt, "{}", p),
+            SingleQuoted(ref w) => write!(fmt, "'{}'", w),
 
             DoubleQuoted(ref words) => {
                 try!(fmt.write_str("\""));

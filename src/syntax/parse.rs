@@ -757,7 +757,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                         .concat();
 
                     if found_close_quot {
-                        ast::Word::Literal(contents)
+                        ast::Word::SingleQuoted(contents)
                     } else {
                         return Err(self.make_unexpected_err(None));
                     }
@@ -1599,7 +1599,6 @@ mod test {
     }
 
     #[test]
-    #[ignore] // FIXME: correct and unignore
     fn test_redirect_invalid_single_quoted_fd() {
         let mut p = make_parser("'1'>>out");
         p.redirect_list().unwrap_err();
@@ -1609,6 +1608,18 @@ mod test {
     #[ignore] // FIXME: correct and unignore
     fn test_redirect_invalid_double_quoted_fd() {
         let mut p = make_parser("\"1\">>out");
+        p.redirect_list().unwrap_err();
+    }
+
+    #[test]
+    fn test_redirect_invalid_single_quoted_dup_fd() {
+        let mut p = make_parser("1>&'2'");
+        p.redirect_list().unwrap_err();
+    }
+
+    #[test]
+    fn test_redirect_invalid_double_quoted_dup_fd() {
+        let mut p = make_parser(">&\"2\"");
         p.redirect_list().unwrap_err();
     }
 
@@ -1650,6 +1661,21 @@ mod test {
         ));
 
         assert_eq!(Redirect::DupWrite(None, 1234), p.redirect(None).unwrap());
+    }
+
+    #[test]
+    fn test_redirect_accept_literal_and_name_tokens() {
+        let mut p = make_parser_from_tokens(vec!(
+            Token::GreatAnd,
+            Token::Literal(String::from("12")),
+        ));
+        assert_eq!(Redirect::DupWrite(None, 12), p.redirect(None).unwrap());
+
+        let mut p = make_parser_from_tokens(vec!(
+            Token::GreatAnd,
+            Token::Name(String::from("12")),
+        ));
+        assert_eq!(Redirect::DupWrite(None, 12), p.redirect(None).unwrap());
     }
 
     #[test]
@@ -1754,6 +1780,8 @@ mod test {
         let mut p = make_parser("1>>out <in 2>&- abc");
         p.redirect_list().unwrap_err();
         let mut p = make_parser("1>>out abc<in 2>&-");
+        p.redirect_list().unwrap_err();
+        let mut p = make_parser("1>>out abc <in 2>&-");
         p.redirect_list().unwrap_err();
     }
 
