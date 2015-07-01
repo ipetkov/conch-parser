@@ -329,7 +329,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Iterator for Parser<I, B> where B::E
     }
 }
 
-/// A parser for the shell language.
+/// A parser for the shell language. It will parse shell commands from a
+/// stream of shell `Token`s, and pass them to an AST builder.
 pub struct Parser<I: Iterator<Item = Token>, B: Builder> {
     iter: TokenIter<I>,
     builder: B,
@@ -1217,7 +1218,6 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         match self.iter.peek() {
             Some(&Pound) => {
-                self.iter.next();
                 let comment = self.iter.by_ref()
                     .take_while(|t| t != &Newline)
                     .map(|t| t.to_string())
@@ -1280,8 +1280,8 @@ mod test {
         assert_eq!(p.linebreak(), vec!(
                 Newline(None),
                 Newline(None),
-                Newline(Some(String::from(" comment1"))),
-                Newline(Some(String::from("comment2"))),
+                Newline(Some(String::from("# comment1"))),
+                Newline(Some(String::from("#comment2"))),
                 Newline(None)
             )
         );
@@ -1302,19 +1302,19 @@ mod test {
     #[test]
     fn test_linebreak_valid_eof_instead_of_newline() {
         let mut p = make_parser("#comment");
-        assert_eq!(p.linebreak(), vec!(Newline(Some(String::from("comment")))));
+        assert_eq!(p.linebreak(), vec!(Newline(Some(String::from("#comment")))));
     }
 
     #[test]
     fn test_linebreak_single_quote_insiginificant() {
         let mut p = make_parser("#unclosed quote ' comment");
-        assert_eq!(p.linebreak(), vec!(Newline(Some(String::from("unclosed quote ' comment")))));
+        assert_eq!(p.linebreak(), vec!(Newline(Some(String::from("#unclosed quote ' comment")))));
     }
 
     #[test]
     fn test_linebreak_double_quote_insiginificant() {
         let mut p = make_parser("#unclosed quote \" comment");
-        assert_eq!(p.linebreak(), vec!(Newline(Some(String::from("unclosed quote \" comment")))));
+        assert_eq!(p.linebreak(), vec!(Newline(Some(String::from("#unclosed quote \" comment")))));
     }
 
     #[test]
@@ -1328,7 +1328,7 @@ mod test {
     fn test_skip_whitespace_preserve_comments() {
         let mut p = make_parser("    \t\t \t \t#comment\n   ");
         p.skip_whitespace();
-        assert_eq!(p.linebreak().pop().unwrap(), Newline(Some(String::from("comment"))));
+        assert_eq!(p.linebreak().pop().unwrap(), Newline(Some(String::from("#comment"))));
     }
 
     #[test]
@@ -1436,7 +1436,7 @@ mod test {
         let mut p = make_parser("hello #world");
         p.word().unwrap().expect("no valid word was discovered");
         let comment = p.linebreak();
-        assert_eq!(comment, vec!(Newline(Some(String::from("world")))));
+        assert_eq!(comment, vec!(Newline(Some(String::from("#world")))));
     }
 
     #[test]
@@ -2375,7 +2375,7 @@ mod test {
         let mut p = make_parser("for var #comment1\nin one two three\n#comment2\n\ndo echo $var; done");
         let (var, var_comment, words, word_comment, body) = p.for_command().unwrap();
         assert_eq!(var, "var");
-        assert_eq!(var_comment, vec!(Newline(Some(String::from("comment1")))));
+        assert_eq!(var_comment, vec!(Newline(Some(String::from("#comment1")))));
         assert_eq!(words.unwrap(), vec!(
             Word::Literal(String::from("one")),
             Word::Literal(String::from("two")),
@@ -2383,7 +2383,7 @@ mod test {
         ));
         assert_eq!(word_comment, Some(vec!(
             Newline(None),
-            Newline(Some(String::from("comment2"))),
+            Newline(Some(String::from("#comment2"))),
             Newline(None),
         )));
 
@@ -2401,7 +2401,7 @@ mod test {
         let mut p = make_parser("for var #comment\ndo echo $var; done");
         let (var, var_comment, words, word_comment, body) = p.for_command().unwrap();
         assert_eq!(var, "var");
-        assert_eq!(var_comment, vec!(Newline(Some(String::from("comment")))));
+        assert_eq!(var_comment, vec!(Newline(Some(String::from("#comment")))));
         assert_eq!(words, None);
         assert_eq!(word_comment, None);
 
@@ -2823,13 +2823,13 @@ mod test {
     #[test]
     fn test_case_command_valid_with_comments() {
         let correct_word = Word::Literal(String::from("foo"));
-        let correct_post_word = vec!(Newline(Some(String::from("post_word_a"))), Newline(Some(String::from("post_word_b"))));
+        let correct_post_word = vec!(Newline(Some(String::from("#post_word_a"))), Newline(Some(String::from("#post_word_b"))));
         let correct_branches = vec!(
             (
                 (
-                    vec!(Newline(Some(String::from("pre_pat_1a"))), Newline(Some(String::from("pre_pat_1b")))),
+                    vec!(Newline(Some(String::from("#pre_pat_1a"))), Newline(Some(String::from("#pre_pat_1b")))),
                     vec!(Word::Literal(String::from("hello")), Word::Literal(String::from("goodbye"))),
-                    vec!(Newline(Some(String::from("post_pat_1a"))), Newline(Some(String::from("post_pat_1b")))),
+                    vec!(Newline(Some(String::from("#post_pat_1a"))), Newline(Some(String::from("#post_pat_1b")))),
                 ),
                 vec!(Simple(Box::new(SimpleCommand {
                     cmd: Some(Word::Literal(String::from("echo"))),
@@ -2840,9 +2840,9 @@ mod test {
             ),
             (
                 (
-                    vec!(Newline(Some(String::from("pre_pat_2a"))), Newline(Some(String::from("pre_pat_2b")))),
+                    vec!(Newline(Some(String::from("#pre_pat_2a"))), Newline(Some(String::from("#pre_pat_2b")))),
                     vec!(Word::Literal(String::from("world"))),
-                    vec!(Newline(Some(String::from("post_pat_2a"))), Newline(Some(String::from("post_pat_2b")))),
+                    vec!(Newline(Some(String::from("#post_pat_2a"))), Newline(Some(String::from("#post_pat_2b")))),
                 ),
                 vec!(Simple(Box::new(SimpleCommand {
                     cmd: Some(Word::Literal(String::from("echo"))),
@@ -2852,7 +2852,7 @@ mod test {
                 }))),
             ),
         );
-        let correct_post_branch = vec!(Newline(Some(String::from("post_branch_a"))), Newline(Some(String::from("post_branch_b"))));
+        let correct_post_branch = vec!(Newline(Some(String::from("#post_branch_a"))), Newline(Some(String::from("#post_branch_b"))));
 
         let correct = (correct_word, correct_post_word, correct_branches, correct_post_branch);
 
@@ -2880,9 +2880,9 @@ mod test {
     #[test]
     fn test_case_command_valid_with_comments_no_body() {
         let correct_word = Word::Literal(String::from("foo"));
-        let correct_post_word = vec!(Newline(Some(String::from("post_word_a"))), Newline(Some(String::from("post_word_b"))));
+        let correct_post_word = vec!(Newline(Some(String::from("#post_word_a"))), Newline(Some(String::from("#post_word_b"))));
         let correct_branches = vec!();
-        let correct_post_branch = vec!(Newline(Some(String::from("one"))), Newline(Some(String::from("two"))), Newline(Some(String::from("three"))));
+        let correct_post_branch = vec!(Newline(Some(String::from("#one"))), Newline(Some(String::from("#two"))), Newline(Some(String::from("#three"))));
 
         let correct = (correct_word, correct_post_word, correct_branches, correct_post_branch);
 
