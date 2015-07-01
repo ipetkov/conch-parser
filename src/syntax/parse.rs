@@ -3009,13 +3009,13 @@ mod test {
 
     #[test]
     fn test_compound_command_delegates_valid_commands_while() {
-        let correct = Compound(Box::new(Loop(false, vec!(cmd_unboxed("guard")), vec!(cmd_unboxed("foo")))), vec!());
+        let correct = Compound(Box::new(While(vec!(cmd_unboxed("guard")), vec!(cmd_unboxed("foo")))), vec!());
         assert_eq!(correct, make_parser("while guard; do foo; done").compound_command().unwrap());
     }
 
     #[test]
     fn test_compound_command_delegates_valid_commands_until() {
-        let correct = Compound(Box::new(Loop(true, vec!(cmd_unboxed("guard")), vec!(cmd_unboxed("foo")))), vec!());
+        let correct = Compound(Box::new(Until(vec!(cmd_unboxed("guard")), vec!(cmd_unboxed("foo")))), vec!());
         assert_eq!(correct, make_parser("until guard; do foo; done").compound_command().unwrap());
     }
 
@@ -3253,13 +3253,13 @@ mod test {
 
     #[test]
     fn test_command_delegates_valid_commands_while() {
-        let correct = Compound(Box::new(Loop(false, vec!(cmd_unboxed("guard")), vec!(cmd_unboxed("foo")))), vec!());
+        let correct = Compound(Box::new(While(vec!(cmd_unboxed("guard")), vec!(cmd_unboxed("foo")))), vec!());
         assert_eq!(correct, make_parser("while guard; do foo; done").command().unwrap());
     }
 
     #[test]
     fn test_command_delegates_valid_commands_until() {
-        let correct = Compound(Box::new(Loop(true, vec!(cmd_unboxed("guard")), vec!(cmd_unboxed("foo")))), vec!());
+        let correct = Compound(Box::new(Until(vec!(cmd_unboxed("guard")), vec!(cmd_unboxed("foo")))), vec!());
         assert_eq!(correct, make_parser("until guard; do foo; done").command().unwrap());
     }
 
@@ -3339,13 +3339,11 @@ mod test {
     }
 
     #[test]
-    fn test_command_should_delegate_literals_and_names_loop() {
+    fn test_command_should_delegate_literals_and_names_loop_while() {
         for kw in vec!(
             Token::Literal(String::from("while")),
-            Token::Name(String::from("while")),
-            Token::Literal(String::from("until")),
-            Token::Name(String::from("until")))
-        {
+            Token::Name(String::from("while"))
+        ) {
             let mut p = make_parser_from_tokens(vec!(
                 kw,
                 Token::Newline,
@@ -3360,7 +3358,36 @@ mod test {
 
             let cmd = p.command().unwrap();
             if let Compound(ref loop_cmd, _) = cmd {
-                if let Loop(..) = **loop_cmd {
+                if let While(..) = **loop_cmd {
+                    continue;
+                } else {
+                    panic!("Parsed an unexpected command: {:?}", cmd)
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_command_should_delegate_literals_and_names_loop_until() {
+        for kw in vec!(
+            Token::Literal(String::from("until")),
+            Token::Name(String::from("until"))
+        ) {
+            let mut p = make_parser_from_tokens(vec!(
+                kw,
+                Token::Newline,
+                Token::Literal(String::from("guard")),
+                Token::Newline,
+                Token::Literal(String::from("do")),
+                Token::Newline,
+                Token::Literal(String::from("foo")),
+                Token::Newline,
+                Token::Literal(String::from("done")),
+            ));
+
+            let cmd = p.command().unwrap();
+            if let Compound(ref loop_cmd, _) = cmd {
+                if let Until(..) = **loop_cmd {
                     continue;
                 } else {
                     panic!("Parsed an unexpected command: {:?}", cmd)

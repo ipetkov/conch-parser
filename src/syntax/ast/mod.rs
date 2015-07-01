@@ -114,13 +114,14 @@ pub enum CompoundCommand {
     Brace(Vec<Command>),
     /// A group of commands that should be executed in a subshell environment.
     Subshell(Vec<Command>),
-    /// A command that represents a `while` or `until` loop, executing a body
-    /// of commands based on the exit status of another command (the guard).
+    /// A command that executes its body as long as its guard exits successfully.
     ///
-    /// The bool indicates an `until` loop, that is, execute the loop until the guard
-    /// returns successfully, otherwise, loop while the guard exits successfully.
-    /// Variant structure: `Loop(is_until, guard, body)`.
-    Loop(bool, Vec<Command>, Vec<Command>),
+    /// Variant structure: `While(guard, body)`.
+    While(Vec<Command>, Vec<Command>),
+    /// A command that executes its body as until as its guard exits unsuccessfully.
+    ///
+    /// Variant structure: `Until(guard, body)`.
+    Until(Vec<Command>, Vec<Command>),
     /// A conditional command that runs the respective command branch when a
     /// certain of the first condition that exits successfully.
     ///

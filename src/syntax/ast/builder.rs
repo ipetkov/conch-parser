@@ -361,12 +361,12 @@ pub trait CommandBuilder {
         body.shrink_to_fit();
         redirects.shrink_to_fit();
 
-        let until = match kind {
-            LoopKind::While => false,
-            LoopKind::Until => true,
+        let loop_cmd = match kind {
+            LoopKind::While => CompoundCommand::While(guard, body),
+            LoopKind::Until => CompoundCommand::Until(guard, body),
         };
 
-        Ok(Command::Compound(Box::new(CompoundCommand::Loop(until, guard, body)), redirects))
+        Ok(Command::Compound(Box::new(loop_cmd), redirects))
     }
 
     /// Constructs a `Command::Compound(If)` node with the provided inputs.
