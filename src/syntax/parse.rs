@@ -553,6 +553,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 Some(&CurlyClose)         |
                 Some(&SingleQuote)        |
                 Some(&Pound)              |
+                Some(&Star)               |
+                Some(&Question)           |
                 Some(&Assignment(_))      |
                 Some(&Name(_))            |
                 Some(&Literal(_))         => {},
@@ -587,6 +589,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 // Also, comments are only recognized where a Newline is valid, thus '#'
                 // becomes a literal if it occurs in the middle of a word.
                 tok@Pound |
+                tok@Star       |
+                tok@Question   |
                 tok@CurlyOpen  |
                 tok@CurlyClose |
                 tok@Assignment(_) => ast::Word::Literal(tok.to_string()),
@@ -638,26 +642,49 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// parameter, the `$` should be treated as a literal. Thus this method
     /// returns an optional parameter, although it will consume the `$` unconditionally.
     pub fn parameter(&mut self) -> Result<Option<ast::Parameter>, Error<B::Err>> {
-        use syntax::ast::Parameter::*;
+        use syntax::ast::Parameter;
+
+        match self.iter.next() {
+            Some(ParamAt)            => return Ok(Some(Parameter::At)),
+            Some(ParamStar)          => return Ok(Some(Parameter::Star)),
+            Some(ParamPound)         => return Ok(Some(Parameter::Pound)),
+            Some(ParamQuestion)      => return Ok(Some(Parameter::Question)),
+            Some(ParamDash)          => return Ok(Some(Parameter::Dash)),
+            Some(ParamDollar)        => return Ok(Some(Parameter::Dollar)),
+            Some(ParamBang)          => return Ok(Some(Parameter::Bang)),
+            Some(ParamPositional(p)) => return Ok(Some(Parameter::Positional(p))),
+
+            Some(Token::Dollar) => match self.iter.peek() {
+                Some(&Name(_))   |
+                Some(&CurlyOpen) => {},
+                _ => return Ok(None),
+            },
+
+            t => return Err(self.make_unexpected_err(t)),
+        }
 
         let param = match self.iter.next() {
-            Some(ParamAt)            => At,
-            Some(ParamStar)          => Star,
-            Some(ParamPound)         => Pound,
-            Some(ParamQuestion)      => Question,
-            Some(ParamDash)          => Dash,
-            Some(ParamDollar)        => Dollar,
-            Some(ParamBang)          => Bang,
-            Some(ParamPositional(p)) => Positional(p),
+            Some(Name(n)) => Parameter::Var(n),
+            Some(CurlyOpen) => {
+                let param = match self.iter.next() {
+                    Some(Star)          => Parameter::Star,
+                    Some(Pound)         => Parameter::Pound,
+                    Some(Question)      => Parameter::Question,
+                    Some(Dollar)        => Parameter::Dollar,
+                    Some(Bang)          => Parameter::Bang,
 
-            Some(Token::Dollar) => if let Some(&Name(_)) = self.iter.peek() {
-                if let Some(Name(n)) = self.iter.next() {
-                    Var(n)
-                } else {
-                    unreachable!()
+                    Some(Name(ref s)) | Some(Literal(ref s)) if s == "@" => Parameter::At,
+                    Some(Name(ref s)) | Some(Literal(ref s)) if s == "-" => Parameter::Dash,
+
+                    Some(Name(n)) => Parameter::Var(n),
+
+                    t => return Err(self.make_unexpected_err(t)),
+                };
+
+                match self.iter.next() {
+                    Some(CurlyClose) => param,
+                    t => return Err(self.make_unexpected_err(t)),
                 }
-            } else {
-                return Ok(None);
             },
 
             t => return Err(self.make_unexpected_err(t)),
@@ -1445,7 +1472,6 @@ mod test {
     }
 
     #[test]
-    #[ignore] // FIXME: enable once implemented
     fn test_parameter_short_in_curlies() {
         let words = vec!(
             Parameter::At,

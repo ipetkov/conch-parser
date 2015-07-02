@@ -18,24 +18,17 @@ pub enum Token {
     /// }
     CurlyClose,
 
-    /// $
-    Dollar,
     /// !
     Bang,
-    /// ;
-    Semi,
-    /// &
-    Amp,
-    /// <
-    Less,
-    /// \>
-    Great,
-    /// |
-    Pipe,
     /// ~
     Tilde,
     /// \#
     Pound,
+    /// *
+    Star,
+    /// ?
+    Question,
+
     /// '
     SingleQuote,
     /// "
@@ -43,6 +36,12 @@ pub enum Token {
     /// `
     Backtick,
 
+    /// ;
+    Semi,
+    /// &
+    Amp,
+    /// |
+    Pipe,
     /// &&
     AndIf,
     /// ||
@@ -50,6 +49,10 @@ pub enum Token {
     /// ;;
     DSemi,
 
+    /// <
+    Less,
+    /// \>
+    Great,
     /// <<
     DLess,
     /// \>>
@@ -65,6 +68,8 @@ pub enum Token {
     /// <>
     LessGreat,
 
+    /// $
+    Dollar,
     /// $@
     ParamAt,
     /// $*
@@ -112,6 +117,8 @@ impl fmt::Display for Token {
             Pipe                => fmt.write_str("|"),
             Tilde               => fmt.write_str("~"),
             Pound               => fmt.write_str("#"),
+            Star                => fmt.write_str("*"),
+            Question            => fmt.write_str("?"),
             SingleQuote         => fmt.write_str("\'"),
             DoubleQuote         => fmt.write_str("\""),
             Backtick            => fmt.write_str("`"),
@@ -152,6 +159,8 @@ impl Token {
             CurlyClose  |
             Dollar      |
             Bang        |
+            Star        |
+            Question    |
             Semi        |
             Amp         |
             Less        |
@@ -215,6 +224,8 @@ impl Token {
             Whitespace(_) => true,
 
             Bang               |
+            Star               |
+            Question           |
             SingleQuote        |
             DoubleQuote        |
             Backtick           |

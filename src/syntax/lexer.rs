@@ -61,14 +61,15 @@ impl<I: Iterator<Item = char>> Lexer<I> {
 
         let tok = match cur {
             '\n' => Newline,
-            '\'' => SingleQuote,
-            '{' => CurlyOpen,
-            '}' => CurlyClose,
             '!' => Bang,
             '~' => Tilde,
+            '#' => Pound,
+            '*' => Star,
+            '?' => Question,
+
+            '\'' => SingleQuote,
             '"' => DoubleQuote,
             '`' => Backtick,
-            '#' => Pound,
 
             ';' => if self.next_is(';') { DSemi } else { Semi },
             '&' => if self.next_is('&') { AndIf } else { Amp  },
@@ -76,6 +77,8 @@ impl<I: Iterator<Item = char>> Lexer<I> {
 
             '(' => ParenOpen,
             ')' => ParenClose,
+            '{' => CurlyOpen,
+            '}' => CurlyClose,
 
             '$' => if self.next_is('@') {
                 ParamAt
@@ -237,6 +240,8 @@ mod test {
     check_tok!(check_Great, Great);
     check_tok!(check_Pipe, Pipe);
     check_tok!(check_Tilde, Tilde);
+    check_tok!(check_Star, Star);
+    check_tok!(check_Question, Question);
     check_tok!(check_Pound, Pound);
     check_tok!(check_DoubleQuote, DoubleQuote);
     check_tok!(check_Backtick, Backtick);
@@ -273,7 +278,7 @@ mod test {
 
     lex_str!(check_Assignment_and_value, "foobar=test", Assignment(String::from("foobar")), Name(String::from("test")));
     lex_str!(check_bad_Assigmnent_and_value, "5foobar=test", Literal(String::from("5foobar=test")));
-    lex_str!(check_Literal_and_Name_combo, "hello ,asdf5_ 6world __name ^?.@abc _test2",
+    lex_str!(check_Literal_and_Name_combo, "hello ,asdf5_ 6world __name ^.@abc _test2",
              Name(String::from("hello")),
              Whitespace(String::from(" ")),
              Literal(String::from(",asdf5_")),
@@ -282,7 +287,7 @@ mod test {
              Whitespace(String::from(" ")),
              Name(String::from("__name")),
              Whitespace(String::from(" ")),
-             Literal(String::from("^?.@abc")),
+             Literal(String::from("^.@abc")),
              Whitespace(String::from(" ")),
              Name(String::from("_test2"))
      );
