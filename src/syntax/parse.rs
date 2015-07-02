@@ -348,8 +348,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         loop {
             if let Some(&Assignment(_)) = self.iter.peek() {
                 if let Some(Assignment(var)) = self.iter.next() {
-                    let word = try!(self.word()).unwrap_or(ast::Word::Literal(String::new()));
-                    vars.push((var, word));
+                    vars.push((var, try!(self.word())));
                 } else {
                     unreachable!();
                 }
@@ -1240,7 +1239,7 @@ mod test {
         Box::new(cmd_unboxed(cmd))
     }
 
-    fn sample_simple_command() -> (Option<Word>, Vec<Word>, Vec<(String, Word)>, Vec<Redirect>) {
+    fn sample_simple_command() -> (Option<Word>, Vec<Word>, Vec<(String, Option<Word>)>, Vec<Redirect>) {
         (
             Some(Word::Literal(String::from("foo"))),
             vec!(
@@ -1248,8 +1247,8 @@ mod test {
                 Word::Literal(String::from("baz")),
             ),
             vec!(
-                (String::from("var"), Word::Literal(String::from("val"))),
-                (String::from("ENV"), Word::Literal(String::from("true"))),
+                (String::from("var"), Some(Word::Literal(String::from("val")))),
+                (String::from("ENV"), Some(Word::Literal(String::from("true")))),
             ),
             vec!(
                 Redirect::Clobber(Some(2),   Word::Literal(String::from("clob"))),

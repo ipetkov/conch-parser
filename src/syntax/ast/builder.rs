@@ -116,7 +116,7 @@ pub trait Builder {
     /// * args: arguments to the command
     /// * redirects: redirection of any file descriptors to/from other file descriptors or files.
     fn simple_command(&mut self,
-                      env_vars: Vec<(String, Word)>,
+                      env_vars: Vec<(String, Option<Word>)>,
                       cmd: Option<Word>,
                       args: Vec<Word>,
                       redirects: Vec<Redirect>)
@@ -309,7 +309,7 @@ pub trait CommandBuilder {
 
     /// Constructs a `Command::Simple` node with the provided inputs.
     fn simple_command(&mut self,
-                      mut env_vars: Vec<(String, Word)>,
+                      mut env_vars: Vec<(String, Option<Word>)>,
                       cmd: Option<Word>,
                       mut args: Vec<Word>,
                       mut redirects: Vec<Redirect>)
@@ -473,7 +473,7 @@ impl<T: CommandBuilder> Builder for T {
     }
 
     fn simple_command(&mut self,
-                      env_vars: Vec<(String, Word)>,
+                      env_vars: Vec<(String, Option<Word>)>,
                       cmd: Option<Word>,
                       args: Vec<Word>,
                       redirects: Vec<Redirect>)

@@ -151,7 +151,7 @@ pub struct SimpleCommand {
     pub args: Vec<Word>,
     /// Environment variable assignments for this command, bound as
     /// tuples of (var name, value).
-    pub vars: Vec<(String, Word)>,
+    pub vars: Vec<(String, Option<Word>)>,
     /// All redirections that should be applied before running the command.
     pub io: Vec<Redirect>,
 }
