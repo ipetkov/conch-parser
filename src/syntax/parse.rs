@@ -81,150 +81,6 @@ impl<T> ::std::convert::From<T> for Error<T> {
     }
 }
 
-/// Checks that at least one of the provided reserved words is present, without
-/// consuming it, returning the result of the respective provided action if one is found.
-macro_rules! reserved_word_peek {
-    // Checks for a reserved word (which is a string literal) and runs the corresponding action if one is found
-    ($parser:expr, word: $($kw:expr => $action:expr),+) => {{
-        $parser.skip_whitespace();
-        match $parser.iter.multipeek(2) {
-            // All tokens that delimit a word
-            // NB: Make sure this list is correct w.r.t. definition of `Parse::word`
-            [ref kw_tok]                    | // Don't forget about delimiting through EOF!
-            [ref kw_tok, Newline, ..]       |
-            [ref kw_tok, ParenOpen, ..]     |
-            [ref kw_tok, ParenClose, ..]    |
-            [ref kw_tok, Bang, ..]          |
-            [ref kw_tok, Semi, ..]          |
-            [ref kw_tok, Amp, ..]           |
-            [ref kw_tok, Less, ..]          |
-            [ref kw_tok, Great, ..]         |
-            [ref kw_tok, Pipe, ..]          |
-            [ref kw_tok, Tilde, ..]         |
-            [ref kw_tok, DoubleQuote, ..]   |
-            [ref kw_tok, Backtick, ..]      |
-            [ref kw_tok, AndIf, ..]         |
-            [ref kw_tok, OrIf, ..]          |
-            [ref kw_tok, DSemi, ..]         |
-            [ref kw_tok, DLess, ..]         |
-            [ref kw_tok, DGreat, ..]        |
-            [ref kw_tok, GreatAnd, ..]      |
-            [ref kw_tok, LessAnd, ..]       |
-            [ref kw_tok, DLessDash, ..]     |
-            [ref kw_tok, Clobber, ..]       |
-            [ref kw_tok, LessGreat, ..]     |
-            [ref kw_tok, Whitespace(_), ..] => match kw_tok {
-                &Token::Name(ref kw)    |
-                &Token::Literal(ref kw) => match ::std::borrow::Borrow::borrow(kw) {
-                    $($kw => Some($action)),+,
-                    _ => None,
-                },
-                _ => None,
-            },
-            _ => None,
-        }
-    }};
-
-    // Checks for a reserved word (which is a token) and runs the corresponding action if one is found
-    ($parser:expr, tok: $($kw:pat => $action:expr),+) => {{
-        $parser.skip_whitespace();
-        match $parser.iter.multipeek(2) {
-            // All tokens that delimit a word
-            // NB: Make sure this list is correct w.r.t. definition of `Parse::word`
-            [ref kw_tok]                    | // Don't forget about delimiting through EOF!
-            [ref kw_tok, Newline, ..]       |
-            [ref kw_tok, ParenOpen, ..]     |
-            [ref kw_tok, ParenClose, ..]    |
-            [ref kw_tok, Bang, ..]          |
-            [ref kw_tok, Semi, ..]          |
-            [ref kw_tok, Amp, ..]           |
-            [ref kw_tok, Less, ..]          |
-            [ref kw_tok, Great, ..]         |
-            [ref kw_tok, Pipe, ..]          |
-            [ref kw_tok, Tilde, ..]         |
-            [ref kw_tok, DoubleQuote, ..]   |
-            [ref kw_tok, Backtick, ..]      |
-            [ref kw_tok, AndIf, ..]         |
-            [ref kw_tok, OrIf, ..]          |
-            [ref kw_tok, DSemi, ..]         |
-            [ref kw_tok, DLess, ..]         |
-            [ref kw_tok, DGreat, ..]        |
-            [ref kw_tok, GreatAnd, ..]      |
-            [ref kw_tok, LessAnd, ..]       |
-            [ref kw_tok, DLessDash, ..]     |
-            [ref kw_tok, Clobber, ..]       |
-            [ref kw_tok, LessGreat, ..]     |
-            [ref kw_tok, Whitespace(_), ..] => match kw_tok {
-                $(&$kw => Some($action)),+,
-                _ => None,
-            },
-            _ => None,
-        }
-    }};
-}
-
-/// Checks that at least one of the provided reserved words is present,
-/// consuming it in the process and returning the result of the provided action.
-/// This macro will return with an error from its calling function if no reserved
-/// word is found.
-macro_rules! reserved_word {
-    // Consumes reserved word (which is a string literal) and runs the corresponding action
-    ($parser:expr, word: $($kw:expr => $action:expr),+) => {
-        match reserved_word_peek!($parser, word: $($kw => $action),+) {
-            None => return Err($parser.make_unexpected_err(None)),
-            Some(ret) => {
-                // Capture the keyword but preserve the following token
-                $parser.iter.next();
-                ret
-            },
-        }
-    };
-
-    // Consumes reserved word (which is a token) and runs the corresponding action
-    ($parser:expr, tok: $($kw:pat => $action:expr),+) => {
-        match reserved_word_peek!($parser, tok: $($kw => $action),+) {
-            None => return Err($parser.make_unexpected_err(None)),
-            Some(ret) => {
-                // Capture the keyword but preserve the following token
-                $parser.iter.next();
-                ret
-            },
-        }
-    };
-}
-
-/// Parses a non-empty vector of complete commands until a reserved word is found.
-/// The reserved word is not consumed, and is recognized by `reserved_word!`. This macro
-/// will return with an error from its calling function if no reserved word is found.
-macro_rules! command_list {
-    // Internal type to avoid duplication when defining the other invocation types.
-    (internal: $parser:expr, $peek:expr) => {{
-        let mut cmds = Vec::new();
-        loop {
-            $peek;
-            match try!($parser.complete_command()) {
-                Some(c) => cmds.push(c),
-                None => break,
-            }
-        }
-
-        if cmds.is_empty() {
-            return Err($parser.make_unexpected_err(None));
-        }
-        cmds
-    }};
-
-    // Parse commands until a reserved word (which is a string literal) is found
-    ($parser:expr, word: $($kw:expr),+) => {
-        command_list!(internal: $parser, reserved_word_peek!($parser, word: $($kw => break),+))
-    };
-
-    // Parse commands until a reserved word (which is a token) is found
-    ($parser:expr, tok: $($kw:pat),+) => {
-        command_list!(internal: $parser, reserved_word_peek!($parser, tok: $($kw => break),+))
-    };
-}
-
 /// Used to indicate what kind of compound command could be parsed next.
 enum CompoundCmdKeyword {
     For,
@@ -465,7 +321,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             return self.compound_command_internal(Some(kw))
         }
 
-        if reserved_word_peek!(self, word: "function" => {}).is_some() {
+        if self.peek_reserved_word(&["function"]).is_some() {
             return self.function_declaration();
         }
 
@@ -694,9 +550,6 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         let mut words = Vec::new();
         loop {
             match self.iter.peek() {
-                // NB: The complement of the tokens below (i.e. any token that would
-                // delimit the current command and break the loop) should be matched
-                // against in the `reserved_word_peek!` macro!
                 Some(&CurlyOpen)          |
                 Some(&CurlyClose)         |
                 Some(&SingleQuote)        |
@@ -818,9 +671,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// reserved words. Each of the reserved words must be a literal token, and cannot be
     /// quoted or concatenated.
     pub fn do_group(&mut self) -> Result<Vec<B::Output>, Error<B::Err>> {
-        reserved_word!(self, word: "do" => {});
-        let result = command_list!(self, word: "done");
-        reserved_word!(self, word: "done" => {});
+        try!(self.reserved_word(&["do"]));
+        let result = try!(self.command_list(&["done"], &[]));
+        try!(self.reserved_word(&["done"]));
         Ok(result)
     }
 
@@ -829,9 +682,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     pub fn brace_group(&mut self) -> Result<Vec<B::Output>, Error<B::Err>> {
         // CurlyClose must be encountered as a stand alone word,
         // even though it is represented as its own token
-        reserved_word!(self, tok: CurlyOpen => {});
-        let cmds = command_list!(self, tok: CurlyClose);
-        reserved_word!(self, tok: CurlyClose => {});
+        try!(self.reserved_token(&[CurlyOpen]));
+        let cmds = try!(self.command_list(&[], &[CurlyClose]));
+        try!(self.reserved_token(&[CurlyClose]));
         Ok(cmds)
     }
 
@@ -845,7 +698,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         }
 
         // Paren's are always special tokens, hence they aren't
-        // reserved words, and the `command_list!` macro doesn't apply.
+        // reserved words, and thus the `command_list` method doesn't apply.
         let mut cmds = Vec::new();
         loop {
             if let Some(&ParenClose) = self.iter.peek() { break; }
@@ -864,17 +717,20 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Peeks at the next token (after skipping whitespace) to determine
     /// if (and which) compound command may follow.
     fn next_compound_command_type(&mut self) -> Option<CompoundCmdKeyword> {
-        reserved_word_peek!(self, word:
-            "for"   => CompoundCmdKeyword::For,
-            "case"  => CompoundCmdKeyword::Case,
-            "if"    => CompoundCmdKeyword::If,
-            "while" => CompoundCmdKeyword::While,
-            "until" => CompoundCmdKeyword::Until
-        ).or_else(|| reserved_word_peek!(self, tok: CurlyOpen => CompoundCmdKeyword::Brace))
-         .or_else(|| match self.iter.peek() {
-            Some(&ParenOpen) => Some(CompoundCmdKeyword::Subshell),
-            _ => None,
-        })
+        if let Some(&ParenOpen) = self.iter.peek() {
+            Some(CompoundCmdKeyword::Subshell)
+        } else if let Some(_) = self.peek_reserved_token(&[CurlyOpen]) {
+            Some(CompoundCmdKeyword::Brace)
+        } else {
+            match self.peek_reserved_word(&["for", "case", "if", "while", "until"]) {
+                Some("for")   => Some(CompoundCmdKeyword::For),
+                Some("case")  => Some(CompoundCmdKeyword::Case),
+                Some("if")    => Some(CompoundCmdKeyword::If),
+                Some("while") => Some(CompoundCmdKeyword::While),
+                Some("until") => Some(CompoundCmdKeyword::Until),
+                _ => None,
+            }
+        }
     }
 
     /// Parses compound commands like `for`, `case`, `if`, `while`, `until`,
@@ -939,11 +795,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     ///
     /// Return structure is `Result(loop_kind, guard_commands, body_commands)`.
     pub fn loop_command(&mut self) -> Result<(builder::LoopKind, Vec<B::Output>, Vec<B::Output>), Error<B::Err>> {
-        let until = reserved_word!(self, word:
-                                   "while" => builder::LoopKind::While,
-                                   "until" => builder::LoopKind::Until);
-        let guard = command_list!(self, word: "do");
-        Ok((until, guard, try!(self.do_group())))
+        let kind = match try!(self.reserved_word(&["while", "until"])) {
+            "while" => builder::LoopKind::While,
+            "until" => builder::LoopKind::Until,
+            _ => unreachable!(),
+        };
+        let guard = try!(self.command_list(&["do"], &[]));
+        Ok((kind, guard, try!(self.do_group())))
     }
 
     /// Parses a single `if` command but does not parse any redirections that may follow.
@@ -957,34 +815,25 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         Vec<(Vec<B::Output>, Vec<B::Output>)>,
         Option<Vec<B::Output>>), Error<B::Err>>
     {
-        reserved_word!(self, word: "if" => {});
+        try!(self.reserved_word(&["if"]));
 
         let mut branches = Vec::new();
         loop {
-            let guard = command_list!(self, word: "then");
-            reserved_word!(self, word: "then" => {});
+            let guard = try!(self.command_list(&["then"], &[]));
+            try!(self.reserved_word(&["then"]));
 
-            let body = command_list!(self, word: "elif", "else", "fi");
+            let body = try!(self.command_list(&["elif", "else", "fi"], &[]));
             branches.push((guard, body));
 
-            // NB: embedding the `continue` within the reserved_word! macro
-            // will cause the loop to continue before the "elif" is consumed.
-            let (found_elif, found_else) = reserved_word!(self, word:
-                "elif" => (true, false),
-                "else" => (false, true),
-                "fi"   => (false, false)
-            );
-
-            if found_elif {
-                continue;
-            }
-
-            let els = if found_else {
-                let els = command_list!(self, word: "fi");
-                reserved_word!(self, word: "fi" => {});
-                Some(els)
-            } else {
-                None
+            let els = match try!(self.reserved_word(&["elif", "else", "fi"])) {
+                "elif" => continue,
+                "else" => {
+                    let els = try!(self.command_list(&["fi"], &[]));
+                    try!(self.reserved_word(&["fi"]));
+                    Some(els)
+                },
+                "fi" => None,
+                _ => unreachable!(),
             };
 
             return Ok((branches, els))
@@ -1005,7 +854,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         Option<Vec<ast::Newline>>,
         Vec<B::Output>), Error<B::Err>>
     {
-        reserved_word!(self, word: "for" => {});
+        try!(self.reserved_word(&["for"]));
+
         self.skip_whitespace();
         let var = match self.iter.next() {
             Some(Name(v)) => v,
@@ -1013,8 +863,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         };
 
         let post_var_comments = self.linebreak();
-        let (words, post_word_comments) = if reserved_word_peek!(self, word: "in" => {}).is_some() {
-            reserved_word!(self, word: "in" => {});
+        let (words, post_word_comments) = if self.peek_reserved_word(&["in"]).is_some() {
+            try!(self.reserved_word(&["in"]));
+
             let mut words = Vec::new();
             while let Some(w) = try!(self.word()) {
                 words.push(w);
@@ -1058,25 +909,25 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             Vec<ast::Newline>
         ), Error<B::Err>>
     {
-        reserved_word!(self, word: "case" => {});
+        try!(self.reserved_word(&["case"]));
         let word = match try!(self.word()) {
             Some(w) => w,
             None => return Err(self.make_unexpected_err(None)),
         };
 
         let post_word_comments = self.linebreak();
-        reserved_word!(self, word: "in" => {});
+        try!(self.reserved_word(&["in"]));
         let mut pre_esac_comments = None;
 
         let mut branches = Vec::new();
         loop {
             let pre_pat_comments = self.linebreak();
-            reserved_word_peek!(self, word: "esac" => {
+            if self.peek_reserved_word(&["esac"]).is_some() {
                 // Make sure we don't lose the captured comments if there are no body
                 debug_assert_eq!(pre_esac_comments, None);
                 pre_esac_comments = Some(pre_pat_comments);
                 break;
-            });
+            }
 
             if let Some(&ParenOpen) = self.iter.peek() {
                 self.iter.next();
@@ -1096,16 +947,16 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 }
             }
 
-            // NB: we must capture linebreaks here since `reserved_word_peek!`
+            // NB: we must capture linebreaks here since `peek_reserved_word`
             // will not consume them, and it could mistake a reserved word for a command.
             let patterns = (pre_pat_comments, patterns, self.linebreak());
 
             // DSemi's are always special tokens, hence they aren't
-            // reserved words, and the `command_list!` macro doesn't apply.
+            // reserved words, and thus the `command_list` method doesn't apply.
             let mut cmds = Vec::new();
             loop {
                 // Make sure we check for both delimiters
-                reserved_word_peek!(self, word: "esac" => break);
+                if self.peek_reserved_word(&["esac"]).is_some() { break; }
                 if let Some(&DSemi) = self.iter.peek() { break; }
 
                 match try!(self.complete_command()) {
@@ -1136,7 +987,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             None => remaining_comments,
         };
 
-        reserved_word!(self, word: "esac" => {});
+        try!(self.reserved_word(&["esac"]));
 
         Ok((word, post_word_comments, branches, pre_esac_comments))
     }
@@ -1147,8 +998,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// the name of the function must be followed by `()`. Whitespace is allowed between
     /// the name and `(`, and whitespace is allowed between `()`.
     fn function_declaration(&mut self) -> Result<B::Output, Error<B::Err>> {
-        let found_fn = match reserved_word_peek!(self, word: "function" => {}) {
-            Some(_) => reserved_word!(self, word: "function" => true),
+        let found_fn = match self.peek_reserved_word(&["function"]) {
+            Some(_) => { self.iter.next(); true },
             None => false,
         };
 
@@ -1233,6 +1084,123 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             },
 
             _ => return None,
+        }
+    }
+
+    /// Checks that one of the specified tokens appears as a reserved word.
+    ///
+    /// The token must be followed by a token which delimits a word when it is
+    /// unquoted/unescaped.
+    ///
+    /// If a reserved word is found, the token which it matches will be
+    /// returned in case the caller cares which specific reserved word was found.
+    pub fn peek_reserved_token<'a>(&mut self, tokens: &'a [Token]) -> Option<&'a Token> {
+        macro_rules! try_once {
+            () => {{
+                let tok = match self.iter.multipeek(2) {
+                    // Don't forget about delimiting through EOF!
+                    [ref kw] => Some(kw),
+                    [ref kw, ref delim] if delim.is_word_delimiter() => Some(kw),
+                    _ => None,
+                };
+
+                tok.and_then(|tok| tokens.iter().find(|&t| t == tok))
+            }}
+        }
+
+        let care_about_whitespace = tokens.iter().any(|tok| {
+            if let &Whitespace(_) = tok {
+                true
+            } else {
+                false
+            }
+        });
+
+        // If the caller cares about whitespace as a reserved word we should
+        // do a reserved word check without skipping any leading whitespace.
+        // If we don't find anything the first time (or if the caller does
+        // not care about whitespace tokens) we will skip the whitespace
+        // and try again.
+        if care_about_whitespace {
+            try_once!()
+        } else {
+            None
+        }.or_else(|| {
+            self.skip_whitespace();
+            try_once!()
+        })
+    }
+
+    /// Checks that one of the specified strings appears as a reserved word.
+    ///
+    /// The word must appear as a single token, unquoted and unescaped, and
+    /// must be followed by a token which delimits a word when it is
+    /// unquoted/unescaped. The reserved word may appear as a `Token::Name`
+    /// or a `Token::Literal`.
+    ///
+    /// If a reserved word is found, the string which it matches will be
+    /// returned in case the caller cares which specific reserved word was found.
+    pub fn peek_reserved_word<'a>(&mut self, words: &'a [&str]) -> Option<&'a str> {
+        self.skip_whitespace();
+        let tok = match self.iter.multipeek(2) {
+            // Don't forget about delimiting through EOF!
+            [ref kw] => kw,
+            [ref kw, ref delim] if delim.is_word_delimiter() => kw,
+            _ => return None,
+        };
+
+        match *tok {
+            Name(ref kw) |
+            Literal(ref kw) => words.iter().find(|&w| w == kw).map(|kw| *kw),
+            _ => None,
+        }
+    }
+
+    /// Checks that one of the specified tokens appears as a reserved word
+    /// and consumes it, returning the token it matched in case the caller
+    /// cares which specific reserved word was found.
+    pub fn reserved_token(&mut self, tokens: &[Token]) -> Result<Token, Error<B::Err>> {
+        match self.peek_reserved_token(tokens) {
+            Some(_) => Ok(self.iter.next().unwrap()),
+            None => Err(self.make_unexpected_err(None)),
+        }
+    }
+
+    /// Checks that one of the specified strings appears as a reserved word
+    /// and consumes it, returning the string it matched in case the caller
+    /// cares which specific reserved word was found.
+    pub fn reserved_word<'a>(&mut self, words: &'a [&str]) -> Result<&'a str, Error<B::Err>> {
+        match self.peek_reserved_word(words) {
+            Some(s) => { self.iter.next(); Ok(s) },
+            None => Err(self.make_unexpected_err(None)),
+        }
+    }
+
+    /// Parses commands until a reserved word or reserved token (or EOF)
+    /// is reached, without consuming the reserved word.
+    ///
+    /// The reserved word/token **must** appear after a complete command
+    /// separator (e.g. `;`, `&`, or a newline), otherwise it will be
+    /// parsed as part of the command.
+    ///
+    /// It is considered an error if no commands are present.
+    pub fn command_list(&mut self, words: &[&str], tokens: &[Token]) -> Result<Vec<B::Output>, Error<B::Err>> {
+        let mut cmds = Vec::new();
+        loop {
+            if self.peek_reserved_word(words).is_some() || self.peek_reserved_token(tokens).is_some() {
+                break;
+            }
+
+            match try!(self.complete_command()) {
+                Some(c) => cmds.push(c),
+                None => break,
+            }
+        }
+
+        if cmds.is_empty() {
+            Err(self.make_unexpected_err(None))
+        } else {
+            Ok(cmds)
         }
     }
 }

@@ -189,4 +189,51 @@ impl Token {
             Assignment(ref s) => s.len() + 1, // Don't forget the '='
         }
     }
+
+    /// Indicates whether a word can be delimited by this token
+    /// when the token is **not** quoted or escaped.
+    pub fn is_word_delimiter(&self) -> bool {
+        match *self {
+            Newline           |
+            ParenOpen         |
+            ParenClose        |
+            Semi              |
+            Amp               |
+            Less              |
+            Great             |
+            Pipe              |
+            AndIf             |
+            OrIf              |
+            DSemi             |
+            DLess             |
+            DGreat            |
+            GreatAnd          |
+            LessAnd           |
+            DLessDash         |
+            Clobber           |
+            LessGreat         |
+            Whitespace(_) => true,
+
+            Bang               |
+            SingleQuote        |
+            DoubleQuote        |
+            Backtick           |
+            CurlyOpen          |
+            CurlyClose         |
+            Dollar             |
+            Tilde              |
+            Pound              |
+            ParamAt            |
+            ParamStar          |
+            ParamPound         |
+            ParamQuestion      |
+            ParamDash          |
+            ParamDollar        |
+            ParamBang          |
+            Name(_)            |
+            Literal(_)         |
+            ParamPositional(_) |
+            Assignment(_)      => false,
+        }
+    }
 }
