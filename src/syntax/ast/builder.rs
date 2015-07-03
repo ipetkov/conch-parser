@@ -10,6 +10,7 @@
 //! trait if you wish to selectively overwrite several of the default
 //! implementations and/or return a custom error from them.
 
+use std::error::Error;
 use syntax::ast::{self, Command, CompoundCommand, SimpleCommand, Redirect, Word};
 
 /// An indicator to the builder of how complete commands are separated.
@@ -59,7 +60,7 @@ pub trait Builder {
     /// The type which represents the different shell commands.
     type Output;
     /// An error type that the builder may want to return.
-    type Err;
+    type Err: Error;
 
     /// Invoked once a complete command is found. That is, a command delimited by a
     /// newline, semicolon, ampersand, or the end of input.
@@ -253,7 +254,7 @@ pub trait Builder {
 /// definition of the `Builder` trait.
 pub trait CommandBuilder {
     /// An error type that an implementor of this trait may return.
-    type Err;
+    type Err: Error;
 
     /// Constructs a `Command::Job` node with the provided inputs if the command
     /// was delimited by an ampersand or the command itself otherwise.
@@ -556,8 +557,24 @@ impl<T: CommandBuilder> Builder for T {
     }
 }
 
+#[derive(Debug)]
+/// A dummy error which implements the `Error` trait.
+pub struct DummyError;
+
+impl ::std::fmt::Display for DummyError {
+    fn fmt(&self, fmt: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+        fmt.write_str("dummy error")
+    }
+}
+
+impl Error for DummyError {
+    fn description(&self) -> &str {
+        "dummy error"
+    }
+}
+
 impl CommandBuilder for DefaultBuilder {
-    type Err = ();
+    type Err = DummyError;
 }
 
 impl ::std::default::Default for DefaultBuilder {
