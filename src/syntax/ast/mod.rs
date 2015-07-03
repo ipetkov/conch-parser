@@ -41,7 +41,12 @@ pub enum Word {
     DoubleQuoted(Vec<Word>),
     /// Access of a value inside a parameter, e.g. `$foo` or `$$`.
     Param(Parameter),
-
+    /// Represents `*`, useful when doing pattern expansions.
+    Star,
+    /// Represents `?`, useful when doing pattern expansions.
+    Question,
+    /// Represents `~`, useful when doing tilde expansions.
+    Tilde,
 }
 
 /// Represents redirecting a command's file descriptors.
@@ -139,6 +144,7 @@ pub enum CompoundCommand {
     /// Variant structure: `Case( to_match, (pattern_alternative+, commands*)* )`
     Case(Word, Vec<(Vec<Word>, Vec<Command>)>),
 }
+
 /// The simplest possible command: an executable with arguments,
 /// environment variable assignments, and redirections.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -180,8 +186,12 @@ impl Display for Word {
         use self::Word::*;
 
         match *self {
+            Star           => fmt.write_str("*"),
+            Question       => fmt.write_str("?"),
+            Tilde          => fmt.write_str("~"),
             Literal(ref s) => fmt.write_str(s),
-            Param(ref p) => write!(fmt, "{}", p),
+
+            Param(ref p)        => write!(fmt, "{}", p),
             SingleQuoted(ref w) => write!(fmt, "'{}'", w),
 
             DoubleQuoted(ref words) => {
