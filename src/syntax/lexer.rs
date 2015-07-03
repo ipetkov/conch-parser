@@ -7,6 +7,7 @@ use self::TokenOrLiteral::*;
 #[derive(PartialEq, Eq, Debug)]
 enum TokenOrLiteral {
     Tok(Token),
+    Escaped(Option<Token>),
     Lit(char),
 }
 
@@ -66,6 +67,15 @@ impl<I: Iterator<Item = char>> Lexer<I> {
             '#' => Pound,
             '*' => Star,
             '?' => Question,
+
+            // Make sure that we treat the next token as a single character,
+            // preventing multi-char tokens from being recognized. This is
+            // important because something like `\&&` would mean that the
+            // first & is a literal while the second retains its properties.
+            // We will let the parser deal with what actually becomes a literal.
+            '\\' => return Some(Escaped(self.inner.next().and_then(|c| {
+                Lexer::new(::std::iter::once(c)).next()
+            }))),
 
             '\'' => SingleQuote,
             '"' => DoubleQuote,
@@ -155,6 +165,12 @@ impl<I: Iterator<Item = char>> Iterator for Lexer<I> {
         match self.next_internal() {
             None => None,
             Some(Tok(t)) => Some(t),
+            Some(Escaped(t)) => {
+                debug_assert_eq!(self.peeked, None);
+                self.peeked = t.map(Tok);
+                Some(Backslash)
+            },
+
             Some(Lit(c)) => {
                 let is_name = name_start_char(c);
                 let mut word = String::new();
@@ -163,9 +179,10 @@ impl<I: Iterator<Item = char>> Iterator for Lexer<I> {
                 loop {
                     match self.next_internal() {
                         // If we hit a token, delimit the current word w/o losing the token
-                        Some(Tok(t)) => {
+                        Some(tok@Tok(_)) |
+                        Some(tok@Escaped(_)) => {
                             debug_assert_eq!(self.peeked, None);
-                            self.peeked = Some(Tok(t));
+                            self.peeked = Some(tok);
                             break;
                         },
 
@@ -291,4 +308,20 @@ mod test {
              Whitespace(String::from(" ")),
              Name(String::from("_test2"))
      );
+
+    lex_str!(check_escape_Backslash,       "\\\\",  Backslash, Backslash);
+    lex_str!(check_escape_AndIf,           "\\&&",  Backslash, Amp, Amp);
+    lex_str!(check_escape_DSemi,           "\\;;",  Backslash, Semi, Semi);
+    lex_str!(check_escape_DLess,           "\\<<",  Backslash, Less, Less);
+    lex_str!(check_escape_DLessDash,       "\\<<-", Backslash, Less, Less, Literal(String::from("-")));
+    lex_str!(check_escape_ParamAt,         "\\$@",  Backslash, Dollar, Literal(String::from("@")));
+    lex_str!(check_escape_ParamDollar,     "\\$$",  Backslash, Dollar, Dollar);
+    lex_str!(check_escape_ParamPositional, "\\$0",  Backslash, Dollar, Literal(String::from("0")));
+    lex_str!(check_escape_Whitespace,      "\\  ",  Backslash, Whitespace(String::from(" ")), Whitespace(String::from(" ")));
+    lex_str!(check_escape_Name,            "\\ab",  Backslash, Name(String::from("a")), Name(String::from("b")));
+    lex_str!(check_escape_Literal,         "\\^3",  Backslash, Literal(String::from("^")), Literal(String::from("3")));
+    lex_str!(check_escape_Assignment,      "\\a=",  Backslash, Name(String::from("a")), Literal(String::from("=")));
+    lex_str!(check_escape_Assignment2,     "\\ab=", Backslash, Name(String::from("a")), Assignment(String::from("b")));
+
+    lex_str!(check_no_tokens_lost, "word\\'", Name(String::from("word")), Backslash, SingleQuote);
 }

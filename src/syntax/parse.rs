@@ -588,6 +588,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 Some(&Question)           |
                 Some(&Tilde)              |
                 Some(&Bang)               |
+                Some(&Backslash)          |
                 Some(&Assignment(_))      |
                 Some(&Name(_))            |
                 Some(&Literal(_))         => {},
@@ -654,6 +655,12 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 Star     => ast::Word::Star,
                 Question => ast::Word::Question,
                 Tilde    => ast::Word::Tilde,
+
+                Backslash => match self.iter.next() {
+                    Some(Newline) => break, // escaped newlines become whitespace and a delimiter
+                    Some(t) => ast::Word::Literal(t.to_string()),
+                    None => break, // Can't escape EOF, just ignore the slash
+                },
 
                 SingleQuote => {
                     // Make sure we actually find the closing quote before EOF
@@ -1184,8 +1191,18 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Skips over any encountered whitespace but preserves newlines.
     #[inline]
     pub fn skip_whitespace(&mut self) {
-        while let Some(&Whitespace(_)) = self.iter.peek() {
-            self.iter.next();
+        loop {
+            while let Some(&Whitespace(_)) = self.iter.peek() {
+                self.iter.next();
+            }
+
+            match self.iter.multipeek(2) {
+                [Backslash, Newline, ..] => {
+                    self.iter.next();
+                    self.iter.next();
+                },
+                _ => break,
+            }
         }
     }
 
@@ -1439,6 +1456,12 @@ mod test {
     }
 
     #[test]
+    fn test_linebreak_escaping_newline_insignificant() {
+        let mut p = make_parser("#comment escapes newline\\\n");
+        assert_eq!(p.linebreak(), vec!(Newline(Some(String::from("#comment escapes newline\\")))));
+    }
+
+    #[test]
     fn test_skip_whitespace_preserve_newline() {
         let mut p = make_parser("    \t\t \t \t\n   ");
         p.skip_whitespace();
@@ -1448,6 +1471,13 @@ mod test {
     #[test]
     fn test_skip_whitespace_preserve_comments() {
         let mut p = make_parser("    \t\t \t \t#comment\n   ");
+        p.skip_whitespace();
+        assert_eq!(p.linebreak().pop().unwrap(), Newline(Some(String::from("#comment"))));
+    }
+
+    #[test]
+    fn test_skip_whitespace_skip_escaped_newlines() {
+        let mut p = make_parser("  \t \\\n  \\\n#comment\n");
         p.skip_whitespace();
         assert_eq!(p.linebreak().pop().unwrap(), Newline(Some(String::from("#comment"))));
     }

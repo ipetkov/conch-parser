@@ -28,6 +28,8 @@ pub enum Token {
     Star,
     /// ?
     Question,
+    /// \\
+    Backslash,
 
     /// '
     SingleQuote,
@@ -119,6 +121,7 @@ impl fmt::Display for Token {
             Pound               => fmt.write_str("#"),
             Star                => fmt.write_str("*"),
             Question            => fmt.write_str("?"),
+            Backslash           => fmt.write_str("\\"),
             SingleQuote         => fmt.write_str("\'"),
             DoubleQuote         => fmt.write_str("\""),
             Backtick            => fmt.write_str("`"),
@@ -161,6 +164,7 @@ impl Token {
             Bang        |
             Star        |
             Question    |
+            Backslash   |
             Semi        |
             Amp         |
             Less        |
@@ -226,6 +230,7 @@ impl Token {
             Bang               |
             Star               |
             Question           |
+            Backslash          |
             SingleQuote        |
             DoubleQuote        |
             Backtick           |
