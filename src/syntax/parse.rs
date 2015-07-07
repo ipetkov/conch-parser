@@ -13,6 +13,7 @@ pub type DefaultParser<I> = Parser<I, builder::DefaultBuilder>;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct SourcePos {
+    pub byte: u64,
     pub line: u64,
     pub col: u64,
 }
@@ -70,7 +71,7 @@ impl<T: Error> fmt::Display for ParseError<T> {
             ParseError::BadIdent(ref id, pos)      => write!(fmt, "not a valid identifier {}: {}", pos, id),
             ParseError::BadSubst(None, pos)        => write!(fmt, "bad substitution {}: empty body", pos),
             ParseError::BadSubst(Some(ref t), pos) => write!(fmt, "bad substitution {}: invalid token: {}", pos, t),
-            ParseError::Unmatched(ref t, pos)      => write!(fmt, "unmatched token on line {}: {}", pos, t),
+            ParseError::Unmatched(ref t, pos)      => write!(fmt, "unmatched `{}` starting on line {}", t, pos),
             ParseError::Unexpected(ref t, pos)     => write!(fmt, "found unexpected token on line {}: {}", pos, t),
 
             ParseError::UnexpectedEOF => fmt.write_str("unexpected end of input"),
@@ -106,8 +107,7 @@ enum CompoundCmdKeyword {
 struct TokenIter<I: Iterator<Item = Token>> {
     iter: I,
     peek_buf: Vec<Token>,
-    line: u64,
-    col: u64,
+    pos: SourcePos,
 }
 
 impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
@@ -136,8 +136,10 @@ impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
             _ => 0,
         };
 
-        self.line += newlines;
-        self.col = if newlines == 0 { self.col + next.len() as u64 } else { 0 };
+        let tok_len = next.len() as u64;
+        self.pos.byte = tok_len;
+        self.pos.line += newlines;
+        self.pos.col = if newlines == 0 { self.pos.col + tok_len } else { 0 };
         Some(next)
     }
 }
@@ -148,8 +150,11 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
         TokenIter {
             iter: iter,
             peek_buf: Vec::new(),
-            line: 1,
-            col: 1,
+            pos: SourcePos {
+                byte: 0,
+                line: 1,
+                col: 1,
+            }
         }
     }
 
@@ -177,13 +182,6 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
 
         let upper = ::std::cmp::min(amt, self.peek_buf.len());
         &self.peek_buf[0..upper]
-    }
-
-    fn pos(&self) -> SourcePos {
-        SourcePos {
-            line: self.line,
-            col: self.col,
-        }
     }
 }
 
@@ -217,24 +215,24 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// token in the iterator will be used (or `UnexpectedEOF` if none left).
     fn make_unexpected_err(&mut self, tok: Option<Token>) -> ParseError<B::Err> {
         tok.or_else(|| self.iter.next())
-           .map_or(ParseError::UnexpectedEOF, |t| ParseError::Unexpected(t, self.iter.pos()))
+           .map_or(ParseError::UnexpectedEOF, |t| ParseError::Unexpected(t, self.iter.pos))
     }
 
     /// Construct a `BadFd` error using the given word, indicating that the word
     /// does not respresent a valid file descriptor to be used with a redirection.
     fn make_bad_fd_err(&mut self, w: ast::Word) -> ParseError<B::Err> {
-        ParseError::BadFd(w, self.iter.pos())
+        ParseError::BadFd(w, self.iter.pos)
     }
 
     /// Construct a `BadIdent` error using the given string, indicating that the literal
     /// does not respresent a valid name.
     fn make_bad_ident_err(&mut self, s: String) -> ParseError<B::Err> {
-        ParseError::BadIdent(s, self.iter.pos())
+        ParseError::BadIdent(s, self.iter.pos)
     }
 
     /// Construct a `BadSubst` error using the given offending token.
     fn make_bad_substitution_err(&mut self, tok: Option<Token>) -> ParseError<B::Err> {
-        ParseError::BadSubst(tok, self.iter.pos())
+        ParseError::BadSubst(tok, self.iter.pos)
     }
 
     /// Construct an `Unmatched` error using the given token.
@@ -633,7 +631,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 None => break,
             }
 
-            let start_pos = self.iter.pos();
+            let start_pos = self.iter.pos;
             let w = match self.iter.next().unwrap() {
                 // Assignments are only treated as such if they occur beforea command is
                 // found. Any "Assignments" afterward should be treated as literals.
@@ -853,7 +851,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// reserved words. Each of the reserved words must be a literal token, and cannot be
     /// quoted or concatenated.
     pub fn do_group(&mut self) -> Result<Vec<B::Output>, ParseError<B::Err>> {
-        let start_pos = self.iter.pos();
+        let start_pos = self.iter.pos;
         try!(self.reserved_word(&["do"]));
         let result = try!(self.command_list(&["done"], &[]));
         if self.iter.peek() == None {
@@ -868,7 +866,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     pub fn brace_group(&mut self) -> Result<Vec<B::Output>, ParseError<B::Err>> {
         // CurlyClose must be encountered as a stand alone word,
         // even though it is represented as its own token
-        let start_pos = self.iter.pos();
+        let start_pos = self.iter.pos;
         try!(self.reserved_token(&[CurlyOpen]));
         let cmds = try!(self.command_list(&[], &[CurlyClose]));
         if self.iter.peek() == None {
@@ -882,7 +880,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     ///
     /// It is considered an error if no commands are present inside the subshell.
     pub fn subshell(&mut self) -> Result<Vec<B::Output>, ParseError<B::Err>> {
-        let start_pos = self.iter.pos();
+        let start_pos = self.iter.pos;
         match self.iter.next() {
             Some(ParenOpen) => {},
             t => return Err(self.make_unexpected_err(t)),
@@ -1007,7 +1005,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         Vec<(Vec<B::Output>, Vec<B::Output>)>,
         Option<Vec<B::Output>>), ParseError<B::Err>>
     {
-        let start_pos = self.iter.pos();
+        let start_pos = self.iter.pos;
         try!(self.reserved_word(&["if"]));
 
         let mut branches = Vec::new();
