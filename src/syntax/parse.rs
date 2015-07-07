@@ -663,27 +663,84 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 },
 
                 SingleQuote => {
-                    // Make sure we actually find the closing quote before EOF
-                    let mut found_close_quot = false;
-                    let contents = self.iter.by_ref()
-                        .take_while(|t| if t == &SingleQuote {
-                            found_close_quot = true;
-                            false // stop collecting
-                        } else {
-                            true // keep collecting literals
-                        })
-                        .map(|t| t.to_string())
-                        .collect::<Vec<String>>()
-                        .concat();
-
-                    if found_close_quot {
-                        ast::Word::SingleQuoted(contents)
-                    } else {
-                        return Err(self.make_unmatched_err(SingleQuote, start_pos));
+                    let mut buf = String::new();
+                    loop {
+                        match self.iter.next() {
+                            // Make sure we actually find the closing quote before EOF
+                            Some(SingleQuote) => break,
+                            Some(t) => buf.push_str(&t.to_string()),
+                            None => return Err(self.make_unmatched_err(SingleQuote, start_pos)),
+                        }
                     }
+
+                    ast::Word::SingleQuoted(buf)
                 },
 
-                DoubleQuote |
+                DoubleQuote => {
+                    let mut words = Vec::new();
+                    let mut buf = String::new();
+                    loop {
+                        // Make sure we don't consume any $ (or any specific parameter token)
+                        // we find since the `parameter` method expects to consume them.
+                        match self.iter.peek() {
+                            Some(&Dollar)             |
+                            Some(&ParamAt)            |
+                            Some(&ParamStar)          |
+                            Some(&ParamPound)         |
+                            Some(&ParamQuestion)      |
+                            Some(&ParamDash)          |
+                            Some(&ParamDollar)        |
+                            Some(&ParamBang)          |
+                            Some(&ParamPositional(_)) => {
+                                match try!(self.parameter()) {
+                                    Some(p) => {
+                                        if !buf.is_empty() {
+                                            words.push(ast::Word::Literal(buf));
+                                            buf = String::new();
+                                        }
+                                        words.push(ast::Word::Param(p))
+                                    },
+
+                                    None => buf.push_str(&Dollar.to_string()),
+                                }
+
+                                continue;
+                            },
+
+                            _ => {},
+                        }
+
+                        match self.iter.next() {
+                            Some(DoubleQuote) => {
+                                if !buf.is_empty() {
+                                    words.push(ast::Word::Literal(buf));
+                                }
+
+                                break;
+                            },
+
+                            Some(Backtick) => unimplemented!(),
+
+                            // Backslashes only escape a few tokens when double quoted
+                            Some(Backslash) => match self.iter.peek() {
+                                Some(&Dollar)      |
+                                Some(&Backtick)    |
+                                Some(&DoubleQuote) |
+                                Some(&Backslash)   |
+                                Some(&Newline)     => buf.push_str(&self.iter.next().unwrap().to_string()),
+
+                                _ => buf.push_str(&Backslash.to_string()),
+                            },
+
+                            Some(Dollar) => unreachable!(), // Sanity
+                            Some(t) => buf.push_str(&t.to_string()),
+                            None => return Err(self.make_unmatched_err(DoubleQuote, start_pos)),
+                        }
+                    }
+
+                    ast::Word::DoubleQuoted(words)
+                },
+
                 Backtick    => unimplemented!(),
 
                 // Parameters should have been
@@ -1738,7 +1795,6 @@ mod test {
     }
 
     #[test]
-    #[ignore] // FIXME: correct and unignore
     fn test_redirect_invalid_double_quoted_fd() {
         let mut p = make_parser("\"1\">>out");
         p.redirect_list().unwrap_err();
@@ -1751,7 +1807,6 @@ mod test {
     }
 
     #[test]
-    #[ignore] // FIXME: correct and unignore
     fn test_redirect_invalid_double_quoted_dup_fd() {
         let mut p = make_parser(">&\"2\"");
         p.redirect_list().unwrap_err();
@@ -3741,6 +3796,112 @@ mod test {
             Ok(result) => panic!("Parsed an unexpected command type: {:?}", result),
             Err(err) => panic!("Failed to parse command: {}", err),
         }
+    }
+
+    #[test]
+    fn test_word_single_quote_valid() {
+        let correct = Word::SingleQuoted(String::from("abc&&||\n\n#comment\nabc"));
+        assert_eq!(Some(correct), make_parser("'abc&&||\n\n#comment\nabc'").word().unwrap());
+    }
+
+    #[test]
+    fn test_word_single_quote_valid_slash_remains_literal() {
+        let correct = Word::SingleQuoted(String::from("\\\n"));
+        assert_eq!(Some(correct), make_parser("'\\\n'").word().unwrap());
+    }
+
+    #[test]
+    fn test_word_single_quote_slash_valid_does_not_quote_single_quotes() {
+        let correct = Word::SingleQuoted(String::from("hello \\"));
+        assert_eq!(Some(correct), make_parser("'hello \\'").word().unwrap());
+    }
+
+    #[test]
+    fn test_word_single_quote_slash_invalid_missing_close_quote() {
+        make_parser("'hello").word().unwrap_err();
+    }
+
+    #[test]
+    fn test_word_double_quote_valid() {
+        let correct = Word::DoubleQuoted(vec!(Word::Literal(String::from("abc&&||\n\n#comment\nabc"))));
+        assert_eq!(Some(correct), make_parser("\"abc&&||\n\n#comment\nabc\"").word().unwrap());
+    }
+
+    #[test]
+    fn test_word_double_quote_valid_recognizes_parameters() {
+        let correct = Word::DoubleQuoted(vec!(
+            Word::Literal(String::from("test asdf")),
+            Word::Param(Parameter::Var(String::from("foo"))),
+            Word::Literal(String::from(" $")),
+        ));
+
+        assert_eq!(Some(correct), make_parser("\"test asdf$foo $\"").word().unwrap());
+    }
+
+    #[test]
+    fn test_word_double_quote_valid_slash_escapes_dollar() {
+        let correct = Word::DoubleQuoted(vec!(
+            Word::Literal(String::from("test$foo ")),
+            Word::Param(Parameter::At),
+        ));
+
+        assert_eq!(Some(correct), make_parser("\"test\\$foo $@\"").word().unwrap());
+    }
+
+    #[test]
+    fn test_word_double_quote_valid_slash_escapes_backtick() {
+        let correct = Word::DoubleQuoted(vec!(
+            Word::Literal(String::from("test` ")),
+            Word::Param(Parameter::Star),
+        ));
+
+        assert_eq!(Some(correct), make_parser("\"test\\` $*\"").word().unwrap());
+    }
+
+    #[test]
+    fn test_word_double_quote_valid_slash_escapes_double_quote() {
+        let correct = Word::DoubleQuoted(vec!(
+            Word::Literal(String::from("test\" ")),
+            Word::Param(Parameter::Pound),
+        ));
+
+        assert_eq!(Some(correct), make_parser("\"test\\\" $#\"").word().unwrap());
+    }
+
+    #[test]
+    fn test_word_double_quote_valid_slash_escapes_newline() {
+        let correct = Word::DoubleQuoted(vec!(
+            Word::Literal(String::from("test\n ")),
+            Word::Param(Parameter::Question),
+        ));
+
+        assert_eq!(Some(correct), make_parser("\"test\\\n $?\"").word().unwrap());
+    }
+
+    #[test]
+    fn test_word_double_quote_valid_slash_escapes_slash() {
+        let correct = Word::DoubleQuoted(vec!(
+            Word::Literal(String::from("test\\ ")),
+            Word::Param(Parameter::Positional(0)),
+        ));
+
+        assert_eq!(Some(correct), make_parser("\"test\\\\ $0\"").word().unwrap());
+    }
+
+    #[test]
+    fn test_word_double_quote_valid_slash_remains_literal_in_general_case() {
+        let correct = Word::DoubleQuoted(vec!(
+            Word::Literal(String::from("t\\est ")),
+            Word::Param(Parameter::Dollar),
+        ));
+
+        assert_eq!(Some(correct), make_parser("\"t\\est $$\"").word().unwrap());
+    }
+
+    #[test]
+    fn test_word_double_quote_slash_invalid_missing_close_quote() {
+        make_parser("\"hello").word().unwrap_err();
+        make_parser("\"hello\\\"").word().unwrap_err();
     }
 }
 
