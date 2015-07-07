@@ -1531,7 +1531,19 @@ mod test {
     }
 
     #[test]
-    fn test_skip_whitespace_skip_escaped_newlines() {
+    fn test_skip_whitespace_comments_capture_all_up_to_newline() {
+        let mut p = make_parser("#comment&&||;;()<<-\n");
+        assert_eq!(p.linebreak().pop().unwrap(), Newline(Some(String::from("#comment&&||;;()<<-"))));
+    }
+
+    #[test]
+    fn test_skip_whitespace_comments_may_end_with_eof() {
+        let mut p = make_parser("#comment");
+        assert_eq!(p.linebreak().pop().unwrap(), Newline(Some(String::from("#comment"))));
+    }
+
+    #[test]
+    fn test_skip_whitespace_skip_escapeds_dont_affect_newlines() {
         let mut p = make_parser("  \t \\\n  \\\n#comment\n");
         p.skip_whitespace();
         assert_eq!(p.linebreak().pop().unwrap(), Newline(Some(String::from("#comment"))));
