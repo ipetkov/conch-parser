@@ -2005,10 +2005,19 @@ mod test {
 
     #[test]
     fn test_do_group_invalid_quoted() {
-        let mut p = make_parser("'do' foo\nbar; baz; done");
-        p.do_group().unwrap_err();
-        let mut p = make_parser("do foo\nbar; baz; 'done'");
-        p.do_group().unwrap_err();
+        let cmds = [
+            "'do' foo\nbar; baz; done",
+            "do foo\nbar; baz; 'done'",
+            "\"do\" foo\nbar; baz; done",
+            "do foo\nbar; baz; \"done\"",
+        ];
+
+        for c in cmds.into_iter() {
+            match make_parser(c).do_group() {
+                Err(_) => {},
+                Ok(result) => panic!("Unexpectedly parsed \"{}\" as {:?}", c, result),
+            }
+        }
     }
 
     #[test]
@@ -2101,10 +2110,19 @@ mod test {
 
     #[test]
     fn test_brace_group_invalid_quoted() {
-        let mut p = make_parser("'{' foo\nbar; baz; }");
-        p.brace_group().unwrap_err();
-        let mut p = make_parser("{ foo\nbar; baz; '}'");
-        p.brace_group().unwrap_err();
+        let cmds = [
+            "'{' foo\nbar; baz; }",
+            "{ foo\nbar; baz; '}'",
+            "\"{\" foo\nbar; baz; }",
+            "{ foo\nbar; baz; \"}\"",
+        ];
+
+        for c in cmds.into_iter() {
+            match make_parser(c).brace_group() {
+                Err(_) => {},
+                Ok(result) => panic!("Unexpectedly parsed \"{}\" as {:?}", c, result),
+            }
+        }
     }
 
     #[test]
@@ -2147,10 +2165,19 @@ mod test {
 
     #[test]
     fn test_subshell_invalid_quoted() {
-        let mut p = make_parser("'(' foo\nbar; baz; )");
-        p.subshell().unwrap_err();
-        let mut p = make_parser("( foo\nbar; baz; ')'");
-        p.subshell().unwrap_err();
+        let cmds = [
+            "'(' foo\nbar; baz; )",
+            "( foo\nbar; baz; ')'",
+            "\"(\" foo\nbar; baz; )",
+            "( foo\nbar; baz; \")\"",
+        ];
+
+        for c in cmds.into_iter() {
+            match make_parser(c).subshell() {
+                Err(_) => {},
+                Ok(result) => panic!("Unexpectedly parsed \"{}\" as {:?}", c, result),
+            }
+        }
     }
 
     #[test]
@@ -2218,10 +2245,19 @@ mod test {
 
     #[test]
     fn test_loop_command_invalid_quoted() {
-        let mut p = make_parser("'while' guard do foo\nbar; baz; done");
-        p.loop_command().unwrap_err();
-        let mut p = make_parser("'until' guard do foo\nbar; baz; done");
-        p.loop_command().unwrap_err();
+        let cmds = [
+            "'while' guard do foo\nbar; baz; done",
+            "'until' guard do foo\nbar; baz; done",
+            "\"while\" guard do foo\nbar; baz; done",
+            "\"until\" guard do foo\nbar; baz; done",
+        ];
+
+        for c in cmds.into_iter() {
+            match make_parser(c).loop_command() {
+                Err(_) => {},
+                Ok(result) => panic!("Unexpectedly parsed \"{}\" as {:?}", c, result),
+            }
+        }
     }
 
     #[test]
@@ -2377,10 +2413,19 @@ mod test {
 
     #[test]
     fn test_if_command_invalid_quoted() {
-        let mut p = make_parser("'if' guard1; then body1; elif guard2; then body2; else else; fi");
-        p.if_command().unwrap_err();
-        let mut p = make_parser("if guard1; then body1; elif guard2; then body2; else else; 'fi'");
-        p.if_command().unwrap_err();
+        let cmds = [
+            "'if' guard1; then body1; elif guard2; then body2; else else; fi",
+            "if guard1; then body1; elif guard2; then body2; else else; 'fi'",
+            "\"if\" guard1; then body1; elif guard2; then body2; else else; fi",
+            "if guard1; then body1; elif guard2; then body2; else else; \"fi\"",
+        ];
+
+        for c in cmds.into_iter() {
+            match make_parser(c).if_command() {
+                Err(_) => {},
+                Ok(result) => panic!("Unexpectedly parsed \"{}\" as {:?}", c, result),
+            }
+        }
     }
 
     #[test]
@@ -2582,10 +2627,19 @@ mod test {
 
     #[test]
     fn test_for_command_invalid_quoted() {
-        let mut p = make_parser("'for' var in one two three\ndo echo $var; done");
-        p.for_command().unwrap_err();
-        let mut p = make_parser("for var 'in' one two three\ndo echo $var; done");
-        p.for_command().unwrap_err();
+        let cmds = [
+            "'for' var in one two three\ndo echo $var; done",
+            "for var 'in' one two three\ndo echo $var; done",
+            "\"for\" var in one two three\ndo echo $var; done",
+            "for var \"in\" one two three\ndo echo $var; done",
+        ];
+
+        for c in cmds.into_iter() {
+            match make_parser(c).for_command() {
+                Err(_) => {},
+                Ok(result) => panic!("Unexpectedly parsed \"{}\" as {:?}", c, result),
+            }
+        }
     }
 
     #[test]
@@ -2797,12 +2851,21 @@ mod test {
 
     #[test]
     fn test_function_declaration_invalid_quoted() {
-        let mut p = make_parser("'function' name { echo body; }");
-        p.function_declaration().unwrap_err();
-        let mut p = make_parser("function 'name'() { echo body; }");
-        p.function_declaration().unwrap_err();
-        let mut p = make_parser("name'()' { echo body; }");
-        p.function_declaration().unwrap_err();
+        let cmds = [
+            "'function' name { echo body; }",
+            "function 'name'() { echo body; }",
+            "name'()' { echo body; }",
+            "\"function\" name { echo body; }",
+            "function \"name\"() { echo body; }",
+            "name\"()\" { echo body; }",
+        ];
+
+        for c in cmds.into_iter() {
+            match make_parser(c).function_declaration() {
+                Err(_) => {},
+                Ok(result) => panic!("Unexpectedly parsed \"{}\" as {:?}", c, result),
+            }
+        }
     }
 
     #[test]
@@ -3050,12 +3113,21 @@ mod test {
 
     #[test]
     fn test_case_command_invalid_quoted() {
-        let mut p = make_parser("'case' foo in foo) echo foo;; bar) echo bar;; esac");
-        p.case_command().unwrap_err();
-        let mut p = make_parser("case foo 'in' foo) echo foo;; bar) echo bar;; esac");
-        p.case_command().unwrap_err();
-        let mut p = make_parser("case foo in foo) echo foo;; bar')' echo bar;; 'esac'");
-        p.case_command().unwrap_err();
+        let cmds = [
+            "'case' foo in foo) echo foo;; bar) echo bar;; esac",
+            "case foo 'in' foo) echo foo;; bar) echo bar;; esac",
+            "case foo in foo) echo foo;; bar')' echo bar;; 'esac'",
+            "\"case\" foo in foo) echo foo;; bar) echo bar;; esac",
+            "case foo \"in\" foo) echo foo;; bar) echo bar;; esac",
+            "case foo in foo) echo foo;; bar\")\" echo bar;; 'esac'",
+        ];
+
+        for c in cmds.into_iter() {
+            match make_parser(c).case_command() {
+                Err(_) => {},
+                Ok(result) => panic!("Unexpectedly parsed \"{}\" as {:?}", c, result),
+            }
+        }
     }
 
     #[test]
@@ -3238,6 +3310,13 @@ mod test {
             "'if' guard; then body; fi",
             "'for' var in; do foo; done",
             "'case' foo in esac",
+            "\"{\" foo; }",
+            "\"(\" foo; )",
+            "\"while\" guard do foo; done",
+            "\"until\" guard do foo; done",
+            "\"if\" guard; then body; fi",
+            "\"for\" var in; do foo; done",
+            "\"case\" foo in esac",
         ];
 
         for cmd in cases.iter() {
@@ -3516,6 +3595,15 @@ mod test {
             "name'()' { echo body; }",
             "123fn() { echo body; }",
             "'case' foo in esac",
+            "\"{\" foo; }",
+            "\"(\" foo; )",
+            "\"while\" guard do foo; done",
+            "\"until\" guard do foo; done",
+            "\"if\" guard; then body; fi",
+            "\"for\" var in; do echo $var; done",
+            "\"function\" name { echo body; }",
+            "name\"()\" { echo body; }",
+            "\"case\" foo in esac",
         ];
 
         for cmd in cases.iter() {
