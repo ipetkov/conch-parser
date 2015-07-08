@@ -2015,7 +2015,7 @@ mod test {
         for c in cmds.into_iter() {
             match make_parser(c).do_group() {
                 Err(_) => {},
-                Ok(result) => panic!("Unexpectedly parsed \"{}\" as {:?}", c, result),
+                Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
             }
         }
     }
@@ -2120,7 +2120,7 @@ mod test {
         for c in cmds.into_iter() {
             match make_parser(c).brace_group() {
                 Err(_) => {},
-                Ok(result) => panic!("Unexpectedly parsed \"{}\" as {:?}", c, result),
+                Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
             }
         }
     }
@@ -2175,7 +2175,7 @@ mod test {
         for c in cmds.into_iter() {
             match make_parser(c).subshell() {
                 Err(_) => {},
-                Ok(result) => panic!("Unexpectedly parsed \"{}\" as {:?}", c, result),
+                Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
             }
         }
     }
@@ -2255,7 +2255,7 @@ mod test {
         for c in cmds.into_iter() {
             match make_parser(c).loop_command() {
                 Err(_) => {},
-                Ok(result) => panic!("Unexpectedly parsed \"{}\" as {:?}", c, result),
+                Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
             }
         }
     }
@@ -2339,7 +2339,7 @@ mod test {
             }
         }
 
-        panic!("Incorrect parse result for Parse::if_command: {:?}", (branches, els));
+        panic!("Incorrect parse result for Parse::if_command:\n{:#?}", (branches, els));
     }
 
     #[test]
@@ -2366,7 +2366,7 @@ mod test {
             }
         }
 
-        panic!("Incorrect parse result for Parse::if_command: {:?}", (branches, els));
+        panic!("Incorrect parse result for Parse::if_command:\n{:#?}", (branches, els));
     }
 
     #[test]
@@ -2423,7 +2423,7 @@ mod test {
         for c in cmds.into_iter() {
             match make_parser(c).if_command() {
                 Err(_) => {},
-                Ok(result) => panic!("Unexpectedly parsed \"{}\" as {:?}", c, result),
+                Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
             }
         }
     }
@@ -2552,7 +2552,7 @@ mod test {
             return;
         }
 
-        panic!("Incorrect parse result for body from Parse::for_command: {:?}", body);
+        panic!("Incorrect parse result for body from Parse::for_command:\n{:#?}", body);
     }
 
     #[test]
@@ -2570,7 +2570,7 @@ mod test {
             return;
         }
 
-        panic!("Incorrect parse result for body from Parse::for_command: {:?}", body);
+        panic!("Incorrect parse result for body from Parse::for_command:\n{:#?}", body);
     }
 
     #[test]
@@ -2637,7 +2637,7 @@ mod test {
         for c in cmds.into_iter() {
             match make_parser(c).for_command() {
                 Err(_) => {},
-                Ok(result) => panic!("Unexpectedly parsed \"{}\" as {:?}", c, result),
+                Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
             }
         }
     }
@@ -2863,7 +2863,7 @@ mod test {
         for c in cmds.into_iter() {
             match make_parser(c).function_declaration() {
                 Err(_) => {},
-                Ok(result) => panic!("Unexpectedly parsed \"{}\" as {:?}", c, result),
+                Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
             }
         }
     }
@@ -3125,7 +3125,7 @@ mod test {
         for c in cmds.into_iter() {
             match make_parser(c).case_command() {
                 Err(_) => {},
-                Ok(result) => panic!("Unexpectedly parsed \"{}\" as {:?}", c, result),
+                Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
             }
         }
     }
@@ -3263,7 +3263,7 @@ mod test {
         for cmd in commands.iter() {
             match make_parser(cmd).compound_command() {
                 Ok(ref result) if result == &correct => {},
-                Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
+                Ok(result) => panic!("Parsed \"{}\" as an unexpected command type:\n{:#?}", cmd, result),
                 Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
             }
         }
@@ -3323,7 +3323,7 @@ mod test {
             match make_parser(cmd).compound_command() {
                 Err(_) => {},
                 Ok(result) =>
-                    panic!("Parse::compound_command unexpectedly succeeded parsing \"{}\" with result: {:?}",
+                    panic!("Parse::compound_command unexpectedly succeeded parsing \"{}\" with result:\n{:#?}",
                            cmd, result),
             }
         }
@@ -3349,7 +3349,7 @@ mod test {
                     Redirect::CloseWrite(Some(2)),
                 )),
 
-                Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
+                Ok(result) => panic!("Parsed \"{}\" as an unexpected command type:\n{:#?}", cmd, result),
                 Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
             }
         }
@@ -3514,7 +3514,7 @@ mod test {
         for cmd in commands.iter() {
             match make_parser(cmd).command() {
                 Ok(ref result) if result == &correct => {},
-                Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
+                Ok(result) => panic!("Parsed \"{}\" as an unexpected command type:\n{:#?}", cmd, result),
                 Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
             }
         }
@@ -3575,7 +3575,7 @@ mod test {
         for cmd in commands.iter() {
             match make_parser(cmd).command() {
                 Ok(ref result) if result == &correct => {},
-                Ok(result) => panic!("Parsed \"{}\" as an unexpected command type: {:?}", cmd, result),
+                Ok(result) => panic!("Parsed \"{}\" as an unexpected command type:\n{:#?}", cmd, result),
                 Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
             }
         }
@@ -3610,7 +3610,7 @@ mod test {
             match make_parser(cmd).command() {
                 Ok(Simple(_)) => {},
                 Ok(result) =>
-                    panic!("Parse::command unexpectedly parsed \"{}\" as a non-simple command: {:?}", cmd, result),
+                    panic!("Parse::command unexpectedly parsed \"{}\" as a non-simple command:\n{:#?}", cmd, result),
                 Err(err) => panic!("Parse::command failed to parse \"{}\": {}", cmd, err),
             }
         }
@@ -3639,7 +3639,7 @@ mod test {
                 if let While(..) = **loop_cmd {
                     continue;
                 } else {
-                    panic!("Parsed an unexpected command: {:?}", cmd)
+                    panic!("Parsed an unexpected command:\n{:#?}", cmd)
                 }
             }
         }
@@ -3668,7 +3668,7 @@ mod test {
                 if let Until(..) = **loop_cmd {
                     continue;
                 } else {
-                    panic!("Parsed an unexpected command: {:?}", cmd)
+                    panic!("Parsed an unexpected command:\n{:#?}", cmd)
                 }
             }
         }
@@ -3716,7 +3716,7 @@ mod test {
                                 if let If(..) = **if_cmd {
                                     continue;
                                 } else {
-                                    panic!("Parsed an unexpected command: {:?}", cmd)
+                                    panic!("Parsed an unexpected command:\n{:#?}", cmd)
                                 }
                             }
                         }
@@ -3764,7 +3764,7 @@ mod test {
                     if let For(..) = **for_cmd {
                         continue;
                     } else {
-                        panic!("Parsed an unexpected command: {:?}", cmd)
+                        panic!("Parsed an unexpected command:\n{:#?}", cmd)
                     }
                 }
             }
@@ -3808,7 +3808,7 @@ mod test {
                         if let Case(..) = **case_cmd {
                             continue;
                         } else {
-                            panic!("Parsed an unexpected command: {:?}", cmd)
+                            panic!("Parsed an unexpected command:\n{:#?}", cmd)
                         }
                     }
                 }
@@ -3837,7 +3837,7 @@ mod test {
             ));
             match p.command() {
                 Ok(Function(..)) => {},
-                Ok(result) => panic!("Parsed an unexpected command type: {:?}", result),
+                Ok(result) => panic!("Parsed an unexpected command type:\n{:#?}", result),
                 Err(err) => panic!("Failed to parse command: {}", err),
             }
         }
@@ -3860,7 +3860,7 @@ mod test {
         ));
         match p.command() {
             Ok(Simple(..)) => {},
-            Ok(result) => panic!("Parsed an unexpected command type: {:?}", result),
+            Ok(result) => panic!("Parsed an unexpected command type:\n{:#?}", result),
             Err(err) => panic!("Failed to parse command: {}", err),
         }
     }
@@ -3882,7 +3882,7 @@ mod test {
         ));
         match p.command() {
             Ok(Function(..)) => {},
-            Ok(result) => panic!("Parsed an unexpected command type: {:?}", result),
+            Ok(result) => panic!("Parsed an unexpected command type:\n{:#?}", result),
             Err(err) => panic!("Failed to parse command: {}", err),
         }
     }
