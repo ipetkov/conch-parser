@@ -2,6 +2,7 @@
 
 use std::error::Error;
 use std::fmt;
+use std::str::FromStr;
 use syntax::ast;
 use syntax::ast::builder::{self, Builder};
 use syntax::token::Token;
@@ -467,8 +468,6 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// the caller is responsible for performing this check and supplying the descriptor
     /// to the method.
     pub fn redirect(&mut self, src_fd: Option<u32>) -> Result<ast::Redirect, ParseError<B::Err>> {
-        use std::str::FromStr;
-
         // Sanity check that we really do have a redirect token
         let redir_tok = match self.iter.next() {
             Some(tok@Less)      |
@@ -519,8 +518,6 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     fn maybe_redirect(&mut self, num: Option<&ast::Word>)
         -> Result<Option<ast::Redirect>, ParseError<B::Err>>
     {
-        use std::str::FromStr;
-
         let fd = match num {
             Some(n) => match u32::from_str(&n.to_string()).ok() {
                 Some(fd) => Some(fd),
@@ -786,7 +783,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         match self.iter.next() {
             Some(ParamAt)            => return Ok(Some(Parameter::At)),
             Some(ParamDash)          => return Ok(Some(Parameter::Dash)),
-            Some(ParamPositional(p)) => return Ok(Some(Parameter::Positional(p))),
+            Some(ParamPositional(p)) => return Ok(Some(Parameter::Positional(p as u32))),
 
             Some(Token::Dollar) => match self.iter.peek() {
                 Some(&Star)      |
@@ -822,6 +819,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     Some(Name(ref s)) | Some(Literal(ref s)) if s == "-" => Parameter::Dash,
 
                     Some(Name(n)) => Parameter::Var(n),
+                    Some(Literal(s)) => match u32::from_str(&s) {
+                        Ok(n)  => Parameter::Positional(n),
+                        Err(_) => return Err(self.make_bad_substitution_err(Some(Literal(s)))),
+                    },
 
                     t => return Err(self.make_bad_substitution_err(t)),
                 };
@@ -1680,10 +1681,11 @@ mod test {
             Parameter::Dollar,
             Parameter::Bang,
             Parameter::Var(String::from("foo")),
-            // FIXME: check for positional parameters, e.g. ${3} or ${100}
+            Parameter::Positional(3),
+            Parameter::Positional(1000),
         );
 
-        let mut p = make_parser("${@}${*}${#}${?}${-}${$}${!}${foo}");
+        let mut p = make_parser("${@}${*}${#}${?}${-}${$}${!}${foo}${3}${1000}");
         for param in words {
             assert_eq!(p.parameter().unwrap().unwrap(), param);
         }
@@ -1696,13 +1698,6 @@ mod test {
         let mut p = make_parser("$^asdf");
         assert_eq!(p.parameter().unwrap(), None);
         assert_eq!(p.word().unwrap().unwrap(), Word::Literal(String::from("^asdf")));
-    }
-
-    #[test]
-    fn test_word_preserve_trailing_whitespace() {
-        let mut p = make_parser("test       ");
-        p.word_preserve_trailing_whitespace().unwrap();
-        assert!(p.iter.next().is_some());
     }
 
     #[test]
@@ -3888,6 +3883,13 @@ mod test {
     }
 
     #[test]
+    fn test_word_preserve_trailing_whitespace() {
+        let mut p = make_parser("test       ");
+        p.word_preserve_trailing_whitespace().unwrap();
+        assert!(p.iter.next().is_some());
+    }
+
+    #[test]
     fn test_word_single_quote_valid() {
         let correct = Word::SingleQuoted(String::from("abc&&||\n\n#comment\nabc"));
         assert_eq!(Some(correct), make_parser("'abc&&||\n\n#comment\nabc'").word().unwrap());
@@ -3991,6 +3993,50 @@ mod test {
     fn test_word_double_quote_slash_invalid_missing_close_quote() {
         make_parser("\"hello").word().unwrap_err();
         make_parser("\"hello\\\"").word().unwrap_err();
+    }
+
+    #[test]
+    fn test_word_delegate_parameters() {
+        let params = [
+            "$@",
+            "$*",
+            "$#",
+            "$?",
+            "$-",
+            "$$",
+            "$!",
+            "$3",
+            "${@}",
+            "${*}",
+            "${#}",
+            "${?}",
+            "${-}",
+            "${$}",
+            "${!}",
+            "${foo}",
+            "${3}",
+            "${1000}",
+        ];
+
+        for p in params.into_iter() {
+            match make_parser(p).word() {
+                Ok(Some(Word::Param(_))) => {}
+                Ok(Some(w)) => panic!("Unexpectedly parsed \"{}\" as a non-parameter word:\n{:#?}", p, w),
+                Ok(None) => panic!("Did not parse \"{}\" as a parameter", p),
+                Err(e) => panic!("Did not parse \"{}\" as a parameter: {}", p, e),
+            }
+        }
+    }
+
+    #[test]
+    fn test_word_literal_dollar_if_not_param() {
+        let mut p = make_parser("$^asdf");
+        let correct = Word::Concat(vec!(
+            Word::Literal(String::from("$")),
+            Word::Literal(String::from("^asdf")),
+        ));
+
+        assert_eq!(correct, p.word().unwrap().unwrap());
     }
 }
 

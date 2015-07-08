@@ -21,8 +21,8 @@ pub enum Parameter {
     Dollar,
     /// $!
     Bang,
-    /// $0, $1, ..., $9
-    Positional(u8),
+    /// $0, $1, ..., $9, ${100}
+    Positional(u32),
     /// $foo
     Var(String),
 }
