@@ -92,18 +92,8 @@ impl<I: Iterator<Item = char>> Lexer<I> {
 
             '$' => if self.next_is('@') {
                 ParamAt
-            } else if self.next_is('*') {
-                ParamStar
-            } else if self.next_is('#') {
-                ParamPound
-            } else if self.next_is('?') {
-                ParamQuestion
             } else if self.next_is('-') {
                 ParamDash
-            } else if self.next_is('$') {
-                ParamDollar
-            } else if self.next_is('!') {
-                ParamBang
             } else {
                 match self.inner.peek() {
                     // Positional parameters are 0-9, so we only
@@ -273,12 +263,7 @@ mod test {
     check_tok!(check_Clobber, Clobber);
     check_tok!(check_LessGreat, LessGreat);
     check_tok!(check_ParamAt, ParamAt);
-    check_tok!(check_ParamStar, ParamStar);
-    check_tok!(check_ParamPound, ParamPound);
-    check_tok!(check_ParamQuestion, ParamQuestion);
     check_tok!(check_ParamDash, ParamDash);
-    check_tok!(check_ParamDollar, ParamDollar);
-    check_tok!(check_ParamBang, ParamBang);
     check_tok!(check_Whitespace, Whitespace(String::from(" \t\r")));
     check_tok!(check_Name, Name(String::from("abc_23_defg")));
     check_tok!(check_Literal, Literal(String::from(",abcdefg80hijklmno-p")));
@@ -290,7 +275,6 @@ mod test {
     lex_str!(check_greedy_Semi,   ";;;",  DSemi, Semi);
     lex_str!(check_greedy_Less,   "<<<",  DLess, Less);
     lex_str!(check_greedy_Great,  ">>>",  DGreat, Great);
-    lex_str!(check_greedy_Dollar, "$$$",  ParamDollar, Dollar);
     lex_str!(check_greedy_Less2,  "<<<-", DLess, Less, Literal(String::from("-")));
 
     lex_str!(check_Assignment_and_value, "foobar=test", Assignment(String::from("foobar")), Name(String::from("test")));
@@ -315,7 +299,7 @@ mod test {
     lex_str!(check_escape_DLess,           "\\<<",  Backslash, Less, Less);
     lex_str!(check_escape_DLessDash,       "\\<<-", Backslash, Less, Less, Literal(String::from("-")));
     lex_str!(check_escape_ParamAt,         "\\$@",  Backslash, Dollar, Literal(String::from("@")));
-    lex_str!(check_escape_ParamDollar,     "\\$$",  Backslash, Dollar, Dollar);
+    lex_str!(check_escape_ParamDash,       "\\$-",  Backslash, Dollar, Literal(String::from("-")));
     lex_str!(check_escape_ParamPositional, "\\$0",  Backslash, Dollar, Literal(String::from("0")));
     lex_str!(check_escape_Whitespace,      "\\  ",  Backslash, Whitespace(String::from(" ")), Whitespace(String::from(" ")));
     lex_str!(check_escape_Name,            "\\ab",  Backslash, Name(String::from("a")), Name(String::from("b")));

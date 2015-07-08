@@ -73,20 +73,19 @@ pub enum Token {
     /// $
     Dollar,
     /// $@
+    ///
+    /// Must be its own token to avoid lumping the `@` with a `Literal`
+    /// since it doesn't have its own token.
     ParamAt,
-    /// $*
-    ParamStar,
-    /// $#
-    ParamPound,
-    /// $?
-    ParamQuestion,
     /// $-
+    ///
+    /// Must be its own token to avoid lumping the `-` with a `Literal`
+    /// since it doesn't have its own token.
     ParamDash,
-    /// $$
-    ParamDollar,
-    /// $!
-    ParamBang,
     /// $0, $1, ..., $9
+    ///
+    /// Must be its own token to avoid lumping the positional parameter
+    /// as a `Literal` if the parameter is concatenated to something.
     ParamPositional(u8),
 
     /// Any string of whitespace characters NOT including a newline.
@@ -136,12 +135,7 @@ impl fmt::Display for Token {
             Clobber             => fmt.write_str(">|"),
             LessGreat           => fmt.write_str("<>"),
             ParamAt             => fmt.write_str("$@"),
-            ParamStar           => fmt.write_str("$*"),
-            ParamPound          => fmt.write_str("$#"),
-            ParamQuestion       => fmt.write_str("$?"),
             ParamDash           => fmt.write_str("$-"),
-            ParamDollar         => fmt.write_str("$$"),
-            ParamBang           => fmt.write_str("$!"),
             Whitespace(ref s)   => fmt.write_str(s),
             Name(ref s)         => fmt.write_str(s),
             Literal(ref s)      => fmt.write_str(s),
@@ -186,12 +180,7 @@ impl Token {
             Clobber       |
             LessGreat     |
             ParamAt       |
-            ParamStar     |
-            ParamPound    |
-            ParamQuestion |
             ParamDash     |
-            ParamDollar   |
-            ParamBang     |
             ParamPositional(_) => 2,
 
             DLessDash => 3,
@@ -240,12 +229,7 @@ impl Token {
             Tilde              |
             Pound              |
             ParamAt            |
-            ParamStar          |
-            ParamPound         |
-            ParamQuestion      |
             ParamDash          |
-            ParamDollar        |
-            ParamBang          |
             Name(_)            |
             Literal(_)         |
             ParamPositional(_) |

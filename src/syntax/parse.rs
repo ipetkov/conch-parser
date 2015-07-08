@@ -593,12 +593,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
                 Some(&Dollar)             |
                 Some(&ParamAt)            |
-                Some(&ParamStar)          |
-                Some(&ParamPound)         |
-                Some(&ParamQuestion)      |
                 Some(&ParamDash)          |
-                Some(&ParamDollar)        |
-                Some(&ParamBang)          |
                 Some(&ParamPositional(_)) => {
                     // If no parameter found, we should treat `$` as a literal
                     let w = try!(self.parameter())
@@ -683,12 +678,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                         match self.iter.peek() {
                             Some(&Dollar)             |
                             Some(&ParamAt)            |
-                            Some(&ParamStar)          |
-                            Some(&ParamPound)         |
-                            Some(&ParamQuestion)      |
                             Some(&ParamDash)          |
-                            Some(&ParamDollar)        |
-                            Some(&ParamBang)          |
                             Some(&ParamPositional(_)) => {
                                 match try!(self.parameter()) {
                                     Some(p) => {
@@ -745,12 +735,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 // handled while peeking above.
                 Dollar             |
                 ParamAt            |
-                ParamStar          |
-                ParamPound         |
-                ParamQuestion      |
                 ParamDash          |
-                ParamDollar        |
-                ParamBang          |
                 ParamPositional(_) => unreachable!(),
 
                 // All word delimiters should have
@@ -800,15 +785,15 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         match self.iter.next() {
             Some(ParamAt)            => return Ok(Some(Parameter::At)),
-            Some(ParamStar)          => return Ok(Some(Parameter::Star)),
-            Some(ParamPound)         => return Ok(Some(Parameter::Pound)),
-            Some(ParamQuestion)      => return Ok(Some(Parameter::Question)),
             Some(ParamDash)          => return Ok(Some(Parameter::Dash)),
-            Some(ParamDollar)        => return Ok(Some(Parameter::Dollar)),
-            Some(ParamBang)          => return Ok(Some(Parameter::Bang)),
             Some(ParamPositional(p)) => return Ok(Some(Parameter::Positional(p))),
 
             Some(Token::Dollar) => match self.iter.peek() {
+                Some(&Star)      |
+                Some(&Pound)     |
+                Some(&Question)  |
+                Some(&Dollar)    |
+                Some(&Bang)      |
                 Some(&Name(_))   |
                 Some(&CurlyOpen) => {},
                 _ => return Ok(None),
@@ -818,7 +803,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         }
 
         let param = match self.iter.next() {
-            Some(Name(n)) => Parameter::Var(n),
+            Some(Star)     => Parameter::Star,
+            Some(Pound)    => Parameter::Pound,
+            Some(Question) => Parameter::Question,
+            Some(Dollar)   => Parameter::Dollar,
+            Some(Bang)     => Parameter::Bang,
+            Some(Name(n))  => Parameter::Var(n),
+
             Some(CurlyOpen) => {
                 let param = match self.iter.next() {
                     Some(Star)          => Parameter::Star,
