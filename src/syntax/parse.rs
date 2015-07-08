@@ -1535,10 +1535,17 @@ mod test {
     }
 
     #[test]
-    fn test_skip_whitespace_skip_escapeds_dont_affect_newlines() {
+    fn test_skip_whitespace_skip_escapes_dont_affect_newlines() {
         let mut p = make_parser("  \t \\\n  \\\n#comment\n");
         p.skip_whitespace();
         assert_eq!(p.linebreak().pop().unwrap(), Newline(Some(String::from("#comment"))));
+    }
+
+    #[test]
+    fn test_skip_whitespace_skips_escaped_newlines() {
+        let mut p = make_parser("\\\n\\\n   \\\n");
+        p.skip_whitespace();
+        assert_eq!(p.linebreak(), vec!());
     }
 
     #[test]
@@ -4037,6 +4044,103 @@ mod test {
         ));
 
         assert_eq!(correct, p.word().unwrap().unwrap());
+    }
+
+    #[test]
+    fn test_word_does_not_capture_comments() {
+        assert_eq!(Ok(None), make_parser("#comment\n").word());
+        assert_eq!(Ok(None), make_parser("  #comment\n").word());
+        let mut p = make_parser("word   #comment\n");
+        p.word().unwrap().unwrap();
+        assert_eq!(Ok(None), p.word());
+    }
+
+    #[test]
+    fn test_word_pound_in_middle_is_not_comment() {
+        let correct = Word::Concat(vec!(
+            Word::Literal(String::from("abc")),
+            Word::Literal(String::from("#")),
+            Word::Literal(String::from("def")),
+        ));
+        assert_eq!(Ok(Some(correct)), make_parser("abc#def\n").word());
+    }
+
+    #[test]
+    fn test_word_tokens_which_become_literal_words() {
+        let words = [
+            "{",
+            "}",
+            "!",
+            "blah=",
+            "name",
+            "1notname",
+        ];
+
+        for w in words.into_iter() {
+            match make_parser(w).word() {
+                Ok(Some(res)) => {
+                    let correct = Word::Literal(String::from(*w));
+                    if correct != res {
+                        panic!("Unexpectedly parsed \"{}\": expected:\n{:#?}\ngot:\n{:#?}", w, correct, res);
+                    }
+                },
+                Ok(None) => panic!("Did not parse \"{}\" as a word", w),
+                Err(e) => panic!("Did not parse \"{}\" as a word: {}", w, e),
+            }
+        }
+    }
+
+    #[test]
+    fn test_word_concatenation_works() {
+        let correct = Word::Concat(vec!(
+            Word::Literal(String::from("foo=")),
+            Word::Literal(String::from("bar")),
+            Word::DoubleQuoted(vec!(Word::Literal(String::from("double")))),
+            Word::SingleQuoted(String::from("single")),
+        ));
+
+        assert_eq!(Ok(Some(correct)), make_parser("foo=bar\"double\"'single'").word());
+    }
+
+    #[test]
+    fn test_word_special_words_recognized_as_such() {
+        assert_eq!(Ok(Some(Word::Star)),     make_parser("*").word());
+        assert_eq!(Ok(Some(Word::Question)), make_parser("?").word());
+        assert_eq!(Ok(Some(Word::Tilde)),    make_parser("~").word());
+    }
+
+    #[test]
+    fn test_word_backslash_makes_things_literal() {
+        let lit = [
+            "a",
+            "&",
+            ";",
+            "(",
+            "*",
+            "?",
+            "$",
+        ];
+
+        for l in lit.into_iter() {
+            let src = format!("\\{}", l);
+            match make_parser(&src).word() {
+                Ok(Some(res)) => {
+                    let correct = Word::Literal(String::from(*l));
+                    if correct != res {
+                        panic!("Unexpectedly parsed \"{}\": expected:\n{:#?}\ngot:\n{:#?}", src, correct, res);
+                    }
+                },
+                Ok(None) => panic!("Did not parse \"{}\" as a word", src),
+                Err(e) => panic!("Did not parse \"{}\" as a word: {}", src, e),
+            }
+        }
+    }
+
+    #[test]
+    fn test_word_escaped_newline_becomes_whitespace() {
+        let mut p = make_parser("foo\\\nbar");
+        assert_eq!(Ok(Some(Word::Literal(String::from("foo")))), p.word());
+        assert_eq!(Ok(Some(Word::Literal(String::from("bar")))), p.word());
     }
 }
 

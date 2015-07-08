@@ -557,7 +557,7 @@ impl<T: CommandBuilder> Builder for T {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 /// A dummy error which implements the `Error` trait.
 pub struct DummyError;
 
