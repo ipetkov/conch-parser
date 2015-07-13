@@ -461,7 +461,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// will result if a redirect is found, `Ok(Some(Err(word)))` if a word is found,
     /// or `Ok(None)` if neither is found.
     pub fn redirect(&mut self) -> Result<Option<::std::result::Result<B::Redirect, B::Word>>, ParseError<B::Err>> {
-        fn is_maybe_numeric<T>(word: &builder::WordKind<T>, escapes_allowed: bool) -> bool {
+        fn is_maybe_numeric<P, C>(word: &builder::WordKind<P, C>, escapes_allowed: bool) -> bool {
             match *word {
                 builder::WordKind::Star     |
                 builder::WordKind::Question |
@@ -575,8 +575,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Identical to `Parser::word_preserve_trailing_whitespace()` but does
     /// not pass the result to the AST builder.
-    pub fn word_preserve_trailing_whitespace_raw(&mut self)
-        -> Result<Option<builder::WordKind<B::Command>>, ParseError<B::Err>>
+    fn word_preserve_trailing_whitespace_raw(&mut self)
+        -> Result<Option<builder::WordKind<B::Parameter, B::Command>>, ParseError<B::Err>>
     {
         self.skip_whitespace();
 
@@ -799,13 +799,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Since it is possible that a leading `$` is not followed by a valid
     /// parameter, the `$` should be treated as a literal. Thus this method
     /// returns an optional parameter, although it will consume the `$` unconditionally.
-    pub fn parameter(&mut self) -> Result<Option<ast::Parameter>, ParseError<B::Err>> {
-        use syntax::ast::Parameter;
+    pub fn parameter(&mut self) -> Result<Option<B::Parameter>, ParseError<B::Err>> {
+        use syntax::ast::builder::ParameterKind;
 
-        match self.iter.next() {
-            Some(ParamAt)            => return Ok(Some(Parameter::At)),
-            Some(ParamDash)          => return Ok(Some(Parameter::Dash)),
-            Some(ParamPositional(p)) => return Ok(Some(Parameter::Positional(p as u32))),
+        let param = match self.iter.next() {
+            Some(ParamAt)            => Some(try!(self.builder.parameter(ParameterKind::At))),
+            Some(ParamDash)          => Some(try!(self.builder.parameter(ParameterKind::Dash))),
+            Some(ParamPositional(p)) => Some(try!(self.builder.parameter(ParameterKind::Positional(p as u32)))),
 
             Some(Token::Dollar) => match self.iter.peek() {
                 Some(&Star)      |
@@ -814,35 +814,41 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 Some(&Dollar)    |
                 Some(&Bang)      |
                 Some(&Name(_))   |
-                Some(&CurlyOpen) => {},
+                Some(&ParenOpen) |
+                Some(&CurlyOpen) => None,
                 _ => return Ok(None),
             },
 
             t => return Err(self.make_unexpected_err(t)),
+        };
+
+        if let Some(p) = param {
+            return Ok(Some(p))
         }
 
+        let start_pos = self.iter.pos;
         let param = match self.iter.next() {
-            Some(Star)     => Parameter::Star,
-            Some(Pound)    => Parameter::Pound,
-            Some(Question) => Parameter::Question,
-            Some(Dollar)   => Parameter::Dollar,
-            Some(Bang)     => Parameter::Bang,
-            Some(Name(n))  => Parameter::Var(n),
+            Some(Star)     => ParameterKind::Star,
+            Some(Pound)    => ParameterKind::Pound,
+            Some(Question) => ParameterKind::Question,
+            Some(Dollar)   => ParameterKind::Dollar,
+            Some(Bang)     => ParameterKind::Bang,
+            Some(Name(n))  => ParameterKind::Var(n),
 
             Some(CurlyOpen) => {
                 let param = match self.iter.next() {
-                    Some(Star)          => Parameter::Star,
-                    Some(Pound)         => Parameter::Pound,
-                    Some(Question)      => Parameter::Question,
-                    Some(Dollar)        => Parameter::Dollar,
-                    Some(Bang)          => Parameter::Bang,
+                    Some(Star)          => ParameterKind::Star,
+                    Some(Pound)         => ParameterKind::Pound,
+                    Some(Question)      => ParameterKind::Question,
+                    Some(Dollar)        => ParameterKind::Dollar,
+                    Some(Bang)          => ParameterKind::Bang,
 
-                    Some(Name(ref s)) | Some(Literal(ref s)) if s == "@" => Parameter::At,
-                    Some(Name(ref s)) | Some(Literal(ref s)) if s == "-" => Parameter::Dash,
+                    Some(Name(ref s)) | Some(Literal(ref s)) if s == "@" => ParameterKind::At,
+                    Some(Name(ref s)) | Some(Literal(ref s)) if s == "-" => ParameterKind::Dash,
 
-                    Some(Name(n)) => Parameter::Var(n),
+                    Some(Name(n)) => ParameterKind::Var(n),
                     Some(Literal(s)) => match u32::from_str(&s) {
-                        Ok(n)  => Parameter::Positional(n),
+                        Ok(n)  => ParameterKind::Positional(n),
                         Err(_) => return Err(self.make_bad_substitution_err(Some(Literal(s)))),
                     },
 
@@ -855,10 +861,25 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 }
             },
 
+            Some(ParenOpen) => {
+                self.skip_whitespace();
+                let cmds = if let Some(&ParenClose) = self.iter.peek() {
+                    Vec::new()
+                } else {
+                    try!(self.command_list(&[], &[ParenClose]))
+                };
+
+                match self.iter.next() {
+                    Some(ParenClose) => ParameterKind::CommandSubst(cmds),
+                    Some(t) => return Err(self.make_unexpected_err(Some(t))),
+                    None => return Err(self.make_unmatched_err(ParenOpen, start_pos)),
+                }
+            },
+
             t => return Err(self.make_unexpected_err(t)),
         };
 
-        Ok(Some(param))
+        Ok(Some(try!(self.builder.parameter(param))))
     }
 
     /// Parses any number of sequential commands between the `do` and `done`
@@ -1729,6 +1750,21 @@ pub mod test {
     }
 
     #[test]
+    fn test_parameter_command_substitution() {
+        let correct = Parameter::CommandSubst(vec!(
+            cmd_args_unboxed("echo", &["hello"]),
+            cmd_args_unboxed("echo", &["world"]),
+        ));
+
+        assert_eq!(Some(correct), make_parser("$(echo hello; echo world)").parameter().unwrap());
+    }
+
+    #[test]
+    fn test_parameter_command_substitution_valid_empty_substitution() {
+        assert_eq!(Some(Parameter::CommandSubst(vec!())), make_parser("$()").parameter().unwrap());
+    }
+
+    #[test]
     fn test_parameter_literal_dollar_if_no_param() {
         let mut p = make_parser("$^asdf");
         assert_eq!(p.parameter().unwrap(), None);
@@ -1773,11 +1809,12 @@ pub mod test {
 
     #[test]
     fn test_redirect_valid_return_redirect_if_src_fd_is_possibly_numeric() {
-        let mut p = make_parser("123$$>out");
+        let mut p = make_parser("123$$$(echo 2)>out");
         let correct = Redirect::Write(
             Some(Word::Concat(vec!(
                 Word::Literal(String::from("123")),
                 Word::Param(Parameter::Dollar),
+                Word::Param(Parameter::CommandSubst(vec!(cmd_args_unboxed("echo", &["2"])))),
             ))),
             Word::Literal(String::from("out"))
         );
@@ -1802,12 +1839,13 @@ pub mod test {
 
     #[test]
     fn test_redirect_valid_dup_return_redirect_if_dst_fd_is_possibly_numeric() {
-        let mut p = make_parser(">&123$$");
+        let mut p = make_parser(">&123$$$(echo 2)");
         let correct = Redirect::DupWrite(
             None,
             Word::Concat(vec!(
                 Word::Literal(String::from("123")),
                 Word::Param(Parameter::Dollar),
+                Word::Param(Parameter::CommandSubst(vec!(cmd_args_unboxed("echo", &["2"])))),
             )),
         );
         assert_eq!(Some(Ok(correct)), p.redirect().unwrap());

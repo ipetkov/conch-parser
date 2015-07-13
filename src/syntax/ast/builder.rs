@@ -53,18 +53,18 @@ pub enum LoopKind {
 
 /// An indicator to the builder what kind of word was parsed.
 #[derive(Debug)]
-pub enum WordKind<C> {
+pub enum WordKind<P, C> {
     /// A non-special literal word.
     Literal(String),
     /// Several distinct words concatenated together.
-    Concat(Vec<WordKind<C>>),
+    Concat(Vec<WordKind<P, C>>),
     /// List of words concatenated within single quotes. Virtually
     /// identical to `Literal`, but makes the distinction if needed.
     SingleQuoted(String),
     /// List of words concatenated within double quotes.
-    DoubleQuoted(Vec<WordKind<C>>),
+    DoubleQuoted(Vec<WordKind<P, C>>),
     /// Access of a value inside a parameter, e.g. `$foo` or `$$`.
-    Param(Parameter),
+    Param(P),
     /// Represents the standard output of some command, e.g. \`echo foo\`.
     CommandSubst(C),
     /// A token which normally has a special meaning is treated as a literal
@@ -103,6 +103,31 @@ pub enum RedirectKind<W> {
     CloseWrite(Option<W>),
 }
 
+/// Represents the type of parameter that was parsed
+#[derive(Debug)]
+pub enum ParameterKind<C> {
+    /// $@
+    At,
+    /// $*
+    Star,
+    /// $#
+    Pound,
+    /// $?
+    Question,
+    /// $-
+    Dash,
+    /// $$
+    Dollar,
+    /// $!
+    Bang,
+    /// $0, $1, ..., $9, ${100}
+    Positional(u32),
+    /// $foo
+    Var(String),
+    /// $(cmd)
+    CommandSubst(Vec<C>),
+}
+
 /// A trait which defines an interface which the parser defined in the `parse` module
 /// uses to delegate Abstract Syntax Tree creation. The methods defined here correspond
 /// to their respectively named methods on the parser, and accept the relevant data for
@@ -114,6 +139,8 @@ pub trait Builder {
     type Word: Debug;
     /// The type which represents a file descriptor redirection.
     type Redirect: Debug;
+    /// The type which represents a parameter or variable.
+    type Parameter: Debug;
     /// An error type that the builder may want to return.
     type Err: Error;
 
@@ -299,7 +326,7 @@ pub trait Builder {
     /// # Arguments
     /// * kind: the type of word that was parsed
     fn word(&mut self,
-            kind: WordKind<Self::Command>)
+            kind: WordKind<Self::Parameter, Self::Command>)
         -> Result<Self::Word, Self::Err>;
 
     /// Invoked when a redirect is parsed.
@@ -309,6 +336,14 @@ pub trait Builder {
     fn redirect(&mut self,
                 kind: RedirectKind<Self::Word>)
         -> Result<Self::Redirect, Self::Err>;
+
+    /// Invoked when a parameter is parsed.
+    ///
+    /// # Arguments
+    /// * kind: the type of the parameter that was parsed
+    fn parameter(&mut self,
+                 kind: ParameterKind<Self::Command>)
+        -> Result<Self::Parameter, Self::Err>;
 }
 
 /// A default implementation of the `Builder` trait. It allows for selectively
@@ -513,7 +548,7 @@ pub trait CommandBuilder {
 
     /// Constructs a `ast::Word` from the provided input.
     fn word(&mut self,
-            kind: WordKind<Command>)
+            kind: WordKind<Parameter, Command>)
         -> Result<Word, Self::Err>
     {
         let word = match kind {
@@ -557,12 +592,34 @@ pub trait CommandBuilder {
 
         Ok(io)
     }
+
+    /// Constructs a `ast::Parameter` from the provided input.
+    fn parameter(&mut self,
+                 kind: ParameterKind<Command>)
+        -> Result<Parameter, Self::Err>
+    {
+        let param = match kind {
+            ParameterKind::At              => Parameter::At,
+            ParameterKind::Star            => Parameter::Star,
+            ParameterKind::Pound           => Parameter::Pound,
+            ParameterKind::Question        => Parameter::Question,
+            ParameterKind::Dash            => Parameter::Dash,
+            ParameterKind::Dollar          => Parameter::Dollar,
+            ParameterKind::Bang            => Parameter::Bang,
+            ParameterKind::Positional(p)   => Parameter::Positional(p),
+            ParameterKind::Var(v)          => Parameter::Var(v),
+            ParameterKind::CommandSubst(c) => Parameter::CommandSubst(c),
+        };
+
+        Ok(param)
+    }
 }
 
 impl<T: CommandBuilder> Builder for T {
     type Command = Command;
     type Word = Word;
     type Redirect = Redirect;
+    type Parameter = Parameter;
     type Err = T::Err;
 
     fn complete_command(&mut self,
@@ -677,7 +734,7 @@ impl<T: CommandBuilder> Builder for T {
     }
 
     fn word(&mut self,
-            kind: WordKind<Command>)
+            kind: WordKind<Parameter, Command>)
         -> Result<Word, Self::Err>
     {
         CommandBuilder::word(self, kind)
@@ -688,6 +745,13 @@ impl<T: CommandBuilder> Builder for T {
         -> Result<Redirect, Self::Err>
     {
         CommandBuilder::redirect(self, kind)
+    }
+
+    fn parameter(&mut self,
+                 kind: ParameterKind<Self::Command>)
+        -> Result<Self::Parameter, Self::Err>
+    {
+        CommandBuilder::parameter(self, kind)
     }
 }
 
@@ -756,8 +820,8 @@ impl<W> Clone for RedirectKind<W> where W: Clone {
     }
 }
 
-impl<C> Eq for WordKind<C> where C: Eq {}
-impl<C> PartialEq<WordKind<C>> for WordKind<C> where C: PartialEq {
+impl<P, C> Eq for WordKind<P, C> where P: Eq, C: Eq {}
+impl<P, C> PartialEq<WordKind<P, C>> for WordKind<P, C> where P: PartialEq, C: PartialEq {
     fn eq(&self, other: &Self) -> bool {
         use self::WordKind::*;
         match (self, other) {
@@ -776,7 +840,7 @@ impl<C> PartialEq<WordKind<C>> for WordKind<C> where C: PartialEq {
     }
 }
 
-impl<C> Clone for WordKind<C> where C: Clone {
+impl<P, C> Clone for WordKind<P, C> where P: Clone, C: Clone {
     fn clone(&self) -> Self {
         use self::WordKind::*;
 
@@ -791,6 +855,45 @@ impl<C> Clone for WordKind<C> where C: Clone {
             Star                => Star,
             Question            => Question,
             Tilde               => Tilde,
+        }
+    }
+}
+
+impl<C> Eq for ParameterKind<C> where C: Eq {}
+impl<C> PartialEq<ParameterKind<C>> for ParameterKind<C> where C: PartialEq {
+    fn eq(&self, other: &Self) -> bool {
+        use self::ParameterKind::*;
+        match (self, other) {
+            (&Positional(ref p1),   &Positional(ref p2))   if p1 == p2 => true,
+            (&Var(ref s1),          &Var(ref s2))          if s1 == s2 => true,
+            (&CommandSubst(ref v1), &CommandSubst(ref v2)) if v1 == v2 => true,
+            (&At,                   &At)                               => true,
+            (&Star,                 &Star)                             => true,
+            (&Pound,                &Pound)                            => true,
+            (&Question,             &Question)                         => true,
+            (&Dash,                 &Dash)                             => true,
+            (&Dollar,               &Dollar)                           => true,
+            (&Bang,                 &Bang)                             => true,
+            _ => false,
+        }
+    }
+}
+
+impl<C> Clone for ParameterKind<C> where C: Clone {
+    fn clone(&self) -> Self {
+        use self::ParameterKind::*;
+
+        match *self {
+            At                  => At,
+            Star                => Star,
+            Pound               => Pound,
+            Question            => Question,
+            Dash                => Dash,
+            Dollar              => Dollar,
+            Bang                => Bang,
+            Positional(p)       => Positional(p),
+            Var(ref s)          => Var(s.clone()),
+            CommandSubst(ref v) => CommandSubst(v.clone()),
         }
     }
 }

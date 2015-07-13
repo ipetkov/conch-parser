@@ -26,7 +26,7 @@ pub enum Parameter {
     /// $foo
     Var(String),
     /// $(cmd)
-    CommandSubst(Command),
+    CommandSubst(Vec<Command>),
 }
 
 /// Represents whitespace delimited text.
@@ -187,7 +187,7 @@ impl Display for Parameter {
                 write!(fmt, "${{{}}}", p)
             },
 
-            CommandSubst(ref c) => write!(fmt, "$({})", c),
+            CommandSubst(ref c) => write!(fmt, "$({})", CmdVec(c)),
         }
     }
 }
@@ -603,6 +603,7 @@ mod test {
             Positional(10),
             Positional(100),
             Var(String::from("foo_bar123")),
+            CommandSubst(vec!(sample_simple_command())),
         );
 
         for p in params {
@@ -675,6 +676,7 @@ mod test {
             Param(Parameter::Positional(10)),
             Param(Parameter::Positional(100)),
             Param(Parameter::Var(String::from("foo_bar123"))),
+            Param(Parameter::CommandSubst(vec!(sample_simple_command()))),
             Star,
             Question,
             Tilde,
