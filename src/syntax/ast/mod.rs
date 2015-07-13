@@ -30,9 +30,9 @@ pub enum Parameter {
 /// Represents whitespace delimited text.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Word {
-    /// A non-special literal word, or single quoted string.
+    /// A non-special literal word.
     Literal(String),
-    /// Concat of several distinct words concatenated together.
+    /// Several distinct words concatenated together.
     Concat(Vec<Word>),
     /// List of words concatenated within single quotes. Virtually
     /// identical to `Literal`, but makes the distinction if needed.
@@ -41,11 +41,11 @@ pub enum Word {
     DoubleQuoted(Vec<Word>),
     /// Access of a value inside a parameter, e.g. `$foo` or `$$`.
     Param(Parameter),
-    /// Represents `*`, useful when doing pattern expansions.
+    /// Represents `*`, useful for handling pattern expansions.
     Star,
-    /// Represents `?`, useful when doing pattern expansions.
+    /// Represents `?`, useful for handling pattern expansions.
     Question,
-    /// Represents `~`, useful when doing tilde expansions.
+    /// Represents `~`, useful for handling tilde expansions.
     Tilde,
 }
 
@@ -53,25 +53,25 @@ pub enum Word {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Redirect {
     /// Open a file for reading, e.g. [n]< file
-    Read(Option<u32>, Word),
+    Read(Option<Word>, Word),
     /// Open a file for writing after truncating, e.g. [n]> file
-    Write(Option<u32>, Word),
+    Write(Option<Word>, Word),
     /// Open a file for reading and writing, e.g. [n]<> file
-    ReadWrite(Option<u32>, Word),
+    ReadWrite(Option<Word>, Word),
     /// Open a file for writing, appending to the end, e.g. [n]>> file
-    Append(Option<u32>, Word),
+    Append(Option<Word>, Word),
     /// Open a file for writing, failing if the `noclobber` shell option is set, e.g.[n]>| file
-    Clobber(Option<u32>, Word),
+    Clobber(Option<Word>, Word),
 
     /// Duplicate a file descriptor for reading, e.g. [n]<& n
-    DupRead(Option<u32>, u32),
+    DupRead(Option<Word>, Word),
     /// Duplicate a file descriptor for writing, e.g. [n]>& n
-    DupWrite(Option<u32>, u32),
+    DupWrite(Option<Word>, Word),
 
     /// Close a file descriptor for reading, e.g. [n]<&-
-    CloseRead(Option<u32>),
+    CloseRead(Option<Word>),
     /// Close a file descriptor for writing, e.g. [n]>&-
-    CloseWrite(Option<u32>),
+    CloseWrite(Option<Word>),
 }
 
 /// Represents a parsed newline, more specifically, the presense of a comment

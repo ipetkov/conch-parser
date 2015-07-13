@@ -10,8 +10,10 @@
 //! trait if you wish to selectively overwrite several of the default
 //! implementations and/or return a custom error from them.
 
+use std::cmp::{PartialEq, Eq};
 use std::error::Error;
-use syntax::ast::{self, Command, CompoundCommand, SimpleCommand, Redirect, Word};
+use std::fmt::Debug;
+use syntax::ast::{self, Command, CompoundCommand, Parameter, SimpleCommand, Redirect, Word};
 
 /// An indicator to the builder of how complete commands are separated.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -49,8 +51,54 @@ pub enum LoopKind {
     Until,
 }
 
-/// A `Builder` implementation which builds shell commands using the AST definitions in the `ast` module.
-pub struct DefaultBuilder;
+/// An indicator to the builder what kind of word was parsed.
+#[derive(Debug)]
+pub enum WordKind<C> {
+    /// A non-special literal word.
+    Literal(String),
+    /// Several distinct words concatenated together.
+    Concat(Vec<WordKind<C>>),
+    /// List of words concatenated within single quotes. Virtually
+    /// identical to `Literal`, but makes the distinction if needed.
+    SingleQuoted(String),
+    /// List of words concatenated within double quotes.
+    DoubleQuoted(Vec<WordKind<C>>),
+    /// Access of a value inside a parameter, e.g. `$foo` or `$$`.
+    Param(Parameter),
+    /// Represents the standard output of some command, e.g. \`echo foo\`.
+    CommandSubst(C),
+    /// Represents `*`, useful for handling pattern expansions.
+    Star,
+    /// Represents `?`, useful for handling pattern expansions.
+    Question,
+    /// Represents `~`, useful for handling tilde expansions.
+    Tilde,
+}
+
+/// Represents redirecting a command's file descriptors.
+#[derive(Debug)]
+pub enum RedirectKind<W> {
+    /// Open a file for reading, e.g. [n]< file
+    Read(Option<W>, W),
+    /// Open a file for writing after truncating, e.g. [n]> file
+    Write(Option<W>, W),
+    /// Open a file for reading and writing, e.g. [n]<> file
+    ReadWrite(Option<W>, W),
+    /// Open a file for writing, appending to the end, e.g. [n]>> file
+    Append(Option<W>, W),
+    /// Open a file for writing, failing if the `noclobber` shell option is set, e.g.[n]>| file
+    Clobber(Option<W>, W),
+
+    /// Duplicate a file descriptor for reading, e.g. [n]<& n
+    DupRead(Option<W>, W),
+    /// Duplicate a file descriptor for writing, e.g. [n]>& n
+    DupWrite(Option<W>, W),
+
+    /// Close a file descriptor for reading, e.g. [n]<&-
+    CloseRead(Option<W>),
+    /// Close a file descriptor for writing, e.g. [n]>&-
+    CloseWrite(Option<W>),
+}
 
 /// A trait which defines an interface which the parser defined in the `parse` module
 /// uses to delegate Abstract Syntax Tree creation. The methods defined here correspond
@@ -58,7 +106,11 @@ pub struct DefaultBuilder;
 /// each shell command type.
 pub trait Builder {
     /// The type which represents the different shell commands.
-    type Output;
+    type Command: Debug;
+    /// The type which represents shell words, which can be command names or arguments.
+    type Word: Debug;
+    /// The type which represents a file descriptor redirection.
+    type Redirect: Debug;
     /// An error type that the builder may want to return.
     type Err: Error;
 
@@ -72,10 +124,10 @@ pub trait Builder {
     /// * post_cmd_comments: any comments that appear after the end of the command
     fn complete_command(&mut self,
                         pre_cmd_comments: Vec<ast::Newline>,
-                        cmd: Self::Output,
+                        cmd: Self::Command,
                         separator: SeparatorKind,
                         pos_cmd_comments: Vec<ast::Newline>)
-        -> Result<Self::Output, Self::Err>;
+        -> Result<Self::Command, Self::Err>;
 
     /// Invoked once two pipeline commands are parsed, which are separated by '&&' or '||'.
     /// Typically the second command is run based on the exit status of the first, running
@@ -88,11 +140,11 @@ pub trait Builder {
     /// start of the second command
     /// * second: the command on the right side of the separator
     fn and_or(&mut self,
-              first: Self::Output,
+              first: Self::Command,
               kind: AndOrKind,
               post_separator_comments: Vec<ast::Newline>,
-              second: Self::Output)
-        -> Result<Self::Output, Self::Err>;
+              second: Self::Command)
+        -> Result<Self::Command, Self::Err>;
 
     /// Invoked when a pipeline of commands is parsed.
     /// A pipeline is one or more commands where the standard output of the previous
@@ -105,8 +157,8 @@ pub trait Builder {
     /// by the command itself, all in the order they were parsed
     fn pipeline(&mut self,
                 bang: bool,
-                cmds: Vec<(Vec<ast::Newline>, Self::Output)>)
-        -> Result<Self::Output, Self::Err>;
+                cmds: Vec<(Vec<ast::Newline>, Self::Command)>)
+        -> Result<Self::Command, Self::Err>;
 
     /// Invoked when the "simplest" possible command is parsed: an executable with arguments.
     ///
@@ -117,11 +169,11 @@ pub trait Builder {
     /// * args: arguments to the command
     /// * redirects: redirection of any file descriptors to/from other file descriptors or files.
     fn simple_command(&mut self,
-                      env_vars: Vec<(String, Option<Word>)>,
-                      cmd: Option<Word>,
-                      args: Vec<Word>,
-                      redirects: Vec<Redirect>)
-        -> Result<Self::Output, Self::Err>;
+                      env_vars: Vec<(String, Option<Self::Word>)>,
+                      cmd: Option<Self::Word>,
+                      args: Vec<Self::Word>,
+                      redirects: Vec<Self::Redirect>)
+        -> Result<Self::Command, Self::Err>;
 
     /// Invoked when a non-zero number of commands were parsed between balanced curly braces.
     /// Typically these commands should run within the current shell environment.
@@ -130,9 +182,9 @@ pub trait Builder {
     /// * cmds: the commands that were parsed between braces
     /// * redirects: any redirects to be applied over the **entire** group of commands
     fn brace_group(&mut self,
-                   cmds: Vec<Self::Output>,
-                   redirects: Vec<Redirect>)
-        -> Result<Self::Output, Self::Err>;
+                   cmds: Vec<Self::Command>,
+                   redirects: Vec<Self::Redirect>)
+        -> Result<Self::Command, Self::Err>;
 
     /// Invoked when a non-zero number of commands were parsed between balanced parentheses.
     /// Typically these commands should run within their own environment without affecting
@@ -142,9 +194,9 @@ pub trait Builder {
     /// * cmds: the commands that were parsed between parens
     /// * redirects: any redirects to be applied over the **entire** group of commands
     fn subshell(&mut self,
-                cmds: Vec<Self::Output>,
-                redirects: Vec<Redirect>)
-        -> Result<Self::Output, Self::Err>;
+                cmds: Vec<Self::Command>,
+                redirects: Vec<Self::Redirect>)
+        -> Result<Self::Command, Self::Err>;
 
     /// Invoked when a loop command like `while` or `until` is parsed.
     /// Typically these commands will execute their body based on the exit status of their guard.
@@ -156,10 +208,10 @@ pub trait Builder {
     /// * redirects: any redirects to be applied over **all** commands part of the loop
     fn loop_command(&mut self,
                     kind: LoopKind,
-                    guard: Vec<Self::Output>,
-                    body: Vec<Self::Output>,
-                    redirects: Vec<Redirect>)
-        -> Result<Self::Output, Self::Err>;
+                    guard: Vec<Self::Command>,
+                    body: Vec<Self::Command>,
+                    redirects: Vec<Self::Redirect>)
+        -> Result<Self::Command, Self::Err>;
 
     /// Invoked when an `if` conditional command is parsed.
     /// Typically an `if` command is made up of one or more guard-body pairs, where the body
@@ -171,10 +223,10 @@ pub trait Builder {
     /// * else_part: optional group of commands to be run if no guard exited successfully
     /// * redirects: any redirects to be applied over **all** commands within the `if` command
     fn if_command(&mut self,
-                  branches: Vec<(Vec<Self::Output>, Vec<Self::Output>)>,
-                  else_part: Option<Vec<Self::Output>>,
-                  redirects: Vec<Redirect>)
-        -> Result<Self::Output, Self::Err>;
+                  branches: Vec<(Vec<Self::Command>, Vec<Self::Command>)>,
+                  else_part: Option<Vec<Self::Command>>,
+                  redirects: Vec<Self::Redirect>)
+        -> Result<Self::Command, Self::Err>;
 
     /// Invoked when a `for` command is parsed.
     /// Typically a `for` command binds a variable to each member in a group of words and
@@ -191,11 +243,11 @@ pub trait Builder {
     fn for_command(&mut self,
                    var: String,
                    post_var_comments: Vec<ast::Newline>,
-                   in_words: Option<Vec<Word>>,
+                   in_words: Option<Vec<Self::Word>>,
                    post_word_comments: Option<Vec<ast::Newline>>,
-                   body: Vec<Self::Output>,
-                   redirects: Vec<Redirect>)
-        -> Result<Self::Output, Self::Err>;
+                   body: Vec<Self::Command>,
+                   redirects: Vec<Self::Redirect>)
+        -> Result<Self::Command, Self::Err>;
 
     /// Invoked when a `case` command is parsed.
     /// Typically this command will execute certain commands when a given word matches a pattern.
@@ -210,12 +262,12 @@ pub trait Builder {
     /// * post_branch_comments: the comments appearing after the last arm but before the `esac` reserved word
     /// * redirects: any redirects to be applied over **all** commands part of the `case` block
     fn case_command(&mut self,
-                    word: Word,
+                    word: Self::Word,
                     post_word_comments: Vec<ast::Newline>,
-                    branches: Vec<( (Vec<ast::Newline>, Vec<Word>, Vec<ast::Newline>), Vec<Self::Output>)>,
+                    branches: Vec<( (Vec<ast::Newline>, Vec<Self::Word>, Vec<ast::Newline>), Vec<Self::Command>)>,
                     post_branch_comments: Vec<ast::Newline>,
-                    redirects: Vec<Redirect>)
-        -> Result<Self::Output, Self::Err>;
+                    redirects: Vec<Self::Redirect>)
+        -> Result<Self::Command, Self::Err>;
 
     /// Invoked when a function declaration is parsed.
     /// Typically a function declaration overwrites any previously defined function
@@ -226,8 +278,8 @@ pub trait Builder {
     /// * body: commands to be run when the function is invoked
     fn function_declaration(&mut self,
                             name: String,
-                            body: Self::Output)
-        -> Result<Self::Output, Self::Err>;
+                            body: Self::Command)
+        -> Result<Self::Command, Self::Err>;
 
     /// Invoked when only comments are parsed with no commands following.
     /// This can occur if an entire shell script is commented out or if there
@@ -238,6 +290,22 @@ pub trait Builder {
     fn comments(&mut self,
                 comments: Vec<ast::Newline>)
         -> Result<(), Self::Err>;
+
+    /// Invoked when a word is parsed.
+    ///
+    /// # Arguments
+    /// * kind: the type of word that was parsed
+    fn word(&mut self,
+            kind: WordKind<Self::Command>)
+        -> Result<Self::Word, Self::Err>;
+
+    /// Invoked when a redirect is parsed.
+    ///
+    /// # Arguments
+    /// * kind: the type of redirect that was parsed
+    fn redirect(&mut self,
+                kind: RedirectKind<Self::Word>)
+        -> Result<Self::Redirect, Self::Err>;
 }
 
 /// A default implementation of the `Builder` trait. It allows for selectively
@@ -439,36 +507,84 @@ pub trait CommandBuilder {
     {
         Ok(())
     }
+
+    /// Constructs a `ast::Word` from the provided input.
+    fn word(&mut self,
+            kind: WordKind<Command>)
+        -> Result<Word, Self::Err>
+    {
+        let word = match kind {
+            WordKind::Literal(s)      => Word::Literal(s),
+            WordKind::SingleQuoted(s) => Word::SingleQuoted(s),
+            WordKind::Param(p)        => Word::Param(p),
+            WordKind::CommandSubst(c) => unimplemented!(), // Word::CommandSubst(c),
+            WordKind::Star            => Word::Star,
+            WordKind::Question        => Word::Question,
+            WordKind::Tilde           => Word::Tilde,
+
+            WordKind::Concat(words) => Word::Concat(
+                try!(words.into_iter().map(|w| self.word(w)).collect())
+            ),
+
+            WordKind::DoubleQuoted(words) => Word::DoubleQuoted(
+                try!(words.into_iter().map(|w| self.word(w)).collect())
+            ),
+        };
+
+        Ok(word)
+    }
+
+    /// Constructs a `ast::Redirect` from the provided input.
+    fn redirect(&mut self,
+                kind: RedirectKind<Word>)
+        -> Result<Redirect, Self::Err>
+    {
+        let io = match kind {
+            RedirectKind::Read(fd, path)      => Redirect::Read(fd, path),
+            RedirectKind::Write(fd, path)     => Redirect::Write(fd, path),
+            RedirectKind::ReadWrite(fd, path) => Redirect::ReadWrite(fd, path),
+            RedirectKind::Append(fd, path)    => Redirect::Append(fd, path),
+            RedirectKind::Clobber(fd, path)   => Redirect::Clobber(fd, path),
+            RedirectKind::DupRead(src, dst)   => Redirect::DupRead(src, dst),
+            RedirectKind::DupWrite(src, dst)  => Redirect::DupWrite(src, dst),
+            RedirectKind::CloseRead(src)      => Redirect::CloseRead(src),
+            RedirectKind::CloseWrite(src)     => Redirect::CloseWrite(src),
+        };
+
+        Ok(io)
+    }
 }
 
 impl<T: CommandBuilder> Builder for T {
-    type Output = Command;
+    type Command = Command;
+    type Word = Word;
+    type Redirect = Redirect;
     type Err = T::Err;
 
     fn complete_command(&mut self,
                         pre_cmd_comments: Vec<ast::Newline>,
-                        cmd: Self::Output,
+                        cmd: Self::Command,
                         separator: SeparatorKind,
                         post_cmd_comments: Vec<ast::Newline>)
-        -> Result<Self::Output, Self::Err>
+        -> Result<Self::Command, Self::Err>
     {
         CommandBuilder::complete_command(self, pre_cmd_comments, cmd, separator, post_cmd_comments)
     }
 
     fn and_or(&mut self,
-              first: Self::Output,
+              first: Self::Command,
               kind: AndOrKind,
               post_separator_comments: Vec<ast::Newline>,
-              second: Self::Output)
-        -> Result<Self::Output, Self::Err>
+              second: Self::Command)
+        -> Result<Self::Command, Self::Err>
     {
         CommandBuilder::and_or(self, first, kind, post_separator_comments, second)
     }
 
     fn pipeline(&mut self,
                 bang: bool,
-                cmds: Vec<(Vec<ast::Newline>, Self::Output)>)
-        -> Result<Self::Output, Self::Err>
+                cmds: Vec<(Vec<ast::Newline>, Self::Command)>)
+        -> Result<Self::Command, Self::Err>
     {
         CommandBuilder::pipeline(self, bang, cmds)
     }
@@ -478,42 +594,42 @@ impl<T: CommandBuilder> Builder for T {
                       cmd: Option<Word>,
                       args: Vec<Word>,
                       redirects: Vec<Redirect>)
-        -> Result<Self::Output, Self::Err>
+        -> Result<Self::Command, Self::Err>
     {
         CommandBuilder::simple_command(self, env_vars, cmd, args, redirects)
     }
 
     fn brace_group(&mut self,
-                   cmds: Vec<Self::Output>,
+                   cmds: Vec<Self::Command>,
                    redirects: Vec<Redirect>)
-        -> Result<Self::Output, Self::Err>
+        -> Result<Self::Command, Self::Err>
     {
         CommandBuilder::brace_group(self, cmds, redirects)
     }
 
     fn subshell(&mut self,
-                cmds: Vec<Self::Output>,
+                cmds: Vec<Self::Command>,
                 redirects: Vec<Redirect>)
-        -> Result<Self::Output, Self::Err>
+        -> Result<Self::Command, Self::Err>
     {
         CommandBuilder::subshell(self, cmds, redirects)
     }
 
     fn loop_command(&mut self,
                     kind: LoopKind,
-                    guard: Vec<Self::Output>,
-                    body: Vec<Self::Output>,
+                    guard: Vec<Self::Command>,
+                    body: Vec<Self::Command>,
                     redirects: Vec<Redirect>)
-        -> Result<Self::Output, Self::Err>
+        -> Result<Self::Command, Self::Err>
     {
         CommandBuilder::loop_command(self, kind, guard, body, redirects)
     }
 
     fn if_command(&mut self,
-                  branches: Vec<(Vec<Self::Output>, Vec<Self::Output>)>,
-                  else_part: Option<Vec<Self::Output>>,
+                  branches: Vec<(Vec<Self::Command>, Vec<Self::Command>)>,
+                  else_part: Option<Vec<Self::Command>>,
                   redirects: Vec<Redirect>)
-        -> Result<Self::Output, Self::Err>
+        -> Result<Self::Command, Self::Err>
     {
         CommandBuilder::if_command(self, branches, else_part, redirects)
     }
@@ -523,9 +639,9 @@ impl<T: CommandBuilder> Builder for T {
                    post_var_comments: Vec<ast::Newline>,
                    in_words: Option<Vec<Word>>,
                    post_word_comments: Option<Vec<ast::Newline>>,
-                   body: Vec<Self::Output>,
+                   body: Vec<Self::Command>,
                    redirects: Vec<Redirect>)
-        -> Result<Self::Output, Self::Err>
+        -> Result<Self::Command, Self::Err>
     {
         CommandBuilder::for_command(self, var, post_var_comments, in_words, post_word_comments, body, redirects)
     }
@@ -533,18 +649,18 @@ impl<T: CommandBuilder> Builder for T {
     fn case_command(&mut self,
                     word: Word,
                     post_word_comments: Vec<ast::Newline>,
-                    branches: Vec<( (Vec<ast::Newline>, Vec<Word>, Vec<ast::Newline>), Vec<Self::Output>)>,
+                    branches: Vec<( (Vec<ast::Newline>, Vec<Word>, Vec<ast::Newline>), Vec<Self::Command>)>,
                     post_branch_comments: Vec<ast::Newline>,
                     redirects: Vec<Redirect>)
-        -> Result<Self::Output, Self::Err>
+        -> Result<Self::Command, Self::Err>
     {
         CommandBuilder::case_command(self, word, post_word_comments, branches, post_branch_comments, redirects)
     }
 
     fn function_declaration(&mut self,
                             name: String,
-                            body: Self::Output)
-        -> Result<Self::Output, Self::Err>
+                            body: Self::Command)
+        -> Result<Self::Command, Self::Err>
     {
         CommandBuilder::function_declaration(self, name, body)
     }
@@ -554,6 +670,20 @@ impl<T: CommandBuilder> Builder for T {
         -> Result<(), Self::Err>
     {
         CommandBuilder::comments(self, comments)
+    }
+
+    fn word(&mut self,
+            kind: WordKind<Command>)
+        -> Result<Word, Self::Err>
+    {
+        CommandBuilder::word(self, kind)
+    }
+
+    fn redirect(&mut self,
+                kind: RedirectKind<Word>)
+        -> Result<Redirect, Self::Err>
+    {
+        CommandBuilder::redirect(self, kind)
     }
 }
 
@@ -573,6 +703,9 @@ impl Error for DummyError {
     }
 }
 
+/// A `Builder` implementation which builds shell commands using the AST definitions in the `ast` module.
+pub struct DefaultBuilder;
+
 impl CommandBuilder for DefaultBuilder {
     type Err = DummyError;
 }
@@ -580,5 +713,78 @@ impl CommandBuilder for DefaultBuilder {
 impl ::std::default::Default for DefaultBuilder {
     fn default() -> DefaultBuilder {
         DefaultBuilder
+    }
+}
+
+impl<W> Eq for RedirectKind<W> where W: Eq {}
+impl<W> PartialEq<RedirectKind<W>> for RedirectKind<W> where W: PartialEq<W> {
+    fn eq(&self, other: &Self) -> bool {
+        use self::RedirectKind::*;
+        match (self, other) {
+            (&Read(ref fd1, ref w1),      &Read(ref fd2, ref w2))      => fd1 == fd2 && w1 == w2,
+            (&Write(ref fd1, ref w1),     &Write(ref fd2, ref w2))     => fd1 == fd2 && w1 == w2,
+            (&ReadWrite(ref fd1, ref w1), &ReadWrite(ref fd2, ref w2)) => fd1 == fd2 && w1 == w2,
+            (&Append(ref fd1, ref w1),    &Append(ref fd2, ref w2))    => fd1 == fd2 && w1 == w2,
+            (&Clobber(ref fd1, ref w1),   &Clobber(ref fd2, ref w2))   => fd1 == fd2 && w1 == w2,
+            (&DupRead(ref fd1, ref w1),   &DupRead(ref fd2, ref w2))   => fd1 == fd2 && w1 == w2,
+            (&DupWrite(ref fd1, ref w1),  &DupWrite(ref fd2, ref w2))  => fd1 == fd2 && w1 == w2,
+            (&CloseRead(ref fd1),         &CloseRead(ref fd2))         => fd1 == fd2,
+            (&CloseWrite(ref fd1),        &CloseWrite(ref fd2))        => fd1 == fd2,
+            _ => false,
+        }
+    }
+}
+
+impl<W> Clone for RedirectKind<W> where W: Clone {
+    fn clone(&self) -> Self {
+        use self::RedirectKind::*;
+        match *self {
+            Read(ref fd, ref w)      => Read(fd.clone(), w.clone()),
+            Write(ref fd, ref w)     => Write(fd.clone(), w.clone()),
+            ReadWrite(ref fd, ref w) => ReadWrite(fd.clone(), w.clone()),
+            Append(ref fd, ref w)    => Append(fd.clone(), w.clone()),
+            Clobber(ref fd, ref w)   => Clobber(fd.clone(), w.clone()),
+            DupRead(ref fd, ref w)   => DupRead(fd.clone(), w.clone()),
+            DupWrite(ref fd, ref w)  => DupWrite(fd.clone(), w.clone()),
+            CloseRead(ref fd)        => CloseRead(fd.clone()),
+            CloseWrite(ref fd)       => CloseWrite(fd.clone()),
+        }
+    }
+}
+
+impl<C> Eq for WordKind<C> where C: Eq {}
+impl<C> PartialEq<WordKind<C>> for WordKind<C> where C: PartialEq {
+    fn eq(&self, other: &Self) -> bool {
+        use self::WordKind::*;
+        match (self, other) {
+            (&Literal(ref s1),      &Literal(ref s2)) if s1      == s2 => true,
+            (&Concat(ref v1),       &Concat(ref v2)) if v1       == v2 => true,
+            (&SingleQuoted(ref s1), &SingleQuoted(ref s2)) if s1 == s2 => true,
+            (&DoubleQuoted(ref v1), &DoubleQuoted(ref v2)) if v1 == v2 => true,
+            (&Param(ref p1),        &Param(ref p2)) if p1        == p2 => true,
+            (&CommandSubst(ref c1), &CommandSubst(ref c2)) if c1 == c2 => true,
+            (&Star,                 &Star)                             => true,
+            (&Question,             &Question)                         => true,
+            (&Tilde,                &Tilde)                            => true,
+            _ => false,
+        }
+    }
+}
+
+impl<C> Clone for WordKind<C> where C: Clone {
+    fn clone(&self) -> Self {
+        use self::WordKind::*;
+
+        match *self {
+            Literal(ref s)      => Literal(s.clone()),
+            Concat(ref v)       => Concat(v.clone()),
+            SingleQuoted(ref s) => SingleQuoted(s.clone()),
+            DoubleQuoted(ref v) => DoubleQuoted(v.clone()),
+            Param(ref p)        => Param(p.clone()),
+            CommandSubst(ref c) => CommandSubst(c.clone()),
+            Star                => Star,
+            Question            => Question,
+            Tilde               => Tilde,
+        }
     }
 }
