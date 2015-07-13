@@ -1303,19 +1303,6 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// If a reserved word is found, the token which it matches will be
     /// returned in case the caller cares which specific reserved word was found.
     pub fn peek_reserved_token<'a>(&mut self, tokens: &'a [Token]) -> Option<&'a Token> {
-        macro_rules! try_once {
-            () => {{
-                let tok = match self.iter.multipeek(2) {
-                    // Don't forget about delimiting through EOF!
-                    [ref kw] => Some(kw),
-                    [ref kw, ref delim] if delim.is_word_delimiter() => Some(kw),
-                    _ => None,
-                };
-
-                tok.and_then(|tok| tokens.iter().find(|&t| t == tok))
-            }}
-        }
-
         let care_about_whitespace = tokens.iter().any(|tok| {
             if let &Whitespace(_) = tok {
                 true
@@ -1329,14 +1316,32 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         // If we don't find anything the first time (or if the caller does
         // not care about whitespace tokens) we will skip the whitespace
         // and try again.
-        if care_about_whitespace {
-            try_once!()
+        let num_tries = if care_about_whitespace {
+            2
         } else {
-            None
-        }.or_else(|| {
             self.skip_whitespace();
-            try_once!()
-        })
+            1
+        };
+
+        for _ in 0..num_tries {
+            {
+                let tok = match self.iter.multipeek(2) {
+                    // Don't forget about delimiting through EOF!
+                    [ref kw] => kw,
+                    [ref kw, ref delim] if delim.is_word_delimiter() => kw,
+                    _ => continue,
+                };
+
+                match tokens.iter().find(|&t| t == tok) {
+                    ret@Some(_) => return ret,
+                    None => {},
+                }
+            }
+
+            self.skip_whitespace();
+        }
+
+        None
     }
 
     /// Checks that one of the specified strings appears as a reserved word.
