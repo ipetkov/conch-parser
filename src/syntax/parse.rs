@@ -461,7 +461,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// will result if a redirect is found, `Ok(Some(Err(word)))` if a word is found,
     /// or `Ok(None)` if neither is found.
     pub fn redirect(&mut self) -> Result<Option<::std::result::Result<B::Redirect, B::Word>>, ParseError<B::Err>> {
-        fn is_maybe_numeric<P, C>(word: &builder::WordKind<P, C>, escapes_allowed: bool) -> bool {
+        fn is_maybe_numeric<C>(word: &builder::WordKind<C>, escapes_allowed: bool) -> bool {
             match *word {
                 builder::WordKind::Star     |
                 builder::WordKind::Question |
@@ -481,6 +481,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 // These could end up evaluating to a numeric,
                 // but we'll have to see at runtime.
                 builder::WordKind::Param(_) |
+                builder::WordKind::Subst(_) |
                 builder::WordKind::CommandSubst(_) => true,
             }
         }
@@ -576,7 +577,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Identical to `Parser::word_preserve_trailing_whitespace()` but does
     /// not pass the result to the AST builder.
     fn word_preserve_trailing_whitespace_raw(&mut self)
-        -> Result<Option<builder::WordKind<B::Parameter, B::Command>>, ParseError<B::Err>>
+        -> Result<Option<builder::WordKind<B::Command>>, ParseError<B::Err>>
     {
         self.skip_whitespace();
 
@@ -608,11 +609,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 Some(&ParamAt)            |
                 Some(&ParamDash)          |
                 Some(&ParamPositional(_)) => {
-                    // If no parameter found, we should treat `$` as a literal
-                    let w = try!(self.parameter())
-                        .map(builder::WordKind::Param)
-                        .unwrap_or(builder::WordKind::Literal(Dollar.to_string()));
-                    words.push(w);
+                    words.push(try!(self.parameter_raw()));
                     continue;
                 },
 
@@ -693,18 +690,11 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                             Some(&ParamAt)            |
                             Some(&ParamDash)          |
                             Some(&ParamPositional(_)) => {
-                                match try!(self.parameter()) {
-                                    Some(p) => {
-                                        if !buf.is_empty() {
-                                            words.push(builder::WordKind::Literal(buf));
-                                            buf = String::new();
-                                        }
-                                        words.push(builder::WordKind::Param(p))
-                                    },
-
-                                    None => buf.push_str(&Dollar.to_string()),
+                                if !buf.is_empty() {
+                                    words.push(builder::WordKind::Literal(buf));
+                                    buf = String::new();
                                 }
-
+                                words.push(try!(self.parameter_raw()));
                                 continue;
                             },
 
@@ -794,18 +784,27 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         Ok(ret)
     }
 
-    /// Parses a parameter such as `$$`, `$1`, `$foo`, etc.
+    /// Parses a parameters such as `$$`, `$1`, `$foo`, etc, or
+    /// parameter substitutions such as `$(cmd)`, `${param-word}`, etc.
     ///
     /// Since it is possible that a leading `$` is not followed by a valid
     /// parameter, the `$` should be treated as a literal. Thus this method
-    /// returns an optional parameter, although it will consume the `$` unconditionally.
-    pub fn parameter(&mut self) -> Result<Option<B::Parameter>, ParseError<B::Err>> {
-        use syntax::ast::builder::ParameterKind;
+    /// returns an `Word`, which will capture both cases where a literal or
+    /// parameter is parsed.
+    pub fn parameter(&mut self) -> Result<B::Word, ParseError<B::Err>> {
+        let param = try!(self.parameter_raw());
+        Ok(try!(self.builder.word(param)))
+    }
 
-        let param = match self.iter.next() {
-            Some(ParamAt)            => Some(try!(self.builder.parameter(ParameterKind::At))),
-            Some(ParamDash)          => Some(try!(self.builder.parameter(ParameterKind::Dash))),
-            Some(ParamPositional(p)) => Some(try!(self.builder.parameter(ParameterKind::Positional(p as u32)))),
+    /// Identical to `Parser::parameter()` but does not pass the result to the AST builder.
+    fn parameter_raw(&mut self) -> Result<builder::WordKind<B::Command>, ParseError<B::Err>> {
+        use syntax::ast::Parameter;
+        use syntax::ast::builder::{WordKind, ParameterSubstitutionKind};
+
+        match self.iter.next() {
+            Some(ParamAt)            => return Ok(WordKind::Param(Parameter::At)),
+            Some(ParamDash)          => return Ok(WordKind::Param(Parameter::Dash)),
+            Some(ParamPositional(p)) => return Ok(WordKind::Param(Parameter::Positional(p as u32))),
 
             Some(Token::Dollar) => match self.iter.peek() {
                 Some(&Star)      |
@@ -815,48 +814,38 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 Some(&Bang)      |
                 Some(&Name(_))   |
                 Some(&ParenOpen) |
-                Some(&CurlyOpen) => None,
-                _ => return Ok(None),
+                Some(&CurlyOpen) => {},
+                _ => return Ok(WordKind::Literal(Dollar.to_string())),
             },
 
             t => return Err(self.make_unexpected_err(t)),
-        };
-
-        if let Some(p) = param {
-            return Ok(Some(p))
         }
 
         let start_pos = self.iter.pos;
         let param = match self.iter.next() {
-            Some(Star)     => ParameterKind::Star,
-            Some(Pound)    => ParameterKind::Pound,
-            Some(Question) => ParameterKind::Question,
-            Some(Dollar)   => ParameterKind::Dollar,
-            Some(Bang)     => ParameterKind::Bang,
-            Some(Name(n))  => ParameterKind::Var(n),
+            Some(Star)     => Parameter::Star,
+            Some(Pound)    => Parameter::Pound,
+            Some(Question) => Parameter::Question,
+            Some(Dollar)   => Parameter::Dollar,
+            Some(Bang)     => Parameter::Bang,
+            Some(Name(n))  => Parameter::Var(n),
 
             Some(CurlyOpen) => {
-                let param = match self.iter.next() {
-                    Some(Star)          => ParameterKind::Star,
-                    Some(Pound)         => ParameterKind::Pound,
-                    Some(Question)      => ParameterKind::Question,
-                    Some(Dollar)        => ParameterKind::Dollar,
-                    Some(Bang)          => ParameterKind::Bang,
-
-                    Some(Name(ref s)) | Some(Literal(ref s)) if s == "@" => ParameterKind::At,
-                    Some(Name(ref s)) | Some(Literal(ref s)) if s == "-" => ParameterKind::Dash,
-
-                    Some(Name(n)) => ParameterKind::Var(n),
-                    Some(Literal(s)) => match u32::from_str(&s) {
-                        Ok(n)  => ParameterKind::Positional(n),
-                        Err(_) => return Err(self.make_bad_substitution_err(Some(Literal(s)))),
-                    },
-
-                    t => return Err(self.make_bad_substitution_err(t)),
+                let param = if let Some(&Pound) = self.iter.peek() {
+                    self.iter.next();
+                    match self.iter.peek() {
+                        Some(&CurlyClose) => Ok(Parameter::Pound),
+                        _ => Err(ParameterSubstitutionKind::Len(try!(self.parameter_inner()))),
+                    }
+                } else {
+                    Ok(try!(self.parameter_inner()))
                 };
 
                 match self.iter.next() {
-                    Some(CurlyClose) => param,
+                    Some(CurlyClose) => match param {
+                        Ok(param)  => param,
+                        Err(subst) => return Ok(WordKind::Subst(subst)),
+                    },
                     t => return Err(self.make_unexpected_err(t)),
                 }
             },
@@ -870,7 +859,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 };
 
                 match self.iter.next() {
-                    Some(ParenClose) => ParameterKind::CommandSubst(cmds),
+                    Some(ParenClose) => return Ok(WordKind::Subst(ParameterSubstitutionKind::Command(cmds))),
                     Some(t) => return Err(self.make_unexpected_err(Some(t))),
                     None => return Err(self.make_unmatched_err(ParenOpen, start_pos)),
                 }
@@ -879,7 +868,33 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             t => return Err(self.make_unexpected_err(t)),
         };
 
-        Ok(Some(try!(self.builder.parameter(param))))
+        Ok(WordKind::Param(param))
+    }
+
+    /// Parses a valid parameter that can appear inside a set of curly braces.
+    fn parameter_inner(&mut self) -> Result<ast::Parameter, ParseError<B::Err>> {
+        use syntax::ast::Parameter;
+
+        let param = match self.iter.next() {
+            Some(Star)          => Parameter::Star,
+            Some(Pound)         => Parameter::Pound,
+            Some(Question)      => Parameter::Question,
+            Some(Dollar)        => Parameter::Dollar,
+            Some(Bang)          => Parameter::Bang,
+
+            Some(Name(ref s)) | Some(Literal(ref s)) if s == "@" => Parameter::At,
+            Some(Name(ref s)) | Some(Literal(ref s)) if s == "-" => Parameter::Dash,
+
+            Some(Name(n)) => Parameter::Var(n),
+            Some(Literal(s)) => match u32::from_str(&s) {
+                Ok(n)  => Parameter::Positional(n),
+                Err(_) => return Err(self.make_bad_substitution_err(Some(Literal(s)))),
+            },
+
+            t => return Err(self.make_bad_substitution_err(t)),
+        };
+
+        Ok(param)
     }
 
     /// Parses any number of sequential commands between the `do` and `done`
@@ -1707,43 +1722,43 @@ pub mod test {
     #[test]
     fn test_parameter_short() {
         let words = vec!(
-            Parameter::At,
-            Parameter::Star,
-            Parameter::Pound,
-            Parameter::Question,
-            Parameter::Dash,
-            Parameter::Dollar,
-            Parameter::Bang,
-            Parameter::Positional(3),
+            Word::Param(Parameter::At),
+            Word::Param(Parameter::Star),
+            Word::Param(Parameter::Pound),
+            Word::Param(Parameter::Question),
+            Word::Param(Parameter::Dash),
+            Word::Param(Parameter::Dollar),
+            Word::Param(Parameter::Bang),
+            Word::Param(Parameter::Positional(3)),
         );
 
         let mut p = make_parser("$@$*$#$?$-$$$!$3$");
         for param in words {
-            assert_eq!(p.parameter().unwrap().unwrap(), param);
+            assert_eq!(p.parameter().unwrap(), param);
         }
 
-        assert_eq!(p.parameter().unwrap(), None);
+        assert_eq!(Word::Literal(String::from("$")), p.parameter().unwrap());
         p.parameter().unwrap_err(); // Stream should be exhausted
     }
 
     #[test]
     fn test_parameter_short_in_curlies() {
         let words = vec!(
-            Parameter::At,
-            Parameter::Star,
-            Parameter::Pound,
-            Parameter::Question,
-            Parameter::Dash,
-            Parameter::Dollar,
-            Parameter::Bang,
-            Parameter::Var(String::from("foo")),
-            Parameter::Positional(3),
-            Parameter::Positional(1000),
+            Word::Param(Parameter::At),
+            Word::Param(Parameter::Star),
+            Word::Param(Parameter::Pound),
+            Word::Param(Parameter::Question),
+            Word::Param(Parameter::Dash),
+            Word::Param(Parameter::Dollar),
+            Word::Param(Parameter::Bang),
+            Word::Param(Parameter::Var(String::from("foo"))),
+            Word::Param(Parameter::Positional(3)),
+            Word::Param(Parameter::Positional(1000)),
         );
 
         let mut p = make_parser("${@}${*}${#}${?}${-}${$}${!}${foo}${3}${1000}");
         for param in words {
-            assert_eq!(p.parameter().unwrap().unwrap(), param);
+            assert_eq!(p.parameter().unwrap(), param);
         }
 
         p.parameter().unwrap_err(); // Stream should be exhausted
@@ -1751,24 +1766,48 @@ pub mod test {
 
     #[test]
     fn test_parameter_command_substitution() {
-        let correct = Parameter::CommandSubst(vec!(
+        let correct = Word::Subst(ParameterSubstitution::Command(vec!(
             cmd_args_unboxed("echo", &["hello"]),
             cmd_args_unboxed("echo", &["world"]),
-        ));
+        )));
 
-        assert_eq!(Some(correct), make_parser("$(echo hello; echo world)").parameter().unwrap());
+        assert_eq!(correct, make_parser("$(echo hello; echo world)").parameter().unwrap());
     }
 
     #[test]
     fn test_parameter_command_substitution_valid_empty_substitution() {
-        assert_eq!(Some(Parameter::CommandSubst(vec!())), make_parser("$()").parameter().unwrap());
+        assert_eq!(Word::Subst(ParameterSubstitution::Command(vec!())), make_parser("$()").parameter().unwrap());
     }
 
     #[test]
     fn test_parameter_literal_dollar_if_no_param() {
         let mut p = make_parser("$^asdf");
-        assert_eq!(p.parameter().unwrap(), None);
+        assert_eq!(Word::Literal(String::from("$")), p.parameter().unwrap());
         assert_eq!(p.word().unwrap().unwrap(), Word::Literal(String::from("^asdf")));
+    }
+
+    #[test]
+    fn test_parameter_substitution() {
+        let words = vec!(
+            Word::Subst(ParameterSubstitution::Len(Parameter::At)),
+            Word::Subst(ParameterSubstitution::Len(Parameter::Star)),
+            Word::Subst(ParameterSubstitution::Len(Parameter::Pound)),
+            Word::Subst(ParameterSubstitution::Len(Parameter::Question)),
+            Word::Subst(ParameterSubstitution::Len(Parameter::Dash)),
+            Word::Subst(ParameterSubstitution::Len(Parameter::Dollar)),
+            Word::Subst(ParameterSubstitution::Len(Parameter::Bang)),
+            Word::Subst(ParameterSubstitution::Len(Parameter::Var(String::from("foo")))),
+            Word::Subst(ParameterSubstitution::Len(Parameter::Positional(3))),
+            Word::Subst(ParameterSubstitution::Len(Parameter::Positional(1000))),
+            Word::Subst(ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["foo"])))),
+        );
+
+        let mut p = make_parser("${#@}${#*}${##}${#?}${#-}${#$}${#!}${#foo}${#3}${#1000}$(echo foo)");
+        for param in words {
+            assert_eq!(param, p.parameter().unwrap());
+        }
+
+        p.parameter().unwrap_err(); // Stream should be exhausted
     }
 
     #[test]
@@ -1814,7 +1853,7 @@ pub mod test {
             Some(Word::Concat(vec!(
                 Word::Literal(String::from("123")),
                 Word::Param(Parameter::Dollar),
-                Word::Param(Parameter::CommandSubst(vec!(cmd_args_unboxed("echo", &["2"])))),
+                Word::Subst(ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["2"])))),
             ))),
             Word::Literal(String::from("out"))
         );
@@ -1845,7 +1884,7 @@ pub mod test {
             Word::Concat(vec!(
                 Word::Literal(String::from("123")),
                 Word::Param(Parameter::Dollar),
-                Word::Param(Parameter::CommandSubst(vec!(cmd_args_unboxed("echo", &["2"])))),
+                Word::Subst(ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["2"])))),
             )),
         );
         assert_eq!(Some(Ok(correct)), p.redirect().unwrap());
@@ -4046,7 +4085,8 @@ pub mod test {
         let correct = Word::DoubleQuoted(vec!(
             Word::Literal(String::from("test asdf")),
             Word::Param(Parameter::Var(String::from("foo"))),
-            Word::Literal(String::from(" $")),
+            Word::Literal(String::from(" ")),
+            Word::Literal(String::from("$")),
         ));
 
         assert_eq!(Some(correct), make_parser("\"test asdf$foo $\"").word().unwrap());

@@ -25,8 +25,15 @@ pub enum Parameter {
     Positional(u32),
     /// $foo
     Var(String),
+}
+
+/// A parameter substitution, e.g. `${param-word}`.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum ParameterSubstitution {
     /// $(cmd)
-    CommandSubst(Vec<Command>),
+    Command(Vec<Command>),
+    /// Returns the length of the value of a parameter, e.g. ${#param}
+    Len(Parameter),
 }
 
 /// Represents whitespace delimited text.
@@ -43,6 +50,8 @@ pub enum Word {
     DoubleQuoted(Vec<Word>),
     /// Access of a value inside a parameter, e.g. `$foo` or `$$`.
     Param(Parameter),
+    /// A parameter substitution, e.g. `${param-word}`.
+    Subst(ParameterSubstitution),
     /// A token which normally has a special meaning is treated as a literal
     /// because it was escaped, typically with a backslash, e.g. `\"`.
     Escaped(String),
@@ -186,8 +195,28 @@ impl Display for Parameter {
             } else {
                 write!(fmt, "${{{}}}", p)
             },
+        }
+    }
+}
 
-            CommandSubst(ref c) => write!(fmt, "$({})", CmdVec(c)),
+impl Display for ParameterSubstitution {
+    fn fmt(&self, fmt: &mut Formatter) -> Result {
+        use self::ParameterSubstitution::*;
+
+        match *self {
+            Command(ref c) => write!(fmt, "$({})", CmdVec(c)),
+            Len(ref p) => match *p {
+                Parameter::At       => fmt.write_str("${#@}"),
+                Parameter::Star     => fmt.write_str("${#*}"),
+                Parameter::Pound    => fmt.write_str("${##}"),
+                Parameter::Question => fmt.write_str("${#?}"),
+                Parameter::Dash     => fmt.write_str("${#-}"),
+                Parameter::Dollar   => fmt.write_str("${#$}"),
+                Parameter::Bang     => fmt.write_str("${#!}"),
+
+                Parameter::Var(ref p)        => write!(fmt, "${{#{}}}", p),
+                Parameter::Positional(ref p) => write!(fmt, "${{#{}}}", p),
+            }
         }
     }
 }
@@ -202,7 +231,9 @@ impl Display for Word {
             Tilde          => fmt.write_str("~"),
             Literal(ref s) => fmt.write_str(s),
 
-            Param(ref p)        => write!(fmt, "{}", p),
+            Param(ref p) => write!(fmt, "{}", p),
+            Subst(ref p) => write!(fmt, "{}", p),
+
             Escaped(ref s)      => write!(fmt, "\\{}", s),
             SingleQuoted(ref w) => write!(fmt, "'{}'", w),
 
@@ -603,7 +634,6 @@ mod test {
             Positional(10),
             Positional(100),
             Var(String::from("foo_bar123")),
-            CommandSubst(vec!(sample_simple_command())),
         );
 
         for p in params {
@@ -618,6 +648,40 @@ mod test {
 
             if correct != parsed {
                 panic!("The source \"{}\" generated from the command `{:#?}` was parsed as `{:#?}`", src, correct, parsed);
+            }
+        }
+    }
+
+    #[test]
+    fn test_display_parameter_substitution() {
+        use super::Parameter::*;
+        use super::ParameterSubstitution::*;
+
+        let substs = vec!(
+            Len(At),
+            Len(Star),
+            Len(Pound),
+            Len(Question),
+            Len(Dash),
+            Len(Dollar),
+            Len(Bang),
+            Len(Var(String::from("foo"))),
+            Len(Positional(3)),
+            Len(Positional(1000)),
+            Command(vec!(sample_simple_command())),
+        );
+
+        for s in substs {
+            let src = s.to_string();
+            let correct = Word::Subst(s);
+
+            let parsed = match make_parser(&src).parameter() {
+                Ok(s) => s,
+                Err(e) => panic!("The source \"{}\" generated from `{:#?}` failed to parse: {}", src, correct, e),
+            };
+
+            if correct != parsed {
+                panic!("The source \"{}\" generated from `{:#?}` was parsed as `{:#?}`", src, correct, parsed);
             }
         }
     }
@@ -676,7 +740,6 @@ mod test {
             Param(Parameter::Positional(10)),
             Param(Parameter::Positional(100)),
             Param(Parameter::Var(String::from("foo_bar123"))),
-            Param(Parameter::CommandSubst(vec!(sample_simple_command()))),
             Star,
             Question,
             Tilde,
