@@ -379,7 +379,12 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         loop {
             if let Some(&Assignment(_)) = self.iter.peek() {
                 if let Some(Assignment(var)) = self.iter.next() {
-                    vars.push((var, try!(self.word())));
+                    let value = if let Some(&Whitespace(_)) = self.iter.peek() {
+                        None
+                    } else {
+                        try!(self.word())
+                    };
+                    vars.push((var, value));
                 } else {
                     unreachable!();
                 }
@@ -456,7 +461,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// will result if a redirect is found, `Ok(Some(Err(word)))` if a word is found,
     /// or `Ok(None)` if neither is found.
     pub fn redirect(&mut self) -> Result<Option<::std::result::Result<B::Redirect, B::Word>>, ParseError<B::Err>> {
-        fn is_maybe_numeric<T: fmt::Debug>(word: &builder::WordKind<T>) -> bool {
+        fn is_maybe_numeric<T>(word: &builder::WordKind<T>, escapes_allowed: bool) -> bool {
             match *word {
                 builder::WordKind::Star     |
                 builder::WordKind::Question |
@@ -467,8 +472,11 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 builder::WordKind::Literal(ref s) |
                 builder::WordKind::SingleQuoted(ref s) => s.chars().all(|c| c.is_digit(10)),
 
+                builder::WordKind::Escaped(ref s) => escapes_allowed && s.chars().all(|c| c.is_digit(10)),
+
                 builder::WordKind::Concat(ref fragments) |
-                builder::WordKind::DoubleQuoted(ref fragments) => fragments.iter().all(is_maybe_numeric),
+                builder::WordKind::DoubleQuoted(ref fragments) =>
+                    fragments.iter().all(|f| is_maybe_numeric(f, escapes_allowed)),
 
                 // These could end up evaluating to a numeric,
                 // but we'll have to see at runtime.
@@ -479,7 +487,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         let src_fd = match try!(self.word_preserve_trailing_whitespace_raw()) {
             None => None,
-            Some(w) => if is_maybe_numeric(&w) {
+            Some(w) => if is_maybe_numeric(&w, false) {
                 Some(try!(self.builder.word(w)))
             } else {
                 return Ok(Some(Err(try!(self.builder.word(w)))))
@@ -503,7 +511,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         let path_start_pos = self.iter.pos;
         let (is_num, path) = match try!(self.word_preserve_trailing_whitespace_raw()) {
-            Some(p) => (is_maybe_numeric(&p), p),
+            Some(p) => (is_maybe_numeric(&p, true), p),
             None => return Err(self.make_unexpected_err(None)),
         };
 
@@ -656,7 +664,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
                 Backslash => match self.iter.next() {
                     Some(Newline) => break, // escaped newlines become whitespace and a delimiter
-                    Some(t) => builder::WordKind::Literal(t.to_string()),
+                    Some(t) => builder::WordKind::Escaped(t.to_string()),
                     None => break, // Can't escape EOF, just ignore the slash
                 },
 
@@ -720,7 +728,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                                 Some(&Backtick)    |
                                 Some(&DoubleQuote) |
                                 Some(&Backslash)   |
-                                Some(&Newline)     => buf.push_str(&self.iter.next().unwrap().to_string()),
+                                Some(&Newline)     => {
+                                    if !buf.is_empty() {
+                                        words.push(builder::WordKind::Literal(buf));
+                                        buf = String::new();
+                                    }
+                                    words.push(builder::WordKind::Escaped(self.iter.next().unwrap().to_string()));
+                                },
 
                                 _ => buf.push_str(&Backslash.to_string()),
                             },
@@ -1419,7 +1433,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 }
 
 #[cfg(test)]
-mod test {
+pub mod test {
     use syntax::lexer::Lexer;
 
     use syntax::ast::*;
@@ -1428,7 +1442,7 @@ mod test {
     use syntax::parse::*;
     use syntax::token::Token;
 
-    fn make_parser(src: &str) -> DefaultParser<Lexer<::std::str::Chars>> {
+    pub fn make_parser(src: &str) -> DefaultParser<Lexer<::std::str::Chars>> {
         DefaultParser::new(Lexer::new(src.chars()))
     }
 
@@ -1453,7 +1467,7 @@ mod test {
         Box::new(cmd_unboxed(cmd))
     }
 
-    fn sample_simple_command() -> (Option<Word>, Vec<Word>, Vec<(String, Option<Word>)>, Vec<Redirect>) {
+    pub fn sample_simple_command() -> (Option<Word>, Vec<Word>, Vec<(String, Option<Word>)>, Vec<Redirect>) {
         (
             Some(Word::Literal(String::from("foo"))),
             vec!(
@@ -1463,6 +1477,7 @@ mod test {
             vec!(
                 (String::from("var"), Some(Word::Literal(String::from("val")))),
                 (String::from("ENV"), Some(Word::Literal(String::from("true")))),
+                (String::from("BLANK"), None),
             ),
             vec!(
                 Redirect::Clobber(Some(Word::Literal(String::from("2"))), Word::Literal(String::from("clob"))),
@@ -1750,6 +1765,13 @@ mod test {
     }
 
     #[test]
+    fn test_redirect_valid_return_word_if_src_fd_has_escaped_numerics() {
+        let mut p = make_parser("\\2>");
+        let correct = Word::Escaped(String::from("2"));
+        assert_eq!(Some(Err(correct)), p.redirect().unwrap());
+    }
+
+    #[test]
     fn test_redirect_valid_return_redirect_if_src_fd_is_possibly_numeric() {
         let mut p = make_parser("123$$>out");
         let correct = Redirect::Write(
@@ -1758,6 +1780,16 @@ mod test {
                 Word::Param(Parameter::Dollar),
             ))),
             Word::Literal(String::from("out"))
+        );
+        assert_eq!(Some(Ok(correct)), p.redirect().unwrap());
+    }
+
+    #[test]
+    fn test_redirect_valid_dst_fd_can_have_escaped_numerics() {
+        let mut p = make_parser(">\\2");
+        let correct = Redirect::Write(
+            None,
+            Word::Escaped(String::from("2")),
         );
         assert_eq!(Some(Ok(correct)), p.redirect().unwrap());
     }
@@ -1939,7 +1971,7 @@ mod test {
 
     #[test]
     fn test_simple_command_valid_assignments_at_start_of_command() {
-        let mut p = make_parser("var=val ENV=true foo bar baz");
+        let mut p = make_parser("var=val ENV=true BLANK= foo bar baz");
         let (cmd, args, vars, _) = sample_simple_command();
         let correct = Simple(Box::new(SimpleCommand { cmd: cmd, args: args, vars: vars, io: vec!() }));
         assert_eq!(correct, p.simple_command().unwrap());
@@ -1947,7 +1979,7 @@ mod test {
 
     #[test]
     fn test_simple_command_assignments_after_start_of_command_should_be_args() {
-        let mut p = make_parser("var=val ENV=true foo var2=val2 bar baz var3=val3");
+        let mut p = make_parser("var=val ENV=true BLANK= foo var2=val2 bar baz var3=val3");
         let (cmd, mut args, vars, _) = sample_simple_command();
         args.insert(0, Word::Concat(vec!(Word::Literal(String::from("var2=")), Word::Literal(String::from("val2")))));
         args.push(Word::Concat(vec!(Word::Literal(String::from("var3=")), Word::Literal(String::from("val3")))));
@@ -1957,7 +1989,7 @@ mod test {
 
     #[test]
     fn test_simple_command_redirections_at_start_of_command() {
-        let mut p = make_parser("2>|clob 3<>rw <in var=val ENV=true foo bar baz");
+        let mut p = make_parser("2>|clob 3<>rw <in var=val ENV=true BLANK= foo bar baz");
         let (cmd, args, vars, io) = sample_simple_command();
         let correct = Simple(Box::new(SimpleCommand { cmd: cmd, args: args, vars: vars, io: io }));
         assert_eq!(correct, p.simple_command().unwrap());
@@ -1965,7 +1997,7 @@ mod test {
 
     #[test]
     fn test_simple_command_redirections_at_end_of_command() {
-        let mut p = make_parser("var=val ENV=true foo bar baz 2>|clob 3<>rw <in");
+        let mut p = make_parser("var=val ENV=true BLANK= foo bar baz 2>|clob 3<>rw <in");
         let (cmd, args, vars, io) = sample_simple_command();
         let correct = Simple(Box::new(SimpleCommand { cmd: cmd, args: args, vars: vars, io: io }));
         assert_eq!(correct, p.simple_command().unwrap());
@@ -1973,7 +2005,7 @@ mod test {
 
     #[test]
     fn test_simple_command_redirections_throughout_the_command() {
-        let mut p = make_parser("2>|clob var=val 3<>rw ENV=true foo bar <in baz 4>&-");
+        let mut p = make_parser("2>|clob var=val 3<>rw ENV=true BLANK= foo bar <in baz 4>&-");
         let (cmd, args, vars, mut io) = sample_simple_command();
         io.push(Redirect::CloseWrite(Some(Word::Literal(String::from("4")))));
         let correct = Simple(Box::new(SimpleCommand { cmd: cmd, args: args, vars: vars, io: io }));
@@ -3985,7 +4017,9 @@ mod test {
     #[test]
     fn test_word_double_quote_valid_slash_escapes_dollar() {
         let correct = Word::DoubleQuoted(vec!(
-            Word::Literal(String::from("test$foo ")),
+            Word::Literal(String::from("test")),
+            Word::Escaped(String::from("$")),
+            Word::Literal(String::from("foo ")),
             Word::Param(Parameter::At),
         ));
 
@@ -3995,7 +4029,9 @@ mod test {
     #[test]
     fn test_word_double_quote_valid_slash_escapes_backtick() {
         let correct = Word::DoubleQuoted(vec!(
-            Word::Literal(String::from("test` ")),
+            Word::Literal(String::from("test")),
+            Word::Escaped(String::from("`")),
+            Word::Literal(String::from(" ")),
             Word::Param(Parameter::Star),
         ));
 
@@ -4005,7 +4041,9 @@ mod test {
     #[test]
     fn test_word_double_quote_valid_slash_escapes_double_quote() {
         let correct = Word::DoubleQuoted(vec!(
-            Word::Literal(String::from("test\" ")),
+            Word::Literal(String::from("test")),
+            Word::Escaped(String::from("\"")),
+            Word::Literal(String::from(" ")),
             Word::Param(Parameter::Pound),
         ));
 
@@ -4015,17 +4053,22 @@ mod test {
     #[test]
     fn test_word_double_quote_valid_slash_escapes_newline() {
         let correct = Word::DoubleQuoted(vec!(
-            Word::Literal(String::from("test\n ")),
+            Word::Literal(String::from("test")),
+            Word::Escaped(String::from("\n")),
+            Word::Literal(String::from(" ")),
             Word::Param(Parameter::Question),
+            Word::Literal(String::from("\n")),
         ));
 
-        assert_eq!(Some(correct), make_parser("\"test\\\n $?\"").word().unwrap());
+        assert_eq!(Some(correct), make_parser("\"test\\\n $?\n\"").word().unwrap());
     }
 
     #[test]
     fn test_word_double_quote_valid_slash_escapes_slash() {
         let correct = Word::DoubleQuoted(vec!(
-            Word::Literal(String::from("test\\ ")),
+            Word::Literal(String::from("test")),
+            Word::Escaped(String::from("\\")),
+            Word::Literal(String::from(" ")),
             Word::Param(Parameter::Positional(0)),
         ));
 
@@ -4171,7 +4214,7 @@ mod test {
             let src = format!("\\{}", l);
             match make_parser(&src).word() {
                 Ok(Some(res)) => {
-                    let correct = Word::Literal(String::from(*l));
+                    let correct = Word::Escaped(String::from(*l));
                     if correct != res {
                         panic!("Unexpectedly parsed \"{}\": expected:\n{:#?}\ngot:\n{:#?}", src, correct, res);
                     }

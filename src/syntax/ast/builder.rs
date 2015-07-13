@@ -67,6 +67,9 @@ pub enum WordKind<C> {
     Param(Parameter),
     /// Represents the standard output of some command, e.g. \`echo foo\`.
     CommandSubst(C),
+    /// A token which normally has a special meaning is treated as a literal
+    /// because it was escaped, typically with a backslash, e.g. `\"`.
+    Escaped(String),
     /// Represents `*`, useful for handling pattern expansions.
     Star,
     /// Represents `?`, useful for handling pattern expansions.
@@ -517,6 +520,7 @@ pub trait CommandBuilder {
             WordKind::Literal(s)      => Word::Literal(s),
             WordKind::SingleQuoted(s) => Word::SingleQuoted(s),
             WordKind::Param(p)        => Word::Param(p),
+            WordKind::Escaped(s)      => Word::Escaped(s),
             WordKind::CommandSubst(c) => unimplemented!(), // Word::CommandSubst(c),
             WordKind::Star            => Word::Star,
             WordKind::Question        => Word::Question,
@@ -757,11 +761,12 @@ impl<C> PartialEq<WordKind<C>> for WordKind<C> where C: PartialEq {
     fn eq(&self, other: &Self) -> bool {
         use self::WordKind::*;
         match (self, other) {
-            (&Literal(ref s1),      &Literal(ref s2)) if s1      == s2 => true,
-            (&Concat(ref v1),       &Concat(ref v2)) if v1       == v2 => true,
+            (&Literal(ref s1),      &Literal(ref s2))      if s1 == s2 => true,
+            (&Concat(ref v1),       &Concat(ref v2))       if v1 == v2 => true,
             (&SingleQuoted(ref s1), &SingleQuoted(ref s2)) if s1 == s2 => true,
             (&DoubleQuoted(ref v1), &DoubleQuoted(ref v2)) if v1 == v2 => true,
-            (&Param(ref p1),        &Param(ref p2)) if p1        == p2 => true,
+            (&Escaped(ref s1),      &Escaped(ref s2))      if s1 == s2 => true,
+            (&Param(ref p1),        &Param(ref p2))        if p1 == p2 => true,
             (&CommandSubst(ref c1), &CommandSubst(ref c2)) if c1 == c2 => true,
             (&Star,                 &Star)                             => true,
             (&Question,             &Question)                         => true,
@@ -780,6 +785,7 @@ impl<C> Clone for WordKind<C> where C: Clone {
             Concat(ref v)       => Concat(v.clone()),
             SingleQuoted(ref s) => SingleQuoted(s.clone()),
             DoubleQuoted(ref v) => DoubleQuoted(v.clone()),
+            Escaped(ref s)      => Escaped(s.clone()),
             Param(ref p)        => Param(p.clone()),
             CommandSubst(ref c) => CommandSubst(c.clone()),
             Star                => Star,
