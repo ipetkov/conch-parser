@@ -74,6 +74,10 @@ pub enum WordKind<C> {
     Star,
     /// Represents `?`, useful for handling pattern expansions.
     Question,
+    /// Represents `[`, useful for handling pattern expansions.
+    SquareOpen,
+    /// Represents `]`, useful for handling pattern expansions.
+    SquareClose,
     /// Represents `~`, useful for handling tilde expansions.
     Tilde,
 }
@@ -561,6 +565,8 @@ impl Builder for DefaultBuilder {
             WordKind::Escaped(s)      => Word::Escaped(s),
             WordKind::Star            => Word::Star,
             WordKind::Question        => Word::Question,
+            WordKind::SquareOpen      => Word::SquareOpen,
+            WordKind::SquareClose     => Word::SquareClose,
             WordKind::Tilde           => Word::Tilde,
 
             WordKind::CommandSubst(c) => Word::Subst(ParameterSubstitution::Command(c)),
@@ -819,6 +825,8 @@ impl<C> PartialEq<WordKind<C>> for WordKind<C> where C: PartialEq {
             (&CommandSubst(ref c1), &CommandSubst(ref c2)) if c1 == c2 => true,
             (&Star,                 &Star)                             => true,
             (&Question,             &Question)                         => true,
+            (&SquareOpen,           &SquareOpen)                       => true,
+            (&SquareClose,          &SquareClose)                      => true,
             (&Tilde,                &Tilde)                            => true,
             _ => false,
         }
@@ -840,6 +848,8 @@ impl<C> Clone for WordKind<C> where C: Clone {
             CommandSubst(ref c) => CommandSubst(c.clone()),
             Star                => Star,
             Question            => Question,
+            SquareOpen          => SquareOpen,
+            SquareClose         => SquareClose,
             Tilde               => Tilde,
         }
     }

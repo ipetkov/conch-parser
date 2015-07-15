@@ -465,9 +465,11 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     pub fn redirect(&mut self) -> Result<Option<::std::result::Result<B::Redirect, B::Word>>, ParseError<B::Err>> {
         fn is_maybe_numeric<C>(word: &builder::WordKind<C>, escapes_allowed: bool) -> bool {
             match *word {
-                builder::WordKind::Star     |
-                builder::WordKind::Question |
-                builder::WordKind::Tilde    => false,
+                builder::WordKind::Star        |
+                builder::WordKind::Question    |
+                builder::WordKind::Tilde       |
+                builder::WordKind::SquareOpen  |
+                builder::WordKind::SquareClose => false,
 
                 // Literals and single quotes can be statically checked
                 // if they have non-numeric characters
@@ -601,6 +603,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         loop {
             match self.iter.peek() {
                 Some(&CurlyOpen)          |
+                Some(&SquareOpen)         |
+                Some(&SquareClose)        |
                 Some(&SingleQuote)        |
                 Some(&DoubleQuote)        |
                 Some(&Backtick)           |
@@ -672,9 +676,11 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 Name(s)    |
                 Literal(s) => builder::WordKind::Literal(s),
 
-                Star     => builder::WordKind::Star,
-                Question => builder::WordKind::Question,
-                Tilde    => builder::WordKind::Tilde,
+                Star        => builder::WordKind::Star,
+                Question    => builder::WordKind::Question,
+                Tilde       => builder::WordKind::Tilde,
+                SquareOpen  => builder::WordKind::SquareOpen,
+                SquareClose => builder::WordKind::SquareClose,
 
                 Backslash => match self.iter.next() {
                     Some(Newline) => break, // escaped newlines become whitespace and a delimiter
@@ -4993,9 +4999,11 @@ pub mod test {
 
     #[test]
     fn test_word_special_words_recognized_as_such() {
-        assert_eq!(Ok(Some(Word::Star)),     make_parser("*").word());
-        assert_eq!(Ok(Some(Word::Question)), make_parser("?").word());
-        assert_eq!(Ok(Some(Word::Tilde)),    make_parser("~").word());
+        assert_eq!(Ok(Some(Word::Star)),        make_parser("*").word());
+        assert_eq!(Ok(Some(Word::Question)),    make_parser("?").word());
+        assert_eq!(Ok(Some(Word::Tilde)),       make_parser("~").word());
+        assert_eq!(Ok(Some(Word::SquareOpen)),  make_parser("[").word());
+        assert_eq!(Ok(Some(Word::SquareClose)), make_parser("]").word());
     }
 
     #[test]

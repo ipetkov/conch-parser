@@ -87,6 +87,10 @@ pub enum Word {
     Star,
     /// Represents `?`, useful for handling pattern expansions.
     Question,
+    /// Represents `[`, useful for handling pattern expansions.
+    SquareOpen,
+    /// Represents `]`, useful for handling pattern expansions.
+    SquareClose,
     /// Represents `~`, useful for handling tilde expansions.
     Tilde,
 }
@@ -302,6 +306,8 @@ impl Display for Word {
         match *self {
             Star           => fmt.write_str("*"),
             Question       => fmt.write_str("?"),
+            SquareOpen     => fmt.write_str("["),
+            SquareClose    => fmt.write_str("]"),
             Tilde          => fmt.write_str("~"),
             Literal(ref s) => fmt.write_str(s),
 
@@ -876,6 +882,8 @@ mod test {
             Param(Parameter::Var(String::from("foo_bar123"))),
             Star,
             Question,
+            SquareOpen,
+            SquareClose,
             Tilde,
         );
 

@@ -95,6 +95,8 @@ impl<I: Iterator<Item = char>> Lexer<I> {
             ')' => ParenClose,
             '{' => CurlyOpen,
             '}' => CurlyClose,
+            '[' => SquareOpen,
+            ']' => SquareClose,
 
             '$' => match self.inner.peek() {
                 // Positional parameters are 0-9, so we only
@@ -234,6 +236,8 @@ mod test {
     check_tok!(check_ParenClose, ParenClose);
     check_tok!(check_CurlyOpen, CurlyOpen);
     check_tok!(check_CurlyClose, CurlyClose);
+    check_tok!(check_SquareOpen, SquareOpen);
+    check_tok!(check_SquareClose, SquareClose);
     check_tok!(check_Dollar, Dollar);
     check_tok!(check_Bang, Bang);
     check_tok!(check_Semi, Semi);

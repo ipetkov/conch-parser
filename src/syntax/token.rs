@@ -17,6 +17,10 @@ pub enum Token {
     CurlyOpen,
     /// }
     CurlyClose,
+    /// [
+    SquareOpen,
+    /// ]
+    SquareClose,
 
     /// !
     Bang,
@@ -108,6 +112,8 @@ impl fmt::Display for Token {
             ParenClose          => fmt.write_str(")"),
             CurlyOpen           => fmt.write_str("{"),
             CurlyClose          => fmt.write_str("}"),
+            SquareOpen          => fmt.write_str("["),
+            SquareClose         => fmt.write_str("]"),
             Dollar              => fmt.write_str("$"),
             Bang                => fmt.write_str("!"),
             Semi                => fmt.write_str(";"),
@@ -156,6 +162,8 @@ impl Token {
             ParenClose  |
             CurlyOpen   |
             CurlyClose  |
+            SquareOpen  |
+            SquareClose |
             Dollar      |
             Bang        |
             Star        |
@@ -236,6 +244,8 @@ impl Token {
             At                 |
             CurlyOpen          |
             CurlyClose         |
+            SquareOpen         |
+            SquareClose        |
             Dollar             |
             Tilde              |
             Pound              |
