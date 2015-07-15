@@ -3,4 +3,6 @@
 
 #![feature(slice_patterns)]
 
+extern crate void;
+
 pub mod syntax;

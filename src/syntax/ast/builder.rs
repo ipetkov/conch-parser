@@ -356,7 +356,7 @@ impl Builder for DefaultBuilder {
     type Command  = Command;
     type Word     = Word;
     type Redirect = Redirect;
-    type Err      = DummyError;
+    type Err      = ::void::Void;
 
     /// Constructs a `Command::Job` node with the provided inputs if the command
     /// was delimited by an ampersand or the command itself otherwise.
@@ -746,22 +746,6 @@ impl<'a, T: Builder> Builder for &'a mut T {
         -> Result<Self::Redirect, Self::Err>
     {
         (**self).redirect(kind)
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-/// A dummy error which implements the `Error` trait.
-pub struct DummyError;
-
-impl ::std::fmt::Display for DummyError {
-    fn fmt(&self, fmt: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-        fmt.write_str("dummy error")
-    }
-}
-
-impl Error for DummyError {
-    fn description(&self) -> &str {
-        "dummy error"
     }
 }
 
