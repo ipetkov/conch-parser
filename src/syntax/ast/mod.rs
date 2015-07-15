@@ -34,6 +34,26 @@ pub enum ParameterSubstitution {
     Command(Vec<Command>),
     /// Returns the length of the value of a parameter, e.g. `${#param}`
     Len(Parameter),
+    /// Use a provided value if the parameter is null or unset, e.g.
+    /// `${param:-[word]}`.
+    /// The boolean indicates the presence of a `:`, and that if the parameter has
+    /// a null value, that situation should be treated as if the parameter is unset.
+    Default(bool, Parameter, Option<Box<Word>>),
+    /// Assign a provided value to the parameter if it is null or unset,
+    /// e.g. `${param:=[word]}`.
+    /// The boolean indicates the presence of a `:`, and that if the parameter has
+    /// a null value, that situation should be treated as if the parameter is unset.
+    Assign(bool, Parameter, Option<Box<Word>>),
+    /// If the parameter is null or unset, an error should result with the provided
+    /// message, e.g. `${param:?[word]}`.
+    /// The boolean indicates the presence of a `:`, and that if the parameter has
+    /// a null value, that situation should be treated as if the parameter is unset.
+    Error(bool, Parameter, Option<Box<Word>>),
+    /// If the parameter is NOT null or unset, a provided word will be used,
+    /// e.g. `${param:+[word]}`.
+    /// The boolean indicates the presence of a `:`, and that if the parameter has
+    /// a null value, that situation should be treated as if the parameter is unset.
+    Alternative(bool, Parameter, Option<Box<Word>>),
     /// Remove smallest suffix pattern from a parameter's value, e.g. `${param%pattern}`
     RemoveSmallestSuffix(Parameter, Option<Box<Word>>),
     /// Remove largest suffix pattern from a parameter's value, e.g. `${param%%pattern}`
@@ -232,31 +252,42 @@ impl Display for ParameterSubstitution {
                 fmt.write_str("}")
             },
 
-            RemoveSmallestSuffix(ref p, ref pat) => {
+            Default(c, ref p, ref w)     |
+            Assign(c, ref p, ref w)      |
+            Error(c, ref p, ref w)       |
+            Alternative(c, ref p, ref w) => {
+                let op = match *self {
+                    Default(..)     => '-',
+                    Assign(..)      => '=',
+                    Error(..)       => '?',
+                    Alternative(..) => '+',
+                    _ => unreachable!(),
+                };
+
+                let colon = if c { ":" } else { "" };
+
                 try!(fmt.write_str("${"));
                 try!(write_inner(fmt, p));
-                try!(fmt.write_str("%"));
-                try!(pat.as_ref().map_or(Ok(()), |p| write!(fmt, "{}", p)));
+                try!(write!(fmt, "{}{}", colon, op));
+                try!(w.as_ref().map_or(Ok(()), |p| write!(fmt, "{}", p)));
                 fmt.write_str("}")
             },
-            RemoveLargestSuffix(ref p, ref pat) => {
+
+            RemoveSmallestSuffix(ref p, ref pat) |
+            RemoveLargestSuffix(ref p, ref pat)  |
+            RemoveSmallestPrefix(ref p, ref pat) |
+            RemoveLargestPrefix(ref p, ref pat)  => {
+                let op = match *self {
+                    RemoveSmallestSuffix(..) => "%",
+                    RemoveLargestSuffix(..)  => "%%",
+                    RemoveSmallestPrefix(..) => "#",
+                    RemoveLargestPrefix(..)  => "##",
+                    _ => unreachable!(),
+                };
+
                 try!(fmt.write_str("${"));
                 try!(write_inner(fmt, p));
-                try!(fmt.write_str("%%"));
-                try!(pat.as_ref().map_or(Ok(()), |p| write!(fmt, "{}", p)));
-                fmt.write_str("}")
-            },
-            RemoveSmallestPrefix(ref p, ref pat) => {
-                try!(fmt.write_str("${"));
-                try!(write_inner(fmt, p));
-                try!(fmt.write_str("#"));
-                try!(pat.as_ref().map_or(Ok(()), |p| write!(fmt, "{}", p)));
-                fmt.write_str("}")
-            },
-            RemoveLargestPrefix(ref p, ref pat) => {
-                try!(fmt.write_str("${"));
-                try!(write_inner(fmt, p));
-                try!(fmt.write_str("##"));
+                try!(write!(fmt, "{}", op));
                 try!(pat.as_ref().map_or(Ok(()), |p| write!(fmt, "{}", p)));
                 fmt.write_str("}")
             },
@@ -736,9 +767,26 @@ mod test {
             Word::Escaped(String::from("\n")),
             Word::Literal(String::from("bar")),
             Word::Literal(String::from("   \t\t\r ")),
+            Word::Param(At),
+            Word::Subst(RemoveLargestPrefix(
+                Var(String::from("foo")),
+                Some(Box::new(Word::Literal(String::from("bar"))))
+            )),
         ));
 
         for p in params {
+            for &b in [true, false].into_iter() {
+                substs.push(Default(b, p.clone(), Some(Box::new(word.clone()))));
+                substs.push(Assign(b, p.clone(), Some(Box::new(word.clone()))));
+                substs.push(Error(b, p.clone(), Some(Box::new(word.clone()))));
+                substs.push(Alternative(b, p.clone(), Some(Box::new(word.clone()))));
+
+                substs.push(Default(b, p.clone(), None));
+                substs.push(Assign(b, p.clone(), None));
+                substs.push(Error(b, p.clone(), None));
+                substs.push(Alternative(b, p.clone(), None));
+            }
+
             substs.push(RemoveSmallestSuffix(p.clone(), Some(Box::new(word.clone()))));
             substs.push(RemoveLargestSuffix(p.clone(), Some(Box::new(word.clone()))));
             substs.push(RemoveSmallestPrefix(p.clone(), Some(Box::new(word.clone()))));
@@ -750,8 +798,14 @@ mod test {
             substs.push(RemoveLargestPrefix(p.clone(), None));
         }
 
-        // ${##} will should parse as Len(#)
-        for s in substs.into_iter().filter(|s| *s != RemoveSmallestPrefix(Pound, None)) {
+        // ${##}, ${#-} and ${#?} should all parse as Len
+        let to_remove = vec!(
+            RemoveSmallestPrefix(Pound, None),
+            Default(false, Pound, None),
+            Error(false, Pound, None),
+        );
+
+        for s in substs.into_iter().filter(|s| to_remove.iter().all(|r| r != s)) {
             let src = s.to_string();
             let correct = Word::Subst(s);
 

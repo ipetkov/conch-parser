@@ -32,6 +32,16 @@ pub enum Token {
     Backslash,
     /// %
     Percent,
+    /// -
+    Dash,
+    /// =
+    Equals,
+    /// +
+    Plus,
+    /// :
+    Colon,
+    /// @
+    At,
 
     /// '
     SingleQuote,
@@ -74,16 +84,6 @@ pub enum Token {
 
     /// $
     Dollar,
-    /// $@
-    ///
-    /// Must be its own token to avoid lumping the `@` with a `Literal`
-    /// since it doesn't have its own token.
-    ParamAt,
-    /// $-
-    ///
-    /// Must be its own token to avoid lumping the `-` with a `Literal`
-    /// since it doesn't have its own token.
-    ParamDash,
     /// $0, $1, ..., $9
     ///
     /// Must be its own token to avoid lumping the positional parameter
@@ -98,9 +98,6 @@ pub enum Token {
     /// A Literal capable of being used as a variable or function name. According to the POSIX
     /// standard it should only contain alphanumerics or underscores, and does not start with a digit.
     Name(String),
-
-    /// A `Name` that was immediately followed by an equals sign, e.g. `foo=` becomes Assignment("foo").
-    Assignment(String),
 }
 
 impl fmt::Display for Token {
@@ -124,6 +121,11 @@ impl fmt::Display for Token {
             Question            => fmt.write_str("?"),
             Backslash           => fmt.write_str("\\"),
             Percent             => fmt.write_str("%"),
+            Dash                => fmt.write_str("-"),
+            Equals              => fmt.write_str("="),
+            Plus                => fmt.write_str("+"),
+            Colon               => fmt.write_str(":"),
+            At                  => fmt.write_str("@"),
             SingleQuote         => fmt.write_str("\'"),
             DoubleQuote         => fmt.write_str("\""),
             Backtick            => fmt.write_str("`"),
@@ -137,13 +139,10 @@ impl fmt::Display for Token {
             DLessDash           => fmt.write_str("<<-"),
             Clobber             => fmt.write_str(">|"),
             LessGreat           => fmt.write_str("<>"),
-            ParamAt             => fmt.write_str("$@"),
-            ParamDash           => fmt.write_str("$-"),
             Whitespace(ref s)   => fmt.write_str(s),
             Name(ref s)         => fmt.write_str(s),
             Literal(ref s)      => fmt.write_str(s),
             ParamPositional(p)  => write!(fmt, "${}", p),
-            Assignment(ref s)   => write!(fmt, "{}=", s),
         }
     }
 }
@@ -163,6 +162,11 @@ impl Token {
             Question    |
             Backslash   |
             Percent     |
+            Dash        |
+            Equals      |
+            Plus        |
+            Colon       |
+            At          |
             Semi        |
             Amp         |
             Less        |
@@ -183,8 +187,6 @@ impl Token {
             LessAnd       |
             Clobber       |
             LessGreat     |
-            ParamAt       |
-            ParamDash     |
             ParamPositional(_) => 2,
 
             DLessDash => 3,
@@ -192,7 +194,6 @@ impl Token {
             Whitespace(ref s) |
             Literal(ref s)    |
             Name(ref s)       => s.len(),
-            Assignment(ref s) => s.len() + 1, // Don't forget the '='
         }
     }
 
@@ -228,17 +229,19 @@ impl Token {
             DoubleQuote        |
             Backtick           |
             Percent            |
+            Dash               |
+            Equals             |
+            Plus               |
+            Colon              |
+            At                 |
             CurlyOpen          |
             CurlyClose         |
             Dollar             |
             Tilde              |
             Pound              |
-            ParamAt            |
-            ParamDash          |
             Name(_)            |
             Literal(_)         |
-            ParamPositional(_) |
-            Assignment(_)      => false,
+            ParamPositional(_) => false,
         }
     }
 }

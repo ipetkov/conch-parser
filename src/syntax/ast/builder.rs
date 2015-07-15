@@ -106,10 +106,30 @@ pub enum RedirectKind<W> {
 /// Represents the type of parameter that was parsed
 #[derive(Debug)]
 pub enum ParameterSubstitutionKind<C, W> {
-    /// $(cmd)
+    /// Returns the standard output of running a command, e.g. `$(cmd)`
     Command(Vec<C>),
     /// Returns the length of the value of a parameter, e.g. ${#param}
     Len(Parameter),
+    /// Use a provided value if the parameter is null or unset, e.g.
+    /// `${param:-[word]}`.
+    /// The boolean indicates the presence of a `:`, and that if the parameter has
+    /// a null value, that situation should be treated as if the parameter is unset.
+    Default(bool, Parameter, Option<Box<W>>),
+    /// Assign a provided value to the parameter if it is null or unset,
+    /// e.g. `${param:=[word]}`.
+    /// The boolean indicates the presence of a `:`, and that if the parameter has
+    /// a null value, that situation should be treated as if the parameter is unset.
+    Assign(bool, Parameter, Option<Box<W>>),
+    /// If the parameter is null or unset, an error should result with the provided
+    /// message, e.g. `${param:?[word]}`.
+    /// The boolean indicates the presence of a `:`, and that if the parameter has
+    /// a null value, that situation should be treated as if the parameter is unset.
+    Error(bool, Parameter, Option<Box<W>>),
+    /// If the parameter is NOT null or unset, a provided word will be used,
+    /// e.g. `${param:+[word]}`.
+    /// The boolean indicates the presence of a `:`, and that if the parameter has
+    /// a null value, that situation should be treated as if the parameter is unset.
+    Alternative(bool, Parameter, Option<Box<W>>),
     /// Remove smallest suffix pattern, e.g. `${param%pattern}`
     RemoveSmallestSuffix(Parameter, Option<Box<W>>),
     /// Remove largest suffix pattern, e.g. `${param%%pattern}`
@@ -548,6 +568,10 @@ impl Builder for DefaultBuilder {
             WordKind::Subst(s) => match s {
                 Len(p)     => Word::Subst(ParameterSubstitution::Len(p)),
                 Command(c) => Word::Subst(ParameterSubstitution::Command(c)),
+                Default(c, p, w)           => Word::Subst(ParameterSubstitution::Default(c, p, map!(w))),
+                Assign(c, p, w)            => Word::Subst(ParameterSubstitution::Assign(c, p, map!(w))),
+                Error(c, p, w)             => Word::Subst(ParameterSubstitution::Error(c, p, map!(w))),
+                Alternative(c, p, w)       => Word::Subst(ParameterSubstitution::Alternative(c, p, map!(w))),
                 RemoveSmallestSuffix(p, w) => Word::Subst(ParameterSubstitution::RemoveSmallestSuffix(p, map!(w))),
                 RemoveLargestSuffix(p, w)  => Word::Subst(ParameterSubstitution::RemoveLargestSuffix(p, map!(w))),
                 RemoveSmallestPrefix(p, w) => Word::Subst(ParameterSubstitution::RemoveSmallestPrefix(p, map!(w))),
@@ -833,7 +857,15 @@ where C: PartialEq, W: PartialEq {
             (&RemoveSmallestSuffix(ref p1, ref w1), &RemoveSmallestSuffix(ref p2, ref w2)) |
             (&RemoveLargestSuffix(ref p1, ref w1),  &RemoveLargestSuffix(ref p2, ref w2))  |
             (&RemoveSmallestPrefix(ref p1, ref w1), &RemoveSmallestPrefix(ref p2, ref w2)) |
-            (&RemoveLargestPrefix(ref p1, ref w1),  &RemoveLargestPrefix(ref p2, ref w2))  if p1 == p2 && w1 == w2 => true,
+            (&RemoveLargestPrefix(ref p1, ref w1),  &RemoveLargestPrefix(ref p2, ref w2))
+                if p1 == p2 && w1 == w2 => true,
+
+            (&Default(c1, ref p1, ref w1),     &Default(c2, ref p2, ref w2))     |
+            (&Assign(c1, ref p1, ref w1),      &Assign(c2, ref p2, ref w2))      |
+            (&Error(c1, ref p1, ref w1),       &Error(c2, ref p2, ref w2))       |
+            (&Alternative(c1, ref p1, ref w1), &Alternative(c2, ref p2, ref w2))
+                if c1 == c2 && p1 == p2 && w1 == w2 => true,
+
             _ => false,
         }
     }
@@ -846,6 +878,12 @@ impl<C, W> Clone for ParameterSubstitutionKind<C, W> where C: Clone, W: Clone {
         match *self {
             Command(ref v) => Command(v.clone()),
             Len(ref s)     => Len(s.clone()),
+
+            Default(c, ref p, ref w)     => Default(c, p.clone(), w.clone()),
+            Assign(c, ref p, ref w)      => Assign(c, p.clone(), w.clone()),
+            Error(c, ref p, ref w)       => Error(c, p.clone(), w.clone()),
+            Alternative(c, ref p, ref w) => Alternative(c, p.clone(), w.clone()),
+
             RemoveSmallestSuffix(ref p, ref w) => RemoveSmallestSuffix(p.clone(), w.clone()),
             RemoveLargestSuffix(ref p, ref w)  => RemoveLargestSuffix(p.clone(), w.clone()),
             RemoveSmallestPrefix(ref p, ref w) => RemoveSmallestPrefix(p.clone(), w.clone()),
