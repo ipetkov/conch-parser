@@ -6,9 +6,8 @@
 //! a reasonable default builder implementation.
 //!
 //! If a custom AST representation is required you will need to implement
-//! the `Builder` trait for your AST. Otherwise check out the `CommandBuilder`
-//! trait if you wish to selectively overwrite several of the default
-//! implementations and/or return a custom error from them.
+//! the `Builder` trait for your AST. Otherwise you can provide the `DefaultBuilder`
+//! struct to the parser if you wish to use the default AST implementation.
 
 use std::cmp::{PartialEq, Eq};
 use std::error::Error;
@@ -65,7 +64,7 @@ pub enum WordKind<C> {
     /// Access of a value inside a parameter, e.g. `$foo` or `$$`.
     Param(Parameter),
     /// A parameter substitution, e.g. `${param-word}`.
-    Subst(ParameterSubstitutionKind<C>),
+    Subst(ParameterSubstitutionKind<C, WordKind<C>>),
     /// Represents the standard output of some command, e.g. \`echo foo\`.
     CommandSubst(Vec<C>),
     /// A token which normally has a special meaning is treated as a literal
@@ -106,11 +105,19 @@ pub enum RedirectKind<W> {
 
 /// Represents the type of parameter that was parsed
 #[derive(Debug)]
-pub enum ParameterSubstitutionKind<C> {
+pub enum ParameterSubstitutionKind<C, W> {
     /// $(cmd)
     Command(Vec<C>),
     /// Returns the length of the value of a parameter, e.g. ${#param}
     Len(Parameter),
+    /// Remove smallest suffix pattern, e.g. `${param%pattern}`
+    RemoveSmallestSuffix(Parameter, Option<Box<W>>),
+    /// Remove largest suffix pattern, e.g. `${param%%pattern}`
+    RemoveLargestSuffix(Parameter, Option<Box<W>>),
+    /// Remove smallest prefix pattern, e.g. `${param#pattern}`
+    RemoveSmallestPrefix(Parameter, Option<Box<W>>),
+    /// Remove largest prefix pattern, e.g. `${param##pattern}`
+    RemoveLargestPrefix(Parameter, Option<Box<W>>),
 }
 
 /// A trait which defines an interface which the parser defined in the `parse` module
@@ -321,21 +328,11 @@ pub trait Builder {
         -> Result<Self::Redirect, Self::Err>;
 }
 
-/// A default implementation of the `Builder` trait. It allows for selectively
-/// overwriting a given method without having to reimplement the rest (as long
-/// as the output of the builder remains the `ast::Command` type, that is).
-///
-/// This implementation does not return any errors, which makes it possible
-/// for an implementor of this trait to perform checks while constructing the
-/// AST and return their own error type.
-///
-/// This implementation ignores all comments.
-///
-/// For more indepth documentation of each method and it's arguments, see the
-/// definition of the `Builder` trait.
-pub trait CommandBuilder {
-    /// An error type that an implementor of this trait may return.
-    type Err: Error;
+impl Builder for DefaultBuilder {
+    type Command  = Command;
+    type Word     = Word;
+    type Redirect = Redirect;
+    type Err      = DummyError;
 
     /// Constructs a `Command::Job` node with the provided inputs if the command
     /// was delimited by an ampersand or the command itself otherwise.
@@ -528,6 +525,15 @@ pub trait CommandBuilder {
     {
         use self::ParameterSubstitutionKind::*;
 
+        macro_rules! map {
+            ($pat:expr) => {
+                match $pat {
+                    Some(w) => Some(Box::new(try!(self.word(*w)))),
+                    None => None,
+                }
+            }
+        }
+
         let word = match kind {
             WordKind::Literal(s)      => Word::Literal(s),
             WordKind::SingleQuoted(s) => Word::SingleQuoted(s),
@@ -537,9 +543,16 @@ pub trait CommandBuilder {
             WordKind::Question        => Word::Question,
             WordKind::Tilde           => Word::Tilde,
 
-            WordKind::Subst(Command(c)) |
-            WordKind::CommandSubst(c)   => Word::Subst(ParameterSubstitution::Command(c)),
-            WordKind::Subst(Len(p))     => Word::Subst(ParameterSubstitution::Len(p)),
+            WordKind::CommandSubst(c) => Word::Subst(ParameterSubstitution::Command(c)),
+
+            WordKind::Subst(s) => match s {
+                Len(p)     => Word::Subst(ParameterSubstitution::Len(p)),
+                Command(c) => Word::Subst(ParameterSubstitution::Command(c)),
+                RemoveSmallestSuffix(p, w) => Word::Subst(ParameterSubstitution::RemoveSmallestSuffix(p, map!(w))),
+                RemoveLargestSuffix(p, w)  => Word::Subst(ParameterSubstitution::RemoveLargestSuffix(p, map!(w))),
+                RemoveSmallestPrefix(p, w) => Word::Subst(ParameterSubstitution::RemoveSmallestPrefix(p, map!(w))),
+                RemoveLargestPrefix(p, w)  => Word::Subst(ParameterSubstitution::RemoveLargestPrefix(p, map!(w))),
+            },
 
             WordKind::Concat(words) => Word::Concat(
                 try!(words.into_iter().map(|w| self.word(w)).collect())
@@ -574,10 +587,10 @@ pub trait CommandBuilder {
     }
 }
 
-impl<T: CommandBuilder> Builder for T {
-    type Command = Command;
-    type Word = Word;
-    type Redirect = Redirect;
+impl<'a, T: Builder> Builder for &'a mut T {
+    type Command = T::Command;
+    type Word = T::Word;
+    type Redirect = T::Redirect;
     type Err = T::Err;
 
     fn complete_command(&mut self,
@@ -587,7 +600,7 @@ impl<T: CommandBuilder> Builder for T {
                         post_cmd_comments: Vec<ast::Newline>)
         -> Result<Self::Command, Self::Err>
     {
-        CommandBuilder::complete_command(self, pre_cmd_comments, cmd, separator, post_cmd_comments)
+        (**self).complete_command(pre_cmd_comments, cmd, separator, post_cmd_comments)
     }
 
     fn and_or(&mut self,
@@ -597,7 +610,7 @@ impl<T: CommandBuilder> Builder for T {
               second: Self::Command)
         -> Result<Self::Command, Self::Err>
     {
-        CommandBuilder::and_or(self, first, kind, post_separator_comments, second)
+        (**self).and_or(first, kind, post_separator_comments, second)
     }
 
     fn pipeline(&mut self,
@@ -605,75 +618,75 @@ impl<T: CommandBuilder> Builder for T {
                 cmds: Vec<(Vec<ast::Newline>, Self::Command)>)
         -> Result<Self::Command, Self::Err>
     {
-        CommandBuilder::pipeline(self, bang, cmds)
+        (**self).pipeline(bang, cmds)
     }
 
     fn simple_command(&mut self,
-                      env_vars: Vec<(String, Option<Word>)>,
-                      cmd: Option<Word>,
-                      args: Vec<Word>,
-                      redirects: Vec<Redirect>)
+                      env_vars: Vec<(String, Option<Self::Word>)>,
+                      cmd: Option<Self::Word>,
+                      args: Vec<Self::Word>,
+                      redirects: Vec<Self::Redirect>)
         -> Result<Self::Command, Self::Err>
     {
-        CommandBuilder::simple_command(self, env_vars, cmd, args, redirects)
+        (**self).simple_command(env_vars, cmd, args, redirects)
     }
 
     fn brace_group(&mut self,
                    cmds: Vec<Self::Command>,
-                   redirects: Vec<Redirect>)
+                   redirects: Vec<Self::Redirect>)
         -> Result<Self::Command, Self::Err>
     {
-        CommandBuilder::brace_group(self, cmds, redirects)
+        (**self).brace_group(cmds, redirects)
     }
 
     fn subshell(&mut self,
                 cmds: Vec<Self::Command>,
-                redirects: Vec<Redirect>)
+                redirects: Vec<Self::Redirect>)
         -> Result<Self::Command, Self::Err>
     {
-        CommandBuilder::subshell(self, cmds, redirects)
+        (**self).subshell(cmds, redirects)
     }
 
     fn loop_command(&mut self,
                     kind: LoopKind,
                     guard: Vec<Self::Command>,
                     body: Vec<Self::Command>,
-                    redirects: Vec<Redirect>)
+                    redirects: Vec<Self::Redirect>)
         -> Result<Self::Command, Self::Err>
     {
-        CommandBuilder::loop_command(self, kind, guard, body, redirects)
+        (**self).loop_command(kind, guard, body, redirects)
     }
 
     fn if_command(&mut self,
                   branches: Vec<(Vec<Self::Command>, Vec<Self::Command>)>,
                   else_part: Option<Vec<Self::Command>>,
-                  redirects: Vec<Redirect>)
+                  redirects: Vec<Self::Redirect>)
         -> Result<Self::Command, Self::Err>
     {
-        CommandBuilder::if_command(self, branches, else_part, redirects)
+        (**self).if_command(branches, else_part, redirects)
     }
 
     fn for_command(&mut self,
                    var: String,
                    post_var_comments: Vec<ast::Newline>,
-                   in_words: Option<Vec<Word>>,
+                   in_words: Option<Vec<Self::Word>>,
                    post_word_comments: Option<Vec<ast::Newline>>,
                    body: Vec<Self::Command>,
-                   redirects: Vec<Redirect>)
+                   redirects: Vec<Self::Redirect>)
         -> Result<Self::Command, Self::Err>
     {
-        CommandBuilder::for_command(self, var, post_var_comments, in_words, post_word_comments, body, redirects)
+        (**self).for_command(var, post_var_comments, in_words, post_word_comments, body, redirects)
     }
 
     fn case_command(&mut self,
-                    word: Word,
+                    word: Self::Word,
                     post_word_comments: Vec<ast::Newline>,
-                    branches: Vec<( (Vec<ast::Newline>, Vec<Word>, Vec<ast::Newline>), Vec<Self::Command>)>,
+                    branches: Vec<( (Vec<ast::Newline>, Vec<Self::Word>, Vec<ast::Newline>), Vec<Self::Command>)>,
                     post_branch_comments: Vec<ast::Newline>,
-                    redirects: Vec<Redirect>)
+                    redirects: Vec<Self::Redirect>)
         -> Result<Self::Command, Self::Err>
     {
-        CommandBuilder::case_command(self, word, post_word_comments, branches, post_branch_comments, redirects)
+        (**self).case_command(word, post_word_comments, branches, post_branch_comments, redirects)
     }
 
     fn function_declaration(&mut self,
@@ -681,28 +694,28 @@ impl<T: CommandBuilder> Builder for T {
                             body: Self::Command)
         -> Result<Self::Command, Self::Err>
     {
-        CommandBuilder::function_declaration(self, name, body)
+        (**self).function_declaration(name, body)
     }
 
     fn comments(&mut self,
                 comments: Vec<ast::Newline>)
         -> Result<(), Self::Err>
     {
-        CommandBuilder::comments(self, comments)
+        (**self).comments(comments)
     }
 
     fn word(&mut self,
-            kind: WordKind<Command>)
-        -> Result<Word, Self::Err>
+            kind: WordKind<Self::Command>)
+        -> Result<Self::Word, Self::Err>
     {
-        CommandBuilder::word(self, kind)
+        (**self).word(kind)
     }
 
     fn redirect(&mut self,
-                kind: RedirectKind<Word>)
-        -> Result<Redirect, Self::Err>
+                kind: RedirectKind<Self::Word>)
+        -> Result<Self::Redirect, Self::Err>
     {
-        CommandBuilder::redirect(self, kind)
+        (**self).redirect(kind)
     }
 }
 
@@ -724,10 +737,6 @@ impl Error for DummyError {
 
 /// A `Builder` implementation which builds shell commands using the AST definitions in the `ast` module.
 pub struct DefaultBuilder;
-
-impl CommandBuilder for DefaultBuilder {
-    type Err = DummyError;
-}
 
 impl ::std::default::Default for DefaultBuilder {
     fn default() -> DefaultBuilder {
@@ -812,25 +821,35 @@ impl<C> Clone for WordKind<C> where C: Clone {
     }
 }
 
-impl<C> Eq for ParameterSubstitutionKind<C> where C: Eq {}
-impl<C> PartialEq<ParameterSubstitutionKind<C>> for ParameterSubstitutionKind<C> where C: PartialEq {
+impl<C, W> Eq for ParameterSubstitutionKind<C, W> where C: Eq, W: Eq {}
+impl<C, W> PartialEq<ParameterSubstitutionKind<C, W>> for ParameterSubstitutionKind<C, W>
+where C: PartialEq, W: PartialEq {
     fn eq(&self, other: &Self) -> bool {
         use self::ParameterSubstitutionKind::*;
         match (self, other) {
             (&Command(ref v1), &Command(ref v2)) if v1 == v2 => true,
             (&Len(ref s1),     &Len(ref s2))     if s1 == s2 => true,
+
+            (&RemoveSmallestSuffix(ref p1, ref w1), &RemoveSmallestSuffix(ref p2, ref w2)) |
+            (&RemoveLargestSuffix(ref p1, ref w1),  &RemoveLargestSuffix(ref p2, ref w2))  |
+            (&RemoveSmallestPrefix(ref p1, ref w1), &RemoveSmallestPrefix(ref p2, ref w2)) |
+            (&RemoveLargestPrefix(ref p1, ref w1),  &RemoveLargestPrefix(ref p2, ref w2))  if p1 == p2 && w1 == w2 => true,
             _ => false,
         }
     }
 }
 
-impl<C> Clone for ParameterSubstitutionKind<C> where C: Clone {
+impl<C, W> Clone for ParameterSubstitutionKind<C, W> where C: Clone, W: Clone {
     fn clone(&self) -> Self {
         use self::ParameterSubstitutionKind::*;
 
         match *self {
             Command(ref v) => Command(v.clone()),
             Len(ref s)     => Len(s.clone()),
+            RemoveSmallestSuffix(ref p, ref w) => RemoveSmallestSuffix(p.clone(), w.clone()),
+            RemoveLargestSuffix(ref p, ref w)  => RemoveLargestSuffix(p.clone(), w.clone()),
+            RemoveSmallestPrefix(ref p, ref w) => RemoveSmallestPrefix(p.clone(), w.clone()),
+            RemoveLargestPrefix(ref p, ref w)  => RemoveLargestPrefix(p.clone(), w.clone()),
         }
     }
 }

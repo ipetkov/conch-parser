@@ -579,19 +579,30 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     fn word_preserve_trailing_whitespace_raw(&mut self)
         -> Result<Option<builder::WordKind<B::Command>>, ParseError<B::Err>>
     {
+        self.word_raw(false)
+    }
+
+    /// Identical to `Parser::word_preserve_trailing_whitespace_raw()` but will
+    /// stop at `}` if parsing a word/pattern in a parameter substitution.
+    fn word_raw(&mut self, param_subst_mode: bool)
+        -> Result<Option<builder::WordKind<B::Command>>, ParseError<B::Err>>
+    {
         self.skip_whitespace();
 
         // Make sure we don't consume comments,
         // e.g. if a # is at the start of a word.
         if let Some(&Pound) = self.iter.peek() {
-            return Ok(None);
+            // Comments aren't recognized when parsing
+            // words in parameter substitutions
+            if !param_subst_mode {
+                return Ok(None);
+            }
         }
 
         let mut words = Vec::new();
         loop {
             match self.iter.peek() {
                 Some(&CurlyOpen)          |
-                Some(&CurlyClose)         |
                 Some(&SingleQuote)        |
                 Some(&DoubleQuote)        |
                 Some(&Backtick)           |
@@ -601,6 +612,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 Some(&Tilde)              |
                 Some(&Bang)               |
                 Some(&Backslash)          |
+                Some(&Percent)            |
                 Some(&Assignment(_))      |
                 Some(&Name(_))            |
                 Some(&Literal(_))         => {},
@@ -633,6 +645,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 Some(&LessGreat)     |
                 Some(&Whitespace(_)) => break,
 
+                // When parsing parameter substitutions } *should* be a delimiter
+                Some(&CurlyClose) => if param_subst_mode { break } else {},
+
                 None => break,
             }
 
@@ -648,6 +663,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 // becomes a literal if it occurs in the middle of a word.
                 tok@Bang          |
                 tok@Pound         |
+                tok@Percent       |
                 tok@CurlyOpen     |
                 tok@CurlyClose    |
                 tok@Assignment(_) => builder::WordKind::Literal(tok.to_string()),
@@ -799,7 +815,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Identical to `Parser::parameter()` but does not pass the result to the AST builder.
     fn parameter_raw(&mut self) -> Result<builder::WordKind<B::Command>, ParseError<B::Err>> {
         use syntax::ast::Parameter;
-        use syntax::ast::builder::{WordKind, ParameterSubstitutionKind};
+        use syntax::ast::builder::WordKind;
+        use syntax::ast::builder::ParameterSubstitutionKind::*;
 
         match self.iter.next() {
             Some(ParamAt)            => return Ok(WordKind::Param(Parameter::At)),
@@ -834,11 +851,53 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 let param = if let Some(&Pound) = self.iter.peek() {
                     self.iter.next();
                     match self.iter.peek() {
+                        Some(&Percent) => {
+                            self.iter.next();
+                            if let Some(&Percent) = self.iter.peek() {
+                                self.iter.next();
+                                Err(RemoveLargestSuffix(Parameter::Pound, try!(self.param_word())))
+                            } else {
+                                Err(RemoveSmallestSuffix(Parameter::Pound, try!(self.param_word())))
+                            }
+                        },
+
+                        Some(&Pound) => {
+                            self.iter.next();
+                            if let Some(&Pound) = self.iter.peek() {
+                                self.iter.next();
+                                Err(RemoveLargestPrefix(Parameter::Pound, try!(self.param_word())))
+                            } else {
+                                match try!(self.param_word()) {
+                                    w@Some(_) => Err(RemoveSmallestPrefix(Parameter::Pound, w)),
+                                    None => Err(Len(Parameter::Pound)),
+                                }
+                            }
+                        },
+
                         Some(&CurlyClose) => Ok(Parameter::Pound),
-                        _ => Err(ParameterSubstitutionKind::Len(try!(self.parameter_inner()))),
+                        _ => Err(Len(try!(self.parameter_inner()))),
                     }
                 } else {
-                    Ok(try!(self.parameter_inner()))
+                    let param = try!(self.parameter_inner());
+                    if let Some(&Percent) = self.iter.peek() {
+                        self.iter.next();
+                        if let Some(&Percent) = self.iter.peek() {
+                            self.iter.next();
+                            Err(RemoveLargestSuffix(param, try!(self.param_word())))
+                        } else {
+                            Err(RemoveSmallestSuffix(param, try!(self.param_word())))
+                        }
+                    } else if let Some(&Pound) = self.iter.peek() {
+                        self.iter.next();
+                        if let Some(&Pound) = self.iter.peek() {
+                            self.iter.next();
+                            Err(RemoveLargestPrefix(param, try!(self.param_word())))
+                        } else {
+                            Err(RemoveSmallestPrefix(param, try!(self.param_word())))
+                        }
+                    } else {
+                        Ok(param)
+                    }
                 };
 
                 match self.iter.next() {
@@ -859,7 +918,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 };
 
                 match self.iter.next() {
-                    Some(ParenClose) => return Ok(WordKind::Subst(ParameterSubstitutionKind::Command(cmds))),
+                    Some(ParenClose) => return Ok(WordKind::Subst(Command(cmds))),
                     Some(t) => return Err(self.make_unexpected_err(Some(t))),
                     None => return Err(self.make_unmatched_err(ParenOpen, start_pos)),
                 }
@@ -895,6 +954,44 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         };
 
         Ok(param)
+    }
+
+    /// Parses a word that can appear at the end of a parameter substitution.
+    ///
+    /// Words in parameter substitutions are slightly different than normal: they can
+    /// contain whitespace and `}` tokens should delimit the word (whereas they are
+    /// normally considered a literal).
+    fn param_word(&mut self) -> Result<Option<Box<builder::WordKind<B::Command>>>, ParseError<B::Err>> {
+        let mut words = Vec::new();
+        loop {
+            let space = self.capture_whitespace();
+            let found = if space.is_empty() {
+                false
+            } else {
+                words.reserve(space.len());
+                for s in space { words.push(s) }
+                true
+            };
+
+            match try!(self.word_raw(true)) {
+                Some(builder::WordKind::Concat(cw)) => {
+                    words.reserve(cw.len());
+                    for w in cw { words.push(w) }
+                },
+                Some(w) => words.push(w),
+                None => if !found { break },
+            }
+        }
+
+        let ret = if words.is_empty() {
+            None
+        } else if words.len() == 1 {
+            Some(words.pop().unwrap())
+        } else {
+            Some(builder::WordKind::Concat(words))
+        };
+
+        Ok(ret.map(Box::new))
     }
 
     /// Parses any number of sequential commands between the `do` and `done`
@@ -1309,6 +1406,28 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 _ => break,
             }
         }
+    }
+
+    /// Captures any encountered whitespace and newlines. Comments are NOT recognized.
+    fn capture_whitespace(&mut self) -> Vec<builder::WordKind<B::Command>> {
+        let mut vec = Vec::new();
+        loop {
+            while let Some(&Whitespace(_)) = self.iter.peek() {
+                if let Some(Whitespace(w)) = self.iter.next() {
+                    vec.push(builder::WordKind::Literal(w));
+                }
+            }
+
+            match self.iter.multipeek(2) {
+                [Backslash, Newline, ..] => {
+                    self.iter.next();
+                    vec.push(builder::WordKind::Escaped(self.iter.next().unwrap().to_string()));
+                },
+                _ => break,
+            }
+        }
+
+        vec
     }
 
     /// Parses zero or more `Token::Newline`s, skipping whitespace but capturing comments.
@@ -1808,6 +1927,250 @@ pub mod test {
         }
 
         p.parameter().unwrap_err(); // Stream should be exhausted
+    }
+
+    #[test]
+    fn test_parameter_substitution_smallest_suffix() {
+        use syntax::ast::Parameter::*;
+        use syntax::ast::ParameterSubstitution::*;
+
+        let word = Word::Literal(String::from("foo"));
+
+        let substs = vec!(
+            RemoveSmallestSuffix(At, Some(Box::new(word.clone()))),
+            RemoveSmallestSuffix(Star, Some(Box::new(word.clone()))),
+            RemoveSmallestSuffix(Pound, Some(Box::new(word.clone()))),
+            RemoveSmallestSuffix(Question, Some(Box::new(word.clone()))),
+            RemoveSmallestSuffix(Dash, Some(Box::new(word.clone()))),
+            RemoveSmallestSuffix(Dollar, Some(Box::new(word.clone()))),
+            RemoveSmallestSuffix(Bang, Some(Box::new(word.clone()))),
+            RemoveSmallestSuffix(Positional(0), Some(Box::new(word.clone()))),
+            RemoveSmallestSuffix(Positional(10), Some(Box::new(word.clone()))),
+            RemoveSmallestSuffix(Positional(100), Some(Box::new(word.clone()))),
+            RemoveSmallestSuffix(Var(String::from("foo_bar123")), Some(Box::new(word.clone()))),
+
+            RemoveSmallestSuffix(At, None),
+            RemoveSmallestSuffix(Star, None),
+            RemoveSmallestSuffix(Pound, None),
+            RemoveSmallestSuffix(Question, None),
+            RemoveSmallestSuffix(Dash, None),
+            RemoveSmallestSuffix(Dollar, None),
+            RemoveSmallestSuffix(Bang, None),
+            RemoveSmallestSuffix(Positional(0), None),
+            RemoveSmallestSuffix(Positional(10), None),
+            RemoveSmallestSuffix(Positional(100), None),
+            RemoveSmallestSuffix(Var(String::from("foo_bar123")), None),
+        );
+
+        let src = "${@%foo}${*%foo}${#%foo}${?%foo}${-%foo}${$%foo}${!%foo}${0%foo}${10%foo}${100%foo}${foo_bar123%foo}${@%}${*%}${#%}${?%}${-%}${$%}${!%}${0%}${10%}${100%}${foo_bar123%}";
+        let mut p = make_parser(src);
+
+        for s in substs {
+            assert_eq!(Word::Subst(s), p.parameter().unwrap());
+        }
+
+        p.parameter().unwrap_err(); // Stream should be exhausted
+    }
+
+    #[test]
+    fn test_parameter_substitution_largest_suffix() {
+        use syntax::ast::Parameter::*;
+        use syntax::ast::ParameterSubstitution::*;
+
+        let word = Word::Literal(String::from("foo"));
+
+        let substs = vec!(
+            RemoveLargestSuffix(At, Some(Box::new(word.clone()))),
+            RemoveLargestSuffix(Star, Some(Box::new(word.clone()))),
+            RemoveLargestSuffix(Pound, Some(Box::new(word.clone()))),
+            RemoveLargestSuffix(Question, Some(Box::new(word.clone()))),
+            RemoveLargestSuffix(Dash, Some(Box::new(word.clone()))),
+            RemoveLargestSuffix(Dollar, Some(Box::new(word.clone()))),
+            RemoveLargestSuffix(Bang, Some(Box::new(word.clone()))),
+            RemoveLargestSuffix(Positional(0), Some(Box::new(word.clone()))),
+            RemoveLargestSuffix(Positional(10), Some(Box::new(word.clone()))),
+            RemoveLargestSuffix(Positional(100), Some(Box::new(word.clone()))),
+            RemoveLargestSuffix(Var(String::from("foo_bar123")), Some(Box::new(word.clone()))),
+
+            RemoveLargestSuffix(At, None),
+            RemoveLargestSuffix(Star, None),
+            RemoveLargestSuffix(Pound, None),
+            RemoveLargestSuffix(Question, None),
+            RemoveLargestSuffix(Dash, None),
+            RemoveLargestSuffix(Dollar, None),
+            RemoveLargestSuffix(Bang, None),
+            RemoveLargestSuffix(Positional(0), None),
+            RemoveLargestSuffix(Positional(10), None),
+            RemoveLargestSuffix(Positional(100), None),
+            RemoveLargestSuffix(Var(String::from("foo_bar123")), None),
+        );
+
+        let src = "${@%%foo}${*%%foo}${#%%foo}${?%%foo}${-%%foo}${$%%foo}${!%%foo}${0%%foo}${10%%foo}${100%%foo}${foo_bar123%%foo}${@%%}${*%%}${#%%}${?%%}${-%%}${$%%}${!%%}${0%%}${10%%}${100%%}${foo_bar123%%}";
+        let mut p = make_parser(src);
+
+        for s in substs {
+            assert_eq!(Word::Subst(s), p.parameter().unwrap());
+        }
+
+        p.parameter().unwrap_err(); // Stream should be exhausted
+    }
+
+    #[test]
+    fn test_parameter_substitution_smallest_prefix() {
+        use syntax::ast::Parameter::*;
+        use syntax::ast::ParameterSubstitution::*;
+
+        let word = Word::Literal(String::from("foo"));
+
+        let substs = vec!(
+            RemoveSmallestPrefix(At, Some(Box::new(word.clone()))),
+            RemoveSmallestPrefix(Star, Some(Box::new(word.clone()))),
+            RemoveSmallestPrefix(Pound, Some(Box::new(word.clone()))),
+            RemoveSmallestPrefix(Question, Some(Box::new(word.clone()))),
+            RemoveSmallestPrefix(Dash, Some(Box::new(word.clone()))),
+            RemoveSmallestPrefix(Dollar, Some(Box::new(word.clone()))),
+            RemoveSmallestPrefix(Bang, Some(Box::new(word.clone()))),
+            RemoveSmallestPrefix(Positional(0), Some(Box::new(word.clone()))),
+            RemoveSmallestPrefix(Positional(10), Some(Box::new(word.clone()))),
+            RemoveSmallestPrefix(Positional(100), Some(Box::new(word.clone()))),
+            RemoveSmallestPrefix(Var(String::from("foo_bar123")), Some(Box::new(word.clone()))),
+
+            RemoveSmallestPrefix(At, None),
+            RemoveSmallestPrefix(Star, None),
+            //RemoveSmallestPrefix(Pound, None), // ${##} should parse as Len(#)
+            RemoveSmallestPrefix(Question, None),
+            RemoveSmallestPrefix(Dash, None),
+            RemoveSmallestPrefix(Dollar, None),
+            RemoveSmallestPrefix(Bang, None),
+            RemoveSmallestPrefix(Positional(0), None),
+            RemoveSmallestPrefix(Positional(10), None),
+            RemoveSmallestPrefix(Positional(100), None),
+            RemoveSmallestPrefix(Var(String::from("foo_bar123")), None),
+        );
+
+        let src = "${@#foo}${*#foo}${##foo}${?#foo}${-#foo}${$#foo}${!#foo}${0#foo}${10#foo}${100#foo}${foo_bar123#foo}${@#}${*#}${?#}${-#}${$#}${!#}${0#}${10#}${100#}${foo_bar123#}";
+        let mut p = make_parser(src);
+
+        for s in substs {
+            assert_eq!(Word::Subst(s), p.parameter().unwrap());
+        }
+
+        p.parameter().unwrap_err(); // Stream should be exhausted
+    }
+
+    #[test]
+    fn test_parameter_substitution_largest_prefix() {
+        use syntax::ast::Parameter::*;
+        use syntax::ast::ParameterSubstitution::*;
+
+        let word = Word::Literal(String::from("foo"));
+
+        let substs = vec!(
+            RemoveLargestPrefix(At, Some(Box::new(word.clone()))),
+            RemoveLargestPrefix(Star, Some(Box::new(word.clone()))),
+            RemoveLargestPrefix(Pound, Some(Box::new(word.clone()))),
+            RemoveLargestPrefix(Question, Some(Box::new(word.clone()))),
+            RemoveLargestPrefix(Dash, Some(Box::new(word.clone()))),
+            RemoveLargestPrefix(Dollar, Some(Box::new(word.clone()))),
+            RemoveLargestPrefix(Bang, Some(Box::new(word.clone()))),
+            RemoveLargestPrefix(Positional(0), Some(Box::new(word.clone()))),
+            RemoveLargestPrefix(Positional(10), Some(Box::new(word.clone()))),
+            RemoveLargestPrefix(Positional(100), Some(Box::new(word.clone()))),
+            RemoveLargestPrefix(Var(String::from("foo_bar123")), Some(Box::new(word.clone()))),
+
+            RemoveLargestPrefix(At, None),
+            RemoveLargestPrefix(Star, None),
+            RemoveLargestPrefix(Pound, None),
+            RemoveLargestPrefix(Question, None),
+            RemoveLargestPrefix(Dash, None),
+            RemoveLargestPrefix(Dollar, None),
+            RemoveLargestPrefix(Bang, None),
+            RemoveLargestPrefix(Positional(0), None),
+            RemoveLargestPrefix(Positional(10), None),
+            RemoveLargestPrefix(Positional(100), None),
+            RemoveLargestPrefix(Var(String::from("foo_bar123")), None),
+        );
+
+        let src = "${@##foo}${*##foo}${###foo}${?##foo}${-##foo}${$##foo}${!##foo}${0##foo}${10##foo}${100##foo}${foo_bar123##foo}${@##}${*##}${###}${?##}${-##}${$##}${!##}${0##}${10##}${100##}${foo_bar123##}";
+        let mut p = make_parser(src);
+
+        for s in substs {
+            assert_eq!(Word::Subst(s), p.parameter().unwrap());
+        }
+
+        p.parameter().unwrap_err(); // Stream should be exhausted
+    }
+
+    #[test]
+    fn test_parameter_substitution_words_can_have_spaces_and_escaped_curlies() {
+        use syntax::ast::Parameter::*;
+        use syntax::ast::ParameterSubstitution::*;
+
+        let word = Box::new(Word::Concat(vec!(
+            Word::Literal(String::from("foo")),
+            Word::Literal(String::from("{")),
+            Word::Escaped(String::from("}")),
+            Word::Literal(String::from(" \t\r ")),
+            Word::Escaped(String::from("\n")),
+            Word::Literal(String::from("bar")),
+            Word::Literal(String::from(" \t\r ")),
+        )));
+
+        let substs = vec!(
+            RemoveSmallestSuffix(Var(String::from("foo_bar123")), Some(word.clone())),
+            RemoveLargestSuffix(Var(String::from("foo_bar123")), Some(word.clone())),
+            RemoveSmallestPrefix(Var(String::from("foo_bar123")), Some(word.clone())),
+            RemoveLargestPrefix(Var(String::from("foo_bar123")), Some(word.clone())),
+        );
+
+        let src = vec!(
+            "%",
+            "%%",
+            "#",
+            "##",
+        );
+
+        for (i, s) in substs.into_iter().enumerate() {
+            let src = format!("${{foo_bar123{}foo{{\\}} \t\r \\\nbar \t\r }}", src[i]);
+            let mut p = make_parser(&src);
+            assert_eq!(Word::Subst(s), p.parameter().unwrap());
+            p.parameter().unwrap_err(); // Stream should be exhausted
+        }
+    }
+
+    #[test]
+    fn test_parameter_substitution_words_can_be_parameters_or_substitutions_as_well() {
+        use syntax::ast::Parameter::*;
+        use syntax::ast::ParameterSubstitution::*;
+
+        let word = Box::new(Word::Concat(vec!(
+            Word::Param(At),
+            Word::Subst(RemoveLargestPrefix(
+                Var(String::from("foo")),
+                Some(Box::new(Word::Literal(String::from("bar"))))
+            )),
+        )));
+
+        let substs = vec!(
+            RemoveSmallestSuffix(Var(String::from("foo_bar123")), Some(word.clone())),
+            RemoveLargestSuffix(Var(String::from("foo_bar123")), Some(word.clone())),
+            RemoveSmallestPrefix(Var(String::from("foo_bar123")), Some(word.clone())),
+            RemoveLargestPrefix(Var(String::from("foo_bar123")), Some(word.clone())),
+        );
+
+        let src = vec!(
+            "%",
+            "%%",
+            "#",
+            "##",
+        );
+
+        for (i, s) in substs.into_iter().enumerate() {
+            let src = format!("${{foo_bar123{}$@${{foo##bar}}}}", src[i]);
+            let mut p = make_parser(&src);
+            assert_eq!(Word::Subst(s), p.parameter().unwrap());
+            p.parameter().unwrap_err(); // Stream should be exhausted
+        }
     }
 
     #[test]

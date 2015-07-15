@@ -67,6 +67,7 @@ impl<I: Iterator<Item = char>> Lexer<I> {
             '#' => Pound,
             '*' => Star,
             '?' => Question,
+            '%' => Percent,
 
             // Make sure that we treat the next token as a single character,
             // preventing multi-char tokens from being recognized. This is
@@ -249,6 +250,7 @@ mod test {
     check_tok!(check_Tilde, Tilde);
     check_tok!(check_Star, Star);
     check_tok!(check_Question, Question);
+    check_tok!(check_Percent, Percent);
     check_tok!(check_Pound, Pound);
     check_tok!(check_DoubleQuote, DoubleQuote);
     check_tok!(check_Backtick, Backtick);

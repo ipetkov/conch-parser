@@ -2,7 +2,7 @@
 use std::fmt::{Display, Formatter, Result};
 
 pub mod builder;
-pub use syntax::ast::builder::{Builder, CommandBuilder};
+pub use syntax::ast::builder::Builder;
 
 /// Represents reading a parameter (or variable) value, e.g. `$foo`.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -30,10 +30,18 @@ pub enum Parameter {
 /// A parameter substitution, e.g. `${param-word}`.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum ParameterSubstitution {
-    /// $(cmd)
+    /// Returns the standard output of running a command, e.g. `$(cmd)`
     Command(Vec<Command>),
-    /// Returns the length of the value of a parameter, e.g. ${#param}
+    /// Returns the length of the value of a parameter, e.g. `${#param}`
     Len(Parameter),
+    /// Remove smallest suffix pattern from a parameter's value, e.g. `${param%pattern}`
+    RemoveSmallestSuffix(Parameter, Option<Box<Word>>),
+    /// Remove largest suffix pattern from a parameter's value, e.g. `${param%%pattern}`
+    RemoveLargestSuffix(Parameter, Option<Box<Word>>),
+    /// Remove smallest prefix pattern from a parameter's value, e.g. `${param#pattern}`
+    RemoveSmallestPrefix(Parameter, Option<Box<Word>>),
+    /// Remove largest prefix pattern from a parameter's value, e.g. `${param##pattern}`
+    RemoveLargestPrefix(Parameter, Option<Box<Word>>),
 }
 
 /// Represents whitespace delimited text.
@@ -203,20 +211,55 @@ impl Display for ParameterSubstitution {
     fn fmt(&self, fmt: &mut Formatter) -> Result {
         use self::ParameterSubstitution::*;
 
+        let write_inner = |fmt: &mut Formatter, p| match p {
+            &Parameter::At       => write!(fmt, "@"),
+            &Parameter::Star     => write!(fmt, "*"),
+            &Parameter::Pound    => write!(fmt, "#"),
+            &Parameter::Question => write!(fmt, "?"),
+            &Parameter::Dash     => write!(fmt, "-"),
+            &Parameter::Dollar   => write!(fmt, "$"),
+            &Parameter::Bang     => write!(fmt, "!"),
+
+            &Parameter::Var(ref p)        => write!(fmt, "{}", p),
+            &Parameter::Positional(ref p) => write!(fmt, "{}", p),
+        };
+
         match *self {
             Command(ref c) => write!(fmt, "$({})", CmdVec(c)),
-            Len(ref p) => match *p {
-                Parameter::At       => fmt.write_str("${#@}"),
-                Parameter::Star     => fmt.write_str("${#*}"),
-                Parameter::Pound    => fmt.write_str("${##}"),
-                Parameter::Question => fmt.write_str("${#?}"),
-                Parameter::Dash     => fmt.write_str("${#-}"),
-                Parameter::Dollar   => fmt.write_str("${#$}"),
-                Parameter::Bang     => fmt.write_str("${#!}"),
+            Len(ref p) => {
+                try!(fmt.write_str("${#"));
+                try!(write_inner(fmt, p));
+                fmt.write_str("}")
+            },
 
-                Parameter::Var(ref p)        => write!(fmt, "${{#{}}}", p),
-                Parameter::Positional(ref p) => write!(fmt, "${{#{}}}", p),
-            }
+            RemoveSmallestSuffix(ref p, ref pat) => {
+                try!(fmt.write_str("${"));
+                try!(write_inner(fmt, p));
+                try!(fmt.write_str("%"));
+                try!(pat.as_ref().map_or(Ok(()), |p| write!(fmt, "{}", p)));
+                fmt.write_str("}")
+            },
+            RemoveLargestSuffix(ref p, ref pat) => {
+                try!(fmt.write_str("${"));
+                try!(write_inner(fmt, p));
+                try!(fmt.write_str("%%"));
+                try!(pat.as_ref().map_or(Ok(()), |p| write!(fmt, "{}", p)));
+                fmt.write_str("}")
+            },
+            RemoveSmallestPrefix(ref p, ref pat) => {
+                try!(fmt.write_str("${"));
+                try!(write_inner(fmt, p));
+                try!(fmt.write_str("#"));
+                try!(pat.as_ref().map_or(Ok(()), |p| write!(fmt, "{}", p)));
+                fmt.write_str("}")
+            },
+            RemoveLargestPrefix(ref p, ref pat) => {
+                try!(fmt.write_str("${"));
+                try!(write_inner(fmt, p));
+                try!(fmt.write_str("##"));
+                try!(pat.as_ref().map_or(Ok(()), |p| write!(fmt, "{}", p)));
+                fmt.write_str("}")
+            },
         }
     }
 }
@@ -657,7 +700,21 @@ mod test {
         use super::Parameter::*;
         use super::ParameterSubstitution::*;
 
-        let substs = vec!(
+        let params = vec!(
+            At,
+            Star,
+            Question,
+            Pound,
+            Dash,
+            Dollar,
+            Bang,
+            Positional(0),
+            Positional(10),
+            Positional(100),
+            Var(String::from("foo_bar123")),
+        );
+
+        let mut substs = vec!(
             Len(At),
             Len(Star),
             Len(Pound),
@@ -671,7 +728,30 @@ mod test {
             Command(vec!(sample_simple_command())),
         );
 
-        for s in substs {
+        let word = Word::Concat(vec!(
+            Word::Literal(String::from("foo")),
+            Word::Literal(String::from("{")),
+            Word::Escaped(String::from("}")),
+            Word::Literal(String::from("   \t\t\r ")),
+            Word::Escaped(String::from("\n")),
+            Word::Literal(String::from("bar")),
+            Word::Literal(String::from("   \t\t\r ")),
+        ));
+
+        for p in params {
+            substs.push(RemoveSmallestSuffix(p.clone(), Some(Box::new(word.clone()))));
+            substs.push(RemoveLargestSuffix(p.clone(), Some(Box::new(word.clone()))));
+            substs.push(RemoveSmallestPrefix(p.clone(), Some(Box::new(word.clone()))));
+            substs.push(RemoveLargestPrefix(p.clone(), Some(Box::new(word.clone()))));
+
+            substs.push(RemoveSmallestSuffix(p.clone(), None));
+            substs.push(RemoveLargestSuffix(p.clone(), None));
+            substs.push(RemoveSmallestPrefix(p.clone(), None));
+            substs.push(RemoveLargestPrefix(p.clone(), None));
+        }
+
+        // ${##} will should parse as Len(#)
+        for s in substs.into_iter().filter(|s| *s != RemoveSmallestPrefix(Pound, None)) {
             let src = s.to_string();
             let correct = Word::Subst(s);
 

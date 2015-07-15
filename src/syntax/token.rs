@@ -30,6 +30,8 @@ pub enum Token {
     Question,
     /// \\
     Backslash,
+    /// %
+    Percent,
 
     /// '
     SingleQuote,
@@ -121,6 +123,7 @@ impl fmt::Display for Token {
             Star                => fmt.write_str("*"),
             Question            => fmt.write_str("?"),
             Backslash           => fmt.write_str("\\"),
+            Percent             => fmt.write_str("%"),
             SingleQuote         => fmt.write_str("\'"),
             DoubleQuote         => fmt.write_str("\""),
             Backtick            => fmt.write_str("`"),
@@ -159,6 +162,7 @@ impl Token {
             Star        |
             Question    |
             Backslash   |
+            Percent     |
             Semi        |
             Amp         |
             Less        |
@@ -223,6 +227,7 @@ impl Token {
             SingleQuote        |
             DoubleQuote        |
             Backtick           |
+            Percent            |
             CurlyOpen          |
             CurlyClose         |
             Dollar             |
