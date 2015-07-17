@@ -569,19 +569,19 @@ impl Builder for DefaultBuilder {
             WordKind::SquareClose     => Word::SquareClose,
             WordKind::Tilde           => Word::Tilde,
 
-            WordKind::CommandSubst(c) => Word::Subst(ParameterSubstitution::Command(c)),
+            WordKind::CommandSubst(c) => Word::Subst(Box::new(ParameterSubstitution::Command(c))),
 
             WordKind::Subst(s) => match s {
-                Len(p)     => Word::Subst(ParameterSubstitution::Len(p)),
-                Command(c) => Word::Subst(ParameterSubstitution::Command(c)),
-                Default(c, p, w)           => Word::Subst(ParameterSubstitution::Default(c, p, map!(w))),
-                Assign(c, p, w)            => Word::Subst(ParameterSubstitution::Assign(c, p, map!(w))),
-                Error(c, p, w)             => Word::Subst(ParameterSubstitution::Error(c, p, map!(w))),
-                Alternative(c, p, w)       => Word::Subst(ParameterSubstitution::Alternative(c, p, map!(w))),
-                RemoveSmallestSuffix(p, w) => Word::Subst(ParameterSubstitution::RemoveSmallestSuffix(p, map!(w))),
-                RemoveLargestSuffix(p, w)  => Word::Subst(ParameterSubstitution::RemoveLargestSuffix(p, map!(w))),
-                RemoveSmallestPrefix(p, w) => Word::Subst(ParameterSubstitution::RemoveSmallestPrefix(p, map!(w))),
-                RemoveLargestPrefix(p, w)  => Word::Subst(ParameterSubstitution::RemoveLargestPrefix(p, map!(w))),
+                Len(p)                     => Word::Subst(Box::new(ParameterSubstitution::Len(p))),
+                Command(c)                 => Word::Subst(Box::new(ParameterSubstitution::Command(c))),
+                Default(c, p, w)           => Word::Subst(Box::new(ParameterSubstitution::Default(c, p, map!(w)))),
+                Assign(c, p, w)            => Word::Subst(Box::new(ParameterSubstitution::Assign(c, p, map!(w)))),
+                Error(c, p, w)             => Word::Subst(Box::new(ParameterSubstitution::Error(c, p, map!(w)))),
+                Alternative(c, p, w)       => Word::Subst(Box::new(ParameterSubstitution::Alternative(c, p, map!(w)))),
+                RemoveSmallestSuffix(p, w) => Word::Subst(Box::new(ParameterSubstitution::RemoveSmallestSuffix(p, map!(w)))),
+                RemoveLargestSuffix(p, w)  => Word::Subst(Box::new(ParameterSubstitution::RemoveLargestSuffix(p, map!(w)))),
+                RemoveSmallestPrefix(p, w) => Word::Subst(Box::new(ParameterSubstitution::RemoveSmallestPrefix(p, map!(w)))),
+                RemoveLargestPrefix(p, w)  => Word::Subst(Box::new(ParameterSubstitution::RemoveLargestPrefix(p, map!(w)))),
             },
 
             WordKind::Concat(words) => Word::Concat(
@@ -617,7 +617,7 @@ impl Builder for DefaultBuilder {
     }
 }
 
-impl<'a, T: Builder> Builder for &'a mut T {
+impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
     type Command = T::Command;
     type Word = T::Word;
     type Redirect = T::Redirect;

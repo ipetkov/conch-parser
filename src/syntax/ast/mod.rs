@@ -79,7 +79,7 @@ pub enum Word {
     /// Access of a value inside a parameter, e.g. `$foo` or `$$`.
     Param(Parameter),
     /// A parameter substitution, e.g. `${param-word}`.
-    Subst(ParameterSubstitution),
+    Subst(Box<ParameterSubstitution>),
     /// A token which normally has a special meaning is treated as a literal
     /// because it was escaped, typically with a backslash, e.g. `\"`.
     Escaped(String),
@@ -766,18 +766,16 @@ mod test {
         );
 
         let word = Word::Concat(vec!(
-            Word::Literal(String::from("foo")),
-            Word::Literal(String::from("{")),
+            Word::Literal(String::from("foo{")),
             Word::Escaped(String::from("}")),
             Word::Literal(String::from("   \t\t\r ")),
             Word::Escaped(String::from("\n")),
-            Word::Literal(String::from("bar")),
-            Word::Literal(String::from("   \t\t\r ")),
+            Word::Literal(String::from("bar   \t\t\r ")),
             Word::Param(At),
-            Word::Subst(RemoveLargestPrefix(
+            Word::Subst(Box::new(RemoveLargestPrefix(
                 Var(String::from("foo")),
                 Some(Box::new(Word::Literal(String::from("bar"))))
-            )),
+            ))),
         ));
 
         for p in params {
@@ -813,7 +811,7 @@ mod test {
 
         for s in substs.into_iter().filter(|s| to_remove.iter().all(|r| r != s)) {
             let src = s.to_string();
-            let correct = Word::Subst(s);
+            let correct = Word::Subst(Box::new(s));
 
             let parsed = match make_parser(&src).parameter() {
                 Ok(s) => s,

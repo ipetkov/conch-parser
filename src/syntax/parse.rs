@@ -12,10 +12,14 @@ use syntax::token::Token::*;
 /// yielding results in terms of types defined in the `ast` module.
 pub type DefaultParser<I> = Parser<I, builder::DefaultBuilder>;
 
+/// Indicates a character/token position in the original source.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct SourcePos {
+    /// The byte offset since the start of parsing.
     pub byte: u64,
+    /// The line offset since the start of parsing, useful for error messages.
     pub line: u64,
+    /// The column offset since the start of parsing, useful for error messages.
     pub col: u64,
 }
 
@@ -75,6 +79,8 @@ impl<T: Error> fmt::Display for ParseError<T> {
             ParseError::BadSubst(None, pos)        => write!(fmt, "bad substitution {}: empty body", pos),
             ParseError::BadSubst(Some(ref t), pos) => write!(fmt, "bad substitution {}: invalid token: {}", pos, t),
             ParseError::Unmatched(ref t, pos)      => write!(fmt, "unmatched `{}` starting on line {}", t, pos),
+            // When printing an unexpected newline, print \n and not an actual newline to avoid confusing messages
+            ParseError::Unexpected(Newline, pos)   => write!(fmt, "found unexpected token on line {}: \\n", pos),
             ParseError::Unexpected(ref t, pos)     => write!(fmt, "found unexpected token on line {}: {}", pos, t),
 
             ParseError::UnexpectedEOF => fmt.write_str("unexpected end of input"),
@@ -579,30 +585,19 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     fn word_preserve_trailing_whitespace_raw(&mut self)
         -> Result<Option<builder::WordKind<B::Command>>, ParseError<B::Err>>
     {
-        self.word_raw(false)
-    }
-
-    /// Identical to `Parser::word_preserve_trailing_whitespace_raw()` but will
-    /// stop at `}` if parsing a word/pattern in a parameter substitution.
-    fn word_raw(&mut self, param_subst_mode: bool)
-        -> Result<Option<builder::WordKind<B::Command>>, ParseError<B::Err>>
-    {
         self.skip_whitespace();
 
         // Make sure we don't consume comments,
         // e.g. if a # is at the start of a word.
         if let Some(&Pound) = self.iter.peek() {
-            // Comments aren't recognized when parsing
-            // words in parameter substitutions
-            if !param_subst_mode {
-                return Ok(None);
-            }
+            return Ok(None);
         }
 
         let mut words = Vec::new();
         loop {
             match self.iter.peek() {
                 Some(&CurlyOpen)          |
+                Some(&CurlyClose)         |
                 Some(&SquareOpen)         |
                 Some(&SquareClose)        |
                 Some(&SingleQuote)        |
@@ -648,9 +643,6 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 Some(&Clobber)       |
                 Some(&LessGreat)     |
                 Some(&Whitespace(_)) => break,
-
-                // When parsing parameter substitutions } *should* be a delimiter
-                Some(&CurlyClose) => if param_subst_mode { break } else {},
 
                 None => break,
             }
@@ -702,62 +694,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     builder::WordKind::SingleQuoted(buf)
                 },
 
-                DoubleQuote => {
-                    let mut words = Vec::new();
-                    let mut buf = String::new();
-                    loop {
-                        // Make sure we don't consume any $ (or any specific parameter token)
-                        // we find since the `parameter` method expects to consume them.
-                        match self.iter.peek() {
-                            Some(&Dollar)             |
-                            Some(&ParamPositional(_)) => {
-                                if !buf.is_empty() {
-                                    words.push(builder::WordKind::Literal(buf));
-                                    buf = String::new();
-                                }
-                                words.push(try!(self.parameter_raw()));
-                                continue;
-                            },
-
-                            _ => {},
-                        }
-
-                        match self.iter.next() {
-                            Some(DoubleQuote) => {
-                                if !buf.is_empty() {
-                                    words.push(builder::WordKind::Literal(buf));
-                                }
-
-                                break;
-                            },
-
-                            Some(Backtick) => unimplemented!(),
-
-                            // Backslashes only escape a few tokens when double quoted
-                            Some(Backslash) => match self.iter.peek() {
-                                Some(&Dollar)      |
-                                Some(&Backtick)    |
-                                Some(&DoubleQuote) |
-                                Some(&Backslash)   |
-                                Some(&Newline)     => {
-                                    if !buf.is_empty() {
-                                        words.push(builder::WordKind::Literal(buf));
-                                        buf = String::new();
-                                    }
-                                    words.push(builder::WordKind::Escaped(self.iter.next().unwrap().to_string()));
-                                },
-
-                                _ => buf.push_str(&Backslash.to_string()),
-                            },
-
-                            Some(Dollar) => unreachable!(), // Sanity
-                            Some(t) => buf.push_str(&t.to_string()),
-                            None => return Err(self.make_unmatched_err(DoubleQuote, start_pos)),
-                        }
-                    }
-
-                    builder::WordKind::DoubleQuoted(words)
-                },
+                DoubleQuote => builder::WordKind::DoubleQuoted(
+                    try!(self.word_interpolated_raw(Some(DoubleQuote), start_pos))),
 
                 Backtick    => unimplemented!(),
 
@@ -803,6 +741,81 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         Ok(ret)
     }
 
+    /// Parses tokens in a way similar to how double quoted strings may be interpreted.
+    ///
+    /// Parameters/substitutions are parsed as normal, backslashes keep their literal
+    /// meaning unless they preceed $, `, ", \, \n, or the specified delimeter, while
+    /// all other tokens are consumed as literals.
+    ///
+    /// Tokens will continue to be consumed until a specified delimeter is reached
+    /// (which is also consumed). If EOF is reached before a delimeter can be found,
+    /// an error will result. If a `None` is provided as a delimeter tokens will be
+    /// consumed until EOF is reached and no error will result.
+    fn word_interpolated_raw(&mut self, delim: Option<Token>, start_pos: SourcePos)
+        -> Result<Vec<builder::WordKind<B::Command>>, ParseError<B::Err>>
+    {
+        let mut words = Vec::new();
+        let mut buf = String::new();
+        loop {
+            if self.iter.peek() == delim.as_ref() {
+                self.iter.next();
+                break;
+            }
+
+            // Make sure we don't consume any $ (or any specific parameter token)
+            // we find since the `parameter` method expects to consume them.
+            match self.iter.peek() {
+                Some(&Dollar)             |
+                Some(&ParamPositional(_)) => {
+                    if !buf.is_empty() {
+                        words.push(builder::WordKind::Literal(buf));
+                        buf = String::new();
+                    }
+                    words.push(try!(self.parameter_raw()));
+                    continue;
+                },
+
+                _ => {},
+            }
+
+            match self.iter.next() {
+                // Backslashes only escape a few tokens when double-quoted-type words
+                Some(Backslash) => {
+                    let special = {
+                        let peeked = self.iter.peek();
+                        [Dollar, Backtick, DoubleQuote, Backslash, Newline].iter().any(|t| Some(t) == peeked)
+                    };
+
+                    if special || self.iter.peek() == delim.as_ref() {
+                        if !buf.is_empty() {
+                            words.push(builder::WordKind::Literal(buf));
+                            buf = String::new();
+                        }
+                        words.push(builder::WordKind::Escaped(self.iter.next().unwrap().to_string()));
+                    } else {
+                        buf.push_str(&Backslash.to_string());
+                    }
+                },
+
+                // FIXME: implement
+                Some(Backtick) => unimplemented!(),
+
+                Some(Dollar) => unreachable!(), // Sanity
+                Some(t) => buf.push_str(&t.to_string()),
+                None => match delim {
+                    Some(delim) => return Err(self.make_unmatched_err(delim, start_pos)),
+                    None => break,
+                },
+            }
+        }
+
+        if !buf.is_empty() {
+            words.push(builder::WordKind::Literal(buf));
+        }
+
+        Ok(words)
+    }
+
     /// Parses a parameters such as `$$`, `$1`, `$foo`, etc, or
     /// parameter substitutions such as `$(cmd)`, `${param-word}`, etc.
     ///
@@ -842,6 +855,19 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         }
 
         let start_pos = self.iter.pos;
+        let param_word = |parser: &mut Self| -> Result<Option<Box<builder::WordKind<B::Command>>>, ParseError<B::Err>> {
+            let mut words = try!(parser.word_interpolated_raw(Some(CurlyClose), start_pos));
+            let ret = if words.is_empty() {
+                None
+            } else if words.len() == 1 {
+                Some(words.pop().unwrap())
+            } else {
+                Some(builder::WordKind::Concat(words))
+            };
+
+            Ok(ret.map(Box::new))
+        };
+
         let param = match self.iter.peek() {
             Some(&CurlyOpen) => {
                 self.iter.next();
@@ -852,9 +878,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                             self.iter.next();
                             if let Some(&Percent) = self.iter.peek() {
                                 self.iter.next();
-                                Err(RemoveLargestSuffix(Parameter::Pound, try!(self.param_word())))
+                                Err(RemoveLargestSuffix(Parameter::Pound, try!(param_word(self))))
                             } else {
-                                Err(RemoveSmallestSuffix(Parameter::Pound, try!(self.param_word())))
+                                Err(RemoveSmallestSuffix(Parameter::Pound, try!(param_word(self))))
                             }
                         },
 
@@ -862,9 +888,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                             self.iter.next();
                             if let Some(&Pound) = self.iter.peek() {
                                 self.iter.next();
-                                Err(RemoveLargestPrefix(Parameter::Pound, try!(self.param_word())))
+                                Err(RemoveLargestPrefix(Parameter::Pound, try!(param_word(self))))
                             } else {
-                                match try!(self.param_word()) {
+                                match try!(param_word(self)) {
                                     w@Some(_) => Err(RemoveSmallestPrefix(Parameter::Pound, w)),
                                     None => Err(Len(Parameter::Pound)),
                                 }
@@ -878,7 +904,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                         Some(&Plus)       |
                         Some(&CurlyClose) => Ok(Parameter::Pound),
 
-                        _ => Err(Len(try!(self.parameter_inner()))),
+                        _ => {
+                            let param = try!(self.parameter_inner());
+                            match self.iter.next() {
+                                Some(CurlyClose) => Err(Len(param)),
+                                t => return Err(self.make_bad_substitution_err(t)),
+                            }
+                        },
                     }
                 } else {
                     let param = try!(self.parameter_inner());
@@ -886,17 +918,17 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                         self.iter.next();
                         if let Some(&Percent) = self.iter.peek() {
                             self.iter.next();
-                            Err(RemoveLargestSuffix(param, try!(self.param_word())))
+                            Err(RemoveLargestSuffix(param, try!(param_word(self))))
                         } else {
-                            Err(RemoveSmallestSuffix(param, try!(self.param_word())))
+                            Err(RemoveSmallestSuffix(param, try!(param_word(self))))
                         }
                     } else if let Some(&Pound) = self.iter.peek() {
                         self.iter.next();
                         if let Some(&Pound) = self.iter.peek() {
                             self.iter.next();
-                            Err(RemoveLargestPrefix(param, try!(self.param_word())))
+                            Err(RemoveLargestPrefix(param, try!(param_word(self))))
                         } else {
-                            Err(RemoveSmallestPrefix(param, try!(self.param_word())))
+                            Err(RemoveSmallestPrefix(param, try!(param_word(self))))
                         }
                     } else {
                         Ok(param)
@@ -922,7 +954,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                             t => return Err(self.make_bad_substitution_err(t)),
                         };
 
-                        let word = try!(self.param_word());
+                        let word = try!(param_word(self));
                         let maybe_len = p == Parameter::Pound && c == false && word.is_none();
 
                         // We must carefully check if we get ${#-} or ${#?}, in which case
@@ -943,12 +975,14 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     },
                 };
 
-                match self.iter.next() {
-                    Some(CurlyClose) => match param {
-                        Ok(param)  => param,
-                        Err(subst) => return Ok(WordKind::Subst(subst)),
+                match param {
+                    // Substitutions have already consumed the closing CurlyClose token
+                    Err(subst) => return Ok(WordKind::Subst(subst)),
+                    // Regular parameters, however, have not
+                    Ok(p) => match self.iter.next() {
+                        Some(CurlyClose) => p,
+                        t => return Err(self.make_unexpected_err(t)),
                     },
-                    t => return Err(self.make_unexpected_err(t)),
                 }
             },
 
@@ -997,44 +1031,6 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         };
 
         Ok(param)
-    }
-
-    /// Parses a word that can appear at the end of a parameter substitution.
-    ///
-    /// Words in parameter substitutions are slightly different than normal: they can
-    /// contain whitespace and `}` tokens should delimit the word (whereas they are
-    /// normally considered a literal).
-    fn param_word(&mut self) -> Result<Option<Box<builder::WordKind<B::Command>>>, ParseError<B::Err>> {
-        let mut words = Vec::new();
-        loop {
-            let space = self.capture_whitespace();
-            let found = if space.is_empty() {
-                false
-            } else {
-                words.reserve(space.len());
-                for s in space { words.push(s) }
-                true
-            };
-
-            match try!(self.word_raw(true)) {
-                Some(builder::WordKind::Concat(cw)) => {
-                    words.reserve(cw.len());
-                    for w in cw { words.push(w) }
-                },
-                Some(w) => words.push(w),
-                None => if !found { break },
-            }
-        }
-
-        let ret = if words.is_empty() {
-            None
-        } else if words.len() == 1 {
-            Some(words.pop().unwrap())
-        } else {
-            Some(builder::WordKind::Concat(words))
-        };
-
-        Ok(ret.map(Box::new))
     }
 
     /// Parses any number of sequential commands between the `do` and `done`
@@ -1449,28 +1445,6 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 _ => break,
             }
         }
-    }
-
-    /// Captures any encountered whitespace and newlines. Comments are NOT recognized.
-    fn capture_whitespace(&mut self) -> Vec<builder::WordKind<B::Command>> {
-        let mut vec = Vec::new();
-        loop {
-            while let Some(&Whitespace(_)) = self.iter.peek() {
-                if let Some(Whitespace(w)) = self.iter.next() {
-                    vec.push(builder::WordKind::Literal(w));
-                }
-            }
-
-            match self.iter.multipeek(2) {
-                [Backslash, Newline, ..] => {
-                    self.iter.next();
-                    vec.push(builder::WordKind::Escaped(self.iter.next().unwrap().to_string()));
-                },
-                _ => break,
-            }
-        }
-
-        vec
     }
 
     /// Parses zero or more `Token::Newline`s, skipping whitespace but capturing comments.
@@ -1928,17 +1902,18 @@ pub mod test {
 
     #[test]
     fn test_parameter_command_substitution() {
-        let correct = Word::Subst(ParameterSubstitution::Command(vec!(
+        let correct = Word::Subst(Box::new(ParameterSubstitution::Command(vec!(
             cmd_args_unboxed("echo", &["hello"]),
             cmd_args_unboxed("echo", &["world"]),
-        )));
+        ))));
 
         assert_eq!(correct, make_parser("$(echo hello; echo world)").parameter().unwrap());
     }
 
     #[test]
     fn test_parameter_command_substitution_valid_empty_substitution() {
-        assert_eq!(Word::Subst(ParameterSubstitution::Command(vec!())), make_parser("$()").parameter().unwrap());
+        let correct = Word::Subst(Box::new(ParameterSubstitution::Command(vec!())));
+        assert_eq!(correct, make_parser("$()").parameter().unwrap());
     }
 
     #[test]
@@ -1951,17 +1926,17 @@ pub mod test {
     #[test]
     fn test_parameter_substitution() {
         let words = vec!(
-            Word::Subst(ParameterSubstitution::Len(Parameter::At)),
-            Word::Subst(ParameterSubstitution::Len(Parameter::Star)),
-            Word::Subst(ParameterSubstitution::Len(Parameter::Pound)),
-            Word::Subst(ParameterSubstitution::Len(Parameter::Question)),
-            Word::Subst(ParameterSubstitution::Len(Parameter::Dash)),
-            Word::Subst(ParameterSubstitution::Len(Parameter::Dollar)),
-            Word::Subst(ParameterSubstitution::Len(Parameter::Bang)),
-            Word::Subst(ParameterSubstitution::Len(Parameter::Var(String::from("foo")))),
-            Word::Subst(ParameterSubstitution::Len(Parameter::Positional(3))),
-            Word::Subst(ParameterSubstitution::Len(Parameter::Positional(1000))),
-            Word::Subst(ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["foo"])))),
+            Word::Subst(Box::new(ParameterSubstitution::Len(Parameter::At))),
+            Word::Subst(Box::new(ParameterSubstitution::Len(Parameter::Star))),
+            Word::Subst(Box::new(ParameterSubstitution::Len(Parameter::Pound))),
+            Word::Subst(Box::new(ParameterSubstitution::Len(Parameter::Question))),
+            Word::Subst(Box::new(ParameterSubstitution::Len(Parameter::Dash))),
+            Word::Subst(Box::new(ParameterSubstitution::Len(Parameter::Dollar))),
+            Word::Subst(Box::new(ParameterSubstitution::Len(Parameter::Bang))),
+            Word::Subst(Box::new(ParameterSubstitution::Len(Parameter::Var(String::from("foo"))))),
+            Word::Subst(Box::new(ParameterSubstitution::Len(Parameter::Positional(3)))),
+            Word::Subst(Box::new(ParameterSubstitution::Len(Parameter::Positional(1000)))),
+            Word::Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["foo"]))))),
         );
 
         let mut p = make_parser("${#@}${#*}${##}${#?}${#-}${#$}${#!}${#foo}${#3}${#1000}$(echo foo)");
@@ -2009,7 +1984,7 @@ pub mod test {
         let mut p = make_parser(src);
 
         for s in substs {
-            assert_eq!(Word::Subst(s), p.parameter().unwrap());
+            assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap());
         }
 
         p.parameter().unwrap_err(); // Stream should be exhausted
@@ -2052,7 +2027,7 @@ pub mod test {
         let mut p = make_parser(src);
 
         for s in substs {
-            assert_eq!(Word::Subst(s), p.parameter().unwrap());
+            assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap());
         }
 
         p.parameter().unwrap_err(); // Stream should be exhausted
@@ -2095,7 +2070,7 @@ pub mod test {
         let mut p = make_parser(src);
 
         for s in substs {
-            assert_eq!(Word::Subst(s), p.parameter().unwrap());
+            assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap());
         }
 
         p.parameter().unwrap_err(); // Stream should be exhausted
@@ -2138,7 +2113,7 @@ pub mod test {
         let mut p = make_parser(src);
 
         for s in substs {
-            assert_eq!(Word::Subst(s), p.parameter().unwrap());
+            assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap());
         }
 
         p.parameter().unwrap_err(); // Stream should be exhausted
@@ -2179,7 +2154,7 @@ pub mod test {
 
         let src = "${@:-foo}${*:-foo}${#:-foo}${?:-foo}${-:-foo}${$:-foo}${!:-foo}${0:-foo}${10:-foo}${100:-foo}${foo_bar123:-foo}${@:-}${*:-}${#:-}${?:-}${-:-}${$:-}${!:-}${0:-}${10:-}${100:-}${foo_bar123:-}";
         let mut p = make_parser(src);
-        for s in substs { assert_eq!(Word::Subst(s), p.parameter().unwrap()); }
+        for s in substs { assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap()); }
         p.parameter().unwrap_err(); // Stream should be exhausted
 
         let substs = vec!(
@@ -2210,7 +2185,7 @@ pub mod test {
 
         let src = "${@-foo}${*-foo}${#-foo}${?-foo}${--foo}${$-foo}${!-foo}${0-foo}${10-foo}${100-foo}${foo_bar123-foo}${@-}${*-}${?-}${--}${$-}${!-}${0-}${10-}${100-}${foo_bar123-}";
         let mut p = make_parser(src);
-        for s in substs { assert_eq!(Word::Subst(s), p.parameter().unwrap()); }
+        for s in substs { assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap()); }
         p.parameter().unwrap_err(); // Stream should be exhausted
     }
 
@@ -2249,7 +2224,7 @@ pub mod test {
 
         let src = "${@:?foo}${*:?foo}${#:?foo}${?:?foo}${-:?foo}${$:?foo}${!:?foo}${0:?foo}${10:?foo}${100:?foo}${foo_bar123:?foo}${@:?}${*:?}${#:?}${?:?}${-:?}${$:?}${!:?}${0:?}${10:?}${100:?}${foo_bar123:?}";
         let mut p = make_parser(src);
-        for s in substs { assert_eq!(Word::Subst(s), p.parameter().unwrap()); }
+        for s in substs { assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap()); }
         p.parameter().unwrap_err(); // Stream should be exhausted
 
         let substs = vec!(
@@ -2280,7 +2255,7 @@ pub mod test {
 
         let src = "${@?foo}${*?foo}${#?foo}${??foo}${-?foo}${$?foo}${!?foo}${0?foo}${10?foo}${100?foo}${foo_bar123?foo}${@?}${*?}${??}${-?}${$?}${!?}${0?}${10?}${100?}${foo_bar123?}";
         let mut p = make_parser(src);
-        for s in substs { assert_eq!(Word::Subst(s), p.parameter().unwrap()); }
+        for s in substs { assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap()); }
         p.parameter().unwrap_err(); // Stream should be exhausted
     }
 
@@ -2319,7 +2294,7 @@ pub mod test {
 
         let src = "${@:=foo}${*:=foo}${#:=foo}${?:=foo}${-:=foo}${$:=foo}${!:=foo}${0:=foo}${10:=foo}${100:=foo}${foo_bar123:=foo}${@:=}${*:=}${#:=}${?:=}${-:=}${$:=}${!:=}${0:=}${10:=}${100:=}${foo_bar123:=}";
         let mut p = make_parser(src);
-        for s in substs { assert_eq!(Word::Subst(s), p.parameter().unwrap()); }
+        for s in substs { assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap()); }
         p.parameter().unwrap_err(); // Stream should be exhausted
 
         let substs = vec!(
@@ -2350,7 +2325,7 @@ pub mod test {
 
         let src = "${@=foo}${*=foo}${#=foo}${?=foo}${-=foo}${$=foo}${!=foo}${0=foo}${10=foo}${100=foo}${foo_bar123=foo}${@=}${*=}${#=}${?=}${-=}${$=}${!=}${0=}${10=}${100=}${foo_bar123=}";
         let mut p = make_parser(src);
-        for s in substs { assert_eq!(Word::Subst(s), p.parameter().unwrap()); }
+        for s in substs { assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap()); }
         p.parameter().unwrap_err(); // Stream should be exhausted
     }
 
@@ -2389,7 +2364,7 @@ pub mod test {
 
         let src = "${@:+foo}${*:+foo}${#:+foo}${?:+foo}${-:+foo}${$:+foo}${!:+foo}${0:+foo}${10:+foo}${100:+foo}${foo_bar123:+foo}${@:+}${*:+}${#:+}${?:+}${-:+}${$:+}${!:+}${0:+}${10:+}${100:+}${foo_bar123:+}";
         let mut p = make_parser(src);
-        for s in substs { assert_eq!(Word::Subst(s), p.parameter().unwrap()); }
+        for s in substs { assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap()); }
         p.parameter().unwrap_err(); // Stream should be exhausted
 
         let substs = vec!(
@@ -2420,7 +2395,7 @@ pub mod test {
 
         let src = "${@+foo}${*+foo}${#+foo}${?+foo}${-+foo}${$+foo}${!+foo}${0+foo}${10+foo}${100+foo}${foo_bar123+foo}${@+}${*+}${#+}${?+}${-+}${$+}${!+}${0+}${10+}${100+}${foo_bar123+}";
         let mut p = make_parser(src);
-        for s in substs { assert_eq!(Word::Subst(s), p.parameter().unwrap()); }
+        for s in substs { assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap()); }
         p.parameter().unwrap_err(); // Stream should be exhausted
     }
 
@@ -2431,13 +2406,11 @@ pub mod test {
 
         let var = Var(String::from("foo_bar123"));
         let word = Box::new(Word::Concat(vec!(
-            Word::Literal(String::from("foo")),
-            Word::Literal(String::from("{")),
+            Word::Literal(String::from("foo{")),
             Word::Escaped(String::from("}")),
             Word::Literal(String::from(" \t\r ")),
             Word::Escaped(String::from("\n")),
-            Word::Literal(String::from("bar")),
-            Word::Literal(String::from(" \t\r ")),
+            Word::Literal(String::from("bar \t\r ")),
         )));
 
         let substs = vec!(
@@ -2473,7 +2446,59 @@ pub mod test {
         for (i, s) in substs.into_iter().enumerate() {
             let src = format!("${{foo_bar123{}foo{{\\}} \t\r \\\nbar \t\r }}", src[i]);
             let mut p = make_parser(&src);
-            assert_eq!(Word::Subst(s), p.parameter().unwrap());
+            assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap());
+            p.parameter().unwrap_err(); // Stream should be exhausted
+        }
+    }
+
+    #[test]
+    fn test_parameter_substitution_words_can_start_with_pound() {
+        use syntax::ast::Parameter::*;
+        use syntax::ast::ParameterSubstitution::*;
+
+        let var = Var(String::from("foo_bar123"));
+        let word = Box::new(Word::Concat(vec!(
+            Word::Literal(String::from("#foo{")),
+            Word::Escaped(String::from("}")),
+            Word::Literal(String::from(" \t\r ")),
+            Word::Escaped(String::from("\n")),
+            Word::Literal(String::from("bar \t\r ")),
+        )));
+
+        let substs = vec!(
+            RemoveSmallestSuffix(var.clone(), Some(word.clone())),
+            RemoveLargestSuffix(var.clone(), Some(word.clone())),
+            //RemoveSmallestPrefix(var.clone(), Some(word.clone())),
+            RemoveLargestPrefix(var.clone(), Some(word.clone())),
+            Default(true, var.clone(), Some(word.clone())),
+            Default(false, var.clone(), Some(word.clone())),
+            Assign(true, var.clone(), Some(word.clone())),
+            Assign(false, var.clone(), Some(word.clone())),
+            Error(true, var.clone(), Some(word.clone())),
+            Error(false, var.clone(), Some(word.clone())),
+            Alternative(true, var.clone(), Some(word.clone())),
+            Alternative(false, var.clone(), Some(word.clone())),
+        );
+
+        let src = vec!(
+            "%",
+            "%%",
+            //"#", // Let's not confuse the pound in the word with a substitution
+            "##",
+            ":-",
+            "-",
+            ":=",
+            "=",
+            ":?",
+            "?",
+            ":+",
+            "+",
+        );
+
+        for (i, s) in substs.into_iter().enumerate() {
+            let src = format!("${{foo_bar123{}#foo{{\\}} \t\r \\\nbar \t\r }}", src[i]);
+            let mut p = make_parser(&src);
+            assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap());
             p.parameter().unwrap_err(); // Stream should be exhausted
         }
     }
@@ -2486,10 +2511,10 @@ pub mod test {
         let var = Var(String::from("foo_bar123"));
         let word = Box::new(Word::Concat(vec!(
             Word::Param(At),
-            Word::Subst(RemoveLargestPrefix(
+            Word::Subst(Box::new(RemoveLargestPrefix(
                 Var(String::from("foo")),
                 Some(Box::new(Word::Literal(String::from("bar"))))
-            )),
+            ))),
         )));
 
         let substs = vec!(
@@ -2525,7 +2550,7 @@ pub mod test {
         for (i, s) in substs.into_iter().enumerate() {
             let src = format!("${{foo_bar123{}$@${{foo##bar}}}}", src[i]);
             let mut p = make_parser(&src);
-            assert_eq!(Word::Subst(s), p.parameter().unwrap());
+            assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap());
             p.parameter().unwrap_err(); // Stream should be exhausted
         }
     }
@@ -2573,7 +2598,7 @@ pub mod test {
             Some(Word::Concat(vec!(
                 Word::Literal(String::from("123")),
                 Word::Param(Parameter::Dollar),
-                Word::Subst(ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["2"])))),
+                Word::Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["2"]))))),
             ))),
             Word::Literal(String::from("out"))
         );
@@ -2604,7 +2629,7 @@ pub mod test {
             Word::Concat(vec!(
                 Word::Literal(String::from("123")),
                 Word::Param(Parameter::Dollar),
-                Word::Subst(ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["2"])))),
+                Word::Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["2"]))))),
             )),
         );
         assert_eq!(Some(Ok(correct)), p.redirect().unwrap());
