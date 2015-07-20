@@ -1051,6 +1051,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         };
 
         let param = match self.iter.peek() {
+            Some(&ParenOpen) => return Ok(WordKind::Subst(Command(try!(self.subshell_internal(true))))),
+
             Some(&CurlyOpen) => {
                 self.iter.next();
                 let param = if let Some(&Pound) = self.iter.peek() {
@@ -1168,22 +1170,6 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 }
             },
 
-            Some(&ParenOpen) => {
-                self.iter.next();
-                self.skip_whitespace();
-                let cmds = if let Some(&ParenClose) = self.iter.peek() {
-                    Vec::new()
-                } else {
-                    try!(self.command_list(&[], &[ParenClose]))
-                };
-
-                match self.iter.next() {
-                    Some(ParenClose) => return Ok(WordKind::Subst(Command(cmds))),
-                    Some(t) => return Err(self.make_unexpected_err(Some(t))),
-                    None => return Err(self.make_unmatched_err(ParenOpen, start_pos)),
-                }
-            },
-
             _ => try!(self.parameter_inner()),
         };
 
@@ -1248,6 +1234,12 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     ///
     /// It is considered an error if no commands are present inside the subshell.
     pub fn subshell(&mut self) -> Result<Vec<B::Command>, ParseError<B::Err>> {
+        self.subshell_internal(false)
+    }
+
+    /// Like `Parser::subshell` but allows the caller to specify
+    /// if an empty body constitutes an error or not.
+    fn subshell_internal(&mut self, empty_body_ok: bool) -> Result<Vec<B::Command>, ParseError<B::Err>> {
         let start_pos = self.iter.pos();
         match self.iter.next() {
             Some(ParenOpen) => {},
@@ -1266,7 +1258,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         }
 
         match self.iter.next() {
-            Some(ParenClose) if !cmds.is_empty() => Ok(cmds),
+            Some(ParenClose) if empty_body_ok || !cmds.is_empty() => Ok(cmds),
             Some(t) => Err(self.make_unexpected_err(Some(t))),
             None => Err(self.make_unmatched_err(ParenClose, start_pos)),
         }
@@ -1671,6 +1663,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// If a reserved word is found, the token which it matches will be
     /// returned in case the caller cares which specific reserved word was found.
     pub fn peek_reserved_token<'a>(&mut self, tokens: &'a [Token]) -> Option<&'a Token> {
+        if tokens.is_empty() {
+            return None;
+        }
+
         let care_about_whitespace = tokens.iter().any(|tok| {
             if let &Whitespace(_) = tok {
                 true
@@ -1722,6 +1718,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// If a reserved word is found, the string which it matches will be
     /// returned in case the caller cares which specific reserved word was found.
     pub fn peek_reserved_word<'a>(&mut self, words: &'a [&str]) -> Option<&'a str> {
+        if words.is_empty() {
+            return None;
+        }
+
         self.skip_whitespace();
         let tok = match self.iter.multipeek(2) {
             // Don't forget about delimiting through EOF!
@@ -2735,6 +2735,19 @@ pub mod test {
             assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap());
             p.parameter().unwrap_err(); // Stream should be exhausted
         }
+    }
+
+
+    #[test]
+    fn test_parameter_substitution_command_close_paren_need_not_be_followed_by_word_delimeter() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            vars: vec!(), io: vec!(),
+            cmd: Some(Word::Literal(String::from("foo"))),
+            args: vec!(Word::DoubleQuoted(vec!(
+                Word::Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_unboxed("bar")))))
+            ))),
+        })));
+        assert_eq!(correct, make_parser("foo \"$(bar)\"").complete_command().unwrap());
     }
 
     #[test]
