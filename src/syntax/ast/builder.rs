@@ -554,7 +554,7 @@ impl Builder for DefaultBuilder {
         macro_rules! map {
             ($pat:expr) => {
                 match $pat {
-                    Some(w) => Some(Box::new(try!(self.word(*w)))),
+                    Some(w) => Some(try!(self.word(*w))),
                     None => None,
                 }
             }

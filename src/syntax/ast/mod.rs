@@ -37,30 +37,30 @@ pub enum ParameterSubstitution {
     /// `${param:-[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Default(bool, Parameter, Option<Box<Word>>),
+    Default(bool, Parameter, Option<Word>),
     /// Assign a provided value to the parameter if it is null or unset,
     /// e.g. `${param:=[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Assign(bool, Parameter, Option<Box<Word>>),
+    Assign(bool, Parameter, Option<Word>),
     /// If the parameter is null or unset, an error should result with the provided
     /// message, e.g. `${param:?[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Error(bool, Parameter, Option<Box<Word>>),
+    Error(bool, Parameter, Option<Word>),
     /// If the parameter is NOT null or unset, a provided word will be used,
     /// e.g. `${param:+[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Alternative(bool, Parameter, Option<Box<Word>>),
+    Alternative(bool, Parameter, Option<Word>),
     /// Remove smallest suffix pattern from a parameter's value, e.g. `${param%pattern}`
-    RemoveSmallestSuffix(Parameter, Option<Box<Word>>),
+    RemoveSmallestSuffix(Parameter, Option<Word>),
     /// Remove largest suffix pattern from a parameter's value, e.g. `${param%%pattern}`
-    RemoveLargestSuffix(Parameter, Option<Box<Word>>),
+    RemoveLargestSuffix(Parameter, Option<Word>),
     /// Remove smallest prefix pattern from a parameter's value, e.g. `${param#pattern}`
-    RemoveSmallestPrefix(Parameter, Option<Box<Word>>),
+    RemoveSmallestPrefix(Parameter, Option<Word>),
     /// Remove largest prefix pattern from a parameter's value, e.g. `${param##pattern}`
-    RemoveLargestPrefix(Parameter, Option<Box<Word>>),
+    RemoveLargestPrefix(Parameter, Option<Word>),
 }
 
 /// Represents whitespace delimited text.

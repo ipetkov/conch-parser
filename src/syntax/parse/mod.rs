@@ -2137,17 +2137,17 @@ pub mod test {
         let word = Word::Literal(String::from("foo"));
 
         let substs = vec!(
-            RemoveSmallestSuffix(At, Some(Box::new(word.clone()))),
-            RemoveSmallestSuffix(Star, Some(Box::new(word.clone()))),
-            RemoveSmallestSuffix(Pound, Some(Box::new(word.clone()))),
-            RemoveSmallestSuffix(Question, Some(Box::new(word.clone()))),
-            RemoveSmallestSuffix(Dash, Some(Box::new(word.clone()))),
-            RemoveSmallestSuffix(Dollar, Some(Box::new(word.clone()))),
-            RemoveSmallestSuffix(Bang, Some(Box::new(word.clone()))),
-            RemoveSmallestSuffix(Positional(0), Some(Box::new(word.clone()))),
-            RemoveSmallestSuffix(Positional(10), Some(Box::new(word.clone()))),
-            RemoveSmallestSuffix(Positional(100), Some(Box::new(word.clone()))),
-            RemoveSmallestSuffix(Var(String::from("foo_bar123")), Some(Box::new(word.clone()))),
+            RemoveSmallestSuffix(At, Some(word.clone())),
+            RemoveSmallestSuffix(Star, Some(word.clone())),
+            RemoveSmallestSuffix(Pound, Some(word.clone())),
+            RemoveSmallestSuffix(Question, Some(word.clone())),
+            RemoveSmallestSuffix(Dash, Some(word.clone())),
+            RemoveSmallestSuffix(Dollar, Some(word.clone())),
+            RemoveSmallestSuffix(Bang, Some(word.clone())),
+            RemoveSmallestSuffix(Positional(0), Some(word.clone())),
+            RemoveSmallestSuffix(Positional(10), Some(word.clone())),
+            RemoveSmallestSuffix(Positional(100), Some(word.clone())),
+            RemoveSmallestSuffix(Var(String::from("foo_bar123")), Some(word.clone())),
 
             RemoveSmallestSuffix(At, None),
             RemoveSmallestSuffix(Star, None),
@@ -2180,17 +2180,17 @@ pub mod test {
         let word = Word::Literal(String::from("foo"));
 
         let substs = vec!(
-            RemoveLargestSuffix(At, Some(Box::new(word.clone()))),
-            RemoveLargestSuffix(Star, Some(Box::new(word.clone()))),
-            RemoveLargestSuffix(Pound, Some(Box::new(word.clone()))),
-            RemoveLargestSuffix(Question, Some(Box::new(word.clone()))),
-            RemoveLargestSuffix(Dash, Some(Box::new(word.clone()))),
-            RemoveLargestSuffix(Dollar, Some(Box::new(word.clone()))),
-            RemoveLargestSuffix(Bang, Some(Box::new(word.clone()))),
-            RemoveLargestSuffix(Positional(0), Some(Box::new(word.clone()))),
-            RemoveLargestSuffix(Positional(10), Some(Box::new(word.clone()))),
-            RemoveLargestSuffix(Positional(100), Some(Box::new(word.clone()))),
-            RemoveLargestSuffix(Var(String::from("foo_bar123")), Some(Box::new(word.clone()))),
+            RemoveLargestSuffix(At, Some(word.clone())),
+            RemoveLargestSuffix(Star, Some(word.clone())),
+            RemoveLargestSuffix(Pound, Some(word.clone())),
+            RemoveLargestSuffix(Question, Some(word.clone())),
+            RemoveLargestSuffix(Dash, Some(word.clone())),
+            RemoveLargestSuffix(Dollar, Some(word.clone())),
+            RemoveLargestSuffix(Bang, Some(word.clone())),
+            RemoveLargestSuffix(Positional(0), Some(word.clone())),
+            RemoveLargestSuffix(Positional(10), Some(word.clone())),
+            RemoveLargestSuffix(Positional(100), Some(word.clone())),
+            RemoveLargestSuffix(Var(String::from("foo_bar123")), Some(word.clone())),
 
             RemoveLargestSuffix(At, None),
             RemoveLargestSuffix(Star, None),
@@ -2223,17 +2223,17 @@ pub mod test {
         let word = Word::Literal(String::from("foo"));
 
         let substs = vec!(
-            RemoveSmallestPrefix(At, Some(Box::new(word.clone()))),
-            RemoveSmallestPrefix(Star, Some(Box::new(word.clone()))),
-            RemoveSmallestPrefix(Pound, Some(Box::new(word.clone()))),
-            RemoveSmallestPrefix(Question, Some(Box::new(word.clone()))),
-            RemoveSmallestPrefix(Dash, Some(Box::new(word.clone()))),
-            RemoveSmallestPrefix(Dollar, Some(Box::new(word.clone()))),
-            RemoveSmallestPrefix(Bang, Some(Box::new(word.clone()))),
-            RemoveSmallestPrefix(Positional(0), Some(Box::new(word.clone()))),
-            RemoveSmallestPrefix(Positional(10), Some(Box::new(word.clone()))),
-            RemoveSmallestPrefix(Positional(100), Some(Box::new(word.clone()))),
-            RemoveSmallestPrefix(Var(String::from("foo_bar123")), Some(Box::new(word.clone()))),
+            RemoveSmallestPrefix(At, Some(word.clone())),
+            RemoveSmallestPrefix(Star, Some(word.clone())),
+            RemoveSmallestPrefix(Pound, Some(word.clone())),
+            RemoveSmallestPrefix(Question, Some(word.clone())),
+            RemoveSmallestPrefix(Dash, Some(word.clone())),
+            RemoveSmallestPrefix(Dollar, Some(word.clone())),
+            RemoveSmallestPrefix(Bang, Some(word.clone())),
+            RemoveSmallestPrefix(Positional(0), Some(word.clone())),
+            RemoveSmallestPrefix(Positional(10), Some(word.clone())),
+            RemoveSmallestPrefix(Positional(100), Some(word.clone())),
+            RemoveSmallestPrefix(Var(String::from("foo_bar123")), Some(word.clone())),
 
             RemoveSmallestPrefix(At, None),
             RemoveSmallestPrefix(Star, None),
@@ -2266,17 +2266,17 @@ pub mod test {
         let word = Word::Literal(String::from("foo"));
 
         let substs = vec!(
-            RemoveLargestPrefix(At, Some(Box::new(word.clone()))),
-            RemoveLargestPrefix(Star, Some(Box::new(word.clone()))),
-            RemoveLargestPrefix(Pound, Some(Box::new(word.clone()))),
-            RemoveLargestPrefix(Question, Some(Box::new(word.clone()))),
-            RemoveLargestPrefix(Dash, Some(Box::new(word.clone()))),
-            RemoveLargestPrefix(Dollar, Some(Box::new(word.clone()))),
-            RemoveLargestPrefix(Bang, Some(Box::new(word.clone()))),
-            RemoveLargestPrefix(Positional(0), Some(Box::new(word.clone()))),
-            RemoveLargestPrefix(Positional(10), Some(Box::new(word.clone()))),
-            RemoveLargestPrefix(Positional(100), Some(Box::new(word.clone()))),
-            RemoveLargestPrefix(Var(String::from("foo_bar123")), Some(Box::new(word.clone()))),
+            RemoveLargestPrefix(At, Some(word.clone())),
+            RemoveLargestPrefix(Star, Some(word.clone())),
+            RemoveLargestPrefix(Pound, Some(word.clone())),
+            RemoveLargestPrefix(Question, Some(word.clone())),
+            RemoveLargestPrefix(Dash, Some(word.clone())),
+            RemoveLargestPrefix(Dollar, Some(word.clone())),
+            RemoveLargestPrefix(Bang, Some(word.clone())),
+            RemoveLargestPrefix(Positional(0), Some(word.clone())),
+            RemoveLargestPrefix(Positional(10), Some(word.clone())),
+            RemoveLargestPrefix(Positional(100), Some(word.clone())),
+            RemoveLargestPrefix(Var(String::from("foo_bar123")), Some(word.clone())),
 
             RemoveLargestPrefix(At, None),
             RemoveLargestPrefix(Star, None),
@@ -2309,17 +2309,17 @@ pub mod test {
         let word = Word::Literal(String::from("foo"));
 
         let substs = vec!(
-            Default(true, At, Some(Box::new(word.clone()))),
-            Default(true, Star, Some(Box::new(word.clone()))),
-            Default(true, Pound, Some(Box::new(word.clone()))),
-            Default(true, Question, Some(Box::new(word.clone()))),
-            Default(true, Dash, Some(Box::new(word.clone()))),
-            Default(true, Dollar, Some(Box::new(word.clone()))),
-            Default(true, Bang, Some(Box::new(word.clone()))),
-            Default(true, Positional(0), Some(Box::new(word.clone()))),
-            Default(true, Positional(10), Some(Box::new(word.clone()))),
-            Default(true, Positional(100), Some(Box::new(word.clone()))),
-            Default(true, Var(String::from("foo_bar123")), Some(Box::new(word.clone()))),
+            Default(true, At, Some(word.clone())),
+            Default(true, Star, Some(word.clone())),
+            Default(true, Pound, Some(word.clone())),
+            Default(true, Question, Some(word.clone())),
+            Default(true, Dash, Some(word.clone())),
+            Default(true, Dollar, Some(word.clone())),
+            Default(true, Bang, Some(word.clone())),
+            Default(true, Positional(0), Some(word.clone())),
+            Default(true, Positional(10), Some(word.clone())),
+            Default(true, Positional(100), Some(word.clone())),
+            Default(true, Var(String::from("foo_bar123")), Some(word.clone())),
 
             Default(true, At, None),
             Default(true, Star, None),
@@ -2340,17 +2340,17 @@ pub mod test {
         p.parameter().unwrap_err(); // Stream should be exhausted
 
         let substs = vec!(
-            Default(false, At, Some(Box::new(word.clone()))),
-            Default(false, Star, Some(Box::new(word.clone()))),
-            Default(false, Pound, Some(Box::new(word.clone()))),
-            Default(false, Question, Some(Box::new(word.clone()))),
-            Default(false, Dash, Some(Box::new(word.clone()))),
-            Default(false, Dollar, Some(Box::new(word.clone()))),
-            Default(false, Bang, Some(Box::new(word.clone()))),
-            Default(false, Positional(0), Some(Box::new(word.clone()))),
-            Default(false, Positional(10), Some(Box::new(word.clone()))),
-            Default(false, Positional(100), Some(Box::new(word.clone()))),
-            Default(false, Var(String::from("foo_bar123")), Some(Box::new(word.clone()))),
+            Default(false, At, Some(word.clone())),
+            Default(false, Star, Some(word.clone())),
+            Default(false, Pound, Some(word.clone())),
+            Default(false, Question, Some(word.clone())),
+            Default(false, Dash, Some(word.clone())),
+            Default(false, Dollar, Some(word.clone())),
+            Default(false, Bang, Some(word.clone())),
+            Default(false, Positional(0), Some(word.clone())),
+            Default(false, Positional(10), Some(word.clone())),
+            Default(false, Positional(100), Some(word.clone())),
+            Default(false, Var(String::from("foo_bar123")), Some(word.clone())),
 
             Default(false, At, None),
             Default(false, Star, None),
@@ -2379,17 +2379,17 @@ pub mod test {
         let word = Word::Literal(String::from("foo"));
 
         let substs = vec!(
-            Error(true, At, Some(Box::new(word.clone()))),
-            Error(true, Star, Some(Box::new(word.clone()))),
-            Error(true, Pound, Some(Box::new(word.clone()))),
-            Error(true, Question, Some(Box::new(word.clone()))),
-            Error(true, Dash, Some(Box::new(word.clone()))),
-            Error(true, Dollar, Some(Box::new(word.clone()))),
-            Error(true, Bang, Some(Box::new(word.clone()))),
-            Error(true, Positional(0), Some(Box::new(word.clone()))),
-            Error(true, Positional(10), Some(Box::new(word.clone()))),
-            Error(true, Positional(100), Some(Box::new(word.clone()))),
-            Error(true, Var(String::from("foo_bar123")), Some(Box::new(word.clone()))),
+            Error(true, At, Some(word.clone())),
+            Error(true, Star, Some(word.clone())),
+            Error(true, Pound, Some(word.clone())),
+            Error(true, Question, Some(word.clone())),
+            Error(true, Dash, Some(word.clone())),
+            Error(true, Dollar, Some(word.clone())),
+            Error(true, Bang, Some(word.clone())),
+            Error(true, Positional(0), Some(word.clone())),
+            Error(true, Positional(10), Some(word.clone())),
+            Error(true, Positional(100), Some(word.clone())),
+            Error(true, Var(String::from("foo_bar123")), Some(word.clone())),
 
             Error(true, At, None),
             Error(true, Star, None),
@@ -2410,17 +2410,17 @@ pub mod test {
         p.parameter().unwrap_err(); // Stream should be exhausted
 
         let substs = vec!(
-            Error(false, At, Some(Box::new(word.clone()))),
-            Error(false, Star, Some(Box::new(word.clone()))),
-            Error(false, Pound, Some(Box::new(word.clone()))),
-            Error(false, Question, Some(Box::new(word.clone()))),
-            Error(false, Dash, Some(Box::new(word.clone()))),
-            Error(false, Dollar, Some(Box::new(word.clone()))),
-            Error(false, Bang, Some(Box::new(word.clone()))),
-            Error(false, Positional(0), Some(Box::new(word.clone()))),
-            Error(false, Positional(10), Some(Box::new(word.clone()))),
-            Error(false, Positional(100), Some(Box::new(word.clone()))),
-            Error(false, Var(String::from("foo_bar123")), Some(Box::new(word.clone()))),
+            Error(false, At, Some(word.clone())),
+            Error(false, Star, Some(word.clone())),
+            Error(false, Pound, Some(word.clone())),
+            Error(false, Question, Some(word.clone())),
+            Error(false, Dash, Some(word.clone())),
+            Error(false, Dollar, Some(word.clone())),
+            Error(false, Bang, Some(word.clone())),
+            Error(false, Positional(0), Some(word.clone())),
+            Error(false, Positional(10), Some(word.clone())),
+            Error(false, Positional(100), Some(word.clone())),
+            Error(false, Var(String::from("foo_bar123")), Some(word.clone())),
 
             Error(false, At, None),
             Error(false, Star, None),
@@ -2449,17 +2449,17 @@ pub mod test {
         let word = Word::Literal(String::from("foo"));
 
         let substs = vec!(
-            Assign(true, At, Some(Box::new(word.clone()))),
-            Assign(true, Star, Some(Box::new(word.clone()))),
-            Assign(true, Pound, Some(Box::new(word.clone()))),
-            Assign(true, Question, Some(Box::new(word.clone()))),
-            Assign(true, Dash, Some(Box::new(word.clone()))),
-            Assign(true, Dollar, Some(Box::new(word.clone()))),
-            Assign(true, Bang, Some(Box::new(word.clone()))),
-            Assign(true, Positional(0), Some(Box::new(word.clone()))),
-            Assign(true, Positional(10), Some(Box::new(word.clone()))),
-            Assign(true, Positional(100), Some(Box::new(word.clone()))),
-            Assign(true, Var(String::from("foo_bar123")), Some(Box::new(word.clone()))),
+            Assign(true, At, Some(word.clone())),
+            Assign(true, Star, Some(word.clone())),
+            Assign(true, Pound, Some(word.clone())),
+            Assign(true, Question, Some(word.clone())),
+            Assign(true, Dash, Some(word.clone())),
+            Assign(true, Dollar, Some(word.clone())),
+            Assign(true, Bang, Some(word.clone())),
+            Assign(true, Positional(0), Some(word.clone())),
+            Assign(true, Positional(10), Some(word.clone())),
+            Assign(true, Positional(100), Some(word.clone())),
+            Assign(true, Var(String::from("foo_bar123")), Some(word.clone())),
 
             Assign(true, At, None),
             Assign(true, Star, None),
@@ -2480,17 +2480,17 @@ pub mod test {
         p.parameter().unwrap_err(); // Stream should be exhausted
 
         let substs = vec!(
-            Assign(false, At, Some(Box::new(word.clone()))),
-            Assign(false, Star, Some(Box::new(word.clone()))),
-            Assign(false, Pound, Some(Box::new(word.clone()))),
-            Assign(false, Question, Some(Box::new(word.clone()))),
-            Assign(false, Dash, Some(Box::new(word.clone()))),
-            Assign(false, Dollar, Some(Box::new(word.clone()))),
-            Assign(false, Bang, Some(Box::new(word.clone()))),
-            Assign(false, Positional(0), Some(Box::new(word.clone()))),
-            Assign(false, Positional(10), Some(Box::new(word.clone()))),
-            Assign(false, Positional(100), Some(Box::new(word.clone()))),
-            Assign(false, Var(String::from("foo_bar123")), Some(Box::new(word.clone()))),
+            Assign(false, At, Some(word.clone())),
+            Assign(false, Star, Some(word.clone())),
+            Assign(false, Pound, Some(word.clone())),
+            Assign(false, Question, Some(word.clone())),
+            Assign(false, Dash, Some(word.clone())),
+            Assign(false, Dollar, Some(word.clone())),
+            Assign(false, Bang, Some(word.clone())),
+            Assign(false, Positional(0), Some(word.clone())),
+            Assign(false, Positional(10), Some(word.clone())),
+            Assign(false, Positional(100), Some(word.clone())),
+            Assign(false, Var(String::from("foo_bar123")), Some(word.clone())),
 
             Assign(false, At, None),
             Assign(false, Star, None),
@@ -2519,17 +2519,17 @@ pub mod test {
         let word = Word::Literal(String::from("foo"));
 
         let substs = vec!(
-            Alternative(true, At, Some(Box::new(word.clone()))),
-            Alternative(true, Star, Some(Box::new(word.clone()))),
-            Alternative(true, Pound, Some(Box::new(word.clone()))),
-            Alternative(true, Question, Some(Box::new(word.clone()))),
-            Alternative(true, Dash, Some(Box::new(word.clone()))),
-            Alternative(true, Dollar, Some(Box::new(word.clone()))),
-            Alternative(true, Bang, Some(Box::new(word.clone()))),
-            Alternative(true, Positional(0), Some(Box::new(word.clone()))),
-            Alternative(true, Positional(10), Some(Box::new(word.clone()))),
-            Alternative(true, Positional(100), Some(Box::new(word.clone()))),
-            Alternative(true, Var(String::from("foo_bar123")), Some(Box::new(word.clone()))),
+            Alternative(true, At, Some(word.clone())),
+            Alternative(true, Star, Some(word.clone())),
+            Alternative(true, Pound, Some(word.clone())),
+            Alternative(true, Question, Some(word.clone())),
+            Alternative(true, Dash, Some(word.clone())),
+            Alternative(true, Dollar, Some(word.clone())),
+            Alternative(true, Bang, Some(word.clone())),
+            Alternative(true, Positional(0), Some(word.clone())),
+            Alternative(true, Positional(10), Some(word.clone())),
+            Alternative(true, Positional(100), Some(word.clone())),
+            Alternative(true, Var(String::from("foo_bar123")), Some(word.clone())),
 
             Alternative(true, At, None),
             Alternative(true, Star, None),
@@ -2550,17 +2550,17 @@ pub mod test {
         p.parameter().unwrap_err(); // Stream should be exhausted
 
         let substs = vec!(
-            Alternative(false, At, Some(Box::new(word.clone()))),
-            Alternative(false, Star, Some(Box::new(word.clone()))),
-            Alternative(false, Pound, Some(Box::new(word.clone()))),
-            Alternative(false, Question, Some(Box::new(word.clone()))),
-            Alternative(false, Dash, Some(Box::new(word.clone()))),
-            Alternative(false, Dollar, Some(Box::new(word.clone()))),
-            Alternative(false, Bang, Some(Box::new(word.clone()))),
-            Alternative(false, Positional(0), Some(Box::new(word.clone()))),
-            Alternative(false, Positional(10), Some(Box::new(word.clone()))),
-            Alternative(false, Positional(100), Some(Box::new(word.clone()))),
-            Alternative(false, Var(String::from("foo_bar123")), Some(Box::new(word.clone()))),
+            Alternative(false, At, Some(word.clone())),
+            Alternative(false, Star, Some(word.clone())),
+            Alternative(false, Pound, Some(word.clone())),
+            Alternative(false, Question, Some(word.clone())),
+            Alternative(false, Dash, Some(word.clone())),
+            Alternative(false, Dollar, Some(word.clone())),
+            Alternative(false, Bang, Some(word.clone())),
+            Alternative(false, Positional(0), Some(word.clone())),
+            Alternative(false, Positional(10), Some(word.clone())),
+            Alternative(false, Positional(100), Some(word.clone())),
+            Alternative(false, Var(String::from("foo_bar123")), Some(word.clone())),
 
             Alternative(false, At, None),
             Alternative(false, Star, None),
@@ -2587,13 +2587,13 @@ pub mod test {
         use syntax::ast::ParameterSubstitution::*;
 
         let var = Var(String::from("foo_bar123"));
-        let word = Box::new(Word::Concat(vec!(
+        let word = Word::Concat(vec!(
             Word::Literal(String::from("foo{")),
             Word::Escaped(String::from("}")),
             Word::Literal(String::from(" \t\r ")),
             Word::Escaped(String::from("\n")),
             Word::Literal(String::from("bar \t\r ")),
-        )));
+        ));
 
         let substs = vec!(
             RemoveSmallestSuffix(var.clone(), Some(word.clone())),
@@ -2639,13 +2639,13 @@ pub mod test {
         use syntax::ast::ParameterSubstitution::*;
 
         let var = Var(String::from("foo_bar123"));
-        let word = Box::new(Word::Concat(vec!(
+        let word = Word::Concat(vec!(
             Word::Literal(String::from("#foo{")),
             Word::Escaped(String::from("}")),
             Word::Literal(String::from(" \t\r ")),
             Word::Escaped(String::from("\n")),
             Word::Literal(String::from("bar \t\r ")),
-        )));
+        ));
 
         let substs = vec!(
             RemoveSmallestSuffix(var.clone(), Some(word.clone())),
@@ -2691,13 +2691,13 @@ pub mod test {
         use syntax::ast::ParameterSubstitution::*;
 
         let var = Var(String::from("foo_bar123"));
-        let word = Box::new(Word::Concat(vec!(
+        let word = Word::Concat(vec!(
             Word::Param(At),
             Word::Subst(Box::new(RemoveLargestPrefix(
                 Var(String::from("foo")),
-                Some(Box::new(Word::Literal(String::from("bar"))))
+                Some(Word::Literal(String::from("bar")))
             ))),
-        )));
+        ));
 
         let substs = vec!(
             RemoveSmallestSuffix(var.clone(), Some(word.clone())),
@@ -3321,7 +3321,7 @@ pub mod test {
             args: vec!(
                 Word::Subst(Box::new(ParameterSubstitution::Assign(false,
                     Parameter::Var(String::from("foo")),
-                    Some(Box::new(Word::Literal(String::from("\n"))))))),
+                    Some(Word::Literal(String::from("\n")))))),
                 Word::Literal(String::from("arg"))
             ),
             cmd: Some(Word::Literal(String::from("cat"))),
