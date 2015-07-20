@@ -877,7 +877,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 },
 
                 DoubleQuote => builder::WordKind::DoubleQuoted(
-                    try!(self.word_interpolated_raw(Some(DoubleQuote), start_pos))),
+                    try!(self.word_interpolated_raw(Some((DoubleQuote, DoubleQuote)), start_pos))),
 
                 Backtick    => unimplemented!(),
 
@@ -933,13 +933,22 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// (which is also consumed). If EOF is reached before a delimeter can be found,
     /// an error will result. If a `None` is provided as a delimeter tokens will be
     /// consumed until EOF is reached and no error will result.
-    fn word_interpolated_raw(&mut self, delim: Option<Token>, start_pos: SourcePos)
+    ///
+    /// `delim` argument structure is Option<(open token, close token)>. The close
+    /// token indicates when to stop parsing the word, while the open token will be
+    /// used to construct a `ParseError::Unmatched` error.
+    fn word_interpolated_raw(&mut self, delim: Option<(Token, Token)>, start_pos: SourcePos)
         -> Result<Vec<builder::WordKind<B::Command>>, ParseError<B::Err>>
     {
+        let (delim_open, delim_close) = match delim {
+            Some((o,c)) => (Some(o), Some(c)),
+            None => (None, None),
+        };
+
         let mut words = Vec::new();
         let mut buf = String::new();
         loop {
-            if self.iter.peek() == delim.as_ref() {
+            if self.iter.peek() == delim_close.as_ref() {
                 self.iter.next();
                 break;
             }
@@ -968,7 +977,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                         [Dollar, Backtick, DoubleQuote, Backslash, Newline].iter().any(|t| Some(t) == peeked)
                     };
 
-                    if special || self.iter.peek() == delim.as_ref() {
+                    if special || self.iter.peek() == delim_close.as_ref() {
                         if !buf.is_empty() {
                             words.push(builder::WordKind::Literal(buf));
                             buf = String::new();
@@ -984,7 +993,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
                 Some(Dollar) => unreachable!(), // Sanity
                 Some(t) => buf.push_str(&t.to_string()),
-                None => match delim {
+                None => match delim_open {
                     Some(delim) => return Err(self.make_unmatched_err(delim, start_pos)),
                     None => break,
                 },
@@ -1038,7 +1047,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         let start_pos = self.iter.pos();
         let param_word = |parser: &mut Self| -> Result<Option<Box<builder::WordKind<B::Command>>>, ParseError<B::Err>> {
-            let mut words = try!(parser.word_interpolated_raw(Some(CurlyClose), start_pos));
+            let mut words = try!(parser.word_interpolated_raw(Some((CurlyOpen, CurlyClose)), start_pos));
             let ret = if words.is_empty() {
                 None
             } else if words.len() == 1 {
@@ -1224,7 +1233,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         try!(self.reserved_token(&[CurlyOpen]));
         let cmds = try!(self.command_list(&[], &[CurlyClose]));
         if self.iter.peek() == None {
-            return Err(self.make_unmatched_err(CurlyClose, start_pos));
+            return Err(self.make_unmatched_err(CurlyOpen, start_pos));
         }
         try!(self.reserved_token(&[CurlyClose]));
         Ok(cmds)
@@ -3382,6 +3391,20 @@ pub mod test {
         })));
         assert_eq!(correct, make_parser("cat <<EOF${ 'asdf'}(\"hello'\"){\\o}\nhere\nEOF${ asdf}(hello'){o}")
                    .complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_delimeter_can_be_followed_by_carriage_return_newline() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            vars: vec!(),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            args: vec!(Word::Literal(String::from("arg"))),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("here\n")))
+            )
+        })));
+        assert_eq!(correct, make_parser("cat <<EOF arg\nhere\nEOF\r\n").complete_command().unwrap());
+        assert_eq!(correct, make_parser("cat <<EOF arg\nhere\r\nEOF\r\n").complete_command().unwrap());
     }
 
     #[test]

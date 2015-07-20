@@ -33,23 +33,6 @@ impl<I: Iterator<Item = char>> Lexer<I> {
         is
     }
 
-    fn concat_matching<P: Fn(char) -> bool>(&mut self, initial: Option<char>, predicate: P) -> String {
-        let mut s = String::new();
-        if initial.is_some() {
-            s.push(initial.unwrap());
-        }
-
-        // NB: Can't use filter here because it will advance the iterator too far.
-        loop {
-            match self.inner.peek() {
-                Some(&c) if predicate(c) => s.push(self.inner.next().unwrap()),
-                _ => break,
-            }
-        }
-
-        s
-    }
-
     fn next_internal(&mut self) -> Option<TokenOrLiteral> {
         if self.peeked.is_some() {
             return self.peeked.take();
@@ -129,8 +112,34 @@ impl<I: Iterator<Item = char>> Lexer<I> {
             },
 
             // Newlines are valid whitespace, however, we want to tokenize them separately!
-            c if c.is_whitespace() =>
-                Whitespace(self.concat_matching(Some(c), |c| c.is_whitespace() && c != '\n')),
+            c if c.is_whitespace() => {
+                if c == '\r' && self.next_is('\n') {
+                    Newline
+                } else {
+                    let mut buf = String::new();
+                    buf.push(c);
+
+                    // NB: Can't use filter here because it will advance the iterator too far.
+                    loop {
+                        match self.inner.peek() {
+                            Some(&'\r') => {
+                                self.inner.next();
+                                if let Some(&'\n') = self.inner.peek() {
+                                    break;
+                                } else {
+                                    buf.push('\r');
+                                }
+                            },
+                            Some(&c) if c.is_whitespace() && c != '\n' =>
+                                buf.push(self.inner.next().unwrap()),
+                            _ => break,
+                        }
+                    }
+
+                    Whitespace(buf)
+                }
+            },
+
             c => return Some(Lit(c)),
         };
 
@@ -271,6 +280,9 @@ mod test {
     check_tok!(check_Name, Name(String::from("abc_23_defg")));
     check_tok!(check_Literal, Literal(String::from(",abcdefg80hijklmnop")));
     check_tok!(check_ParamPositional, ParamPositional(9));
+
+    lex_str!(check_RN_is_newline, "\r\n", Newline);
+    lex_str!(check_R_is_newline_only_when_followed_by_N, "\r\r\n", Whitespace(String::from("\r")), Newline);
 
     lex_str!(check_greedy_Amp,    "&&&",  AndIf, Amp);
     lex_str!(check_greedy_Pipe,   "|||",  OrIf, Pipe);
