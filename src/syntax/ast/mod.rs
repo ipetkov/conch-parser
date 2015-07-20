@@ -107,6 +107,8 @@ pub enum Redirect {
     Append(Option<Word>, Word),
     /// Open a file for writing, failing if the `noclobber` shell option is set, e.g.[n]>| file
     Clobber(Option<Word>, Word),
+    /// Lines contained in the source that should be provided by as input to a file descriptor.
+    Heredoc(Option<Word>, Word),
 
     /// Duplicate a file descriptor for reading, e.g. [n]<& n
     DupRead(Option<Word>, Word),

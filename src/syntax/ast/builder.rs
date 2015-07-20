@@ -95,6 +95,8 @@ pub enum RedirectKind<W> {
     Append(Option<W>, W),
     /// Open a file for writing, failing if the `noclobber` shell option is set, e.g.[n]>| file
     Clobber(Option<W>, W),
+    /// Lines contained in the source that should be provided by as input to a file descriptor.
+    Heredoc(Option<W>, W),
 
     /// Duplicate a file descriptor for reading, e.g. [n]<& n
     DupRead(Option<W>, W),
@@ -607,6 +609,7 @@ impl Builder for DefaultBuilder {
             RedirectKind::ReadWrite(fd, path) => Redirect::ReadWrite(fd, path),
             RedirectKind::Append(fd, path)    => Redirect::Append(fd, path),
             RedirectKind::Clobber(fd, path)   => Redirect::Clobber(fd, path),
+            RedirectKind::Heredoc(fd, body)   => Redirect::Heredoc(fd, body),
             RedirectKind::DupRead(src, dst)   => Redirect::DupRead(src, dst),
             RedirectKind::DupWrite(src, dst)  => Redirect::DupWrite(src, dst),
             RedirectKind::CloseRead(src)      => Redirect::CloseRead(src),
@@ -768,6 +771,7 @@ impl<W> PartialEq<RedirectKind<W>> for RedirectKind<W> where W: PartialEq<W> {
             (&ReadWrite(ref fd1, ref w1), &ReadWrite(ref fd2, ref w2)) => fd1 == fd2 && w1 == w2,
             (&Append(ref fd1, ref w1),    &Append(ref fd2, ref w2))    => fd1 == fd2 && w1 == w2,
             (&Clobber(ref fd1, ref w1),   &Clobber(ref fd2, ref w2))   => fd1 == fd2 && w1 == w2,
+            (&Heredoc(ref fd1, ref b1),   &Clobber(ref fd2, ref b2))   => fd1 == fd2 && b1 == b2,
             (&DupRead(ref fd1, ref w1),   &DupRead(ref fd2, ref w2))   => fd1 == fd2 && w1 == w2,
             (&DupWrite(ref fd1, ref w1),  &DupWrite(ref fd2, ref w2))  => fd1 == fd2 && w1 == w2,
             (&CloseRead(ref fd1),         &CloseRead(ref fd2))         => fd1 == fd2,
@@ -786,6 +790,7 @@ impl<W> Clone for RedirectKind<W> where W: Clone {
             ReadWrite(ref fd, ref w) => ReadWrite(fd.clone(), w.clone()),
             Append(ref fd, ref w)    => Append(fd.clone(), w.clone()),
             Clobber(ref fd, ref w)   => Clobber(fd.clone(), w.clone()),
+            Heredoc(ref fd, ref b)   => Clobber(fd.clone(), b.clone()),
             DupRead(ref fd, ref w)   => DupRead(fd.clone(), w.clone()),
             DupWrite(ref fd, ref w)  => DupWrite(fd.clone(), w.clone()),
             CloseRead(ref fd)        => CloseRead(fd.clone()),

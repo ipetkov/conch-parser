@@ -8,6 +8,8 @@ use syntax::ast::builder::{self, Builder};
 use syntax::token::Token;
 use syntax::token::Token::*;
 
+mod iter;
+
 /// A parser which will use a default AST builder implementation,
 /// yielding results in terms of types defined in the `ast` module.
 pub type DefaultParser<I> = Parser<I, builder::DefaultBuilder>;
@@ -21,6 +23,28 @@ pub struct SourcePos {
     pub line: u64,
     /// The column offset since the start of parsing, useful for error messages.
     pub col: u64,
+}
+
+impl SourcePos {
+    /// Increments self using the length of the provided token.
+    pub fn advance(&mut self, next: &Token) {
+        let newlines = match *next {
+            // Most of these should not have any newlines
+            // embedded within them, but permitting external
+            // tokenizers means we should sanity check anyway.
+            Name(ref s)       |
+            Literal(ref s)    |
+            Whitespace(ref s) => s.chars().filter(|&c| c == '\n').count() as u64,
+
+            Newline => 1,
+            _ => 0,
+        };
+
+        let tok_len = next.len() as u64;
+        self.byte += tok_len;
+        self.line += newlines;
+        self.col = if newlines == 0 { self.col + tok_len } else { 0 };
+    }
 }
 
 /// The error type which is returned from parsing shell commands.
@@ -101,6 +125,12 @@ impl<T: Error> ::std::convert::From<T> for ParseError<T> {
     }
 }
 
+impl<T: Error> ::std::convert::From<iter::UnmatchedError> for ParseError<T> {
+    fn from(err: iter::UnmatchedError) -> ParseError<T> {
+        ParseError::Unmatched(err.0, err.1)
+    }
+}
+
 /// Used to indicate what kind of compound command could be parsed next.
 enum CompoundCmdKeyword {
     For,
@@ -110,87 +140,6 @@ enum CompoundCmdKeyword {
     Until,
     Brace,
     Subshell,
-}
-
-/// A Token iterator that keeps track of how many lines have been read.
-struct TokenIter<I: Iterator<Item = Token>> {
-    iter: I,
-    peek_buf: Vec<Token>,
-    pos: SourcePos,
-}
-
-impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
-    type Item = Token;
-
-    fn next(&mut self) -> Option<Token> {
-        let next = if !self.peek_buf.is_empty() {
-            self.peek_buf.remove(0)
-        } else {
-            match self.iter.next() {
-                Some(t) => t,
-                None => return None,
-            }
-        };
-
-        let newlines = match next {
-            // Most of these should not have any newlines
-            // embedded within them, but permitting external
-            // tokenizers means we should sanity check anyway.
-            Name(ref s)       |
-            Literal(ref s)    |
-            Whitespace(ref s) => s.chars().filter(|&c| c == '\n').count() as u64,
-
-            Newline => 1,
-            _ => 0,
-        };
-
-        let tok_len = next.len() as u64;
-        self.pos.byte += tok_len;
-        self.pos.line += newlines;
-        self.pos.col = if newlines == 0 { self.pos.col + tok_len } else { 0 };
-        Some(next)
-    }
-}
-
-impl<I: Iterator<Item = Token>> TokenIter<I> {
-    /// Creates a new TokenIter from another Token iterator.
-    fn new(iter: I) -> TokenIter<I> {
-        TokenIter {
-            iter: iter,
-            peek_buf: Vec::new(),
-            pos: SourcePos {
-                byte: 0,
-                line: 1,
-                col: 1,
-            }
-        }
-    }
-
-    /// Allows the caller to peek at the next token without consuming it.
-    #[inline]
-    fn peek(&mut self) -> Option<&Token> {
-        let slice = self.multipeek(1);
-        if slice.is_empty() {
-            None
-        } else {
-            Some(&slice[0])
-        }
-    }
-
-    /// Allows the caller to peek several tokens at a time. All results will
-    /// begin with the same token until iterator is advanced through `next`.
-    fn multipeek(&mut self, amt: usize) -> &[Token] {
-        // Fill up the peek buffer if needed
-        while self.peek_buf.len() < amt {
-            match self.iter.next() {
-                Some(t) => self.peek_buf.push(t),
-                None => break,
-            }
-        }
-
-        let upper = ::std::cmp::min(amt, self.peek_buf.len());
-        &self.peek_buf[0..upper]
-    }
 }
 
 impl<I: Iterator<Item = Token>, B: Builder> Iterator for Parser<I, B> {
@@ -207,7 +156,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Iterator for Parser<I, B> {
 /// A parser for the shell language. It will parse shell commands from a
 /// stream of shell `Token`s, and pass them to an AST builder.
 pub struct Parser<I: Iterator<Item = Token>, B: Builder> {
-    iter: TokenIter<I>,
+    iter: iter::TokenIter<I>,
     builder: B,
 }
 
@@ -221,30 +170,35 @@ impl<I: Iterator<Item = Token>, B: Builder + Default> Parser<I, B> {
 impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Construct an `Unexpected` error using the given token. If `None` specified, the next
     /// token in the iterator will be used (or `UnexpectedEOF` if none left).
+    #[inline]
     fn make_unexpected_err(&mut self, tok: Option<Token>) -> ParseError<B::Err> {
         tok.or_else(|| self.iter.next())
-           .map_or(ParseError::UnexpectedEOF, |t| ParseError::Unexpected(t, self.iter.pos))
+           .map_or(ParseError::UnexpectedEOF, |t| ParseError::Unexpected(t, self.iter.pos()))
     }
 
     /// Construct a `BadFd` error using the given start position of a word,
     /// indicating that the word cannot possibly respresent a valid file
     /// descriptor to be used with a redirection.
+    #[inline]
     fn make_bad_fd_err(&mut self, start: SourcePos) -> ParseError<B::Err> {
-        ParseError::BadFd(start, self.iter.pos)
+        ParseError::BadFd(start, self.iter.pos())
     }
 
     /// Construct a `BadIdent` error using the given string, indicating that the literal
     /// does not respresent a valid name.
+    #[inline]
     fn make_bad_ident_err(&mut self, s: String) -> ParseError<B::Err> {
-        ParseError::BadIdent(s, self.iter.pos)
+        ParseError::BadIdent(s, self.iter.pos())
     }
 
     /// Construct a `BadSubst` error using the given offending token.
+    #[inline]
     fn make_bad_substitution_err(&mut self, tok: Option<Token>) -> ParseError<B::Err> {
-        ParseError::BadSubst(tok, self.iter.pos)
+        ParseError::BadSubst(tok, self.iter.pos())
     }
 
     /// Construct an `Unmatched` error using the given token.
+    #[inline]
     fn make_unmatched_err(&mut self, tok: Token, start: SourcePos) -> ParseError<B::Err> {
         ParseError::Unmatched(tok, start)
     }
@@ -252,7 +206,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Creates a new Parser from a Token iterator and provided AST builder.
     pub fn with_builder(iter: I, builder: B) -> Parser<I, B> {
         Parser {
-            iter: TokenIter::new(iter),
+            iter: iter::TokenIter::new(iter),
             builder: builder,
         }
     }
@@ -445,7 +399,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     pub fn redirect_list(&mut self) -> Result<Vec<B::Redirect>, ParseError<B::Err>> {
         let mut list = Vec::new();
         loop {
-            let start_pos = self.iter.pos;
+            let start_pos = self.iter.pos();
             match try!(self.redirect()) {
                 Some(Ok(io)) => list.push(io),
                 Some(Err(_)) => return Err(self.make_bad_fd_err(start_pos)),
@@ -514,13 +468,16 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             Some(&GreatAnd)  |
             Some(&LessGreat) => self.iter.next().unwrap(),
 
+            Some(&DLess)     |
+            Some(&DLessDash) => return Ok(Some(Ok(try!(self.redirect_heredoc(src_fd))))),
+
             _ => match src_fd {
                 Some(w) => return Ok(Some(Err(w))),
                 None => return Ok(None),
             },
         };
 
-        let path_start_pos = self.iter.pos;
+        let path_start_pos = self.iter.pos();
 
         let (is_num, close, path) = if self.peek_reserved_token(&[Dash]).is_some() {
             (false, true, builder::WordKind::Literal(try!(self.reserved_token(&[Dash])).to_string()))
@@ -553,6 +510,236 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         };
 
         Ok(Some(Ok(try!(self.builder.redirect(redirect)))))
+    }
+
+    /// Parses a heredoc redirection and the heredoc's body.
+    ///
+    /// This method will look ahead after the next unquoted/unescaped newline
+    /// to capture the heredoc's body, and will stop consuming tokens until
+    /// the approrpiate delimeter is found on a line by itself. If the
+    /// delimeter is unquoted, the heredoc's body will be expanded for
+    /// parameters and other special words. Otherwise, there heredoc's body
+    /// will be treated as a literal.
+    ///
+    /// The heredoc delimeter need not be a valid word (e.g. parameter subsitution
+    /// rules within ${ } need not apply), although it is expected to be balanced
+    /// like a regular word. In other words, all single/double quotes, backticks,
+    /// `${ }`, `$( )`, and `( )` must be balanced.
+    ///
+    /// Note: if the delimeter is quoted, this method will look for an UNQUOTED
+    /// version in the body. For example `<<"EOF"` will cause the parser to look
+    /// until `\nEOF` is found. This it is possible to create a heredoc that can
+    /// only be delimited by the end of the stream, e.g. if a newline is embedded
+    /// within the delimeter.
+    ///
+    /// Note: this method expects that the caller provide a potential file
+    /// descriptor for redirection.
+    pub fn redirect_heredoc(&mut self, src_fd: Option<B::Word>) -> Result<B::Redirect, ParseError<B::Err>> {
+        let strip_tabs = match self.iter.next() {
+            Some(DLess) => false,
+            Some(DLessDash) => true,
+            t => return Err(self.make_unexpected_err(t)),
+        };
+
+        self.skip_whitespace();
+
+        // Unfortunately we're going to have to capture the delimeter word "manually"
+        // here and double some code. The problem is that we might need to unquote the
+        // word--something that the parser isn't normally aware as a concept. We can
+        // crawl a parsed WordKind tree, but we would still have to convert the inner
+        // trees as either a token collection or into a string, each of which is more
+        // trouble than its worth (especially since WordKind can hold a parsed and
+        // and assembled Builder::Command object, which may not even be possible to
+        // be represented as a string).
+        //
+        // Also some shells like bash and zsh seem to check for balanced tokens like
+        // ', ", or ` within the heredoc delimiter (though this may just be from them
+        // parsing out a word as usual), so to maintain reasonable expectations, we'll
+        // do the same here.
+        let mut delim_tokens = Vec::new();
+        loop {
+            // Normally parens are never part of words, but many
+            // shells permit them to be part of a heredoc delimeter.
+            if let Some(t) = self.iter.peek() {
+                if t.is_word_delimiter() && t != &ParenOpen { break; }
+            } else {
+                break;
+            }
+
+            for t in self.iter.balanced() { delim_tokens.push(try!(t)); }
+        }
+
+        let mut iter = iter::TokenIter::new(delim_tokens.into_iter());
+        let mut quoted = false;
+        let mut delim = String::new();
+        loop {
+            match iter.next() {
+                Some(Backslash) => {
+                    quoted = true;
+                    iter.next().map(|t| delim.push_str(&t.to_string()));
+                },
+
+                Some(SingleQuote) => {
+                    quoted = true;
+                    for t in iter.single_quoted() { delim.push_str(&try!(t).to_string()); }
+                },
+
+                Some(DoubleQuote) => {
+                    quoted = true;
+                    let mut iter = iter.double_quoted();
+                    while let Some(next) = iter.next() {
+                        match try!(next) {
+                            Backslash => {
+                                match iter.next() {
+                                    Some(Ok(tok@Dollar))      |
+                                    Some(Ok(tok@Backtick))    |
+                                    Some(Ok(tok@DoubleQuote)) |
+                                    Some(Ok(tok@Backslash))   |
+                                    Some(Ok(tok@Newline))     => delim.push_str(&tok.to_string()),
+
+                                    Some(t) => {
+                                        let t = try!(t);
+                                        delim.push_str(&Backslash.to_string());
+                                        delim.push_str(&t.to_string());
+                                    },
+
+                                    None => delim.push_str(&Backslash.to_string()),
+                                }
+                            },
+
+                            t => delim.push_str(&t.to_string()),
+                        }
+                    }
+                },
+
+                Some(Backtick) => unimplemented!(),
+
+                Some(t) => delim.push_str(&t.to_string()),
+                None => break,
+            }
+        }
+
+        if delim.is_empty() {
+            return Err(self.make_unexpected_err(None));
+        }
+
+        delim.shrink_to_fit();
+        let (delim, quoted) = (delim, quoted);
+        let delim_len = delim.len();
+        let quoted = quoted;
+
+        // Here we will fast-forward to the next newline and capture the heredoc's
+        // body that comes after it. Then we'll store these tokens in a safe place
+        // and continue parsing them later. Although it may seem inefficient to do
+        // this instead of parsing input until all pending heredocs are resolved,
+        // we would have to do even more bookkeeping to store pending and resolved
+        // heredocs, especially if we want to keep the builder unaware of our
+        // shenanigans (since it *could* be keeping some internal state of what
+        // we feed it).
+        let saved_pos = self.iter.pos();
+        let mut saved_tokens = Vec::new();
+        loop {
+            // Make sure we save all tokens until the next UNQUOTED newilne
+            if let Some(&Newline) = self.iter.peek() {
+                saved_tokens.push(self.iter.next().unwrap());
+                break;
+            }
+
+            let old_len = saved_tokens.len();
+            for t in self.iter.balanced() { saved_tokens.push(try!(t)); }
+
+            // If we hit EOF (and consume no more tokens) better not get stuck in a loop
+            if saved_tokens.len() == old_len {
+                break;
+            }
+        }
+
+        let heredoc_start_pos = self.iter.pos();
+        let mut heredoc = Vec::new();
+        'heredoc: loop {
+            let mut line: Vec<Token> = Vec::new();
+            'line: loop {
+                if strip_tabs {
+                    if let Some(&Whitespace(_)) = self.iter.peek() {
+                        if let Some(Whitespace(w)) = self.iter.next() {
+                            let s: String = w.chars().skip_while(|&c| c == '\t').collect();
+                            if !s.is_empty() {
+                                line.push(Whitespace(s));
+                            }
+                        } else {
+                            unreachable!()
+                        }
+                    }
+                }
+
+                let next = self.iter.next();
+                match next {
+                    // If we haven't grabbed any input we must have hit EOF
+                    // which should delimit the heredoc body
+                    None if line.is_empty() => break 'heredoc,
+
+                    // Otherwise, if we have a partial line captured, check
+                    // whether it happens to be the delimeter, and append it
+                    // to the body if it isn't
+                    None | Some(Newline) => {
+                        // Do a quick length check on the line. Odds are that heredoc lines
+                        // will be much longer than the delimeter itself, and it could get
+                        // slow to stringify each and every line (and alloc it in memory)
+                        // when token length checks are available without converting to strings.
+                        let mut line_len = 0;
+                        for t in line.iter() {
+                            line_len += t.len();
+                            if line_len > delim_len {
+                                break;
+                            }
+                        }
+
+                        // NB A delimeter like "\eof" becomes [Name(e), Name(of)], which
+                        // won't compare to [Name(eof)], forcing us to do a string comparison
+                        if line_len == delim_len &&
+                           delim == line.iter().map(|t| t.to_string()).collect::<Vec<String>>().concat()
+                        {
+                            break 'heredoc;
+                        } else {
+                            if next == Some(Newline) { line.push(Newline); }
+                            break 'line;
+                        }
+                    },
+
+                    Some(t) => line.push(t),
+                }
+            }
+
+            heredoc.reserve(line.len());
+            for t in line { heredoc.push(t) }
+        }
+
+        self.iter.backup_buffered_tokens(saved_tokens, saved_pos);
+
+        let body = if quoted {
+            builder::WordKind::Literal(
+                heredoc.into_iter().map(|t| t.to_string()).collect::<Vec<String>>().concat()
+            )
+        } else {
+            // Dodge an "ICE": If we don't erase the type of the builder, the type of the parser
+            // below will will be of type Parser<_, &mut B>, whose methods that create a sub-parser
+            // create a ones whose type will be Parser<_, &mut &mut B>, ad infinitum, causing rustc
+            // to overflow its stack. By erasing the builder's type the sub-parser's type is always
+            // fixed and rustc will remain happy :)
+            let b = &mut self.builder
+                as &mut Builder<Command=B::Command, Word=B::Word, Redirect=B::Redirect, Err=B::Err>;
+            let mut parser = Parser::with_builder(heredoc.into_iter(), b);
+            let mut body = try!(parser.word_interpolated_raw(None, heredoc_start_pos));
+
+            if body.len() > 1 {
+                builder::WordKind::Concat(body)
+            } else {
+                body.pop().unwrap_or(builder::WordKind::Literal(String::new()))
+            }
+        };
+
+        let word = try!(self.builder.word(body));
+        Ok(try!(self.builder.redirect(builder::RedirectKind::Heredoc(src_fd, word))))
     }
 
     /// Parses a whitespace delimited chunk of text, honoring space quoting rules,
@@ -647,7 +834,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 None => break,
             }
 
-            let start_pos = self.iter.pos;
+            let start_pos = self.iter.pos();
             let w = match self.iter.next().unwrap() {
                 // Unless we are explicitly parsing a brace group, `{` and `}` should
                 // be treated as literals.
@@ -682,13 +869,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
                 SingleQuote => {
                     let mut buf = String::new();
-                    loop {
-                        match self.iter.next() {
-                            // Make sure we actually find the closing quote before EOF
-                            Some(SingleQuote) => break,
-                            Some(t) => buf.push_str(&t.to_string()),
-                            None => return Err(self.make_unmatched_err(SingleQuote, start_pos)),
-                        }
+                    for t in self.iter.single_quoted() {
+                        buf.push_str(&try!(t).to_string());
                     }
 
                     builder::WordKind::SingleQuoted(buf)
@@ -854,7 +1036,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             t => return Err(self.make_unexpected_err(t)),
         }
 
-        let start_pos = self.iter.pos;
+        let start_pos = self.iter.pos();
         let param_word = |parser: &mut Self| -> Result<Option<Box<builder::WordKind<B::Command>>>, ParseError<B::Err>> {
             let mut words = try!(parser.word_interpolated_raw(Some(CurlyClose), start_pos));
             let ret = if words.is_empty() {
@@ -1037,7 +1219,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// reserved words. Each of the reserved words must be a literal token, and cannot be
     /// quoted or concatenated.
     pub fn do_group(&mut self) -> Result<Vec<B::Command>, ParseError<B::Err>> {
-        let start_pos = self.iter.pos;
+        let start_pos = self.iter.pos();
         try!(self.reserved_word(&["do"]));
         let result = try!(self.command_list(&["done"], &[]));
         if self.iter.peek() == None {
@@ -1052,7 +1234,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     pub fn brace_group(&mut self) -> Result<Vec<B::Command>, ParseError<B::Err>> {
         // CurlyClose must be encountered as a stand alone word,
         // even though it is represented as its own token
-        let start_pos = self.iter.pos;
+        let start_pos = self.iter.pos();
         try!(self.reserved_token(&[CurlyOpen]));
         let cmds = try!(self.command_list(&[], &[CurlyClose]));
         if self.iter.peek() == None {
@@ -1066,7 +1248,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     ///
     /// It is considered an error if no commands are present inside the subshell.
     pub fn subshell(&mut self) -> Result<Vec<B::Command>, ParseError<B::Err>> {
-        let start_pos = self.iter.pos;
+        let start_pos = self.iter.pos();
         match self.iter.next() {
             Some(ParenOpen) => {},
             t => return Err(self.make_unexpected_err(t)),
@@ -1191,7 +1373,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         Vec<(Vec<B::Command>, Vec<B::Command>)>,
         Option<Vec<B::Command>>), ParseError<B::Err>>
     {
-        let start_pos = self.iter.pos;
+        let start_pos = self.iter.pos();
         try!(self.reserved_word(&["if"]));
 
         let mut branches = Vec::new();
@@ -2843,25 +3025,364 @@ pub mod test {
     }
 
     #[test]
-    #[ignore]
-    fn test_heredoc_recognition() {
-        //let mut p = make_parser("cat <<eof1; cat <<eof2
-        //hello
-        //eof1
-        //world
-        //eof2");
-        panic!("placeholder: heredoc recognition not yet implemented");
+    fn test_heredoc_valid() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            args: vec!(), vars: vec!(),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
+            )
+        })));
+
+        assert_eq!(correct, make_parser("cat <<eof\nhello\neof\n").complete_command().unwrap());
     }
 
     #[test]
-    #[ignore]
-    fn test_heredoc_tab_removal_recognition() {
-        //let mut p = make_parser("cat <<eof1; cat <<eof2
-        //\t\thello
-        //eof1
-        //\t\tworld
-        //eof2");
-        panic!("placeholder: heredoc recognition not yet implemented");
+    fn test_heredoc_valid_eof_after_delimiter_allowed() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            args: vec!(), vars: vec!(),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
+            )
+        })));
+
+        assert_eq!(correct, make_parser("cat <<eof\nhello\neof").complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_with_empty_body() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            args: vec!(), vars: vec!(),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            io: vec!(Redirect::Heredoc(None, Word::Literal(String::new())))
+        })));
+
+        assert_eq!(correct, make_parser("cat <<eof\neof").complete_command().unwrap());
+        assert_eq!(correct, make_parser("cat <<eof\n").complete_command().unwrap());
+        assert_eq!(correct, make_parser("cat <<eof").complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_eof_acceptable_as_delimeter() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            args: vec!(), vars: vec!(),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
+            )
+        })));
+
+        assert_eq!(correct, make_parser("cat <<eof\nhello\neof").complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_does_not_lose_tokens_up_to_next_newline() {
+        let mut p = make_parser("cat <<eof1; cat 3<<eof2\nhello\neof1\nworld\neof2");
+        let cat = Some(Word::Literal(String::from("cat")));
+        let first = Simple(Box::new(SimpleCommand {
+            cmd: cat.clone(), args: vec!(), vars: vec!(), io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
+            )
+        }));
+        let second = Simple(Box::new(SimpleCommand {
+            cmd: cat.clone(), args: vec!(), vars: vec!(), io: vec!(
+                Redirect::Heredoc(Some(Word::Literal(String::from("3"))),
+                    Word::Literal(String::from("world\n"))
+                )
+            )
+        }));
+
+        assert_eq!(Some(first), p.complete_command().unwrap());
+        assert_eq!(Some(second), p.complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_space_before_delimeter_allowed() {
+        let mut p = make_parser("cat <<   eof1; cat 3<<- eof2\nhello\neof1\nworld\neof2");
+        let cat = Some(Word::Literal(String::from("cat")));
+        let first = Simple(Box::new(SimpleCommand {
+            cmd: cat.clone(), args: vec!(), vars: vec!(), io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
+            )
+        }));
+        let second = Simple(Box::new(SimpleCommand {
+            cmd: cat.clone(), args: vec!(), vars: vec!(), io: vec!(
+                Redirect::Heredoc(Some(Word::Literal(String::from("3"))),
+                    Word::Literal(String::from("world\n"))
+                )
+            )
+        }));
+
+        assert_eq!(Some(first), p.complete_command().unwrap());
+        assert_eq!(Some(second), p.complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_unquoted_delimeter_should_expand_body() {
+        let cat = Some(Word::Literal(String::from("cat")));
+        let expanded = Some(Simple(Box::new(SimpleCommand {
+            cmd: cat.clone(), args: vec!(), vars: vec!(), io: vec!(
+                Redirect::Heredoc(None, Word::Concat(vec!(
+                    Word::Param(Parameter::Dollar),
+                    Word::Literal(String::from(" ")),
+                    Word::Subst(Box::new(ParameterSubstitution::Len(Parameter::Bang))),
+                    Word::Literal(String::from("\n")),
+                ))
+            ))
+        })));
+        let literal = Some(Simple(Box::new(SimpleCommand {
+            cmd: cat.clone(), args: vec!(), vars: vec!(), io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("$$ ${#!}\n")))
+            )
+        })));
+
+        assert_eq!(expanded, make_parser("cat <<eof\n$$ ${#!}\neof").complete_command().unwrap());
+        assert_eq!(literal, make_parser("cat <<'eof'\n$$ ${#!}\neof").complete_command().unwrap());
+        assert_eq!(literal, make_parser("cat <<\"eof\"\n$$ ${#!}\neof").complete_command().unwrap());
+        assert_eq!(literal, make_parser("cat <<e\\of\n$$ ${#!}\neof").complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_leading_tab_removal_works() {
+        let mut p = make_parser("cat <<-eof1; cat 3<<-eof2\n\t\thello\n\teof1\n\t\t \t\nworld\n\t\teof2");
+        let cat = Some(Word::Literal(String::from("cat")));
+        let first = Simple(Box::new(SimpleCommand {
+            cmd: cat.clone(), args: vec!(), vars: vec!(), io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
+            )
+        }));
+        let second = Simple(Box::new(SimpleCommand {
+            cmd: cat.clone(), args: vec!(), vars: vec!(), io: vec!(
+                Redirect::Heredoc(Some(Word::Literal(String::from("3"))),
+                    Word::Literal(String::from(" \t\nworld\n"))
+                )
+            )
+        }));
+
+        assert_eq!(Some(first), p.complete_command().unwrap());
+        assert_eq!(Some(second), p.complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_leading_tab_removal_works_if_dash_immediately_after_dless() {
+        let mut p = make_parser("cat 3<< -eof\n\t\t \t\nworld\n\t\teof\n\t\t-eof\n-eof");
+        let correct = Simple(Box::new(SimpleCommand {
+            args: vec!(), vars: vec!(),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            io: vec!(
+                Redirect::Heredoc(Some(Word::Literal(String::from("3"))),
+                    Word::Literal(String::from("\t\t \t\nworld\n\t\teof\n\t\t-eof\n"))
+                )
+            )
+        }));
+
+        assert_eq!(Some(correct), p.complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_unquoted_backslashes_in_delimeter_disappear() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            args: vec!(), vars: vec!(),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
+            )
+        })));
+
+        assert_eq!(correct, make_parser("cat <<e\\ f\\f\nhello\ne ff").complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_balanced_single_quotes_in_delimeter() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            args: vec!(), vars: vec!(),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
+            )
+        })));
+
+        assert_eq!(correct, make_parser("cat <<e'o'f\nhello\neof").complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_balanced_double_quotes_in_delimeter() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            args: vec!(), vars: vec!(),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
+            )
+        })));
+
+        assert_eq!(correct, make_parser("cat <<e\"\\o${foo}\"f\nhello\ne\\o${foo}f").complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_balanced_parens_in_delimeter() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            args: vec!(), vars: vec!(),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
+            )
+        })));
+
+        assert_eq!(correct, make_parser("cat <<eof(  )\nhello\neof(  )").complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_cmd_subst_in_delimeter() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            args: vec!(), vars: vec!(),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
+            )
+        })));
+
+        assert_eq!(correct, make_parser("cat <<eof$(  )\nhello\neof$(  )").complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_param_subst_in_delimeter() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            args: vec!(), vars: vec!(),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
+            )
+        })));
+        assert_eq!(correct, make_parser("cat <<eof${  }\nhello\neof${  }").complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_skip_past_newlines_in_single_quotes() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            vars: vec!(),
+            args: vec!(Word::SingleQuoted(String::from("\n")), Word::Literal(String::from("arg"))),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("here\n")))
+            )
+        })));
+        assert_eq!(correct, make_parser("cat <<EOF '\n' arg\nhere\nEOF").complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_skip_past_newlines_in_double_quotes() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            vars: vec!(),
+            args: vec!(
+                Word::DoubleQuoted(vec!(Word::Literal(String::from("\n")))),
+                Word::Literal(String::from("arg"))
+            ),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("here\n")))
+            )
+        })));
+        assert_eq!(correct, make_parser("cat <<EOF \"\n\" arg\nhere\nEOF").complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_skip_past_newlines_in_parens() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            vars: vec!(), args: vec!(),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("here\n")))
+            )
+        })));
+        assert_eq!(correct, make_parser("cat <<EOF; (foo\n); arg\nhere\nEOF").complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_skip_past_newlines_in_cmd_subst() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            vars: vec!(),
+            args: vec!(
+                Word::Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_unboxed("foo"))))),
+                Word::Literal(String::from("arg"))
+            ),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("here\n")))
+            )
+        })));
+        assert_eq!(correct, make_parser("cat <<EOF $(foo\n) arg\nhere\nEOF").complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_skip_past_newlines_in_param_subst() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            vars: vec!(),
+            args: vec!(
+                Word::Subst(Box::new(ParameterSubstitution::Assign(false,
+                    Parameter::Var(String::from("foo")),
+                    Some(Box::new(Word::Literal(String::from("\n"))))))),
+                Word::Literal(String::from("arg"))
+            ),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("here\n")))
+            )
+        })));
+        assert_eq!(correct, make_parser("cat <<EOF ${foo=\n} arg\nhere\nEOF").complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_skip_past_escaped_newlines() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            vars: vec!(),
+            args: vec!(Word::Literal(String::from("arg"))),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("here\n")))
+            )
+        })));
+        assert_eq!(correct, make_parser("cat <<EOF \\\n arg\nhere\nEOF").complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_double_quoted_delim_keeps_backslashe_except_after_specials() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            vars: vec!(), args: vec!(),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("here\n")))
+            )
+        })));
+        assert_eq!(correct, make_parser("cat <<\"\\EOF\\$\\`\\\"\\\\\"\nhere\n\\EOF$`\"\\\n")
+                   .complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_unquoting_only_removes_outer_quotes_and_backslashes() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            vars: vec!(), args: vec!(),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("here\n")))
+            )
+        })));
+        assert_eq!(correct, make_parser("cat <<EOF${ 'asdf'}(\"hello'\"){\\o}\nhere\nEOF${ asdf}(hello'){o}")
+                   .complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_invalid_missing_delimeter() {
+        make_parser("cat << ;").complete_command().unwrap_err();
+    }
+
+    #[test]
+    fn test_heredoc_invalid_unbalanced_quoting() {
+        make_parser("cat <<'eof").complete_command().unwrap_err();
+        make_parser("cat <<\"eof").complete_command().unwrap_err();
+        make_parser("cat <<eof(").complete_command().unwrap_err();
+        make_parser("cat <<eof$(").complete_command().unwrap_err();
+        make_parser("cat <<eof${").complete_command().unwrap_err();
     }
 
     #[test]
@@ -4817,13 +5338,13 @@ pub mod test {
     }
 
     #[test]
-    fn test_word_single_quote_slash_valid_does_not_quote_single_quotes() {
+    fn test_word_single_quote_valid_does_not_quote_single_quotes() {
         let correct = Word::SingleQuoted(String::from("hello \\"));
         assert_eq!(Some(correct), make_parser("'hello \\'").word().unwrap());
     }
 
     #[test]
-    fn test_word_single_quote_slash_invalid_missing_close_quote() {
+    fn test_word_single_quote_invalid_missing_close_quote() {
         make_parser("'hello").word().unwrap_err();
     }
 
