@@ -4,5 +4,6 @@
 #![feature(slice_patterns)]
 
 extern crate void;
+extern crate itertools;
 
 pub mod syntax;

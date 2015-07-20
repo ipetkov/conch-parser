@@ -549,6 +549,7 @@ impl Builder for DefaultBuilder {
             kind: WordKind<Command>)
         -> Result<Word, Self::Err>
     {
+        use itertools::Itertools;
         use self::ParameterSubstitutionKind::*;
 
         macro_rules! map {
@@ -557,6 +558,30 @@ impl Builder for DefaultBuilder {
                     Some(w) => Some(try!(self.word(*w))),
                     None => None,
                 }
+            }
+        }
+
+        macro_rules! compress {
+            ($vec:expr) => {
+                $vec.into_iter().flat_map(|w| match w {
+                    WordKind::Concat(v) => v.into_iter(),
+                    w => vec!(w).into_iter(),
+                }).coalesce(coalesce)
+            }
+        }
+
+        fn coalesce(a: WordKind<ast::Command>, b: WordKind<ast::Command>)
+            -> Result<WordKind<ast::Command>, (WordKind<ast::Command>, WordKind<ast::Command>)>
+        {
+            match (a, b) {
+                (WordKind::Literal(mut a), WordKind::Literal(b)) => {
+                    a.push_str(&b);
+                    Ok(WordKind::Literal(a))
+                },
+
+                (WordKind::DoubleQuoted(v), b) =>
+                    Err((WordKind::DoubleQuoted(compress!(v).collect()), b)),
+                (a, b) => Err((a, b)),
             }
         }
 
@@ -573,26 +598,30 @@ impl Builder for DefaultBuilder {
 
             WordKind::CommandSubst(c) => Word::Subst(Box::new(ParameterSubstitution::Command(c))),
 
-            WordKind::Subst(s) => match s {
-                Len(p)                     => Word::Subst(Box::new(ParameterSubstitution::Len(p))),
-                Command(c)                 => Word::Subst(Box::new(ParameterSubstitution::Command(c))),
-                Default(c, p, w)           => Word::Subst(Box::new(ParameterSubstitution::Default(c, p, map!(w)))),
-                Assign(c, p, w)            => Word::Subst(Box::new(ParameterSubstitution::Assign(c, p, map!(w)))),
-                Error(c, p, w)             => Word::Subst(Box::new(ParameterSubstitution::Error(c, p, map!(w)))),
-                Alternative(c, p, w)       => Word::Subst(Box::new(ParameterSubstitution::Alternative(c, p, map!(w)))),
-                RemoveSmallestSuffix(p, w) => Word::Subst(Box::new(ParameterSubstitution::RemoveSmallestSuffix(p, map!(w)))),
-                RemoveLargestSuffix(p, w)  => Word::Subst(Box::new(ParameterSubstitution::RemoveLargestSuffix(p, map!(w)))),
-                RemoveSmallestPrefix(p, w) => Word::Subst(Box::new(ParameterSubstitution::RemoveSmallestPrefix(p, map!(w)))),
-                RemoveLargestPrefix(p, w)  => Word::Subst(Box::new(ParameterSubstitution::RemoveLargestPrefix(p, map!(w)))),
-            },
-
-            WordKind::Concat(words) => Word::Concat(
-                try!(words.into_iter().map(|w| self.word(w)).collect())
-            ),
+            WordKind::Subst(s) => Word::Subst(Box::new(match s {
+                Len(p)                     => ParameterSubstitution::Len(p),
+                Command(c)                 => ParameterSubstitution::Command(c),
+                Default(c, p, w)           => ParameterSubstitution::Default(c, p, map!(w)),
+                Assign(c, p, w)            => ParameterSubstitution::Assign(c, p, map!(w)),
+                Error(c, p, w)             => ParameterSubstitution::Error(c, p, map!(w)),
+                Alternative(c, p, w)       => ParameterSubstitution::Alternative(c, p, map!(w)),
+                RemoveSmallestSuffix(p, w) => ParameterSubstitution::RemoveSmallestSuffix(p, map!(w)),
+                RemoveLargestSuffix(p, w)  => ParameterSubstitution::RemoveLargestSuffix(p, map!(w)),
+                RemoveSmallestPrefix(p, w) => ParameterSubstitution::RemoveSmallestPrefix(p, map!(w)),
+                RemoveLargestPrefix(p, w)  => ParameterSubstitution::RemoveLargestPrefix(p, map!(w)),
+            })),
 
             WordKind::DoubleQuoted(words) => Word::DoubleQuoted(
-                try!(words.into_iter().map(|w| self.word(w)).collect())
-            ),
+                try!(compress!(words).map(|w| self.word(w)).collect())),
+
+            WordKind::Concat(words) => {
+                let mut v: Vec<Word> = try!(compress!(words).map(|w| self.word(w)).collect());
+                if v.len() == 1 {
+                    v.pop().unwrap()
+                } else {
+                    Word::Concat(v)
+                }
+            },
         };
 
         Ok(word)

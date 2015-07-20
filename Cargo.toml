@@ -5,3 +5,4 @@ authors = ["Ivan Petkov <ivanppetkov@gmail.com>"]
 
 [dependencies]
 void = "*"
+itertools = "0.3"

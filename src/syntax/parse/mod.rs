@@ -1996,11 +1996,7 @@ pub mod test {
     fn test_comment_cannot_start_mid_whitespace_delimited_word() {
         let mut p = make_parser("hello#world");
         let word = p.word().unwrap().expect("no valid word was discovered");
-        assert_eq!(word, Word::Concat(vec!(
-                    Word::Literal(String::from("hello")),
-                    Word::Literal(String::from("#")),
-                    Word::Literal(String::from("world")),
-        )));
+        assert_eq!(word, Word::Literal(String::from("hello#world")));
     }
 
     #[test]
@@ -2957,10 +2953,7 @@ pub mod test {
             cmd: Some(Word::Literal(String::from("foo"))),
             args: vec!(),
             vars: vec!(),
-            io: vec!(Redirect::CloseRead(Some(Word::Concat(vec!(
-                Word::Literal(String::from("12")),
-                Word::Literal(String::from("34")),
-            ))))),
+            io: vec!(Redirect::CloseRead(Some(Word::Literal(String::from("1234"))))),
         })));
     }
 
@@ -2972,11 +2965,7 @@ pub mod test {
             Token::Literal(String::from("34")),
         ));
 
-        let correct = Redirect::DupWrite(None, Word::Concat(vec!(
-            Word::Literal(String::from("12")),
-            Word::Literal(String::from("34")),
-        )));
-
+        let correct = Redirect::DupWrite(None, Word::Literal(String::from("1234")));
         assert_eq!(Some(Ok(correct)), p.redirect().unwrap());
     }
 
@@ -3007,16 +2996,8 @@ pub mod test {
     fn test_simple_command_assignments_after_start_of_command_should_be_args() {
         let mut p = make_parser("var=val ENV=true BLANK= foo var2=val2 bar baz var3=val3");
         let (cmd, mut args, vars, _) = sample_simple_command();
-        args.insert(0, Word::Concat(vec!(
-            Word::Literal(String::from("var2")),
-            Word::Literal(String::from("=")),
-            Word::Literal(String::from("val2"))),
-        ));
-        args.push(Word::Concat(vec!(
-            Word::Literal(String::from("var3")),
-            Word::Literal(String::from("=")),
-            Word::Literal(String::from("val3"))),
-        ));
+        args.insert(0, Word::Literal(String::from("var2=val2")));
+        args.push(Word::Literal(String::from("var3=val3")));
         let correct = Simple(Box::new(SimpleCommand { cmd: cmd, args: args, vars: vars, io: vec!() }));
         assert_eq!(correct, p.simple_command().unwrap());
     }
@@ -3981,10 +3962,7 @@ pub mod test {
         let source = "echo {} } {";
         let mut p = make_parser(source);
         assert_eq!(p.word().unwrap().unwrap(), Word::Literal(String::from("echo")));
-        assert_eq!(p.word().unwrap().unwrap(), Word::Concat(vec!(
-                    Word::Literal(String::from("{")),
-                    Word::Literal(String::from("}")),
-        )));
+        assert_eq!(p.word().unwrap().unwrap(), Word::Literal(String::from("{}")));
         assert_eq!(p.word().unwrap().unwrap(), Word::Literal(String::from("}")));
         assert_eq!(p.word().unwrap().unwrap(), Word::Literal(String::from("{")));
 
@@ -5395,8 +5373,7 @@ pub mod test {
         let correct = Word::DoubleQuoted(vec!(
             Word::Literal(String::from("test asdf")),
             Word::Param(Parameter::Var(String::from("foo"))),
-            Word::Literal(String::from(" ")),
-            Word::Literal(String::from("$")),
+            Word::Literal(String::from(" $")),
         ));
 
         assert_eq!(Some(correct), make_parser("\"test asdf$foo $\"").word().unwrap());
@@ -5514,13 +5491,8 @@ pub mod test {
 
     #[test]
     fn test_word_literal_dollar_if_not_param() {
-        let mut p = make_parser("$^asdf");
-        let correct = Word::Concat(vec!(
-            Word::Literal(String::from("$")),
-            Word::Literal(String::from("^asdf")),
-        ));
-
-        assert_eq!(correct, p.word().unwrap().unwrap());
+        let correct = Word::Literal(String::from("$^asdf"));
+        assert_eq!(correct, make_parser("$^asdf").word().unwrap().unwrap());
     }
 
     #[test]
@@ -5534,11 +5506,7 @@ pub mod test {
 
     #[test]
     fn test_word_pound_in_middle_is_not_comment() {
-        let correct = Word::Concat(vec!(
-            Word::Literal(String::from("abc")),
-            Word::Literal(String::from("#")),
-            Word::Literal(String::from("def")),
-        ));
+        let correct = Word::Literal(String::from("abc#def"));
         assert_eq!(Ok(Some(correct)), make_parser("abc#def\n").word());
     }
 
@@ -5569,9 +5537,7 @@ pub mod test {
     #[test]
     fn test_word_concatenation_works() {
         let correct = Word::Concat(vec!(
-            Word::Literal(String::from("foo")),
-            Word::Literal(String::from("=")),
-            Word::Literal(String::from("bar")),
+            Word::Literal(String::from("foo=bar")),
             Word::DoubleQuoted(vec!(Word::Literal(String::from("double")))),
             Word::SingleQuoted(String::from("single")),
         ));
