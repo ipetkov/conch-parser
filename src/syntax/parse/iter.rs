@@ -128,6 +128,21 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
         Balanced::new(self.by_ref(), Some(DoubleQuote), true)
     }
 
+    /// Returns an iterator that yields tokens up to when a (closing) backtick
+    /// is reached (assuming that the caller has reached the opening backtick and
+    /// wishes to continue up to but not including the closing backtick).
+    pub fn backticked<'a>(&'a mut self) -> Balanced<'a, I> {
+        Balanced::new(self.by_ref(), Some(Backtick), true)
+    }
+
+    /// Returns an iterator that yields tokens up to when a (closing) backtick
+    /// is reached (assuming that the caller has reached the opening backtick and
+    /// wishes to continue up to but not including the closing backtick).
+    /// Any backslashes followed by \, $, or ` are removed from the stream.
+    pub fn backticked_remove_backslashes<'a>(&'a mut self) -> BacktickBackslashRemover<'a, I> {
+        BacktickBackslashRemover::new(self.backticked())
+    }
+
     /// Returns an iterator that yields at least one token, but continues to yield
     /// tokens until all matching cases of single/double quotes, backticks,
     /// ${ }, $( ), or ( ) are found.
@@ -140,10 +155,15 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
 /// tokens until all matching cases of single/double quotes, backticks,
 /// ${ }, $( ), or ( ) are found.
 pub struct Balanced<'a, I> where I: 'a + Iterator<Item=Token> {
+    /// The underlying token iterator.
     iter: &'a mut TokenIter<I>,
+    /// Any token we had to peek after a backslash but haven't yielded yet.
     escaped: Option<Token>,
+    /// A stack of pending unmatched tokens we still must encounter.
     stack: Vec<(Token, SourcePos)>,
+    /// Indicates if we should yield the final, outermost delimeter.
     skip_last_delimeter: bool,
+    /// Makes the iterator *fused* by yielding None forever after we are done.
     done: bool,
 }
 
@@ -254,6 +274,66 @@ impl<'a, I: 'a + Iterator<Item=Token>> Iterator for Balanced<'a, I> {
                 None => { self.done = true; None },
                 // But its not okay otherwise
                 Some((delim, pos)) => Some(Err(UnmatchedError(delim, pos))),
+            },
+        }
+    }
+}
+
+pub struct BacktickBackslashRemover<'a, I> where I: 'a + Iterator<Item=Token> {
+    /// The underlying token iterator.
+    iter: Balanced<'a, I>,
+    /// Any token we had to peek after a backslash but haven't yielded yet.
+    peeked: Option<Result<Token, UnmatchedError>>,
+    /// Makes the iterator *fused* by yielding None forever after we are done.
+    done: bool,
+}
+
+impl<'a, I: 'a + Iterator<Item=Token>> BacktickBackslashRemover<'a, I> {
+    /// Constructs a new balanced backtick iterator which removes all backslashes
+    /// from the stream thar are followed by \, $, or `.
+    fn new(iter: Balanced<'a, I>) -> Self {
+        BacktickBackslashRemover {
+            iter: iter,
+            peeked: None,
+            done: false
+        }
+    }
+}
+
+impl<'a, I: 'a + Iterator<Item=Token>> Iterator for BacktickBackslashRemover<'a, I> {
+    type Item = Result<Token, UnmatchedError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.peeked.is_some() {
+            return self.peeked.take();
+        } else if self.done {
+            return None;
+        }
+
+        match self.iter.next() {
+            Some(Ok(Backslash)) => {
+                match self.iter.next() {
+                    ret@Some(Ok(Dollar))    |
+                    ret@Some(Ok(Backtick))  |
+                    ret@Some(Ok(Backslash)) => ret,
+
+                    Some(t) => {
+                        debug_assert!(self.peeked.is_none());
+                        self.peeked = Some(t);
+                        Some(Ok(Backslash))
+                    },
+
+                    None => {
+                        self.done = true;
+                        Some(Ok(Backslash))
+                    },
+                }
+            },
+
+            Some(t) => Some(t),
+            None => {
+                self.done = true;
+                None
             },
         }
     }

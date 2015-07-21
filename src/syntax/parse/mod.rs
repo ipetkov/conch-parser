@@ -530,7 +530,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// version in the body. For example `<<"EOF"` will cause the parser to look
     /// until `\nEOF` is found. This it is possible to create a heredoc that can
     /// only be delimited by the end of the stream, e.g. if a newline is embedded
-    /// within the delimeter.
+    /// within the delimeter. Any backticks that appear in the delimeter are
+    /// expected to appear at the end of the delimeter of the heredoc body, as
+    /// well as any embedded backslashes (unless the backslashes are followed by
+    /// a \, $, or `).
     ///
     /// Note: this method expects that the caller provide a potential file
     /// descriptor for redirection.
@@ -612,7 +615,35 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     }
                 },
 
-                Some(Backtick) => unimplemented!(),
+                // Having backticks in a heredoc delimeter is something the major shells all
+                // disagree on. Half of them (bash included) treat he precense of backticks
+                // as indicating that the delimeter is quoted (and the body isn't expanded).
+                // Although the POSIX standard does not indicate backticks are a form of quoting
+                // its not unreasonable for them to be seen as such a way. Moreover, the presense
+                // of backticks in a heredoc delimeter isn't something that is seen often, so there
+                // probably won't be many problems in using this non-portable style, so we will
+                // treat their presense as an indication to NOT expand the body.
+                //
+                // Backslashes inside the double quotes should retain their literal meaning unless
+                // followed by \, $, or `, according to the POSIX standard. bash is the only major
+                // shell which does not follow this rule. Since the majority of the shells seeem to
+                // follow these escaping rules (one way or another), and since the standard
+                // indicates this course of action, we will adopt it as well. Again, most shell
+                // script maintainers probably avoid using escaping in heredoc delimeters to avoid
+                // confusing, and non-portable style so picking any approach shouldn't cause too
+                // many issues that cannot be fixed in a future version or with some compatability
+                // flag.
+                //
+                // TL;DR: balanced backticks are allowed in delimeter, they cause the body to NOT
+                // be expanded, and backslashes are only removed if followed by \, $, or `.
+                Some(Backtick) => {
+                    quoted = true;
+                    delim.push_str(&Backtick.to_string());
+                    for t in iter.backticked_remove_backslashes() {
+                        delim.push_str(&try!(t).to_string());
+                    }
+                    delim.push_str(&Backtick.to_string());
+                },
 
                 Some(t) => delim.push_str(&t.to_string()),
                 None => break,
@@ -789,7 +820,6 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 Some(&SquareClose)        |
                 Some(&SingleQuote)        |
                 Some(&DoubleQuote)        |
-                Some(&Backtick)           |
                 Some(&Pound)              |
                 Some(&Star)               |
                 Some(&Question)           |
@@ -804,6 +834,11 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 Some(&At)                 |
                 Some(&Name(_))            |
                 Some(&Literal(_))         => {},
+
+                Some(&Backtick) => {
+                    words.push(try!(self.backticked_raw()));
+                    continue;
+                },
 
                 Some(&Dollar)             |
                 Some(&ParamPositional(_)) => {
@@ -879,10 +914,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 DoubleQuote => builder::WordKind::DoubleQuoted(
                     try!(self.word_interpolated_raw(Some((DoubleQuote, DoubleQuote)), start_pos))),
 
-                Backtick    => unimplemented!(),
-
-                // Parameters should have been
+                // Parameters and backticks should have been
                 // handled while peeking above.
+                Backtick           |
                 Dollar             |
                 ParamPositional(_) => unreachable!(),
 
@@ -953,16 +987,27 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 break;
             }
 
+            macro_rules! store {
+                ($word:expr) => {{
+                    if !buf.is_empty() {
+                        words.push(builder::WordKind::Literal(buf));
+                        buf = String::new();
+                    }
+                    words.push($word);
+                }}
+            }
+
             // Make sure we don't consume any $ (or any specific parameter token)
             // we find since the `parameter` method expects to consume them.
             match self.iter.peek() {
                 Some(&Dollar)             |
                 Some(&ParamPositional(_)) => {
-                    if !buf.is_empty() {
-                        words.push(builder::WordKind::Literal(buf));
-                        buf = String::new();
-                    }
-                    words.push(try!(self.parameter_raw()));
+                    store!(try!(self.parameter_raw()));
+                    continue;
+                },
+
+                Some(&Backtick) => {
+                    store!(try!(self.backticked_raw()));
                     continue;
                 },
 
@@ -978,20 +1023,15 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     };
 
                     if special || self.iter.peek() == delim_close.as_ref() {
-                        if !buf.is_empty() {
-                            words.push(builder::WordKind::Literal(buf));
-                            buf = String::new();
-                        }
-                        words.push(builder::WordKind::Escaped(self.iter.next().unwrap().to_string()));
+                        store!(builder::WordKind::Escaped(self.iter.next().unwrap().to_string()))
                     } else {
                         buf.push_str(&Backslash.to_string());
                     }
                 },
 
-                // FIXME: implement
-                Some(Backtick) => unimplemented!(),
-
                 Some(Dollar) => unreachable!(), // Sanity
+                Some(Backtick) => unreachable!(), // Sanity
+
                 Some(t) => buf.push_str(&t.to_string()),
                 None => match delim_open {
                     Some(delim) => return Err(self.make_unmatched_err(delim, start_pos)),
@@ -1005,6 +1045,43 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         }
 
         Ok(words)
+    }
+
+    /// Parses a command subsitution in the form \`cmd\`.
+    ///
+    /// Any backslashes that are immediately followed by \, $, or ` are removed
+    /// before the contents inside the original backticks are recursively parsed
+    /// as a command.
+    pub fn backticked_command_substitution(&mut self) -> Result<B::Word, ParseError<B::Err>> {
+        let word = try!(self.backticked_raw());
+        Ok(try!(self.builder.word(word)))
+    }
+
+    /// Identical to `Parser::backticked_command_substitution`, except but does not pass the
+    /// result to the AST builder.
+    fn backticked_raw(&mut self) -> Result<builder::WordKind<B::Command>, ParseError<B::Err>> {
+        match self.iter.next() {
+            Some(Backtick) => {},
+            t => return Err(self.make_unexpected_err(t)),
+        }
+
+        let tokens: Vec<Token> = try!(self.iter.backticked_remove_backslashes().collect());
+
+        // Dodge an "ICE": If we don't erase the type of the builder, the type of the parser
+        // below will will be of type Parser<_, &mut B>, whose methods that create a sub-parser
+        // create a ones whose type will be Parser<_, &mut &mut B>, ad infinitum, causing rustc
+        // to overflow its stack. By erasing the builder's type the sub-parser's type is always
+        // fixed and rustc will remain happy :)
+        let b = &mut self.builder
+            as &mut Builder<Command=B::Command, Word=B::Word, Redirect=B::Redirect, Err=B::Err>;
+        let mut parser = Parser::with_builder(tokens.into_iter(), b);
+
+        let mut cmds = Vec::new();
+        while let Some(c) = try!(parser.complete_command()) {
+            cmds.push(c);
+        }
+
+        Ok(builder::WordKind::CommandSubst(cmds))
     }
 
     /// Parses a parameters such as `$$`, `$1`, `$foo`, etc, or
@@ -2793,12 +2870,13 @@ pub mod test {
 
     #[test]
     fn test_redirect_valid_return_redirect_if_src_fd_is_possibly_numeric() {
-        let mut p = make_parser("123$$$(echo 2)>out");
+        let mut p = make_parser("123$$$(echo 2)`echo bar`>out");
         let correct = Redirect::Write(
             Some(Word::Concat(vec!(
                 Word::Literal(String::from("123")),
                 Word::Param(Parameter::Dollar),
                 Word::Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["2"]))))),
+                Word::Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["bar"]))))),
             ))),
             Word::Literal(String::from("out"))
         );
@@ -2823,13 +2901,14 @@ pub mod test {
 
     #[test]
     fn test_redirect_valid_dup_return_redirect_if_dst_fd_is_possibly_numeric() {
-        let mut p = make_parser(">&123$$$(echo 2)");
+        let mut p = make_parser(">&123$$$(echo 2)`echo bar`");
         let correct = Redirect::DupWrite(
             None,
             Word::Concat(vec!(
                 Word::Literal(String::from("123")),
                 Word::Param(Parameter::Dollar),
                 Word::Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["2"]))))),
+                Word::Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["bar"]))))),
             )),
         );
         assert_eq!(Some(Ok(correct)), p.redirect().unwrap());
@@ -3130,20 +3209,23 @@ pub mod test {
                     Word::Param(Parameter::Dollar),
                     Word::Literal(String::from(" ")),
                     Word::Subst(Box::new(ParameterSubstitution::Len(Parameter::Bang))),
+                    Word::Literal(String::from(" ")),
+                    Word::Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_unboxed("foo"))))),
                     Word::Literal(String::from("\n")),
                 ))
             ))
         })));
         let literal = Some(Simple(Box::new(SimpleCommand {
             cmd: cat.clone(), args: vec!(), vars: vec!(), io: vec!(
-                Redirect::Heredoc(None, Word::Literal(String::from("$$ ${#!}\n")))
+                Redirect::Heredoc(None, Word::Literal(String::from("$$ ${#!} `foo`\n")))
             )
         })));
 
-        assert_eq!(expanded, make_parser("cat <<eof\n$$ ${#!}\neof").complete_command().unwrap());
-        assert_eq!(literal, make_parser("cat <<'eof'\n$$ ${#!}\neof").complete_command().unwrap());
-        assert_eq!(literal, make_parser("cat <<\"eof\"\n$$ ${#!}\neof").complete_command().unwrap());
-        assert_eq!(literal, make_parser("cat <<e\\of\n$$ ${#!}\neof").complete_command().unwrap());
+        assert_eq!(expanded, make_parser("cat <<eof\n$$ ${#!} `foo`\neof").complete_command().unwrap());
+        assert_eq!(literal, make_parser("cat <<'eof'\n$$ ${#!} `foo`\neof").complete_command().unwrap());
+        assert_eq!(literal, make_parser("cat <<`eof`\n$$ ${#!} `foo`\n`eof`").complete_command().unwrap());
+        assert_eq!(literal, make_parser("cat <<\"eof\"\n$$ ${#!} `foo`\neof").complete_command().unwrap());
+        assert_eq!(literal, make_parser("cat <<e\\of\n$$ ${#!} `foo`\neof").complete_command().unwrap());
     }
 
     #[test]
@@ -3223,6 +3305,19 @@ pub mod test {
     }
 
     #[test]
+    fn test_heredoc_valid_balanced_backticks_in_delimeter() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            args: vec!(), vars: vec!(),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
+            )
+        })));
+
+        assert_eq!(correct, make_parser("cat <<e`\\o\\$\\`\\\\${f}`\nhello\ne`\\o$`\\${f}`").complete_command().unwrap());
+    }
+
+    #[test]
     fn test_heredoc_valid_balanced_parens_in_delimeter() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             args: vec!(), vars: vec!(),
@@ -3287,6 +3382,22 @@ pub mod test {
             )
         })));
         assert_eq!(correct, make_parser("cat <<EOF \"\n\" arg\nhere\nEOF").complete_command().unwrap());
+    }
+
+    #[test]
+    fn test_heredoc_valid_skip_past_newlines_in_backticks() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            vars: vec!(),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            args: vec!(
+                Word::Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_unboxed("echo"))))),
+                Word::Literal(String::from("arg"))
+            ),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("here\n")))
+            )
+        })));
+        assert_eq!(correct, make_parser("cat <<EOF `echo \n` arg\nhere\nEOF").complete_command().unwrap());
     }
 
     #[test]
@@ -3396,6 +3507,7 @@ pub mod test {
     #[test]
     fn test_heredoc_invalid_unbalanced_quoting() {
         make_parser("cat <<'eof").complete_command().unwrap_err();
+        make_parser("cat <<eof`").complete_command().unwrap_err();
         make_parser("cat <<\"eof").complete_command().unwrap_err();
         make_parser("cat <<eof(").complete_command().unwrap_err();
         make_parser("cat <<eof$(").complete_command().unwrap_err();
@@ -5380,6 +5492,16 @@ pub mod test {
     }
 
     #[test]
+    fn test_word_double_quote_valid_recognizes_backticks() {
+        let correct = Word::DoubleQuoted(vec!(
+            Word::Literal(String::from("test asdf ")),
+            Word::Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_unboxed("foo"))))),
+        ));
+
+        assert_eq!(Some(correct), make_parser("\"test asdf `foo`\"").word().unwrap());
+    }
+
+    #[test]
     fn test_word_double_quote_valid_slash_escapes_dollar() {
         let correct = Word::DoubleQuoted(vec!(
             Word::Literal(String::from("test")),
@@ -5586,5 +5708,129 @@ pub mod test {
         let mut p = make_parser("foo\\\nbar");
         assert_eq!(Ok(Some(Word::Literal(String::from("foo")))), p.word());
         assert_eq!(Ok(Some(Word::Literal(String::from("bar")))), p.word());
+    }
+
+    #[test]
+    fn test_backticked_valid() {
+        let correct = Word::Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_unboxed("foo")))));
+        assert_eq!(correct, make_parser("`foo`").backticked_command_substitution().unwrap());
+    }
+
+    #[test]
+    fn test_backticked_valid_backslashes_removed_if_before_dollar_backslash_and_backtick() {
+        let correct = Word::Subst(Box::new(ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
+            vars: vec!(), io: vec!(),
+            cmd: Some(Word::Literal(String::from("foo"))),
+            args: vec!(Word::Concat(vec!(
+                Word::Param(Parameter::Dollar),
+                Word::Escaped(String::from("`")),
+                Word::Escaped(String::from("o")),
+            )))
+        }))))));
+        assert_eq!(correct, make_parser("`foo \\$\\$\\\\\\`\\o`").backticked_command_substitution().unwrap());
+    }
+
+    #[test]
+    fn test_backticked_nested_backticks() {
+        let correct = Word::Subst(Box::new(ParameterSubstitution::Command(vec!(
+            Simple(Box::new(SimpleCommand {
+                vars: vec!(), io: vec!(),
+                cmd: Some(Word::Literal(String::from("foo"))),
+                args: vec!(Word::Subst(Box::new(
+                    ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
+                        vars: vec!(), io: vec!(),
+                        cmd: Some(Word::Literal(String::from("bar"))),
+                        args: vec!(Word::Concat(vec!(Word::Escaped(String::from("$")), Word::Escaped(String::from("$")))))
+                    }))))
+                )))
+            }))
+        ))));
+        assert_eq!(correct, make_parser(r#"`foo \`bar \\\\$\\\\$\``"#).backticked_command_substitution().unwrap());
+    }
+
+    #[test]
+    fn test_backticked_nested_backticks_x2() {
+        let correct = Word::Subst(Box::new(ParameterSubstitution::Command(vec!(
+            Simple(Box::new(SimpleCommand {
+                vars: vec!(), io: vec!(),
+                cmd: Some(Word::Literal(String::from("foo"))),
+                args: vec!(Word::Subst(Box::new(
+                    ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
+                        vars: vec!(), io: vec!(),
+                        cmd: Some(Word::Literal(String::from("bar"))),
+                        args: vec!(Word::Subst(Box::new(
+                            ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
+                                vars: vec!(), io: vec!(),
+                                cmd: Some(Word::Literal(String::from("baz"))),
+                                args: vec!(Word::Concat(vec!(Word::Escaped(String::from("$")), Word::Escaped(String::from("$")))))
+                            }))))
+                        ))),
+                    }))))
+                )))
+            }))
+        ))));
+        assert_eq!(correct, make_parser(r#"`foo \`bar \\\`baz \\\\\\\\$\\\\\\\\$ \\\`\``"#).backticked_command_substitution().unwrap());
+    }
+
+    #[test]
+    fn test_backticked_nested_backticks_x3() {
+        let correct = Word::Subst(Box::new(ParameterSubstitution::Command(vec!(
+            Simple(Box::new(SimpleCommand {
+                vars: vec!(), io: vec!(),
+                cmd: Some(Word::Literal(String::from("foo"))),
+                args: vec!(Word::Subst(Box::new(
+                    ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
+                        vars: vec!(), io: vec!(),
+                        cmd: Some(Word::Literal(String::from("bar"))),
+                        args: vec!(Word::Subst(Box::new(
+                            ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
+                                vars: vec!(), io: vec!(),
+                                cmd: Some(Word::Literal(String::from("baz"))),
+                                args: vec!(Word::Subst(Box::new(
+                                    ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
+                                        vars: vec!(), io: vec!(),
+                                        cmd: Some(Word::Literal(String::from("qux"))),
+                                        args: vec!(Word::Concat(vec!(Word::Escaped(String::from("$")), Word::Escaped(String::from("$")))))
+                                    }))))
+                                ))),
+                            }))))
+                        )))
+                    }))))
+                )))
+            }))
+        ))));
+        assert_eq!(correct, make_parser(
+            r#"`foo \`bar \\\`baz \\\\\\\`qux \\\\\\\\\\\\\\\\$\\\\\\\\\\\\\\\\$ \\\\\\\` \\\`\``"#
+        ).backticked_command_substitution().unwrap());
+    }
+
+    #[test]
+    fn test_backticked_invalid_missing_closing_backtick() {
+        let src = [
+            // Missing outermost backtick
+            r#"`foo"#,
+            r#"`foo \`bar \\\\$\\\\$\`"#,
+            r#"`foo \`bar \\\`baz \\\\\\\\$\\\\\\\\$ \\\`\`"#,
+            r#"`foo \`bar \\\`baz \\\\\\\`qux \\\\\\\\\\\\\\\\$ \\\\\\\\\\\\\\\\$ \\\\\\\` \\\`\`"#,
+
+            // Missing second to last backtick
+            r#"`foo \`bar \\\\$\\\\$`"#,
+            r#"`foo \`bar \\\`baz \\\\\\\\$\\\\\\\\$ \\\``"#,
+            r#"`foo \`bar \\\`baz \\\\\\\`qux \\\\\\\\\\\\\\\\$ \\\\\\\\\\\\\\\\$ \\\\\\\` \\\``"#,
+
+            // Missing third to last backtick
+            r#"`foo \`bar \\\`baz \\\\\\\\$\\\\\\\\$ \``"#,
+            r#"`foo \`bar \\\`baz \\\\\\\`qux \\\\\\\\\\\\\\\\$ \\\\\\\\\\\\\\\\$ \\\\\\\` \``"#,
+
+            // Missing fourth to last backtick
+            r#"`foo \`bar \\\`baz \\\\\\\`qux \\\\\\\\\\\\\\\\$ \\\\\\\\\\\\\\\\$ \\\`\``"#,
+        ];
+
+        for s in src.iter() {
+            match make_parser(s).backticked_command_substitution() {
+                Ok(w) => panic!("Unexpectedly parsed the source \"{}\" as\n{:?}", s, w),
+                Err(_) => {},
+            }
+        }
     }
 }
