@@ -59,6 +59,13 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
         }
     }
 
+    /// Creates a new TokenIter from another Token iterator and an initial position.
+    pub fn with_position(iter: I, pos: SourcePos) -> TokenIter<I> {
+        let mut iter = TokenIter::new(iter);
+        iter.pos = pos;
+        iter
+    }
+
     /// Allows the caller to peek at the next token without consuming it.
     #[inline]
     pub fn peek(&mut self) -> Option<&Token> {

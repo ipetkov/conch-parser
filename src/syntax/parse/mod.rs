@@ -211,6 +211,15 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         }
     }
 
+    /// Creates a new Parser from a Token iterator, provided AST builder, and
+    /// provided starting posiiton.
+    fn with_builder_and_position(iter: I, builder: B, pos: SourcePos) -> Parser<I, B> {
+        Parser {
+            iter: iter::TokenIter::with_position(iter, pos),
+            builder: builder,
+        }
+    }
+
     /// Parses a single complete command.
     ///
     /// For example, `foo && bar; baz` will yield two complete
@@ -759,7 +768,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             // fixed and rustc will remain happy :)
             let b = &mut self.builder
                 as &mut Builder<Command=B::Command, Word=B::Word, Redirect=B::Redirect, Err=B::Err>;
-            let mut parser = Parser::with_builder(heredoc.into_iter(), b);
+            let mut parser = Parser::with_builder_and_position(heredoc.into_iter(), b, self.iter.pos());
             let mut body = try!(parser.word_interpolated_raw(None, heredoc_start_pos));
 
             if body.len() > 1 {
@@ -1074,7 +1083,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         // fixed and rustc will remain happy :)
         let b = &mut self.builder
             as &mut Builder<Command=B::Command, Word=B::Word, Redirect=B::Redirect, Err=B::Err>;
-        let mut parser = Parser::with_builder(tokens.into_iter(), b);
+        let mut parser = Parser::with_builder_and_position(tokens.into_iter(), b, self.iter.pos());
 
         let mut cmds = Vec::new();
         while let Some(c) = try!(parser.complete_command()) {
