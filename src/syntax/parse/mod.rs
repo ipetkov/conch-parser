@@ -3882,60 +3882,78 @@ pub mod test {
 
     #[test]
     fn test_if_command_valid_with_else() {
+        let guard1 = Simple(Box::new(SimpleCommand {
+            vars: vec!(), args: vec!(),
+            cmd: Some(Word::Literal(String::from("guard1"))),
+            io: vec!(Redirect::Read(None, Word::Literal(String::from("in")))),
+        }));
+
+        let guard2 = Simple(Box::new(SimpleCommand {
+            vars: vec!(), args: vec!(),
+            cmd: Some(Word::Literal(String::from("guard2"))),
+            io: vec!(Redirect::Write(None, Word::Literal(String::from("out")))),
+        }));
+
+        let guard3 = Simple(Box::new(SimpleCommand {
+            vars: vec!(), args: vec!(),
+            cmd: Some(Word::Literal(String::from("guard3"))),
+            io: vec!(),
+        }));
+
+        let body1 = Simple(Box::new(SimpleCommand {
+            vars: vec!(), args: vec!(),
+            cmd: Some(Word::Literal(String::from("body1"))),
+            io: vec!(Redirect::Clobber(None, Word::Literal(String::from("clob")))),
+        }));
+
+        let body2 = Simple(Box::new(SimpleCommand {
+            vars: vec!(), args: vec!(),
+            cmd: Some(Word::Literal(String::from("body2"))),
+            io: vec!(Redirect::Append(Some(Word::Literal(String::from("2"))), Word::Literal(String::from("app")))),
+        }));
+
+        let els = cmd_unboxed("else");
+
+        let correct = (vec!((vec!(guard1, guard2), vec!(body1)), (vec!(guard3), vec!(body2))), Some(vec!(els)));
         let mut p = make_parser("if guard1 <in; >out guard2; then body1 >|clob\n elif guard3; then body2 2>>app; else else; fi");
-        let (branches, els) = p.if_command().unwrap();
-        if let [(ref cond1, ref body1), (ref cond2, ref body2)] = &branches[..] {
-            if let ([Simple(ref guard1), Simple(ref guard2)], [Simple(ref body1)],
-                    [Simple(ref guard3)], [Simple(ref body2)]) = (&cond1[..], &body1[..], &cond2[..], &body2[..])
-            {
-                assert_eq!(guard1.cmd.as_ref().unwrap(), &Word::Literal(String::from("guard1")));
-                assert_eq!(guard2.cmd.as_ref().unwrap(), &Word::Literal(String::from("guard2")));
-                assert_eq!(guard3.cmd.as_ref().unwrap(), &Word::Literal(String::from("guard3")));
-                assert_eq!(body1.cmd.as_ref().unwrap(),  &Word::Literal(String::from("body1")));
-                assert_eq!(body2.cmd.as_ref().unwrap(),  &Word::Literal(String::from("body2")));
-
-                assert_eq!(guard1.io, vec!(Redirect::Read(None, Word::Literal(String::from("in")))));
-                assert_eq!(guard2.io, vec!(Redirect::Write(None, Word::Literal(String::from("out")))));
-                assert_eq!(body1.io,  vec!(Redirect::Clobber(None, Word::Literal(String::from("clob")))));
-                assert_eq!(body2.io,  vec!(Redirect::Append(Some(Word::Literal(String::from("2"))), Word::Literal(String::from("app")))));
-
-                let els = els.as_ref().unwrap();
-                assert_eq!(els.len(), 1);
-                if let Simple(ref els) = els[0] {
-                    assert_eq!(els.cmd.as_ref().unwrap(), &Word::Literal(String::from("else")));
-                    return;
-                }
-            }
-        }
-
-        panic!("Incorrect parse result for Parse::if_command:\n{:#?}", (branches, els));
+        assert_eq!(correct, p.if_command().unwrap());
     }
 
     #[test]
     fn test_if_command_valid_without_else() {
+        let guard1 = Simple(Box::new(SimpleCommand {
+            vars: vec!(), args: vec!(),
+            cmd: Some(Word::Literal(String::from("guard1"))),
+            io: vec!(Redirect::Read(None, Word::Literal(String::from("in")))),
+        }));
+
+        let guard2 = Simple(Box::new(SimpleCommand {
+            vars: vec!(), args: vec!(),
+            cmd: Some(Word::Literal(String::from("guard2"))),
+            io: vec!(Redirect::Write(None, Word::Literal(String::from("out")))),
+        }));
+
+        let guard3 = Simple(Box::new(SimpleCommand {
+            vars: vec!(), args: vec!(),
+            cmd: Some(Word::Literal(String::from("guard3"))),
+            io: vec!(),
+        }));
+
+        let body1 = Simple(Box::new(SimpleCommand {
+            vars: vec!(), args: vec!(),
+            cmd: Some(Word::Literal(String::from("body1"))),
+            io: vec!(Redirect::Clobber(None, Word::Literal(String::from("clob")))),
+        }));
+
+        let body2 = Simple(Box::new(SimpleCommand {
+            vars: vec!(), args: vec!(),
+            cmd: Some(Word::Literal(String::from("body2"))),
+            io: vec!(Redirect::Append(Some(Word::Literal(String::from("2"))), Word::Literal(String::from("app")))),
+        }));
+
+        let correct = (vec!((vec!(guard1, guard2), vec!(body1)), (vec!(guard3), vec!(body2))), None);
         let mut p = make_parser("if guard1 <in; >out guard2; then body1 >|clob\n elif guard3; then body2 2>>app; fi");
-        let (branches, els) = p.if_command().unwrap();
-        if let [(ref cond1, ref body1), (ref cond2, ref body2)] = &branches[..] {
-            if let ([Simple(ref guard1), Simple(ref guard2)], [Simple(ref body1)],
-                    [Simple(ref guard3)], [Simple(ref body2)]) = (&cond1[..], &body1[..], &cond2[..], &body2[..])
-            {
-                assert_eq!(guard1.cmd.as_ref().unwrap(), &Word::Literal(String::from("guard1")));
-                assert_eq!(guard2.cmd.as_ref().unwrap(), &Word::Literal(String::from("guard2")));
-                assert_eq!(guard3.cmd.as_ref().unwrap(), &Word::Literal(String::from("guard3")));
-                assert_eq!(body1.cmd.as_ref().unwrap(),  &Word::Literal(String::from("body1")));
-                assert_eq!(body2.cmd.as_ref().unwrap(),  &Word::Literal(String::from("body2")));
-
-                assert_eq!(guard1.io, vec!(Redirect::Read(None, Word::Literal(String::from("in")))));
-                assert_eq!(guard2.io, vec!(Redirect::Write(None, Word::Literal(String::from("out")))));
-                assert_eq!(body1.io,  vec!(Redirect::Clobber(None, Word::Literal(String::from("clob")))));
-                assert_eq!(body2.io,  vec!(Redirect::Append(Some(Word::Literal(String::from("2"))), Word::Literal(String::from("app")))));
-
-                assert_eq!(els, None);
-                return;
-            }
-        }
-
-        panic!("Incorrect parse result for Parse::if_command:\n{:#?}", (branches, els));
+        assert_eq!(correct, p.if_command().unwrap());
     }
 
     #[test]
@@ -4087,12 +4105,8 @@ pub mod test {
         assert_eq!(p.word().unwrap().unwrap(), Word::Literal(String::from("}")));
         assert_eq!(p.word().unwrap().unwrap(), Word::Literal(String::from("{")));
 
-        let mut p = make_parser(source);
-        if let Simple(_) = p.complete_command().unwrap().unwrap() {
-            return;
-        } else {
-            panic!("Parsing of {} did not yield a simple command", source);
-        }
+        let correct = Some(cmd_args_unboxed("echo", &["{}", "}", "{"]));
+        assert_eq!(correct, make_parser(source).complete_command().unwrap());
     }
 
     #[test]
@@ -4112,13 +4126,13 @@ pub mod test {
             Newline(None),
         )));
 
-        if let [Simple(ref echo)] = &body[..] {
-            assert_eq!(echo.cmd.as_ref().unwrap(), &Word::Literal(String::from("echo")));
-            assert_eq!(echo.args, vec!(Word::Param(Parameter::Var(String::from("var")))));
-            return;
-        }
+        let correct_body = vec!(Simple(Box::new(SimpleCommand {
+            vars: vec!(), io: vec!(),
+            cmd: Some(Word::Literal(String::from("echo"))),
+            args: vec!(Word::Param(Parameter::Var(String::from("var"))))
+        })));
 
-        panic!("Incorrect parse result for body from Parse::for_command:\n{:#?}", body);
+        assert_eq!(correct_body, body);
     }
 
     #[test]
@@ -4130,13 +4144,13 @@ pub mod test {
         assert_eq!(words, None);
         assert_eq!(word_comment, None);
 
-        if let [Simple(ref echo)] = &body[..] {
-            assert_eq!(echo.cmd.as_ref().unwrap(), &Word::Literal(String::from("echo")));
-            assert_eq!(echo.args, vec!(Word::Param(Parameter::Var(String::from("var")))));
-            return;
-        }
+        let correct_body = vec!(Simple(Box::new(SimpleCommand {
+            vars: vec!(), io: vec!(),
+            cmd: Some(Word::Literal(String::from("echo"))),
+            args: vec!(Word::Param(Parameter::Var(String::from("var"))))
+        })));
 
-        panic!("Incorrect parse result for body from Parse::for_command:\n{:#?}", body);
+        assert_eq!(correct_body, body);
     }
 
     #[test]
