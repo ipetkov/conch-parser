@@ -124,37 +124,38 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
     /// Returns an iterator that yields tokens up to when a (closing) single quote
     /// is reached (assuming that the caller has reached the opening quote and
     /// wishes to continue up to but not including the closing quote).
-    pub fn single_quoted<'a>(&'a mut self) -> Balanced<'a, I> {
-        Balanced::new(self.by_ref(), Some(SingleQuote), true)
+    pub fn single_quoted<'a>(&'a mut self, pos: SourcePos) -> Balanced<'a, I> {
+        Balanced::new(self.by_ref(), Some(SingleQuote), true, pos)
     }
 
     /// Returns an iterator that yields tokens up to when a (closing) double quote
     /// is reached (assuming that the caller has reached the opening quote and
     /// wishes to continue up to but not including the closing quote).
-    pub fn double_quoted<'a>(&'a mut self) -> Balanced<'a, I> {
-        Balanced::new(self.by_ref(), Some(DoubleQuote), true)
+    pub fn double_quoted<'a>(&'a mut self, pos: SourcePos) -> Balanced<'a, I> {
+        Balanced::new(self.by_ref(), Some(DoubleQuote), true, pos)
     }
 
     /// Returns an iterator that yields tokens up to when a (closing) backtick
     /// is reached (assuming that the caller has reached the opening backtick and
     /// wishes to continue up to but not including the closing backtick).
-    pub fn backticked<'a>(&'a mut self) -> Balanced<'a, I> {
-        Balanced::new(self.by_ref(), Some(Backtick), true)
+    pub fn backticked<'a>(&'a mut self, pos: SourcePos) -> Balanced<'a, I> {
+        Balanced::new(self.by_ref(), Some(Backtick), true, pos)
     }
 
     /// Returns an iterator that yields tokens up to when a (closing) backtick
     /// is reached (assuming that the caller has reached the opening backtick and
     /// wishes to continue up to but not including the closing backtick).
     /// Any backslashes followed by \, $, or ` are removed from the stream.
-    pub fn backticked_remove_backslashes<'a>(&'a mut self) -> BacktickBackslashRemover<'a, I> {
-        BacktickBackslashRemover::new(self.backticked())
+    pub fn backticked_remove_backslashes<'a>(&'a mut self, pos: SourcePos) -> BacktickBackslashRemover<'a, I> {
+        BacktickBackslashRemover::new(self.backticked(pos))
     }
 
     /// Returns an iterator that yields at least one token, but continues to yield
     /// tokens until all matching cases of single/double quotes, backticks,
     /// ${ }, $( ), or ( ) are found.
     pub fn balanced<'a>(&'a mut self) -> Balanced<'a, I> {
-        Balanced::new(self.by_ref(), None, false)
+        let pos = self.pos();
+        Balanced::new(self.by_ref(), None, false, pos)
     }
 }
 
@@ -184,10 +185,15 @@ impl<'a, I: 'a + Iterator<Item=Token>> Balanced<'a, I> {
     /// The caller can also choose if the final delimeter (before the iterator
     /// stops yielding tokens completely) should be yielded at all through the
     /// `skip_last_delimeter` parameter.
-    fn new(iter: &'a mut TokenIter<I>, delim: Option<Token>, skip_last_delimeter: bool) -> Self {
+    fn new(iter: &'a mut TokenIter<I>,
+           delim: Option<Token>,
+           skip_last_delimeter: bool,
+           pos: SourcePos)
+        -> Self
+    {
         Balanced {
             escaped: None,
-            stack: delim.map_or(Vec::new(), |d| vec!((d, iter.pos()))),
+            stack: delim.map_or(Vec::new(), |d| vec!((d, pos))),
             done: false,
             skip_last_delimeter: skip_last_delimeter,
             iter: iter,
@@ -259,6 +265,7 @@ impl<'a, I: 'a + Iterator<Item=Token>> Iterator for Balanced<'a, I> {
             },
 
             Some(Dollar) => {
+                let cur_pos = self.iter.pos(); // Want the pos of {, not $ here
                 match self.iter.peek() {
                     Some(&CurlyOpen) => self.stack.push((CurlyClose, cur_pos)),
                     Some(&ParenOpen) => {}, // Already handled by paren case above
@@ -280,7 +287,9 @@ impl<'a, I: 'a + Iterator<Item=Token>> Iterator for Balanced<'a, I> {
                 // Its okay to hit EOF if everything is balanced so far
                 None => { self.done = true; None },
                 // But its not okay otherwise
-                Some((delim, pos)) => Some(Err(UnmatchedError(delim, pos))),
+                Some((ParenClose, pos)) => Some(Err(UnmatchedError(ParenOpen, pos))),
+                Some((CurlyClose, pos)) => Some(Err(UnmatchedError(CurlyOpen, pos))),
+                Some((delim, pos))      => Some(Err(UnmatchedError(delim, pos))),
             },
         }
     }

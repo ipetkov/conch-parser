@@ -18,11 +18,11 @@ pub type DefaultParser<I> = Parser<I, builder::DefaultBuilder>;
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct SourcePos {
     /// The byte offset since the start of parsing.
-    pub byte: u64,
+    pub byte: usize,
     /// The line offset since the start of parsing, useful for error messages.
-    pub line: u64,
+    pub line: usize,
     /// The column offset since the start of parsing, useful for error messages.
-    pub col: u64,
+    pub col: usize,
 }
 
 impl SourcePos {
@@ -34,16 +34,16 @@ impl SourcePos {
             // tokenizers means we should sanity check anyway.
             Name(ref s)       |
             Literal(ref s)    |
-            Whitespace(ref s) => s.chars().filter(|&c| c == '\n').count() as u64,
+            Whitespace(ref s) => s.chars().filter(|&c| c == '\n').count(),
 
             Newline => 1,
             _ => 0,
         };
 
-        let tok_len = next.len() as u64;
+        let tok_len = next.len();
         self.byte += tok_len;
         self.line += newlines;
-        self.col = if newlines == 0 { self.col + tok_len } else { 0 };
+        self.col = if newlines == 0 { self.col + tok_len } else { 1 };
     }
 }
 
@@ -55,11 +55,15 @@ pub enum ParseError<T: Error> {
     BadFd(SourcePos, SourcePos),
     /// Encountered a `Token::Literal` where expecting a `Token::Name`.
     BadIdent(String, SourcePos),
-    /// Encountered a bad token inside of `${...}` (or lack of a token).
-    BadSubst(Option<Token>, SourcePos),
+    /// Encountered a bad token inside of `${...}`.
+    BadSubst(Token, SourcePos),
     /// Encountered EOF while looking for a match for the specified token.
     /// Stores position of opening token.
     Unmatched(Token, SourcePos),
+    /// Did not find a reserved keyword within a command. The first String is the
+    /// command being parsed, followed by the position of the start of the command,
+    /// followed by the expected (missing) keyword.
+    IncompleteCmd(&'static str, SourcePos, &'static str),
     /// Encountered a token not appropriate for the current context.
     Unexpected(Token, SourcePos),
     /// Encountered the end of input while expecting additional tokens.
@@ -75,6 +79,7 @@ impl<T: Error> Error for ParseError<T> {
             ParseError::BadIdent(..)    => "bad identifier found",
             ParseError::BadSubst(..)    => "bad substitution found",
             ParseError::Unmatched(..)   => "unmatched token",
+            ParseError::IncompleteCmd(..)=> "incomplete command",
             ParseError::Unexpected(..)  => "unexpected token found",
             ParseError::UnexpectedEOF   => "unexpected end of input",
             ParseError::External(ref e) => e.description(),
@@ -83,12 +88,13 @@ impl<T: Error> Error for ParseError<T> {
 
     fn cause(&self) -> Option<&Error> {
         match *self {
-            ParseError::BadFd(..)      |
-            ParseError::BadIdent(..)   |
-            ParseError::BadSubst(..)   |
-            ParseError::Unmatched(..)  |
-            ParseError::Unexpected(..) |
-            ParseError::UnexpectedEOF => None,
+            ParseError::BadFd(..)        |
+            ParseError::BadIdent(..)     |
+            ParseError::BadSubst(..)     |
+            ParseError::Unmatched(..)    |
+            ParseError::IncompleteCmd(..)|
+            ParseError::Unexpected(..)   |
+            ParseError::UnexpectedEOF    => None,
             ParseError::External(ref e) => Some(e),
         }
     }
@@ -99,13 +105,16 @@ impl<T: Error> fmt::Display for ParseError<T> {
         match *self {
             ParseError::BadFd(ref start, ref end)  =>
                 write!(fmt, "file descriptor found between lines {} - {} cannot possibly be a valid", start, end),
-            ParseError::BadIdent(ref id, pos)      => write!(fmt, "not a valid identifier {}: {}", pos, id),
-            ParseError::BadSubst(None, pos)        => write!(fmt, "bad substitution {}: empty body", pos),
-            ParseError::BadSubst(Some(ref t), pos) => write!(fmt, "bad substitution {}: invalid token: {}", pos, t),
-            ParseError::Unmatched(ref t, pos)      => write!(fmt, "unmatched `{}` starting on line {}", t, pos),
-            // When printing an unexpected newline, print \n and not an actual newline to avoid confusing messages
-            ParseError::Unexpected(Newline, pos)   => write!(fmt, "found unexpected token on line {}: \\n", pos),
-            ParseError::Unexpected(ref t, pos)     => write!(fmt, "found unexpected token on line {}: {}", pos, t),
+            ParseError::BadIdent(ref id, pos) => write!(fmt, "not a valid identifier {}: {}", pos, id),
+            ParseError::BadSubst(ref t, pos)  => write!(fmt, "bad substitution {}: invalid token: {}", pos, t),
+            ParseError::Unmatched(ref t, pos) => write!(fmt, "unmatched `{}` starting on line {}", t, pos),
+
+            ParseError::IncompleteCmd(ref c, pos, ref kw) =>
+                write!(fmt, "did not find `{}` keyword in `{}` command which starts on line {}", kw, c, pos),
+
+            // When printing unexpected newlines, print \n instead to avoid confusingly formatted messages
+            ParseError::Unexpected(Newline, pos) => write!(fmt, "found unexpected token on line {}: \\n", pos),
+            ParseError::Unexpected(ref t, pos)   => write!(fmt, "found unexpected token on line {}: {}", pos, t),
 
             ParseError::UnexpectedEOF => fmt.write_str("unexpected end of input"),
             ParseError::External(ref e) => write!(fmt, "{}", e),
@@ -167,40 +176,65 @@ impl<I: Iterator<Item = Token>, B: Builder + Default> Parser<I, B> {
     }
 }
 
+/// A macro that will consume a specified token from the parser's iterator
+/// an run a corresponding action block to do something with the token,
+/// or it will construct and return an appropriate Unexpected(EOF) error.
+macro_rules! eat {
+    ($parser:expr, { $($tok:pat => $blk:block),+, }) => { eat!($parser, {$($tok => $blk),+}) };
+
+    ($parser:expr, {$($tok:pat => $blk:block),+}) => {{
+        let pos = $parser.iter.pos();
+        match $parser.iter.peek() {
+            $(Some(&$tok) => {}),+,
+            Some(_) => return Err(ParseError::Unexpected($parser.iter.next().unwrap(), pos)),
+            None => return Err(ParseError::UnexpectedEOF),
+        }
+
+        match $parser.iter.next() {
+            $(Some($tok) => $blk),+,
+            _ => unreachable!(),
+        }
+    }};
+}
+
+/// A macro that will consume and return a token that matches a specified pattern
+/// from a parser's token iterator. If no matching token is found, None will be yielded.
+macro_rules! eat_maybe {
+    ($parser:expr, { $($tok:pat => $blk:block),+; _ => $default:block, }) => {
+        eat_maybe!($parser, { $($tok => $blk),+; _ => $default })
+    };
+
+    ($parser:expr, { $($tok:pat => $blk:block),+,}) => {
+        eat_maybe!($parser, { $($tok => $blk),+ })
+    };
+
+    ($parser:expr, { $($tok:pat => $blk:block),+; _ => $default:block }) => {
+        match $parser.iter.peek() {
+            $(Some(&$tok) => {
+                $parser.iter.next();
+                $blk
+            }),+,
+            _ => $default,
+        }
+    };
+
+    ($parser:expr, { $($tok:pat => $blk:block),+ }) => {
+        match $parser.iter.peek() {
+            $(Some(&$tok) => {
+                $parser.iter.next();
+                $blk
+            }),+
+        }
+    };
+}
+
 impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Construct an `Unexpected` error using the given token. If `None` specified, the next
     /// token in the iterator will be used (or `UnexpectedEOF` if none left).
     #[inline]
-    fn make_unexpected_err(&mut self, tok: Option<Token>) -> ParseError<B::Err> {
-        tok.or_else(|| self.iter.next())
-           .map_or(ParseError::UnexpectedEOF, |t| ParseError::Unexpected(t, self.iter.pos()))
-    }
-
-    /// Construct a `BadFd` error using the given start position of a word,
-    /// indicating that the word cannot possibly respresent a valid file
-    /// descriptor to be used with a redirection.
-    #[inline]
-    fn make_bad_fd_err(&mut self, start: SourcePos) -> ParseError<B::Err> {
-        ParseError::BadFd(start, self.iter.pos())
-    }
-
-    /// Construct a `BadIdent` error using the given string, indicating that the literal
-    /// does not respresent a valid name.
-    #[inline]
-    fn make_bad_ident_err(&mut self, s: String) -> ParseError<B::Err> {
-        ParseError::BadIdent(s, self.iter.pos())
-    }
-
-    /// Construct a `BadSubst` error using the given offending token.
-    #[inline]
-    fn make_bad_substitution_err(&mut self, tok: Option<Token>) -> ParseError<B::Err> {
-        ParseError::BadSubst(tok, self.iter.pos())
-    }
-
-    /// Construct an `Unmatched` error using the given token.
-    #[inline]
-    fn make_unmatched_err(&mut self, tok: Token, start: SourcePos) -> ParseError<B::Err> {
-        ParseError::Unmatched(tok, start)
+    fn make_unexpected_err(&mut self) -> ParseError<B::Err> {
+        let pos = self.iter.pos();
+        self.iter.next().map_or(ParseError::UnexpectedEOF, |t| ParseError::Unexpected(t, pos))
     }
 
     /// Creates a new Parser from a Token iterator and provided AST builder.
@@ -234,16 +268,17 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         let cmd = try!(self.and_or());
 
-        let sep = match self.iter.peek() {
-            Some(&Semi) => { self.iter.next(); builder::SeparatorKind::Semi },
-            Some(&Amp)  => { self.iter.next(); builder::SeparatorKind::Amp },
-
-            _ => if let Some(n) = self.newline() {
-                builder::SeparatorKind::Newline(n)
-            } else {
-                builder::SeparatorKind::Other
-            },
-        };
+        let sep = eat_maybe!(self, {
+            Semi => { builder::SeparatorKind::Semi },
+            Amp  => { builder::SeparatorKind::Amp  };
+            _ => {
+                if let Some(n) = self.newline() {
+                    builder::SeparatorKind::Newline(n)
+                } else {
+                    builder::SeparatorKind::Other
+                }
+            }
+        });
 
         let post_cmd_comments = self.linebreak();
         Ok(Some(try!(self.builder.complete_command(pre_cmd_comments, cmd, sep, post_cmd_comments))))
@@ -258,19 +293,11 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         loop {
             self.skip_whitespace();
-            let kind = match self.iter.peek() {
-                Some(&OrIf)  => {
-                    self.iter.next();
-                    builder::AndOrKind::Or
-                },
-
-                Some(&AndIf) => {
-                    self.iter.next();
-                    builder::AndOrKind::And
-                },
-
-                _ => break,
-            };
+            let kind = eat_maybe!(self, {
+                OrIf  => { builder::AndOrKind::Or  },
+                AndIf => { builder::AndOrKind::And };
+                _ => { break },
+            });
 
             let post_sep_comments = self.linebreak();
             let next = try!(self.pipeline());
@@ -285,30 +312,28 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// For example `[!] foo | bar`.
     pub fn pipeline(&mut self) -> Result<B::Command, ParseError<B::Err>> {
         self.skip_whitespace();
-
-        let bang = match self.iter.peek() {
-            Some(&Bang) => { self.iter.next(); true }
-            _ => false,
-        };
+        let bang = eat_maybe!(self, {
+            Bang => { true };
+            _ => { false },
+        });
 
         let mut cmds = Vec::new();
-
         loop {
             // We've already passed an apropriate spot for !, so it
             // is an error if it appears before the start of a command.
             if let Some(&Bang) = self.iter.peek() {
-                return Err(self.make_unexpected_err(None));
+                return Err(self.make_unexpected_err());
             }
 
             let cmd = try!(self.command());
 
-            if let Some(&Pipe) = self.iter.peek() {
-                self.iter.next();
-                cmds.push((self.linebreak(), cmd));
-            } else {
-                cmds.push((Vec::new(), cmd));
-                break;
-            }
+            eat_maybe!(self, {
+                Pipe => { cmds.push((self.linebreak(), cmd)) };
+                _ => {
+                    cmds.push((Vec::new(), cmd));
+                    break;
+                },
+            });
         }
 
         Ok(try!(self.builder.pipeline(bang, cmds)))
@@ -395,7 +420,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         if cmd.is_none() {
             debug_assert!(args.is_empty());
             if vars.is_empty() && io.is_empty() {
-                try!(Err(self.make_unexpected_err(None)));
+                try!(Err(self.make_unexpected_err()));
             }
         }
 
@@ -408,10 +433,11 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     pub fn redirect_list(&mut self) -> Result<Vec<B::Redirect>, ParseError<B::Err>> {
         let mut list = Vec::new();
         loop {
+            self.skip_whitespace();
             let start_pos = self.iter.pos();
             match try!(self.redirect()) {
                 Some(Ok(io)) => list.push(io),
-                Some(Err(_)) => return Err(self.make_bad_fd_err(start_pos)),
+                Some(Err(_)) => return Err(ParseError::BadFd(start_pos, self.iter.pos())),
                 None => break,
             }
         }
@@ -486,6 +512,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             },
         };
 
+        self.skip_whitespace();
         let path_start_pos = self.iter.pos();
 
         let (is_num, close, path) = if self.peek_reserved_token(&[Dash]).is_some() {
@@ -493,7 +520,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         } else {
             match try!(self.word_preserve_trailing_whitespace_raw()) {
                 Some(p) => (is_maybe_numeric(&p, true), false, p),
-                None => return Err(self.make_unexpected_err(None)),
+                None => return Err(self.make_unexpected_err()),
             }
         };
 
@@ -513,7 +540,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
             // Duplication fd is not valid
             LessAnd  |
-            GreatAnd => return Err(self.make_bad_fd_err(path_start_pos)),
+            GreatAnd => return Err(ParseError::BadFd(path_start_pos, self.iter.pos())),
 
             _ => unreachable!(),
         };
@@ -547,11 +574,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Note: this method expects that the caller provide a potential file
     /// descriptor for redirection.
     pub fn redirect_heredoc(&mut self, src_fd: Option<B::Word>) -> Result<B::Redirect, ParseError<B::Err>> {
-        let strip_tabs = match self.iter.next() {
-            Some(DLess) => false,
-            Some(DLessDash) => true,
-            t => return Err(self.make_unexpected_err(t)),
-        };
+        let strip_tabs = eat!(self, {
+            DLess => { false },
+            DLessDash => { true },
+        });
 
         self.skip_whitespace();
 
@@ -585,6 +611,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         let mut quoted = false;
         let mut delim = String::new();
         loop {
+            let start_pos = iter.pos();
             match iter.next() {
                 Some(Backslash) => {
                     quoted = true;
@@ -593,12 +620,14 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
                 Some(SingleQuote) => {
                     quoted = true;
-                    for t in iter.single_quoted() { delim.push_str(&try!(t).to_string()); }
+                    for t in iter.single_quoted(start_pos) {
+                        delim.push_str(&try!(t).to_string());
+                    }
                 },
 
                 Some(DoubleQuote) => {
                     quoted = true;
-                    let mut iter = iter.double_quoted();
+                    let mut iter = iter.double_quoted(start_pos);
                     while let Some(next) = iter.next() {
                         match try!(next) {
                             Backslash => {
@@ -648,7 +677,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 Some(Backtick) => {
                     quoted = true;
                     delim.push_str(&Backtick.to_string());
-                    for t in iter.backticked_remove_backslashes() {
+                    for t in iter.backticked_remove_backslashes(start_pos) {
                         delim.push_str(&try!(t).to_string());
                     }
                     delim.push_str(&Backtick.to_string());
@@ -660,7 +689,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         }
 
         if delim.is_empty() {
-            return Err(self.make_unexpected_err(None));
+            return Err(self.make_unexpected_err());
         }
 
         delim.shrink_to_fit();
@@ -768,7 +797,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             // fixed and rustc will remain happy :)
             let b = &mut self.builder
                 as &mut Builder<Command=B::Command, Word=B::Word, Redirect=B::Redirect, Err=B::Err>;
-            let mut parser = Parser::with_builder_and_position(heredoc.into_iter(), b, self.iter.pos());
+            let mut parser = Parser::with_builder_and_position(heredoc.into_iter(), b, heredoc_start_pos);
             let mut body = try!(parser.word_interpolated_raw(None, heredoc_start_pos));
 
             if body.len() > 1 {
@@ -913,7 +942,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
                 SingleQuote => {
                     let mut buf = String::new();
-                    for t in self.iter.single_quoted() {
+                    for t in self.iter.single_quoted(start_pos) {
                         buf.push_str(&try!(t).to_string());
                     }
 
@@ -1043,7 +1072,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
                 Some(t) => buf.push_str(&t.to_string()),
                 None => match delim_open {
-                    Some(delim) => return Err(self.make_unmatched_err(delim, start_pos)),
+                    Some(delim) => return Err(ParseError::Unmatched(delim, start_pos)),
                     None => break,
                 },
             }
@@ -1069,12 +1098,11 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Identical to `Parser::backticked_command_substitution`, except but does not pass the
     /// result to the AST builder.
     fn backticked_raw(&mut self) -> Result<builder::WordKind<B::Command>, ParseError<B::Err>> {
-        match self.iter.next() {
-            Some(Backtick) => {},
-            t => return Err(self.make_unexpected_err(t)),
-        }
+        let backtick_pos = self.iter.pos();
+        eat!(self, { Backtick => {} });
 
-        let tokens: Vec<Token> = try!(self.iter.backticked_remove_backslashes().collect());
+        let cmd_pos = self.iter.pos();
+        let tokens: Vec<Token> = try!(self.iter.backticked_remove_backslashes(backtick_pos).collect());
 
         // Dodge an "ICE": If we don't erase the type of the builder, the type of the parser
         // below will will be of type Parser<_, &mut B>, whose methods that create a sub-parser
@@ -1083,7 +1111,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         // fixed and rustc will remain happy :)
         let b = &mut self.builder
             as &mut Builder<Command=B::Command, Word=B::Word, Redirect=B::Redirect, Err=B::Err>;
-        let mut parser = Parser::with_builder_and_position(tokens.into_iter(), b, self.iter.pos());
+        let mut parser = Parser::with_builder_and_position(tokens.into_iter(), b, cmd_pos);
 
         let mut cmds = Vec::new();
         while let Some(c) = try!(parser.complete_command()) {
@@ -1111,24 +1139,28 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         use syntax::ast::builder::WordKind;
         use syntax::ast::builder::ParameterSubstitutionKind::*;
 
+        let start_pos = self.iter.pos();
         match self.iter.next() {
             Some(ParamPositional(p)) => return Ok(WordKind::Param(Parameter::Positional(p as u32))),
 
-            Some(Token::Dollar) => match self.iter.peek() {
-                Some(&Star)      |
-                Some(&Pound)     |
-                Some(&Question)  |
-                Some(&Dollar)    |
-                Some(&Bang)      |
-                Some(&Dash)      |
-                Some(&At)        |
-                Some(&Name(_))   |
-                Some(&ParenOpen) |
-                Some(&CurlyOpen) => {},
-                _ => return Ok(WordKind::Literal(Dollar.to_string())),
+            Some(Token::Dollar) => {
+                match self.iter.peek() {
+                    Some(&Star)      |
+                    Some(&Pound)     |
+                    Some(&Question)  |
+                    Some(&Dollar)    |
+                    Some(&Bang)      |
+                    Some(&Dash)      |
+                    Some(&At)        |
+                    Some(&Name(_))   |
+                    Some(&ParenOpen) |
+                    Some(&CurlyOpen) => {},
+                    _ => return Ok(WordKind::Literal(Dollar.to_string())),
+                }
             },
 
-            t => return Err(self.make_unexpected_err(t)),
+            Some(t) => return Err(ParseError::Unexpected(t, start_pos)),
+            None => return Err(ParseError::UnexpectedEOF),
         }
 
         let start_pos = self.iter.pos();
@@ -1185,10 +1217,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
                         _ => {
                             let param = try!(self.parameter_inner());
-                            match self.iter.next() {
-                                Some(CurlyClose) => Err(Len(param)),
-                                t => return Err(self.make_bad_substitution_err(t)),
-                            }
+                            eat!(self, { CurlyClose => { Err(Len(param)) } })
                         },
                     }
                 } else {
@@ -1225,12 +1254,14 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                             false
                         };
 
+                        let op_pos = self.iter.pos();
                         let op = match self.iter.next() {
                             Some(tok@Dash)     |
                             Some(tok@Equals)   |
                             Some(tok@Question) |
                             Some(tok@Plus)     => tok,
-                            t => return Err(self.make_bad_substitution_err(t)),
+                            Some(t) => return Err(ParseError::BadSubst(t, op_pos)),
+                            None => return Err(ParseError::UnexpectedEOF),
                         };
 
                         let word = try!(param_word(self));
@@ -1258,10 +1289,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     // Substitutions have already consumed the closing CurlyClose token
                     Err(subst) => return Ok(WordKind::Subst(subst)),
                     // Regular parameters, however, have not
-                    Ok(p) => match self.iter.next() {
-                        Some(CurlyClose) => p,
-                        t => return Err(self.make_unexpected_err(t)),
-                    },
+                    Ok(p) => eat!(self, { CurlyClose => { p } }),
                 }
             },
 
@@ -1275,6 +1303,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     fn parameter_inner(&mut self) -> Result<ast::Parameter, ParseError<B::Err>> {
         use syntax::ast::Parameter;
 
+        let start_pos = self.iter.pos();
         let param = match self.iter.next() {
             Some(Star)     => Parameter::Star,
             Some(Pound)    => Parameter::Pound,
@@ -1287,10 +1316,11 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             Some(Name(n)) => Parameter::Var(n),
             Some(Literal(s)) => match u32::from_str(&s) {
                 Ok(n)  => Parameter::Positional(n),
-                Err(_) => return Err(self.make_bad_substitution_err(Some(Literal(s)))),
+                Err(_) => return Err(ParseError::BadSubst(Literal(s), start_pos)),
             },
 
-            t => return Err(self.make_bad_substitution_err(t)),
+            Some(t) => return Err(ParseError::BadSubst(t, start_pos)),
+            None => return Err(ParseError::UnexpectedEOF),
         };
 
         Ok(param)
@@ -1301,12 +1331,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// quoted or concatenated.
     pub fn do_group(&mut self) -> Result<Vec<B::Command>, ParseError<B::Err>> {
         let start_pos = self.iter.pos();
-        try!(self.reserved_word(&["do"]));
+        try!(self.reserved_word(&["do"]).map_err(|_| self.make_unexpected_err()));
         let result = try!(self.command_list(&["done"], &[]));
-        if self.iter.peek() == None {
-            return Err(self.make_unmatched_err(Literal(String::from("do")), start_pos));
-        }
-        try!(self.reserved_word(&["done"]));
+        try!(self.reserved_word(&["done"]).or(Err(ParseError::IncompleteCmd("do", start_pos, "done"))));
         Ok(result)
     }
 
@@ -1318,10 +1345,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         let start_pos = self.iter.pos();
         try!(self.reserved_token(&[CurlyOpen]));
         let cmds = try!(self.command_list(&[], &[CurlyClose]));
-        if self.iter.peek() == None {
-            return Err(self.make_unmatched_err(CurlyOpen, start_pos));
-        }
-        try!(self.reserved_token(&[CurlyClose]));
+        try!(self.reserved_token(&[CurlyClose]).or(Err(ParseError::Unmatched(CurlyOpen, start_pos))));
         Ok(cmds)
     }
 
@@ -1336,10 +1360,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// if an empty body constitutes an error or not.
     fn subshell_internal(&mut self, empty_body_ok: bool) -> Result<Vec<B::Command>, ParseError<B::Err>> {
         let start_pos = self.iter.pos();
-        match self.iter.next() {
-            Some(ParenOpen) => {},
-            t => return Err(self.make_unexpected_err(t)),
-        }
+        eat!(self, { ParenOpen => {} });
 
         // Paren's are always special tokens, hence they aren't
         // reserved words, and thus the `command_list` method doesn't apply.
@@ -1352,10 +1373,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             }
         }
 
-        match self.iter.next() {
-            Some(ParenClose) if empty_body_ok || !cmds.is_empty() => Ok(cmds),
-            Some(t) => Err(self.make_unexpected_err(Some(t))),
-            None => Err(self.make_unmatched_err(ParenClose, start_pos)),
+        match self.iter.peek() {
+            Some(&ParenClose) if empty_body_ok || !cmds.is_empty() => {
+                self.iter.next();
+                Ok(cmds)
+            },
+            Some(_) => Err(self.make_unexpected_err()),
+            None => Err(ParseError::Unmatched(ParenOpen, start_pos)),
         }
     }
 
@@ -1425,7 +1449,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 try!(self.builder.subshell(cmds, io))
             },
 
-            None => return Err(self.make_unexpected_err(None)),
+            None => return Err(self.make_unexpected_err()),
         };
 
         Ok(cmd)
@@ -1440,13 +1464,18 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     ///
     /// Return structure is `Result(loop_kind, guard_commands, body_commands)`.
     pub fn loop_command(&mut self) -> Result<(builder::LoopKind, Vec<B::Command>, Vec<B::Command>), ParseError<B::Err>> {
-        let kind = match try!(self.reserved_word(&["while", "until"])) {
+        let start_pos = self.iter.pos();
+        let kind = match try!(self.reserved_word(&["while", "until"])
+                              .map_err(|_| self.make_unexpected_err())) {
             "while" => builder::LoopKind::While,
             "until" => builder::LoopKind::Until,
             _ => unreachable!(),
         };
         let guard = try!(self.command_list(&["do"], &[]));
-        Ok((kind, guard, try!(self.do_group())))
+        match self.peek_reserved_word(&["do"]) {
+            Some(_) => Ok((kind, guard, try!(self.do_group()))),
+            None => Err(ParseError::IncompleteCmd("while", start_pos, "do")),
+        }
     }
 
     /// Parses a single `if` command but does not parse any redirections that may follow.
@@ -1461,27 +1490,24 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         Option<Vec<B::Command>>), ParseError<B::Err>>
     {
         let start_pos = self.iter.pos();
-        try!(self.reserved_word(&["if"]));
+        try!(self.reserved_word(&["if"]).map_err(|_| self.make_unexpected_err()));
+
+        let missing_fi   = |_| ParseError::IncompleteCmd("if", start_pos, "fi");
+        let missing_then = |_| ParseError::IncompleteCmd("if", start_pos, "then");
 
         let mut branches = Vec::new();
         loop {
             let guard = try!(self.command_list(&["then"], &[]));
-            try!(self.reserved_word(&["then"]));
+            try!(self.reserved_word(&["then"]).map_err(&missing_then));
 
             let body = try!(self.command_list(&["elif", "else", "fi"], &[]));
             branches.push((guard, body));
 
-            if self.iter.peek() == None {
-                return Err(self.make_unmatched_err(Literal(String::from("if")), start_pos))
-            }
-            let els = match try!(self.reserved_word(&["elif", "else", "fi"])) {
+            let els = match try!(self.reserved_word(&["elif", "else", "fi"]).map_err(&missing_fi)) {
                 "elif" => continue,
                 "else" => {
                     let els = try!(self.command_list(&["fi"], &[]));
-                    if self.iter.peek() == None {
-                        return Err(self.make_unmatched_err(Literal(String::from("if")), start_pos))
-                    }
-                    try!(self.reserved_word(&["fi"]));
+                    try!(self.reserved_word(&["fi"]).map_err(&missing_fi));
                     Some(els)
                 },
                 "fi" => None,
@@ -1506,17 +1532,31 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         Option<Vec<ast::Newline>>,
         Vec<B::Command>), ParseError<B::Err>>
     {
-        try!(self.reserved_word(&["for"]));
+        let start_pos = self.iter.pos();
+        try!(self.reserved_word(&["for"]).map_err(|_| self.make_unexpected_err()));
 
         self.skip_whitespace();
+
+        match self.iter.peek() {
+            Some(&Name(_))    |
+            Some(&Literal(_)) => {},
+            _ => return Err(self.make_unexpected_err()),
+        }
+
+        let var_pos = self.iter.pos();
         let var = match self.iter.next() {
             Some(Name(v)) => v,
-            t => return Err(self.make_unexpected_err(t)),
+            Some(Literal(s)) => return Err(ParseError::BadIdent(s, var_pos)),
+            _ => unreachable!(),
         };
+
+        // Make sure that there isn't some extraneous token concatenated
+        // ot the Name token which is the variable
+        eat!(self, { Whitespace(_) => {} });
 
         let post_var_comments = self.linebreak();
         let (words, post_word_comments) = if self.peek_reserved_word(&["in"]).is_some() {
-            try!(self.reserved_word(&["in"]));
+            self.reserved_word(&["in"]).unwrap();
 
             let mut words = Vec::new();
             while let Some(w) = try!(self.word()) {
@@ -1534,13 +1574,24 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             // Thus if neither is found it is considered an error
             let post_word_comments = self.linebreak();
             if !found_semi && post_word_comments.is_empty() {
-                return Err(self.make_unexpected_err(None));
+                return Err(self.make_unexpected_err());
             }
 
             (Some(words), Some(post_word_comments))
         } else {
-            (None, None)
+            // If we didn't find an `in` keyword, and we havent hit the body
+            // (a `do` keyword), then we can reasonably say the script has
+            // words without an `in` keyword.
+            if self.peek_reserved_word(&["do"]).is_none() {
+                return Err(ParseError::IncompleteCmd("for", start_pos, "in"));
+            } else {
+                (None, None)
+            }
         };
+
+        if self.peek_reserved_word(&["do"]).is_none() {
+            return Err(ParseError::IncompleteCmd("for", start_pos , "do"));
+        }
 
         let body = try!(self.do_group());
         Ok((var, post_var_comments, words, post_word_comments, body))
@@ -1561,16 +1612,21 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             Vec<ast::Newline>
         ), ParseError<B::Err>>
     {
-        try!(self.reserved_word(&["case"]));
+        let start_pos = self.iter.pos();
+        let missing_in   = |_| ParseError::IncompleteCmd("case", start_pos, "in");
+        let missing_esac = |_| ParseError::IncompleteCmd("case", start_pos, "esac");
+
+        try!(self.reserved_word(&["case"]).map_err(|_| self.make_unexpected_err()));
+
         let word = match try!(self.word()) {
             Some(w) => w,
-            None => return Err(self.make_unexpected_err(None)),
+            None => return Err(self.make_unexpected_err()),
         };
 
         let post_word_comments = self.linebreak();
-        try!(self.reserved_word(&["in"]));
-        let mut pre_esac_comments = None;
+        try!(self.reserved_word(&["in"]).map_err(&missing_in));
 
+        let mut pre_esac_comments = None;
         let mut branches = Vec::new();
         loop {
             let pre_pat_comments = self.linebreak();
@@ -1585,17 +1641,34 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 self.iter.next();
             }
 
+            // Make sure we check for missing `esac` here, otherwise if we have EOF
+            // trying to parse a word will result in an `UnexpectedEOF` error
+            if self.iter.peek().is_none() {
+                return Err(()).map_err(&missing_esac);
+            }
+
             let mut patterns = Vec::new();
             loop {
                 match try!(self.word()) {
                     Some(p) => patterns.push(p),
-                    None => return Err(self.make_unexpected_err(None)),
+                    None => return Err(self.make_unexpected_err()),
                 }
 
-                match self.iter.next() {
-                    Some(Pipe) => continue,
-                    Some(ParenClose) if !patterns.is_empty() => break,
-                    t => return Err(self.make_unexpected_err(t)),
+                match self.iter.peek() {
+                    Some(&Pipe) => {
+                        self.iter.next();
+                        continue;
+                    },
+
+                    Some(&ParenClose) if !patterns.is_empty() => {
+                        self.iter.next();
+                        break;
+                    },
+
+                    // Make sure we check for missing `esac` here, otherwise if we have EOF
+                    // trying to parse a word will result in an `UnexpectedEOF` error
+                    None => return Err(()).map_err(&missing_esac),
+                    _ => return Err(self.make_unexpected_err()),
                 }
             }
 
@@ -1639,7 +1712,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             None => remaining_comments,
         };
 
-        try!(self.reserved_word(&["esac"]));
+        try!(self.reserved_word(&["esac"]).map_err(&missing_esac));
 
         Ok((word, post_word_comments, branches, pre_esac_comments))
     }
@@ -1656,10 +1729,18 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         };
 
         self.skip_whitespace();
+
+        match self.iter.peek() {
+            Some(&Name(_))    |
+            Some(&Literal(_)) => {},
+            _ => return Err(self.make_unexpected_err()),
+        }
+
+        let ident_pos = self.iter.pos();
         let name = match self.iter.next() {
             Some(Name(n)) => n,
-            Some(Literal(s)) => return Err(self.make_bad_ident_err(s)),
-            t => return Err(self.make_unexpected_err(t)),
+            Some(Literal(s)) => return Err(ParseError::BadIdent(s, ident_pos)),
+            _ => unreachable!(),
         };
 
         // There must be whitespace after the function name, UNLESS we find `()` immediately after,
@@ -1670,7 +1751,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             [ParenOpen, Whitespace(_), ParenClose, ..] => {},
             [Newline, ..] if found_fn                  => {},
 
-            _ => return Err(self.make_unexpected_err(None)),
+            _ => return Err(self.make_unexpected_err()),
         }
 
         self.skip_whitespace();
@@ -1687,12 +1768,12 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             },
 
             // If no `function` keyword, we must find `()`
-            _ => if !found_fn { return Err(self.make_unexpected_err(None)) },
+            _ => if !found_fn { return Err(self.make_unexpected_err()) },
         }
 
         let body = match try!(self.complete_command()) {
             Some(c) => c,
-            None => return Err(self.make_unexpected_err(None)),
+            None => return Err(self.make_unexpected_err()),
         };
 
         Ok(try!(self.builder.function_declaration(name, body)))
@@ -1838,17 +1919,29 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     pub fn reserved_token(&mut self, tokens: &[Token]) -> Result<Token, ParseError<B::Err>> {
         match self.peek_reserved_token(tokens) {
             Some(_) => Ok(self.iter.next().unwrap()),
-            None => Err(self.make_unexpected_err(None)),
+            None => {
+                // If the desired token is next, but we failed to find a reserved
+                // token (because the token after it isn't a valid delimeter)
+                // then the following token is the unexpected culprit, so we should
+                // skip the upcoming one before forming the error.
+                let skip_one = {
+                    let peeked = self.iter.peek();
+                    tokens.iter().any(|t| Some(t) == peeked)
+                };
+
+                if skip_one { self.iter.next(); }
+                Err(self.make_unexpected_err())
+            },
         }
     }
 
     /// Checks that one of the specified strings appears as a reserved word
     /// and consumes it, returning the string it matched in case the caller
     /// cares which specific reserved word was found.
-    pub fn reserved_word<'a>(&mut self, words: &'a [&str]) -> Result<&'a str, ParseError<B::Err>> {
+    pub fn reserved_word<'a>(&mut self, words: &'a [&str]) -> Result<&'a str, ()> {
         match self.peek_reserved_word(words) {
             Some(s) => { self.iter.next(); Ok(s) },
-            None => Err(self.make_unexpected_err(None)),
+            None => Err(()),
         }
     }
 
@@ -1874,7 +1967,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         }
 
         if cmds.is_empty() {
-            Err(self.make_unexpected_err(None))
+            Err(self.make_unexpected_err())
         } else {
             Ok(cmds)
         }
@@ -1889,6 +1982,7 @@ pub mod test {
     use syntax::ast::Command::*;
     use syntax::ast::CompoundCommand::*;
     use syntax::parse::*;
+    use syntax::parse::ParseError::*;
     use syntax::token::Token;
 
     pub fn make_parser(src: &str) -> DefaultParser<Lexer<::std::str::Chars>> {
@@ -1914,6 +2008,14 @@ pub mod test {
 
     fn cmd(cmd: &str) -> Box<Command> {
         Box::new(cmd_unboxed(cmd))
+    }
+
+    fn src(byte: usize, line: usize, col: usize) -> SourcePos {
+        SourcePos {
+            byte: byte,
+            line: line,
+            col: col,
+        }
     }
 
     pub fn sample_simple_command() -> (Option<Word>, Vec<Word>, Vec<(String, Option<Word>)>, Vec<Redirect>) {
@@ -2043,7 +2145,8 @@ pub mod test {
     fn test_and_or_invalid_with_newlines_before_operator() {
         let mut p = make_parser("foo || bar\n\n&& baz");
         p.and_or().unwrap();     // Successful parse Or(foo, bar)
-        p.and_or().unwrap_err(); // Fail to parse "&& baz" which is an error
+        // Fail to parse "&& baz" which is an error
+        assert_eq!(Err(ParseError::Unexpected(Token::AndIf, src(12, 3, 1))), p.complete_command());
     }
 
     #[test]
@@ -2075,7 +2178,7 @@ pub mod test {
     #[test]
     fn test_pipeline_invalid_multiple_bangs_in_same_pipeline() {
         let mut p = make_parser("! foo | bar | ! baz");
-        p.pipeline().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Bang, src(14, 1, 15))), p.pipeline());
     }
 
     #[test]
@@ -2147,7 +2250,7 @@ pub mod test {
         }
 
         assert_eq!(Word::Literal(String::from("$")), p.parameter().unwrap());
-        p.parameter().unwrap_err(); // Stream should be exhausted
+        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -2170,7 +2273,7 @@ pub mod test {
             assert_eq!(p.parameter().unwrap(), param);
         }
 
-        p.parameter().unwrap_err(); // Stream should be exhausted
+        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -2217,7 +2320,7 @@ pub mod test {
             assert_eq!(param, p.parameter().unwrap());
         }
 
-        p.parameter().unwrap_err(); // Stream should be exhausted
+        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -2260,7 +2363,7 @@ pub mod test {
             assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap());
         }
 
-        p.parameter().unwrap_err(); // Stream should be exhausted
+        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -2303,7 +2406,7 @@ pub mod test {
             assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap());
         }
 
-        p.parameter().unwrap_err(); // Stream should be exhausted
+        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -2346,7 +2449,7 @@ pub mod test {
             assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap());
         }
 
-        p.parameter().unwrap_err(); // Stream should be exhausted
+        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -2389,7 +2492,7 @@ pub mod test {
             assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap());
         }
 
-        p.parameter().unwrap_err(); // Stream should be exhausted
+        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -2428,7 +2531,7 @@ pub mod test {
         let src = "${@:-foo}${*:-foo}${#:-foo}${?:-foo}${-:-foo}${$:-foo}${!:-foo}${0:-foo}${10:-foo}${100:-foo}${foo_bar123:-foo}${@:-}${*:-}${#:-}${?:-}${-:-}${$:-}${!:-}${0:-}${10:-}${100:-}${foo_bar123:-}";
         let mut p = make_parser(src);
         for s in substs { assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap()); }
-        p.parameter().unwrap_err(); // Stream should be exhausted
+        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
 
         let substs = vec!(
             Default(false, At, Some(word.clone())),
@@ -2459,7 +2562,7 @@ pub mod test {
         let src = "${@-foo}${*-foo}${#-foo}${?-foo}${--foo}${$-foo}${!-foo}${0-foo}${10-foo}${100-foo}${foo_bar123-foo}${@-}${*-}${?-}${--}${$-}${!-}${0-}${10-}${100-}${foo_bar123-}";
         let mut p = make_parser(src);
         for s in substs { assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap()); }
-        p.parameter().unwrap_err(); // Stream should be exhausted
+        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -2498,7 +2601,7 @@ pub mod test {
         let src = "${@:?foo}${*:?foo}${#:?foo}${?:?foo}${-:?foo}${$:?foo}${!:?foo}${0:?foo}${10:?foo}${100:?foo}${foo_bar123:?foo}${@:?}${*:?}${#:?}${?:?}${-:?}${$:?}${!:?}${0:?}${10:?}${100:?}${foo_bar123:?}";
         let mut p = make_parser(src);
         for s in substs { assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap()); }
-        p.parameter().unwrap_err(); // Stream should be exhausted
+        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
 
         let substs = vec!(
             Error(false, At, Some(word.clone())),
@@ -2529,7 +2632,7 @@ pub mod test {
         let src = "${@?foo}${*?foo}${#?foo}${??foo}${-?foo}${$?foo}${!?foo}${0?foo}${10?foo}${100?foo}${foo_bar123?foo}${@?}${*?}${??}${-?}${$?}${!?}${0?}${10?}${100?}${foo_bar123?}";
         let mut p = make_parser(src);
         for s in substs { assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap()); }
-        p.parameter().unwrap_err(); // Stream should be exhausted
+        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -2568,7 +2671,7 @@ pub mod test {
         let src = "${@:=foo}${*:=foo}${#:=foo}${?:=foo}${-:=foo}${$:=foo}${!:=foo}${0:=foo}${10:=foo}${100:=foo}${foo_bar123:=foo}${@:=}${*:=}${#:=}${?:=}${-:=}${$:=}${!:=}${0:=}${10:=}${100:=}${foo_bar123:=}";
         let mut p = make_parser(src);
         for s in substs { assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap()); }
-        p.parameter().unwrap_err(); // Stream should be exhausted
+        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
 
         let substs = vec!(
             Assign(false, At, Some(word.clone())),
@@ -2599,7 +2702,7 @@ pub mod test {
         let src = "${@=foo}${*=foo}${#=foo}${?=foo}${-=foo}${$=foo}${!=foo}${0=foo}${10=foo}${100=foo}${foo_bar123=foo}${@=}${*=}${#=}${?=}${-=}${$=}${!=}${0=}${10=}${100=}${foo_bar123=}";
         let mut p = make_parser(src);
         for s in substs { assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap()); }
-        p.parameter().unwrap_err(); // Stream should be exhausted
+        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -2638,7 +2741,7 @@ pub mod test {
         let src = "${@:+foo}${*:+foo}${#:+foo}${?:+foo}${-:+foo}${$:+foo}${!:+foo}${0:+foo}${10:+foo}${100:+foo}${foo_bar123:+foo}${@:+}${*:+}${#:+}${?:+}${-:+}${$:+}${!:+}${0:+}${10:+}${100:+}${foo_bar123:+}";
         let mut p = make_parser(src);
         for s in substs { assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap()); }
-        p.parameter().unwrap_err(); // Stream should be exhausted
+        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
 
         let substs = vec!(
             Alternative(false, At, Some(word.clone())),
@@ -2669,7 +2772,7 @@ pub mod test {
         let src = "${@+foo}${*+foo}${#+foo}${?+foo}${-+foo}${$+foo}${!+foo}${0+foo}${10+foo}${100+foo}${foo_bar123+foo}${@+}${*+}${#+}${?+}${-+}${$+}${!+}${0+}${10+}${100+}${foo_bar123+}";
         let mut p = make_parser(src);
         for s in substs { assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap()); }
-        p.parameter().unwrap_err(); // Stream should be exhausted
+        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -2720,7 +2823,7 @@ pub mod test {
             let src = format!("${{foo_bar123{}foo{{\\}} \t\r \\\nbar \t\r }}", src[i]);
             let mut p = make_parser(&src);
             assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap());
-            p.parameter().unwrap_err(); // Stream should be exhausted
+            assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
         }
     }
 
@@ -2772,7 +2875,7 @@ pub mod test {
             let src = format!("${{foo_bar123{}#foo{{\\}} \t\r \\\nbar \t\r }}", src[i]);
             let mut p = make_parser(&src);
             assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap());
-            p.parameter().unwrap_err(); // Stream should be exhausted
+            assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
         }
     }
 
@@ -2824,10 +2927,9 @@ pub mod test {
             let src = format!("${{foo_bar123{}$@${{foo##bar}}}}", src[i]);
             let mut p = make_parser(&src);
             assert_eq!(Word::Subst(Box::new(s)), p.parameter().unwrap());
-            p.parameter().unwrap_err(); // Stream should be exhausted
+            assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
         }
     }
-
 
     #[test]
     fn test_parameter_substitution_command_close_paren_need_not_be_followed_by_word_delimeter() {
@@ -2904,8 +3006,7 @@ pub mod test {
 
     #[test]
     fn test_redirect_invalid_dup_if_dst_fd_is_definitely_non_numeric() {
-        let mut p = make_parser(">&123$$'foo'");
-        p.redirect().unwrap_err();
+        assert_eq!(Err(BadFd(src(2, 1, 3), src(12, 1, 13))), make_parser(">&123$$'foo'").redirect());
     }
 
     #[test]
@@ -2925,14 +3026,12 @@ pub mod test {
 
     #[test]
     fn test_redirect_invalid_close_without_whitespace() {
-        let mut p = make_parser(">&-asdf");
-        p.redirect().unwrap_err();
+        assert_eq!(Err(BadFd(src(2, 1, 3), src(7, 1, 8))), make_parser(">&-asdf").redirect());
     }
 
     #[test]
     fn test_redirect_invalid_close_with_whitespace() {
-        let mut p = make_parser("<&       -asdf");
-        p.redirect().unwrap_err();
+        assert_eq!(Err(BadFd(src(9, 1, 10), src(14, 1, 15))), make_parser("<&       -asdf").redirect());
     }
 
     #[test]
@@ -3510,17 +3609,26 @@ pub mod test {
 
     #[test]
     fn test_heredoc_invalid_missing_delimeter() {
-        make_parser("cat << ;").complete_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Semi, src(7, 1, 8))), make_parser("cat << ;").complete_command());
     }
 
     #[test]
     fn test_heredoc_invalid_unbalanced_quoting() {
-        make_parser("cat <<'eof").complete_command().unwrap_err();
-        make_parser("cat <<eof`").complete_command().unwrap_err();
-        make_parser("cat <<\"eof").complete_command().unwrap_err();
-        make_parser("cat <<eof(").complete_command().unwrap_err();
-        make_parser("cat <<eof$(").complete_command().unwrap_err();
-        make_parser("cat <<eof${").complete_command().unwrap_err();
+        assert_eq!(Err(Unmatched(Token::SingleQuote, src(6,  1,  7))), make_parser("cat <<'eof" ).complete_command());
+        assert_eq!(Err(Unmatched(Token::Backtick,    src(6,  1,  7))), make_parser("cat <<`eof" ).complete_command());
+        assert_eq!(Err(Unmatched(Token::DoubleQuote, src(6,  1,  7))), make_parser("cat <<\"eof").complete_command());
+        assert_eq!(Err(Unmatched(Token::ParenOpen,   src(9,  1, 10))), make_parser("cat <<eof(" ).complete_command());
+        assert_eq!(Err(Unmatched(Token::ParenOpen,   src(10, 1, 11))), make_parser("cat <<eof$(").complete_command());
+        assert_eq!(Err(Unmatched(Token::CurlyOpen,   src(10, 1, 11))), make_parser("cat <<eof${").complete_command());
+    }
+
+    #[test]
+    fn test_heredoc_invalid_shows_right_position_of_error() {
+        let mut p = make_parser("cat <<EOF\nhello\n${invalid subst\nEOF");
+        assert_eq!(
+            Err(BadSubst(Token::Whitespace(String::from(" ")), src(25,3,10))),
+            p.complete_command()
+        );
     }
 
     #[test]
@@ -3536,12 +3644,9 @@ pub mod test {
 
     #[test]
     fn test_redirect_list_rejects_non_fd_words() {
-        let mut p = make_parser("1>>out <in 2>&- abc");
-        p.redirect_list().unwrap_err();
-        let mut p = make_parser("1>>out abc<in 2>&-");
-        p.redirect_list().unwrap_err();
-        let mut p = make_parser("1>>out abc <in 2>&-");
-        p.redirect_list().unwrap_err();
+        assert_eq!(Err(BadFd(src(16, 1, 17), src(19, 1, 20))), make_parser("1>>out <in 2>&- abc").redirect_list());
+        assert_eq!(Err(BadFd(src(7,  1, 8),  src(10,  1, 11))), make_parser("1>>out abc<in 2>&-").redirect_list());
+        assert_eq!(Err(BadFd(src(7,  1, 8),  src(10,  1, 11))), make_parser("1>>out abc <in 2>&-").redirect_list());
     }
 
     #[test]
@@ -3554,7 +3659,7 @@ pub mod test {
     #[test]
     fn test_do_group_invalid_missing_separator() {
         let mut p = make_parser("do foo\nbar; baz done");
-        p.do_group().unwrap_err();
+        assert_eq!(Err(IncompleteCmd("do", src(0,1,1), "done")), p.do_group());
     }
 
     #[test]
@@ -3567,24 +3672,27 @@ pub mod test {
     #[test]
     fn test_do_group_invalid_missing_keyword() {
         let mut p = make_parser("foo\nbar; baz; done");
-        p.do_group().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Name(String::from("foo")), src(0,1,1))), p.do_group());
         let mut p = make_parser("do foo\nbar; baz");
-        p.do_group().unwrap_err();
+        assert_eq!(Err(IncompleteCmd("do", src(0,1,1), "done")), p.do_group());
     }
 
     #[test]
     fn test_do_group_invalid_quoted() {
         let cmds = [
-            "'do' foo\nbar; baz; done",
-            "do foo\nbar; baz; 'done'",
-            "\"do\" foo\nbar; baz; done",
-            "do foo\nbar; baz; \"done\"",
+            ("'do' foo\nbar; baz; done",   Unexpected(Token::SingleQuote, src(0, 1, 1))),
+            ("do foo\nbar; baz; 'done'",   IncompleteCmd("do", src(0,1,1), "done")),
+            ("\"do\" foo\nbar; baz; done", Unexpected(Token::DoubleQuote, src(0, 1, 1))),
+            ("do foo\nbar; baz; \"done\"", IncompleteCmd("do", src(0,1,1), "done")),
         ];
 
-        for c in cmds.into_iter() {
+        for &(c, ref e) in cmds.into_iter() {
             match make_parser(c).do_group() {
-                Err(_) => {},
                 Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
+                Err(ref err) => if err != e {
+                    panic!("Expected the source \"{}\" to return the error `{:?}`, but got `{:?}`",
+                           c, e, err);
+                },
             }
         }
     }
@@ -3599,7 +3707,7 @@ pub mod test {
             Token::Newline,
             Token::Literal(String::from("done")),
         ));
-        p.do_group().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Literal(String::from("d")), src(0,1,1))), p.do_group());
         let mut p = make_parser_from_tokens(vec!(
             Token::Literal(String::from("do")),
             Token::Newline,
@@ -3608,7 +3716,7 @@ pub mod test {
             Token::Literal(String::from("do")),
             Token::Literal(String::from("ne")),
         ));
-        p.do_group().unwrap_err();
+        assert_eq!(Err(IncompleteCmd("do", src(0,1,1), "done")), p.do_group());
     }
 
     #[test]
@@ -3630,7 +3738,7 @@ pub mod test {
     #[test]
     fn test_do_group_invalid_missing_body() {
         let mut p = make_parser("do\ndone");
-        p.loop_command().unwrap_err();
+        assert_eq!(Err(IncompleteCmd("do", src(0,1,1), "done")), p.do_group());
     }
 
     #[test]
@@ -3642,18 +3750,17 @@ pub mod test {
 
     #[test]
     fn test_brace_group_invalid_missing_separator() {
-        let mut p = make_parser("{ foo\nbar; baz }");
-        p.brace_group().unwrap_err();
+        assert_eq!(Err(Unmatched(Token::CurlyOpen, src(0,1,1))), make_parser("{ foo\nbar; baz }").brace_group());
     }
 
     #[test]
     fn test_brace_group_invalid_start_must_be_whitespace_delimited() {
         let mut p = make_parser("{foo\nbar; baz; }");
-        p.brace_group().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Name(String::from("foo")), src(1,1,2))), p.brace_group());
     }
 
     #[test]
-    fn test_brace_group_invalid_end_must_be_whitespace_and_separator_delimited() {
+    fn test_brace_group_valid_end_must_be_whitespace_and_separator_delimited() {
         let mut p = make_parser("{ foo\nbar}; baz; }");
         p.brace_group().unwrap();
         assert_eq!(p.complete_command().unwrap(), None); // Ensure stream is empty
@@ -3672,32 +3779,34 @@ pub mod test {
     #[test]
     fn test_brace_group_invalid_missing_keyword() {
         let mut p = make_parser("{ foo\nbar; baz");
-        p.brace_group().unwrap_err();
+        assert_eq!(Err(Unmatched(Token::CurlyOpen, src(0,1,1))), p.brace_group());
         let mut p = make_parser("foo\nbar; baz; }");
-        p.brace_group().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Name(String::from("foo")), src(0,1,1))), p.brace_group());
     }
 
     #[test]
     fn test_brace_group_invalid_quoted() {
         let cmds = [
-            "'{' foo\nbar; baz; }",
-            "{ foo\nbar; baz; '}'",
-            "\"{\" foo\nbar; baz; }",
-            "{ foo\nbar; baz; \"}\"",
+            ("'{' foo\nbar; baz; }",   Unexpected(Token::SingleQuote, src(0,1,1))),
+            ("{ foo\nbar; baz; '}'",   Unmatched(Token::CurlyOpen, src(0,1,1))),
+            ("\"{\" foo\nbar; baz; }", Unexpected(Token::DoubleQuote, src(0,1,1))),
+            ("{ foo\nbar; baz; \"}\"", Unmatched(Token::CurlyOpen, src(0,1,1))),
         ];
 
-        for c in cmds.into_iter() {
+        for &(c, ref e) in cmds.into_iter() {
             match make_parser(c).brace_group() {
-                Err(_) => {},
                 Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
+                Err(ref err) => if err != e {
+                    panic!("Expected the source \"{}\" to return the error `{:?}`, but got `{:?}`",
+                           c, e, err);
+                }
             }
         }
     }
 
     #[test]
     fn test_brace_group_invalid_missing_body() {
-        let mut p = make_parser("{\n}");
-        p.loop_command().unwrap_err();
+        assert_eq!(Err(Unmatched(Token::CurlyOpen, src(0, 1, 1))), make_parser("{\n}").brace_group());
     }
 
     #[test]
@@ -3726,35 +3835,35 @@ pub mod test {
 
     #[test]
     fn test_subshell_invalid_missing_keyword() {
-        let mut p = make_parser("( foo\nbar; baz");
-        p.subshell().unwrap_err();
-        let mut p = make_parser("foo\nbar; baz; )");
-        p.subshell().unwrap_err();
+        assert_eq!(Err(Unmatched(Token::ParenOpen, src(0,1,1))), make_parser("( foo\nbar; baz").subshell());
+        assert_eq!(Err(Unexpected(Token::Name(String::from("foo")), src(0,1,1))),
+            make_parser("foo\nbar; baz; )").subshell());
     }
 
     #[test]
     fn test_subshell_invalid_quoted() {
         let cmds = [
-            "'(' foo\nbar; baz; )",
-            "( foo\nbar; baz; ')'",
-            "\"(\" foo\nbar; baz; )",
-            "( foo\nbar; baz; \")\"",
+            ("'(' foo\nbar; baz; )",   Unexpected(Token::SingleQuote, src(0,1,1))),
+            ("( foo\nbar; baz; ')'",   Unmatched(Token::ParenOpen, src(0,1,1))),
+            ("\"(\" foo\nbar; baz; )", Unexpected(Token::DoubleQuote, src(0,1,1))),
+            ("( foo\nbar; baz; \")\"", Unmatched(Token::ParenOpen, src(0,1,1))),
         ];
 
-        for c in cmds.into_iter() {
+        for &(c, ref e) in cmds.into_iter() {
             match make_parser(c).subshell() {
-                Err(_) => {},
                 Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
+                Err(ref err) => if err != e {
+                    panic!("Expected the source \"{}\" to return the error `{:?}`, but got `{:?}`",
+                           c, e, err);
+                },
             }
         }
     }
 
     #[test]
     fn test_subshell_invalid_missing_body() {
-        let mut p = make_parser("(\n)");
-        p.loop_command().unwrap_err();
-        let mut p = make_parser("()");
-        p.loop_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::ParenClose, src(2,2,1))), make_parser("(\n)").subshell());
+        assert_eq!(Err(Unexpected(Token::ParenClose, src(1,1,2))), make_parser("()").subshell());
     }
 
     #[test]
@@ -3786,45 +3895,48 @@ pub mod test {
     #[test]
     fn test_loop_command_invalid_missing_separator() {
         let mut p = make_parser("while guard do foo\nbar; baz; done");
-        p.loop_command().unwrap_err();
+        assert_eq!(Err(IncompleteCmd("while", src(0,1,1), "do")), p.loop_command());
         let mut p = make_parser("while guard; do foo\nbar; baz done");
-        p.loop_command().unwrap_err();
+        assert_eq!(Err(IncompleteCmd("do", src(13,1,14), "done")), p.loop_command());
     }
 
     #[test]
     fn test_loop_command_invalid_missing_keyword() {
         let mut p = make_parser("guard; do foo\nbar; baz; done");
-        p.loop_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Name(String::from("guard")), src(0,1,1))), p.loop_command());
     }
 
     #[test]
     fn test_loop_command_invalid_missing_guard() {
         // With command separator between loop and do keywords
         let mut p = make_parser("while; do foo\nbar; baz; done");
-        p.loop_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Semi, src(5, 1, 6))), p.loop_command());
         let mut p = make_parser("until; do foo\nbar; baz; done");
-        p.loop_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Semi, src(5, 1, 6))), p.loop_command());
 
         // Without command separator between loop and do keywords
         let mut p = make_parser("while do foo\nbar; baz; done");
-        p.loop_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Name(String::from("do")), src(6, 1, 7))), p.loop_command());
         let mut p = make_parser("until do foo\nbar; baz; done");
-        p.loop_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Name(String::from("do")), src(6, 1, 7))), p.loop_command());
     }
 
     #[test]
     fn test_loop_command_invalid_quoted() {
         let cmds = [
-            "'while' guard do foo\nbar; baz; done",
-            "'until' guard do foo\nbar; baz; done",
-            "\"while\" guard do foo\nbar; baz; done",
-            "\"until\" guard do foo\nbar; baz; done",
+            ("'while' guard do foo\nbar; baz; done",   Unexpected(Token::SingleQuote, src(0,1,1))),
+            ("'until' guard do foo\nbar; baz; done",   Unexpected(Token::SingleQuote, src(0,1,1))),
+            ("\"while\" guard do foo\nbar; baz; done", Unexpected(Token::DoubleQuote, src(0,1,1))),
+            ("\"until\" guard do foo\nbar; baz; done", Unexpected(Token::DoubleQuote, src(0,1,1))),
         ];
 
-        for c in cmds.into_iter() {
+        for &(c, ref e) in cmds.into_iter() {
             match make_parser(c).loop_command() {
-                Err(_) => {},
                 Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
+                Err(ref err) => if err != e {
+                    panic!("Expected the source \"{}\" to return the error `{:?}`, but got `{:?}`",
+                           c, e, err);
+                },
             }
         }
     }
@@ -3842,7 +3954,7 @@ pub mod test {
             Token::Newline,
             Token::Literal(String::from("done")),
         ));
-        p.loop_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Literal(String::from("whi")), src(0,1,1))), p.loop_command());
         let mut p = make_parser_from_tokens(vec!(
             Token::Literal(String::from("un")),
             Token::Literal(String::from("til")),
@@ -3854,7 +3966,7 @@ pub mod test {
             Token::Newline,
             Token::Literal(String::from("done")),
         ));
-        p.loop_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Literal(String::from("un")), src(0,1,1))), p.loop_command());
     }
 
     #[test]
@@ -3957,60 +4069,51 @@ pub mod test {
     }
 
     #[test]
-    fn test_if_command_invalid_body_can_be_empty() {
-        let mut p = make_parser("if guard; then; else else part; fi");
-        p.if_command().unwrap_err();
-    }
-
-    #[test]
-    fn test_if_command_invalid_else_part_can_be_empty() {
-        let mut p = make_parser("if guard; then body; else; fi");
-        p.if_command().unwrap_err();
-    }
-
-    #[test]
     fn test_if_command_invalid_missing_separator() {
         let mut p = make_parser("if guard; then body1; elif guard2; then body2; else else fi");
-        p.if_command().unwrap_err();
+        assert_eq!(Err(IncompleteCmd("if", src(0,1,1), "fi")), p.if_command());
     }
 
     #[test]
     fn test_if_command_invalid_missing_keyword() {
         let mut p = make_parser("guard1; then body1; elif guard2; then body2; else else; fi");
-        p.if_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Name(String::from("guard1")), src(0,1,1))), p.if_command());
         let mut p = make_parser("if guard1; then body1; elif guard2; then body2; else else;");
-        p.if_command().unwrap_err();
+        assert_eq!(Err(IncompleteCmd("if", src(0,1,1), "fi")), p.if_command());
     }
 
     #[test]
     fn test_if_command_invalid_missing_guard() {
         let mut p = make_parser("if; then body1; elif guard2; then body2; else else; fi");
-        p.if_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Semi, src(2,1,3))), p.if_command());
     }
 
     #[test]
     fn test_if_command_invalid_missing_body() {
         let mut p = make_parser("if guard; then; elif guard2; then body2; else else; fi");
-        p.if_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Semi, src(14, 1, 15))), p.if_command());
         let mut p = make_parser("if guard1; then body1; elif; then body2; else else; fi");
-        p.if_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Semi, src(27, 1, 28))), p.if_command());
         let mut p = make_parser("if guard1; then body1; elif guard2; then body2; else; fi");
-        p.if_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Semi, src(52, 1, 53))), p.if_command());
     }
 
     #[test]
     fn test_if_command_invalid_quoted() {
         let cmds = [
-            "'if' guard1; then body1; elif guard2; then body2; else else; fi",
-            "if guard1; then body1; elif guard2; then body2; else else; 'fi'",
-            "\"if\" guard1; then body1; elif guard2; then body2; else else; fi",
-            "if guard1; then body1; elif guard2; then body2; else else; \"fi\"",
+            ("'if' guard1; then body1; elif guard2; then body2; else else; fi", Unexpected(Token::SingleQuote, src(0,1,1))),
+            ("if guard1; then body1; elif guard2; then body2; else else; 'fi'", IncompleteCmd("if", src(0,1,1), "fi")),
+            ("\"if\" guard1; then body1; elif guard2; then body2; else else; fi", Unexpected(Token::DoubleQuote, src(0,1,1))),
+            ("if guard1; then body1; elif guard2; then body2; else else; \"fi\"", IncompleteCmd("if", src(0,1,1), "fi")),
         ];
 
-        for c in cmds.into_iter() {
-            match make_parser(c).if_command() {
-                Err(_) => {},
-                Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
+        for &(s, ref e) in cmds.into_iter() {
+            match make_parser(s).if_command() {
+                Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", s, result),
+                Err(ref err) => if err != e {
+                    panic!("Expected the source \"{}\" to return the error `{:?}`, but got `{:?}`",
+                           s, e, err);
+                },
             }
         }
     }
@@ -4030,7 +4133,7 @@ pub mod test {
             Token::Newline, Token::Literal(String::from("else part")), Token::Newline,
             Token::Literal(String::from("fi")),
         ));
-        p.if_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Literal(String::from("i")), src(0,1,1))), p.if_command());
 
         // Splitting up `then`, `elif`, and `else` tokens makes them
         // get interpreted as arguments, so an explicit error may not be raised
@@ -4049,7 +4152,7 @@ pub mod test {
             Token::Newline, Token::Literal(String::from("else part")), Token::Newline,
             Token::Literal(String::from("f")), Token::Literal(String::from("i")),
         ));
-        p.if_command().unwrap_err();
+        assert_eq!(Err(IncompleteCmd("if", src(0,1,1), "fi")), p.if_command());
     }
 
     #[test]
@@ -4172,52 +4275,55 @@ pub mod test {
     #[test]
     fn test_for_command_invalid_with_in_no_words_no_with_separator() {
         let mut p = make_parser("for var in do echo $var; done");
-        p.for_command().unwrap_err();
+        assert_eq!(Err(IncompleteCmd("for", src(0,1,1), "do")), p.for_command());
     }
 
     #[test]
     fn test_for_command_invalid_missing_separator() {
         let mut p = make_parser("for var in one two three do echo $var; done");
-        p.for_command().unwrap_err();
+        assert_eq!(Err(IncompleteCmd("for", src(0,1,1), "do")), p.for_command());
     }
 
     #[test]
     fn test_for_command_invalid_amp_not_valid_separator() {
         let mut p = make_parser("for var in one two three& do echo $var; done");
-        p.for_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Amp, src(24, 1, 25))), p.for_command());
     }
 
     #[test]
     fn test_for_command_invalid_missing_keyword() {
         let mut p = make_parser("var in one two three\ndo echo $var; done");
-        p.for_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Name(String::from("var")), src(0,1,1))), p.for_command());
     }
 
     #[test]
     fn test_for_command_invalid_missing_var() {
         let mut p = make_parser("for in one two three\ndo echo $var; done");
-        p.for_command().unwrap_err();
+        assert_eq!(Err(IncompleteCmd("for", src(0,1,1), "in")), p.for_command());
     }
 
     #[test]
     fn test_for_command_invalid_missing_body() {
         let mut p = make_parser("for var in one two three\n");
-        p.for_command().unwrap_err();
+        assert_eq!(Err(IncompleteCmd("for", src(0,1,1), "do")), p.for_command());
     }
 
     #[test]
     fn test_for_command_invalid_quoted() {
         let cmds = [
-            "'for' var in one two three\ndo echo $var; done",
-            "for var 'in' one two three\ndo echo $var; done",
-            "\"for\" var in one two three\ndo echo $var; done",
-            "for var \"in\" one two three\ndo echo $var; done",
+            ("'for' var in one two three\ndo echo $var; done", Unexpected(Token::SingleQuote, src(0,1,1))),
+            ("for var 'in' one two three\ndo echo $var; done", IncompleteCmd("for", src(0,1,1), "in")),
+            ("\"for\" var in one two three\ndo echo $var; done", Unexpected(Token::DoubleQuote, src(0,1,1))),
+            ("for var \"in\" one two three\ndo echo $var; done", IncompleteCmd("for", src(0,1,1), "in")),
         ];
 
-        for c in cmds.into_iter() {
+        for &(c, ref e) in cmds.into_iter() {
             match make_parser(c).for_command() {
-                Err(_) => {},
                 Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
+                Err(ref err) => if err != e {
+                    panic!("Expected the source \"{}\" to return the error `{:?}`, but got `{:?}`",
+                           c, e, err);
+                },
             }
         }
     }
@@ -4225,13 +4331,13 @@ pub mod test {
     #[test]
     fn test_for_command_invalid_var_must_be_name() {
         let mut p = make_parser("for 123var in one two three\ndo echo $var; done");
-        p.for_command().unwrap_err();
+        assert_eq!(Err(BadIdent(String::from("123var"), src(4, 1, 5))), p.for_command());
         let mut p = make_parser("for 'var' in one two three\ndo echo $var; done");
-        p.for_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::SingleQuote, src(4, 1, 5))), p.for_command());
         let mut p = make_parser("for \"var\" in one two three\ndo echo $var; done");
-        p.for_command().unwrap_err();
-        let mut p = make_parser("for var&*^ in one two three\ndo echo $var; done");
-        p.for_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::DoubleQuote, src(4, 1, 5))), p.for_command());
+        let mut p = make_parser("for var*^ in one two three\ndo echo $var; done");
+        assert_eq!(Err(Unexpected(Token::Star, src(7, 1, 8))), p.for_command());
     }
 
     #[test]
@@ -4253,7 +4359,7 @@ pub mod test {
             Token::Newline,
             Token::Literal(String::from("done")),
         ));
-        p.for_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Literal(String::from("fo")), src(0, 1, 1))), p.for_command());
 
         let mut p = make_parser_from_tokens(vec!(
             Token::Literal(String::from("for")),
@@ -4272,7 +4378,7 @@ pub mod test {
             Token::Newline,
             Token::Literal(String::from("done")),
         ));
-        p.for_command().unwrap_err();
+        assert_eq!(Err(IncompleteCmd("for", src(0,1,1), "in")), p.for_command());
     }
 
     #[test]
@@ -4384,66 +4490,71 @@ pub mod test {
     #[test]
     fn test_function_declaration_invalid_newline_in_declaration() {
         let mut p = make_parser("function\nname() { echo body; }");
-        p.function_declaration().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Newline, src(8,1,9))), p.function_declaration());
+        // If the function keyword is present the () are optional, and at this particular point
+        // they become an empty subshell (which is invalid)
         let mut p = make_parser("function name\n() { echo body; }");
-        p.function_declaration().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::ParenClose, src(15,2,2))), p.function_declaration());
     }
 
     #[test]
     fn test_function_declaration_invalid_missing_space_after_fn_keyword_and_no_parens() {
         let mut p = make_parser("functionname { echo body; }");
-        p.function_declaration().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::CurlyOpen, src(13,1,14))), p.function_declaration());
     }
 
     #[test]
     fn test_function_declaration_invalid_missing_fn_keyword_and_parens() {
         let mut p = make_parser("name { echo body; }");
-        p.function_declaration().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::CurlyOpen, src(5,1,6))), p.function_declaration());
     }
 
     #[test]
     fn test_function_declaration_invalid_missing_space_after_name_no_parens() {
         let mut p = make_parser("function name{ echo body; }");
-        p.function_declaration().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::CurlyOpen, src(13,1,14))), p.function_declaration());
         let mut p = make_parser("function name( echo body; )");
-        p.function_declaration().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::ParenOpen, src(13,1,14))), p.function_declaration());
     }
 
     #[test]
     fn test_function_declaration_invalid_missing_name() {
         let mut p = make_parser("function { echo body; }");
-        p.function_declaration().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::CurlyOpen, src(9,1,10))), p.function_declaration());
         let mut p = make_parser("function () { echo body; }");
-        p.function_declaration().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::ParenOpen, src(9,1,10))), p.function_declaration());
         let mut p = make_parser("() { echo body; }");
-        p.function_declaration().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::ParenOpen, src(0,1,1))), p.function_declaration());
     }
 
     #[test]
     fn test_function_declaration_invalid_missing_body() {
         let mut p = make_parser("function name");
-        p.function_declaration().unwrap_err();
+        assert_eq!(Err(UnexpectedEOF), p.function_declaration());
         let mut p = make_parser("function name()");
-        p.function_declaration().unwrap_err();
+        assert_eq!(Err(UnexpectedEOF), p.function_declaration());
         let mut p = make_parser("name()");
-        p.function_declaration().unwrap_err();
+        assert_eq!(Err(UnexpectedEOF), p.function_declaration());
     }
 
     #[test]
     fn test_function_declaration_invalid_quoted() {
         let cmds = [
-            "'function' name { echo body; }",
-            "function 'name'() { echo body; }",
-            "name'()' { echo body; }",
-            "\"function\" name { echo body; }",
-            "function \"name\"() { echo body; }",
-            "name\"()\" { echo body; }",
+            ("'function' name { echo body; }", Unexpected(Token::SingleQuote, src(0,1,1))),
+            ("function 'name'() { echo body; }", Unexpected(Token::SingleQuote, src(9,1,10))),
+            ("name'()' { echo body; }", Unexpected(Token::SingleQuote, src(4,1,5))),
+            ("\"function\" name { echo body; }", Unexpected(Token::DoubleQuote, src(0,1,1))),
+            ("function \"name\"() { echo body; }", Unexpected(Token::DoubleQuote, src(9,1,10))),
+            ("name\"()\" { echo body; }", Unexpected(Token::DoubleQuote, src(4,1,5))),
         ];
 
-        for c in cmds.into_iter() {
+        for &(c, ref e) in cmds.into_iter() {
             match make_parser(c).function_declaration() {
-                Err(_) => {},
                 Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
+                Err(ref err) => if err != e {
+                    panic!("Expected the source \"{}\" to return the error `{:?}`, but got `{:?}`",
+                           c, e, err);
+                },
             }
         }
     }
@@ -4451,11 +4562,11 @@ pub mod test {
     #[test]
     fn test_function_declaration_invalid_fn_must_be_name() {
         let mut p = make_parser("function 123fn { echo body; }");
-        p.function_declaration().unwrap_err();
+        assert_eq!(Err(BadIdent(String::from("123fn"), src(9, 1, 10))), p.function_declaration());
         let mut p = make_parser("function 123fn() { echo body; }");
-        p.function_declaration().unwrap_err();
+        assert_eq!(Err(BadIdent(String::from("123fn"), src(9, 1, 10))), p.function_declaration());
         let mut p = make_parser("123fn() { echo body; }");
-        p.function_declaration().unwrap_err();
+        assert_eq!(Err(BadIdent(String::from("123fn"), src(0, 1, 1))), p.function_declaration());
     }
 
     #[test]
@@ -4476,7 +4587,7 @@ pub mod test {
             Token::Semi,
             Token::CurlyClose,
         ));
-        p.function_declaration().unwrap_err();
+        assert_eq!(Err(BadIdent(String::from("fn_name"), src(9, 1, 10))), p.function_declaration());
 
         let mut p = make_parser_from_tokens(vec!(
             Token::Literal(String::from("function")),
@@ -4515,7 +4626,7 @@ pub mod test {
             Token::Semi,
             Token::CurlyClose,
         ));
-        p.function_declaration().unwrap_err();
+        assert_eq!(Err(BadIdent(String::from("func"), src(0, 1, 1))), p.function_declaration());
     }
 
     #[test]
@@ -4678,34 +4789,39 @@ pub mod test {
     #[test]
     fn test_case_command_invalid_missing_keyword() {
         let mut p = make_parser("foo in foo) echo foo;; bar) echo bar;; esac");
-        p.case_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Name(String::from("foo")), src(0, 1, 1))), p.case_command());
         let mut p = make_parser("case foo foo) echo foo;; bar) echo bar;; esac");
-        p.case_command().unwrap_err();
+        assert_eq!(Err(IncompleteCmd("case", src(0, 1, 1), "in")), p.case_command());
         let mut p = make_parser("case foo in foo) echo foo;; bar) echo bar;;");
-        p.case_command().unwrap_err();
+        assert_eq!(Err(IncompleteCmd("case", src(0, 1, 1), "esac")), p.case_command());
     }
 
     #[test]
     fn test_case_command_invalid_missing_word() {
         let mut p = make_parser("case in foo) echo foo;; bar) echo bar;; esac");
-        p.case_command().unwrap_err();
+        assert_eq!(Err(IncompleteCmd("case", src(0, 1, 1), "in")), p.case_command());
     }
 
     #[test]
     fn test_case_command_invalid_quoted() {
         let cmds = [
-            "'case' foo in foo) echo foo;; bar) echo bar;; esac",
-            "case foo 'in' foo) echo foo;; bar) echo bar;; esac",
-            "case foo in foo) echo foo;; bar')' echo bar;; 'esac'",
-            "\"case\" foo in foo) echo foo;; bar) echo bar;; esac",
-            "case foo \"in\" foo) echo foo;; bar) echo bar;; esac",
-            "case foo in foo) echo foo;; bar\")\" echo bar;; 'esac'",
+            ("'case' foo in foo) echo foo;; bar) echo bar;; esac", Unexpected(Token::SingleQuote, src(0,1,1))),
+            ("case foo 'in' foo) echo foo;; bar) echo bar;; esac", IncompleteCmd("case", src(0,1,1), "in")),
+            ("case foo in foo) echo foo;; bar')' echo bar;; esac", Unexpected(Token::Name(String::from("echo")), src(35,1,36))),
+            ("case foo in foo) echo foo;; bar) echo bar;; 'esac'", IncompleteCmd("case", src(0,1,1), "esac")),
+            ("\"case\" foo in foo) echo foo;; bar) echo bar;; esac", Unexpected(Token::DoubleQuote, src(0,1,1))),
+            ("case foo \"in\" foo) echo foo;; bar) echo bar;; esac", IncompleteCmd("case", src(0,1,1), "in")),
+            ("case foo in foo) echo foo;; bar\")\" echo bar;; esac", Unexpected(Token::Name(String::from("echo")), src(35,1,36))),
+            ("case foo in foo) echo foo;; bar) echo bar;; \"esac\"", IncompleteCmd("case", src(0,1,1), "esac")),
         ];
 
-        for c in cmds.into_iter() {
+        for &(c, ref e) in cmds.into_iter() {
             match make_parser(c).case_command() {
-                Err(_) => {},
                 Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
+                Err(ref err) => if err != e {
+                    panic!("Expected the source \"{}\" to return the error `{:?}`, but got `{:?}`",
+                           c, e, err);
+                },
             }
         }
     }
@@ -4713,7 +4829,7 @@ pub mod test {
     #[test]
     fn test_case_command_invalid_newline_after_case() {
         let mut p = make_parser("case\nfoo in foo) echo foo;; bar) echo bar;; esac");
-        p.case_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Newline, src(4, 1, 5))), p.case_command());
     }
 
     #[test]
@@ -4739,7 +4855,7 @@ pub mod test {
 
             Token::Literal(String::from("esac")),
         ));
-        p.case_command().unwrap_err();
+        assert_eq!(Err(Unexpected(Token::Literal(String::from("ca")), src(0,1,1))), p.case_command());
 
         let mut p = make_parser_from_tokens(vec!(
             Token::Literal(String::from("case")),
@@ -4762,7 +4878,7 @@ pub mod test {
 
             Token::Literal(String::from("esac")),
         ));
-        p.case_command().unwrap_err();
+        assert_eq!(Err(IncompleteCmd("case", src(0,1,1), "in")), p.case_command());
 
         let mut p = make_parser_from_tokens(vec!(
             Token::Literal(String::from("case")),
@@ -4773,6 +4889,7 @@ pub mod test {
             Token::Whitespace(String::from(" ")),
 
             Token::Literal(String::from("in")),
+            Token::Whitespace(String::from(" ")),
             Token::Literal(String::from("foo")),
             Token::ParenClose,
             Token::Newline,
@@ -4785,7 +4902,7 @@ pub mod test {
 
             Token::Literal(String::from("es")), Token::Literal(String::from("ac")),
         ));
-        p.case_command().unwrap_err();
+        assert_eq!(Err(IncompleteCmd("case", src(0,1,1), "esac")), p.case_command());
     }
 
     #[test]
@@ -4882,29 +4999,37 @@ pub mod test {
     #[test]
     fn test_compound_command_errors_on_quoted_commands() {
         let cases = [
-            "{foo; }", // { is a reserved word, thus concatenating it essentially "quotes" it
-            "'{' foo; }",
-            "'(' foo; )",
-            "'while' guard do foo; done",
-            "'until' guard do foo; done",
-            "'if' guard; then body; fi",
-            "'for' var in; do foo; done",
-            "'case' foo in esac",
-            "\"{\" foo; }",
-            "\"(\" foo; )",
-            "\"while\" guard do foo; done",
-            "\"until\" guard do foo; done",
-            "\"if\" guard; then body; fi",
-            "\"for\" var in; do foo; done",
-            "\"case\" foo in esac",
+            // { is a reserved word, thus concatenating it essentially "quotes" it
+            // `compound_command` doesn't know or care enough to specify that "foo" is
+            // the problematic token instead of {, however, callers who are smart enough
+            // to expect a brace command would be aware themselves that no such valid
+            // command actually exists. TL;DR: it's okay for `compound_command` to blame {
+            ("{foo; }",                      Unexpected(Token::CurlyOpen,   src(0,1,1))),
+            ("'{' foo; }",                   Unexpected(Token::SingleQuote, src(0,1,1))),
+            ("'(' foo; )",                   Unexpected(Token::SingleQuote, src(0,1,1))),
+            ("'while' guard do foo; done",   Unexpected(Token::SingleQuote, src(0,1,1))),
+            ("'until' guard do foo; done",   Unexpected(Token::SingleQuote, src(0,1,1))),
+            ("'if' guard; then body; fi",    Unexpected(Token::SingleQuote, src(0,1,1))),
+            ("'for' var in; do foo; done",   Unexpected(Token::SingleQuote, src(0,1,1))),
+            ("'case' foo in esac",           Unexpected(Token::SingleQuote, src(0,1,1))),
+            ("\"{\" foo; }",                 Unexpected(Token::DoubleQuote, src(0,1,1))),
+            ("\"(\" foo; )",                 Unexpected(Token::DoubleQuote, src(0,1,1))),
+            ("\"while\" guard do foo; done", Unexpected(Token::DoubleQuote, src(0,1,1))),
+            ("\"until\" guard do foo; done", Unexpected(Token::DoubleQuote, src(0,1,1))),
+            ("\"if\" guard; then body; fi",  Unexpected(Token::DoubleQuote, src(0,1,1))),
+            ("\"for\" var in; do foo; done", Unexpected(Token::DoubleQuote, src(0,1,1))),
+            ("\"case\" foo in esac",         Unexpected(Token::DoubleQuote, src(0,1,1))),
         ];
 
-        for cmd in cases.iter() {
-            match make_parser(cmd).compound_command() {
-                Err(_) => {},
+        for &(src, ref e) in cases.iter() {
+            match make_parser(src).compound_command() {
                 Ok(result) =>
                     panic!("Parse::compound_command unexpectedly succeeded parsing \"{}\" with result:\n{:#?}",
-                           cmd, result),
+                           src, result),
+                Err(ref err) => if err != e {
+                    panic!("Expected the source \"{}\" to return the error `{:?}`, but got `{:?}`",
+                           src, e, err);
+                },
             }
         }
     }
@@ -5494,7 +5619,7 @@ pub mod test {
 
     #[test]
     fn test_word_single_quote_invalid_missing_close_quote() {
-        make_parser("'hello").word().unwrap_err();
+        assert_eq!(Err(Unmatched(Token::SingleQuote, src(0, 1, 1))), make_parser("'hello").word());
     }
 
     #[test]
@@ -5597,8 +5722,8 @@ pub mod test {
 
     #[test]
     fn test_word_double_quote_slash_invalid_missing_close_quote() {
-        make_parser("\"hello").word().unwrap_err();
-        make_parser("\"hello\\\"").word().unwrap_err();
+        assert_eq!(Err(Unmatched(Token::DoubleQuote, src(0, 1, 1))), make_parser("\"hello").word());
+        assert_eq!(Err(Unmatched(Token::DoubleQuote, src(0, 1, 1))), make_parser("\"hello\\\"").word());
     }
 
     #[test]
@@ -5855,5 +5980,14 @@ pub mod test {
                 Err(_) => {},
             }
         }
+    }
+
+    #[test]
+    fn test_backticked_invalid_missing_opening_backtick() {
+        let mut p = make_parser("foo`");
+        assert_eq!(
+            Err(Unexpected(Token::Name(String::from("foo")), src(0,1,1))),
+            p.backticked_command_substitution()
+        );
     }
 }
