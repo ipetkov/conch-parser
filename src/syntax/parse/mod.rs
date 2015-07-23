@@ -695,7 +695,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         delim.shrink_to_fit();
         let (delim, quoted) = (delim, quoted);
         let delim_len = delim.len();
-        let quoted = quoted;
+        let delim_r = delim.clone() + "\r";
+        let delim_r_len = delim_r.len();
 
         // Here we will fast-forward to the next newline and capture the heredoc's
         // body that comes after it. Then we'll store these tokens in a safe place
@@ -758,21 +759,27 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                         let mut line_len = 0;
                         for t in line.iter() {
                             line_len += t.len();
-                            if line_len > delim_len {
+                            if line_len > delim_r_len {
                                 break;
                             }
                         }
 
                         // NB A delimeter like "\eof" becomes [Name(e), Name(of)], which
                         // won't compare to [Name(eof)], forcing us to do a string comparison
-                        if line_len == delim_len &&
-                           delim == line.iter().map(|t| t.to_string()).collect::<Vec<String>>().concat()
-                        {
-                            break 'heredoc;
-                        } else {
-                            if next == Some(Newline) { line.push(Newline); }
-                            break 'line;
+                        // NB We must also do a check using \r\n line endings. Although we could
+                        // lex \r\n as a Newline token, doing so would complicate keeping track
+                        // of positions in the source, as we could have one or two byte Newlines,
+                        // or two different tokens to deal with.
+                        if line_len == delim_len || line_len == delim_r_len {
+                            let line_str = line.iter().map(|t| t.to_string()).collect::<Vec<String>>().concat();
+
+                            if line_str == delim || line_str == delim_r {
+                                break 'heredoc;
+                            }
                         }
+
+                        if next == Some(Newline) { line.push(Newline); }
+                        break 'line;
                     },
 
                     Some(t) => line.push(t),
@@ -3604,6 +3611,15 @@ pub mod test {
             )
         })));
         assert_eq!(correct, make_parser("cat <<EOF arg\nhere\nEOF\r\n").complete_command().unwrap());
+
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            vars: vec!(),
+            cmd: Some(Word::Literal(String::from("cat"))),
+            args: vec!(Word::Literal(String::from("arg"))),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("here\r\n")))
+            )
+        })));
         assert_eq!(correct, make_parser("cat <<EOF arg\nhere\r\nEOF\r\n").complete_command().unwrap());
     }
 
