@@ -1534,9 +1534,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Return structure is `Result(var_name, comments_after_var, in_words, comments_after_words, body)`.
     pub fn for_command(&mut self) -> Result<(
         String,
-        Vec<ast::Newline>,
+        Vec<builder::Newline>,
         Option<Vec<B::Word>>,
-        Option<Vec<ast::Newline>>,
+        Option<Vec<builder::Newline>>,
         Vec<B::Command>), ParseError<B::Err>>
     {
         let start_pos = self.iter.pos();
@@ -1614,9 +1614,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// ( (pre_pat_comments, pattern_alternatives+, post_pat_comments), cmds_to_run_on_match)* )`.
     pub fn case_command(&mut self) -> Result<(
             B::Word,
-            Vec<ast::Newline>,
-            Vec<( (Vec<ast::Newline>, Vec<B::Word>, Vec<ast::Newline>), Vec<B::Command> )>,
-            Vec<ast::Newline>
+            Vec<builder::Newline>,
+            Vec<( (Vec<builder::Newline>, Vec<B::Word>, Vec<builder::Newline>), Vec<B::Command> )>,
+            Vec<builder::Newline>
         ), ParseError<B::Err>>
     {
         let start_pos = self.iter.pos();
@@ -1806,7 +1806,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses zero or more `Token::Newline`s, skipping whitespace but capturing comments.
     #[inline]
-    pub fn linebreak(&mut self) -> Vec<ast::Newline> {
+    pub fn linebreak(&mut self) -> Vec<builder::Newline> {
         let mut lines = Vec::new();
         while let Some(n) = self.newline() {
             lines.push(n);
@@ -1815,7 +1815,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     }
 
     /// Tries to parse a `Token::Newline` (or a comment) after skipping whitespace.
-    pub fn newline(&mut self) -> Option<ast::Newline> {
+    pub fn newline(&mut self) -> Option<builder::Newline> {
         self.skip_whitespace();
 
         match self.iter.peek() {
@@ -1826,12 +1826,12 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     .collect::<Vec<String>>()
                     .concat();
 
-                Some(ast::Newline(Some(comment)))
+                Some(builder::Newline(Some(comment)))
             },
 
             Some(&Newline) => {
                 self.iter.next();
-                Some(ast::Newline(None))
+                Some(builder::Newline(None))
             },
 
             _ => return None,
@@ -1986,6 +1986,7 @@ pub mod test {
     use syntax::lexer::Lexer;
 
     use syntax::ast::*;
+    use syntax::ast::builder::Newline;
     use syntax::ast::Command::*;
     use syntax::ast::CompoundCommand::*;
     use syntax::parse::*;

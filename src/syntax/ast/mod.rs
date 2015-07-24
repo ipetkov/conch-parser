@@ -121,15 +121,6 @@ pub enum Redirect {
     CloseWrite(Option<Word>),
 }
 
-/// Represents a parsed newline, more specifically, the presense of a comment
-/// immediately preceeding the newline.
-///
-/// Since shell comments are usually treated as a newline, they can be present
-/// anywhere a newline can be as well. Thus if it is desired to retain comments
-/// they can be optionally attached to a parsed newline.
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct Newline(pub Option<String>);
-
 /// Represents any valid shell command.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Command {

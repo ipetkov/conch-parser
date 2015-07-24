@@ -21,7 +21,7 @@ pub enum SeparatorKind {
     /// An ampersand appears between commands, normally indicating an asyncronous job.
     Amp,
     /// A newline (and possibly a comment) appears at the end of a command before the next.
-    Newline(ast::Newline),
+    Newline(Newline),
     /// The command was delimited by a token (e.g. a compound command delimiter) or
     /// the end of input, but is *not* followed by another sequential command.
     Other,
@@ -146,6 +146,15 @@ pub enum ParameterSubstitutionKind<C, W> {
     RemoveLargestPrefix(Parameter, Option<Box<W>>),
 }
 
+/// Represents a parsed newline, more specifically, the presense of a comment
+/// immediately preceeding the newline.
+///
+/// Since shell comments are usually treated as a newline, they can be present
+/// anywhere a newline can be as well. Thus if it is desired to retain comments
+/// they can be optionally attached to a parsed newline.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Newline(pub Option<String>);
+
 /// A trait which defines an interface which the parser defined in the `parse` module
 /// uses to delegate Abstract Syntax Tree creation. The methods defined here correspond
 /// to their respectively named methods on the parser, and accept the relevant data for
@@ -169,10 +178,10 @@ pub trait Builder {
     /// * separator: indicates how the command was delimited
     /// * post_cmd_comments: any comments that appear after the end of the command
     fn complete_command(&mut self,
-                        pre_cmd_comments: Vec<ast::Newline>,
+                        pre_cmd_comments: Vec<Newline>,
                         cmd: Self::Command,
                         separator: SeparatorKind,
-                        pos_cmd_comments: Vec<ast::Newline>)
+                        pos_cmd_comments: Vec<Newline>)
         -> Result<Self::Command, Self::Err>;
 
     /// Invoked once two pipeline commands are parsed, which are separated by '&&' or '||'.
@@ -188,7 +197,7 @@ pub trait Builder {
     fn and_or(&mut self,
               first: Self::Command,
               kind: AndOrKind,
-              post_separator_comments: Vec<ast::Newline>,
+              post_separator_comments: Vec<Newline>,
               second: Self::Command)
         -> Result<Self::Command, Self::Err>;
 
@@ -203,7 +212,7 @@ pub trait Builder {
     /// by the command itself, all in the order they were parsed
     fn pipeline(&mut self,
                 bang: bool,
-                cmds: Vec<(Vec<ast::Newline>, Self::Command)>)
+                cmds: Vec<(Vec<Newline>, Self::Command)>)
         -> Result<Self::Command, Self::Err>;
 
     /// Invoked when the "simplest" possible command is parsed: an executable with arguments.
@@ -288,9 +297,9 @@ pub trait Builder {
     /// * redirects: any redirects to be applied over **all** commands within the `for` command
     fn for_command(&mut self,
                    var: String,
-                   post_var_comments: Vec<ast::Newline>,
+                   post_var_comments: Vec<Newline>,
                    in_words: Option<Vec<Self::Word>>,
-                   post_word_comments: Option<Vec<ast::Newline>>,
+                   post_word_comments: Option<Vec<Newline>>,
                    body: Vec<Self::Command>,
                    redirects: Vec<Self::Redirect>)
         -> Result<Self::Command, Self::Err>;
@@ -309,9 +318,9 @@ pub trait Builder {
     /// * redirects: any redirects to be applied over **all** commands part of the `case` block
     fn case_command(&mut self,
                     word: Self::Word,
-                    post_word_comments: Vec<ast::Newline>,
-                    branches: Vec<( (Vec<ast::Newline>, Vec<Self::Word>, Vec<ast::Newline>), Vec<Self::Command>)>,
-                    post_branch_comments: Vec<ast::Newline>,
+                    post_word_comments: Vec<Newline>,
+                    branches: Vec<( (Vec<Newline>, Vec<Self::Word>, Vec<Newline>), Vec<Self::Command>)>,
+                    post_branch_comments: Vec<Newline>,
                     redirects: Vec<Self::Redirect>)
         -> Result<Self::Command, Self::Err>;
 
@@ -334,7 +343,7 @@ pub trait Builder {
     /// # Arguments
     /// * comments: the parsed comments
     fn comments(&mut self,
-                comments: Vec<ast::Newline>)
+                comments: Vec<Newline>)
         -> Result<(), Self::Err>;
 
     /// Invoked when a word is parsed.
@@ -363,10 +372,10 @@ impl Builder for DefaultBuilder {
     /// Constructs a `Command::Job` node with the provided inputs if the command
     /// was delimited by an ampersand or the command itself otherwise.
     fn complete_command(&mut self,
-                        _pre_cmd_comments: Vec<ast::Newline>,
+                        _pre_cmd_comments: Vec<Newline>,
                         cmd: Command,
                         separator: SeparatorKind,
-                        _pos_cmd_comments: Vec<ast::Newline>)
+                        _pos_cmd_comments: Vec<Newline>)
         -> Result<Command, Self::Err>
     {
         match separator {
@@ -381,7 +390,7 @@ impl Builder for DefaultBuilder {
     fn and_or(&mut self,
               first: Command,
               kind: AndOrKind,
-              _post_separator_comments: Vec<ast::Newline>,
+              _post_separator_comments: Vec<Newline>,
               second: Command)
         -> Result<Command, Self::Err>
     {
@@ -395,7 +404,7 @@ impl Builder for DefaultBuilder {
     /// node if only a single command with no status inversion is supplied.
     fn pipeline(&mut self,
                 bang: bool,
-                cmds: Vec<(Vec<ast::Newline>, Command)>)
+                cmds: Vec<(Vec<Newline>, Command)>)
         -> Result<Command, Self::Err>
     {
         debug_assert_eq!(cmds.is_empty(), false);
@@ -495,9 +504,9 @@ impl Builder for DefaultBuilder {
     /// Constructs a `Command::Compound(For)` node with the provided inputs.
     fn for_command(&mut self,
                    var: String,
-                   _post_var_comments: Vec<ast::Newline>,
+                   _post_var_comments: Vec<Newline>,
                    mut in_words: Option<Vec<Word>>,
-                   _post_word_comments: Option<Vec<ast::Newline>>,
+                   _post_word_comments: Option<Vec<Newline>>,
                    mut body: Vec<Command>,
                    mut redirects: Vec<Redirect>)
         -> Result<Command, Self::Err>
@@ -511,9 +520,9 @@ impl Builder for DefaultBuilder {
     /// Constructs a `Command::Compound(Case)` node with the provided inputs.
     fn case_command(&mut self,
                     word: Word,
-                    _post_word_comments: Vec<ast::Newline>,
-                    branches: Vec<( (Vec<ast::Newline>, Vec<Word>, Vec<ast::Newline>), Vec<Command>)>,
-                    _post_branch_comments: Vec<ast::Newline>,
+                    _post_word_comments: Vec<Newline>,
+                    branches: Vec<( (Vec<Newline>, Vec<Word>, Vec<Newline>), Vec<Command>)>,
+                    _post_branch_comments: Vec<Newline>,
                     mut redirects: Vec<Redirect>)
         -> Result<Command, Self::Err>
     {
@@ -538,7 +547,7 @@ impl Builder for DefaultBuilder {
 
     /// Ignored by the builder.
     fn comments(&mut self,
-                _comments: Vec<ast::Newline>)
+                _comments: Vec<Newline>)
         -> Result<(), Self::Err>
     {
         Ok(())
@@ -656,10 +665,10 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
     type Err = T::Err;
 
     fn complete_command(&mut self,
-                        pre_cmd_comments: Vec<ast::Newline>,
+                        pre_cmd_comments: Vec<Newline>,
                         cmd: Self::Command,
                         separator: SeparatorKind,
-                        post_cmd_comments: Vec<ast::Newline>)
+                        post_cmd_comments: Vec<Newline>)
         -> Result<Self::Command, Self::Err>
     {
         (**self).complete_command(pre_cmd_comments, cmd, separator, post_cmd_comments)
@@ -668,7 +677,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
     fn and_or(&mut self,
               first: Self::Command,
               kind: AndOrKind,
-              post_separator_comments: Vec<ast::Newline>,
+              post_separator_comments: Vec<Newline>,
               second: Self::Command)
         -> Result<Self::Command, Self::Err>
     {
@@ -677,7 +686,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
 
     fn pipeline(&mut self,
                 bang: bool,
-                cmds: Vec<(Vec<ast::Newline>, Self::Command)>)
+                cmds: Vec<(Vec<Newline>, Self::Command)>)
         -> Result<Self::Command, Self::Err>
     {
         (**self).pipeline(bang, cmds)
@@ -730,9 +739,9 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
 
     fn for_command(&mut self,
                    var: String,
-                   post_var_comments: Vec<ast::Newline>,
+                   post_var_comments: Vec<Newline>,
                    in_words: Option<Vec<Self::Word>>,
-                   post_word_comments: Option<Vec<ast::Newline>>,
+                   post_word_comments: Option<Vec<Newline>>,
                    body: Vec<Self::Command>,
                    redirects: Vec<Self::Redirect>)
         -> Result<Self::Command, Self::Err>
@@ -742,9 +751,9 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
 
     fn case_command(&mut self,
                     word: Self::Word,
-                    post_word_comments: Vec<ast::Newline>,
-                    branches: Vec<( (Vec<ast::Newline>, Vec<Self::Word>, Vec<ast::Newline>), Vec<Self::Command>)>,
-                    post_branch_comments: Vec<ast::Newline>,
+                    post_word_comments: Vec<Newline>,
+                    branches: Vec<( (Vec<Newline>, Vec<Self::Word>, Vec<Newline>), Vec<Self::Command>)>,
+                    post_branch_comments: Vec<Newline>,
                     redirects: Vec<Self::Redirect>)
         -> Result<Self::Command, Self::Err>
     {
@@ -760,7 +769,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
     }
 
     fn comments(&mut self,
-                comments: Vec<ast::Newline>)
+                comments: Vec<Newline>)
         -> Result<(), Self::Err>
     {
         (**self).comments(comments)
