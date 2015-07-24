@@ -114,7 +114,8 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
         buf.shrink_to_fit();
         buf.reverse();
         self.prev_buffered = buf;
-        self.post_buf_pos = Some(post_buf_pos)
+        self.post_buf_pos = Some(self.pos);
+        self.pos = post_buf_pos
     }
 
     /// Returns the iterator's current position in the source.

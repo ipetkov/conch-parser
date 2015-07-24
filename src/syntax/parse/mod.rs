@@ -3663,6 +3663,15 @@ pub mod test {
     }
 
     #[test]
+    fn test_heredoc_keeps_track_of_correct_position_after_redirect() {
+        let mut p = make_parser("cat <<EOF arg ()\nhello\nEOF");
+        // Grab the heredoc command
+        p.complete_command().unwrap();
+        // Fail on the ()
+        assert_eq!(Err(Unexpected(Token::ParenClose, src(15,1,16))), p.complete_command());
+    }
+
+    #[test]
     fn test_redirect_list_valid() {
         let mut p = make_parser("1>>out <& 2 2>&-");
         let io = p.redirect_list().unwrap();
