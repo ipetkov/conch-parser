@@ -61,9 +61,10 @@ pub enum ParseError<T: Error> {
     /// Stores position of opening token.
     Unmatched(Token, SourcePos),
     /// Did not find a reserved keyword within a command. The first String is the
-    /// command being parsed, followed by the position of the start of the command,
-    /// followed by the expected (missing) keyword.
-    IncompleteCmd(&'static str, SourcePos, &'static str),
+    /// command being parsed, followed by the position of where it starts. Next
+    /// is the missing keyword followed by the position of where the parse
+    /// expected to have encountered it.
+    IncompleteCmd(&'static str, SourcePos, &'static str, SourcePos),
     /// Encountered a token not appropriate for the current context.
     Unexpected(Token, SourcePos),
     /// Encountered the end of input while expecting additional tokens.
@@ -109,8 +110,9 @@ impl<T: Error> fmt::Display for ParseError<T> {
             ParseError::BadSubst(ref t, pos)  => write!(fmt, "bad substitution {}: invalid token: {}", pos, t),
             ParseError::Unmatched(ref t, pos) => write!(fmt, "unmatched `{}` starting on line {}", t, pos),
 
-            ParseError::IncompleteCmd(ref c, pos, ref kw) =>
-                write!(fmt, "did not find `{}` keyword in `{}` command which starts on line {}", kw, c, pos),
+            ParseError::IncompleteCmd(ref c, start, ref kw, kw_pos) => write!(fmt,
+                "did not find `{}` keyword on line {}, in `{}` command which starts on line {}",
+                kw, kw_pos, c, start),
 
             // When printing unexpected newlines, print \n instead to avoid confusingly formatted messages
             ParseError::Unexpected(Newline, pos) => write!(fmt, "found unexpected token on line {}: \\n", pos),
@@ -1340,7 +1342,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         let start_pos = self.iter.pos();
         try!(self.reserved_word(&["do"]).map_err(|_| self.make_unexpected_err()));
         let result = try!(self.command_list(&["done"], &[]));
-        try!(self.reserved_word(&["done"]).or(Err(ParseError::IncompleteCmd("do", start_pos, "done"))));
+        try!(self.reserved_word(&["done"])
+             .or(Err(ParseError::IncompleteCmd("do", start_pos, "done", self.iter.pos()))));
         Ok(result)
     }
 
@@ -1481,7 +1484,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         let guard = try!(self.command_list(&["do"], &[]));
         match self.peek_reserved_word(&["do"]) {
             Some(_) => Ok((kind, guard, try!(self.do_group()))),
-            None => Err(ParseError::IncompleteCmd("while", start_pos, "do")),
+            None => Err(ParseError::IncompleteCmd("while", start_pos, "do", self.iter.pos())),
         }
     }
 
@@ -1499,22 +1502,27 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         let start_pos = self.iter.pos();
         try!(self.reserved_word(&["if"]).map_err(|_| self.make_unexpected_err()));
 
-        let missing_fi   = |_| ParseError::IncompleteCmd("if", start_pos, "fi");
-        let missing_then = |_| ParseError::IncompleteCmd("if", start_pos, "then");
+        macro_rules! missing_fi {
+            () => { |_| ParseError::IncompleteCmd("if", start_pos, "fi", self.iter.pos()) }
+        }
+
+        macro_rules! missing_then {
+            () => { |_| ParseError::IncompleteCmd("if", start_pos, "then", self.iter.pos()) }
+        }
 
         let mut branches = Vec::new();
         loop {
             let guard = try!(self.command_list(&["then"], &[]));
-            try!(self.reserved_word(&["then"]).map_err(&missing_then));
+            try!(self.reserved_word(&["then"]).map_err(missing_then!()));
 
             let body = try!(self.command_list(&["elif", "else", "fi"], &[]));
             branches.push((guard, body));
 
-            let els = match try!(self.reserved_word(&["elif", "else", "fi"]).map_err(&missing_fi)) {
+            let els = match try!(self.reserved_word(&["elif", "else", "fi"]).map_err(missing_fi!())) {
                 "elif" => continue,
                 "else" => {
                     let els = try!(self.command_list(&["fi"], &[]));
-                    try!(self.reserved_word(&["fi"]).map_err(&missing_fi));
+                    try!(self.reserved_word(&["fi"]).map_err(missing_fi!()));
                     Some(els)
                 },
                 "fi" => None,
@@ -1590,14 +1598,14 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             // (a `do` keyword), then we can reasonably say the script has
             // words without an `in` keyword.
             if self.peek_reserved_word(&["do"]).is_none() {
-                return Err(ParseError::IncompleteCmd("for", start_pos, "in"));
+                return Err(ParseError::IncompleteCmd("for", start_pos, "in", self.iter.pos()));
             } else {
                 (None, None)
             }
         };
 
         if self.peek_reserved_word(&["do"]).is_none() {
-            return Err(ParseError::IncompleteCmd("for", start_pos , "do"));
+            return Err(ParseError::IncompleteCmd("for", start_pos , "do", self.iter.pos()));
         }
 
         let body = try!(self.do_group());
@@ -1620,8 +1628,14 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         ), ParseError<B::Err>>
     {
         let start_pos = self.iter.pos();
-        let missing_in   = |_| ParseError::IncompleteCmd("case", start_pos, "in");
-        let missing_esac = |_| ParseError::IncompleteCmd("case", start_pos, "esac");
+
+        macro_rules! missing_in {
+            () => { |_| ParseError::IncompleteCmd("case", start_pos, "in", self.iter.pos()); }
+        }
+
+        macro_rules! missing_esac {
+            () => { |_| ParseError::IncompleteCmd("case", start_pos, "esac", self.iter.pos()); }
+        }
 
         try!(self.reserved_word(&["case"]).map_err(|_| self.make_unexpected_err()));
 
@@ -1631,7 +1645,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         };
 
         let post_word_comments = self.linebreak();
-        try!(self.reserved_word(&["in"]).map_err(&missing_in));
+        try!(self.reserved_word(&["in"]).map_err(missing_in!()));
 
         let mut pre_esac_comments = None;
         let mut branches = Vec::new();
@@ -1651,7 +1665,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             // Make sure we check for missing `esac` here, otherwise if we have EOF
             // trying to parse a word will result in an `UnexpectedEOF` error
             if self.iter.peek().is_none() {
-                return Err(()).map_err(&missing_esac);
+                return Err(()).map_err(missing_esac!());
             }
 
             let mut patterns = Vec::new();
@@ -1674,7 +1688,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
                     // Make sure we check for missing `esac` here, otherwise if we have EOF
                     // trying to parse a word will result in an `UnexpectedEOF` error
-                    None => return Err(()).map_err(&missing_esac),
+                    None => return Err(()).map_err(missing_esac!()),
                     _ => return Err(self.make_unexpected_err()),
                 }
             }
@@ -1719,7 +1733,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             None => remaining_comments,
         };
 
-        try!(self.reserved_word(&["esac"]).map_err(&missing_esac));
+        try!(self.reserved_word(&["esac"]).map_err(missing_esac!()));
 
         Ok((word, post_word_comments, branches, pre_esac_comments))
     }
@@ -3676,7 +3690,7 @@ pub mod test {
     #[test]
     fn test_do_group_invalid_missing_separator() {
         let mut p = make_parser("do foo\nbar; baz done");
-        assert_eq!(Err(IncompleteCmd("do", src(0,1,1), "done")), p.do_group());
+        assert_eq!(Err(IncompleteCmd("do", src(0,1,1), "done", src(20,2,14))), p.do_group());
     }
 
     #[test]
@@ -3691,16 +3705,16 @@ pub mod test {
         let mut p = make_parser("foo\nbar; baz; done");
         assert_eq!(Err(Unexpected(Token::Name(String::from("foo")), src(0,1,1))), p.do_group());
         let mut p = make_parser("do foo\nbar; baz");
-        assert_eq!(Err(IncompleteCmd("do", src(0,1,1), "done")), p.do_group());
+        assert_eq!(Err(IncompleteCmd("do", src(0,1,1), "done", src(15,2,9))), p.do_group());
     }
 
     #[test]
     fn test_do_group_invalid_quoted() {
         let cmds = [
             ("'do' foo\nbar; baz; done",   Unexpected(Token::SingleQuote, src(0, 1, 1))),
-            ("do foo\nbar; baz; 'done'",   IncompleteCmd("do", src(0,1,1), "done")),
+            ("do foo\nbar; baz; 'done'",   IncompleteCmd("do", src(0,1,1), "done", src(23,2,17))),
             ("\"do\" foo\nbar; baz; done", Unexpected(Token::DoubleQuote, src(0, 1, 1))),
-            ("do foo\nbar; baz; \"done\"", IncompleteCmd("do", src(0,1,1), "done")),
+            ("do foo\nbar; baz; \"done\"", IncompleteCmd("do", src(0,1,1), "done", src(23,2,17))),
         ];
 
         for &(c, ref e) in cmds.into_iter() {
@@ -3733,7 +3747,7 @@ pub mod test {
             Token::Literal(String::from("do")),
             Token::Literal(String::from("ne")),
         ));
-        assert_eq!(Err(IncompleteCmd("do", src(0,1,1), "done")), p.do_group());
+        assert_eq!(Err(IncompleteCmd("do", src(0,1,1), "done", src(11,3,5))), p.do_group());
     }
 
     #[test]
@@ -3755,7 +3769,7 @@ pub mod test {
     #[test]
     fn test_do_group_invalid_missing_body() {
         let mut p = make_parser("do\ndone");
-        assert_eq!(Err(IncompleteCmd("do", src(0,1,1), "done")), p.do_group());
+        assert_eq!(Err(IncompleteCmd("do", src(0,1,1), "done", src(7,2,5))), p.do_group());
     }
 
     #[test]
@@ -3912,9 +3926,9 @@ pub mod test {
     #[test]
     fn test_loop_command_invalid_missing_separator() {
         let mut p = make_parser("while guard do foo\nbar; baz; done");
-        assert_eq!(Err(IncompleteCmd("while", src(0,1,1), "do")), p.loop_command());
+        assert_eq!(Err(IncompleteCmd("while", src(0,1,1), "do", src(33,2,15))), p.loop_command());
         let mut p = make_parser("while guard; do foo\nbar; baz done");
-        assert_eq!(Err(IncompleteCmd("do", src(13,1,14), "done")), p.loop_command());
+        assert_eq!(Err(IncompleteCmd("do", src(13,1,14), "done", src(33,2,14))), p.loop_command());
     }
 
     #[test]
@@ -4088,7 +4102,7 @@ pub mod test {
     #[test]
     fn test_if_command_invalid_missing_separator() {
         let mut p = make_parser("if guard; then body1; elif guard2; then body2; else else fi");
-        assert_eq!(Err(IncompleteCmd("if", src(0,1,1), "fi")), p.if_command());
+        assert_eq!(Err(IncompleteCmd("if", src(0,1,1), "fi", src(59,1,60))), p.if_command());
     }
 
     #[test]
@@ -4096,7 +4110,7 @@ pub mod test {
         let mut p = make_parser("guard1; then body1; elif guard2; then body2; else else; fi");
         assert_eq!(Err(Unexpected(Token::Name(String::from("guard1")), src(0,1,1))), p.if_command());
         let mut p = make_parser("if guard1; then body1; elif guard2; then body2; else else;");
-        assert_eq!(Err(IncompleteCmd("if", src(0,1,1), "fi")), p.if_command());
+        assert_eq!(Err(IncompleteCmd("if", src(0,1,1), "fi", src(58,1,59))), p.if_command());
     }
 
     #[test]
@@ -4119,9 +4133,9 @@ pub mod test {
     fn test_if_command_invalid_quoted() {
         let cmds = [
             ("'if' guard1; then body1; elif guard2; then body2; else else; fi", Unexpected(Token::SingleQuote, src(0,1,1))),
-            ("if guard1; then body1; elif guard2; then body2; else else; 'fi'", IncompleteCmd("if", src(0,1,1), "fi")),
+            ("if guard1; then body1; elif guard2; then body2; else else; 'fi'", IncompleteCmd("if", src(0,1,1), "fi", src(63,1,64))),
             ("\"if\" guard1; then body1; elif guard2; then body2; else else; fi", Unexpected(Token::DoubleQuote, src(0,1,1))),
-            ("if guard1; then body1; elif guard2; then body2; else else; \"fi\"", IncompleteCmd("if", src(0,1,1), "fi")),
+            ("if guard1; then body1; elif guard2; then body2; else else; \"fi\"", IncompleteCmd("if", src(0,1,1), "fi", src(63,1,64))),
         ];
 
         for &(s, ref e) in cmds.into_iter() {
@@ -4169,7 +4183,7 @@ pub mod test {
             Token::Newline, Token::Literal(String::from("else part")), Token::Newline,
             Token::Literal(String::from("f")), Token::Literal(String::from("i")),
         ));
-        assert_eq!(Err(IncompleteCmd("if", src(0,1,1), "fi")), p.if_command());
+        assert_eq!(Err(IncompleteCmd("if", src(0,1,1), "fi", src(61,11,3))), p.if_command());
     }
 
     #[test]
@@ -4292,13 +4306,13 @@ pub mod test {
     #[test]
     fn test_for_command_invalid_with_in_no_words_no_with_separator() {
         let mut p = make_parser("for var in do echo $var; done");
-        assert_eq!(Err(IncompleteCmd("for", src(0,1,1), "do")), p.for_command());
+        assert_eq!(Err(IncompleteCmd("for", src(0,1,1), "do", src(25,1,26))), p.for_command());
     }
 
     #[test]
     fn test_for_command_invalid_missing_separator() {
         let mut p = make_parser("for var in one two three do echo $var; done");
-        assert_eq!(Err(IncompleteCmd("for", src(0,1,1), "do")), p.for_command());
+        assert_eq!(Err(IncompleteCmd("for", src(0,1,1), "do", src(39,1,40))), p.for_command());
     }
 
     #[test]
@@ -4316,22 +4330,22 @@ pub mod test {
     #[test]
     fn test_for_command_invalid_missing_var() {
         let mut p = make_parser("for in one two three\ndo echo $var; done");
-        assert_eq!(Err(IncompleteCmd("for", src(0,1,1), "in")), p.for_command());
+        assert_eq!(Err(IncompleteCmd("for", src(0,1,1), "in", src(7,1,8))), p.for_command());
     }
 
     #[test]
     fn test_for_command_invalid_missing_body() {
         let mut p = make_parser("for var in one two three\n");
-        assert_eq!(Err(IncompleteCmd("for", src(0,1,1), "do")), p.for_command());
+        assert_eq!(Err(IncompleteCmd("for", src(0,1,1), "do", src(25,2,1))), p.for_command());
     }
 
     #[test]
     fn test_for_command_invalid_quoted() {
         let cmds = [
             ("'for' var in one two three\ndo echo $var; done", Unexpected(Token::SingleQuote, src(0,1,1))),
-            ("for var 'in' one two three\ndo echo $var; done", IncompleteCmd("for", src(0,1,1), "in")),
+            ("for var 'in' one two three\ndo echo $var; done", IncompleteCmd("for", src(0,1,1), "in", src(8,1,9))),
             ("\"for\" var in one two three\ndo echo $var; done", Unexpected(Token::DoubleQuote, src(0,1,1))),
-            ("for var \"in\" one two three\ndo echo $var; done", IncompleteCmd("for", src(0,1,1), "in")),
+            ("for var \"in\" one two three\ndo echo $var; done", IncompleteCmd("for", src(0,1,1), "in", src(8,1,9))),
         ];
 
         for &(c, ref e) in cmds.into_iter() {
@@ -4395,7 +4409,7 @@ pub mod test {
             Token::Newline,
             Token::Literal(String::from("done")),
         ));
-        assert_eq!(Err(IncompleteCmd("for", src(0,1,1), "in")), p.for_command());
+        assert_eq!(Err(IncompleteCmd("for", src(0,1,1), "in", src(8,1,9))), p.for_command());
     }
 
     #[test]
@@ -4808,28 +4822,28 @@ pub mod test {
         let mut p = make_parser("foo in foo) echo foo;; bar) echo bar;; esac");
         assert_eq!(Err(Unexpected(Token::Name(String::from("foo")), src(0, 1, 1))), p.case_command());
         let mut p = make_parser("case foo foo) echo foo;; bar) echo bar;; esac");
-        assert_eq!(Err(IncompleteCmd("case", src(0, 1, 1), "in")), p.case_command());
+        assert_eq!(Err(IncompleteCmd("case", src(0,1,1), "in", src(9,1,10))), p.case_command());
         let mut p = make_parser("case foo in foo) echo foo;; bar) echo bar;;");
-        assert_eq!(Err(IncompleteCmd("case", src(0, 1, 1), "esac")), p.case_command());
+        assert_eq!(Err(IncompleteCmd("case", src(0,1,1), "esac", src(43,1,44))), p.case_command());
     }
 
     #[test]
     fn test_case_command_invalid_missing_word() {
         let mut p = make_parser("case in foo) echo foo;; bar) echo bar;; esac");
-        assert_eq!(Err(IncompleteCmd("case", src(0, 1, 1), "in")), p.case_command());
+        assert_eq!(Err(IncompleteCmd("case", src(0,1,1), "in", src(8,1,9))), p.case_command());
     }
 
     #[test]
     fn test_case_command_invalid_quoted() {
         let cmds = [
             ("'case' foo in foo) echo foo;; bar) echo bar;; esac", Unexpected(Token::SingleQuote, src(0,1,1))),
-            ("case foo 'in' foo) echo foo;; bar) echo bar;; esac", IncompleteCmd("case", src(0,1,1), "in")),
+            ("case foo 'in' foo) echo foo;; bar) echo bar;; esac", IncompleteCmd("case", src(0,1,1), "in", src(9,1,10))),
             ("case foo in foo) echo foo;; bar')' echo bar;; esac", Unexpected(Token::Name(String::from("echo")), src(35,1,36))),
-            ("case foo in foo) echo foo;; bar) echo bar;; 'esac'", IncompleteCmd("case", src(0,1,1), "esac")),
+            ("case foo in foo) echo foo;; bar) echo bar;; 'esac'", IncompleteCmd("case", src(0,1,1), "esac", src(50,1,51))),
             ("\"case\" foo in foo) echo foo;; bar) echo bar;; esac", Unexpected(Token::DoubleQuote, src(0,1,1))),
-            ("case foo \"in\" foo) echo foo;; bar) echo bar;; esac", IncompleteCmd("case", src(0,1,1), "in")),
+            ("case foo \"in\" foo) echo foo;; bar) echo bar;; esac", IncompleteCmd("case", src(0,1,1), "in", src(9,1,10))),
             ("case foo in foo) echo foo;; bar\")\" echo bar;; esac", Unexpected(Token::Name(String::from("echo")), src(35,1,36))),
-            ("case foo in foo) echo foo;; bar) echo bar;; \"esac\"", IncompleteCmd("case", src(0,1,1), "esac")),
+            ("case foo in foo) echo foo;; bar) echo bar;; \"esac\"", IncompleteCmd("case", src(0,1,1), "esac", src(50,1,51))),
         ];
 
         for &(c, ref e) in cmds.into_iter() {
@@ -4895,7 +4909,7 @@ pub mod test {
 
             Token::Literal(String::from("esac")),
         ));
-        assert_eq!(Err(IncompleteCmd("case", src(0,1,1), "in")), p.case_command());
+        assert_eq!(Err(IncompleteCmd("case", src(0,1,1), "in", src(12,1,13))), p.case_command());
 
         let mut p = make_parser_from_tokens(vec!(
             Token::Literal(String::from("case")),
@@ -4919,7 +4933,7 @@ pub mod test {
 
             Token::Literal(String::from("es")), Token::Literal(String::from("ac")),
         ));
-        assert_eq!(Err(IncompleteCmd("case", src(0,1,1), "esac")), p.case_command());
+        assert_eq!(Err(IncompleteCmd("case", src(0,1,1), "esac", src(36,4,7))), p.case_command());
     }
 
     #[test]
