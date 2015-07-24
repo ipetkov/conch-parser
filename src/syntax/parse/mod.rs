@@ -247,6 +247,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         }
     }
 
+    fn with_token_iter_and_builder(iter: iter::TokenIter<I>, builder: B) -> Parser<I, B> {
+        Parser {
+            iter: iter,
+            builder: builder,
+        }
+    }
+
     /// Creates a new Parser from a Token iterator, provided AST builder, and
     /// provided starting posiiton.
     fn with_builder_and_position(iter: I, builder: B, pos: SourcePos) -> Parser<I, B> {
@@ -710,31 +717,35 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         // we feed it).
         let saved_pos = self.iter.pos();
         let mut saved_tokens = Vec::new();
-        loop {
+        while self.iter.peek().is_some() {
             // Make sure we save all tokens until the next UNQUOTED newilne
             if let Some(&Newline) = self.iter.peek() {
                 saved_tokens.push(self.iter.next().unwrap());
                 break;
             }
 
-            let old_len = saved_tokens.len();
             for t in self.iter.balanced() { saved_tokens.push(try!(t)); }
-
-            // If we hit EOF (and consume no more tokens) better not get stuck in a loop
-            if saved_tokens.len() == old_len {
-                break;
-            }
         }
 
         let heredoc_start_pos = self.iter.pos();
         let mut heredoc = Vec::new();
         'heredoc: loop {
+            let mut line_start_pos = self.iter.pos();
             let mut line: Vec<Token> = Vec::new();
             'line: loop {
                 if strip_tabs {
                     if let Some(&Whitespace(_)) = self.iter.peek() {
                         if let Some(Whitespace(w)) = self.iter.next() {
-                            let s: String = w.chars().skip_while(|&c| c == '\t').collect();
+                            let mut w_iter = w.chars().peekable();
+                            let mut tabs: String = String::with_capacity(w.len());
+
+                            while let Some(&'\t') = w_iter.peek() {
+                                tabs.push(w_iter.next().unwrap());
+                            }
+
+                            line_start_pos.advance(&Whitespace(tabs));
+
+                            let s: String = w_iter.collect();
                             if !s.is_empty() {
                                 line.push(Whitespace(s));
                             }
@@ -788,17 +799,23 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 }
             }
 
-            heredoc.reserve(line.len());
-            for t in line { heredoc.push(t) }
+            heredoc.push((line, line_start_pos));
         }
 
         self.iter.backup_buffered_tokens(saved_tokens, saved_pos);
 
         let body = if quoted {
-            builder::WordKind::Literal(
-                heredoc.into_iter().map(|t| t.to_string()).collect::<Vec<String>>().concat()
-            )
+            builder::WordKind::Literal(heredoc.into_iter()
+                                       .flat_map(|(t,_)| t)
+                                       .map(|t| t.to_string())
+                                       .collect::<Vec<String>>()
+                                       .concat())
         } else {
+            let mut tok_iter = iter::TokenIter::with_position(::std::iter::empty(), heredoc_start_pos);
+            while let Some((line, pos)) = heredoc.pop() {
+                tok_iter.backup_buffered_tokens(line, pos);
+            }
+
             // Dodge an "ICE": If we don't erase the type of the builder, the type of the parser
             // below will will be of type Parser<_, &mut B>, whose methods that create a sub-parser
             // create a ones whose type will be Parser<_, &mut &mut B>, ad infinitum, causing rustc
@@ -806,7 +823,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             // fixed and rustc will remain happy :)
             let b = &mut self.builder
                 as &mut Builder<Command=B::Command, Word=B::Word, Redirect=B::Redirect, Err=B::Err>;
-            let mut parser = Parser::with_builder_and_position(heredoc.into_iter(), b, heredoc_start_pos);
+            let mut parser = Parser::with_token_iter_and_builder(tok_iter, b);
             let mut body = try!(parser.word_interpolated_raw(None, heredoc_start_pos));
 
             if body.len() > 1 {
@@ -3658,6 +3675,15 @@ pub mod test {
         let mut p = make_parser("cat <<EOF\nhello\n${invalid subst\nEOF");
         assert_eq!(
             Err(BadSubst(Token::Whitespace(String::from(" ")), src(25,3,10))),
+            p.complete_command()
+        );
+    }
+
+    #[test]
+    fn test_heredoc_invalid_shows_right_position_of_error_when_tabs_stripped() {
+        let mut p = make_parser("cat <<-EOF\n\t\thello\n\t\t${invalid subst\n\t\t\tEOF");
+        assert_eq!(
+            Err(BadSubst(Token::Whitespace(String::from(" ")), src(30,3,12))),
             p.complete_command()
         );
     }

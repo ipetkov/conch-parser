@@ -13,16 +13,15 @@ pub struct UnmatchedError(pub Token, pub SourcePos);
 pub struct TokenIter<I: Iterator<Item = Token>> {
     /// The underlying token iterator being wrapped.
     iter: I,
-    /// Any tokens that were previously yielded but to be consumed later
-    prev_buffered: Vec<Token>,
+    /// Any tokens that were previously yielded but to be consumed later,
+    /// tupled with the position in the source where we will be once each
+    /// buffered chunk of tokens is exhausted.
+    prev_buffered: Vec<(Vec<Token>, SourcePos)>,
     /// Any tokens that have been peeked from the `iter` or `prev_buffered`
     /// but not yet consumed
     peek_buf: Vec<Token>,
     /// The current position in the source that we have consumed up to
     pos: SourcePos,
-    /// The position in the source where we will be once `prev_buffered`
-    /// is completely exhausted.
-    post_buf_pos: Option<SourcePos>,
 }
 
 impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
@@ -55,7 +54,6 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
                 line: 1,
                 col: 1,
             },
-            post_buf_pos: None,
         }
     }
 
@@ -98,10 +96,19 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
     /// then tokens yielded from the wrapped iterator.
     #[inline]
     pub fn next_internal(&mut self) -> Option<Token> {
-        self.prev_buffered.pop().or_else(|| {
-            self.post_buf_pos.take().and_then(|p| { self.pos = p; Some(()) });
-            self.iter.next()
-        })
+        loop {
+            let (ret, post_pos) = match self.prev_buffered.last_mut() {
+                Some(&mut (ref mut toks, post_pos)) => (toks.pop(), post_pos),
+                None => return self.iter.next(),
+            };
+
+            if ret.is_some() {
+                return ret;
+            } else {
+                self.prev_buffered.pop();
+                self.pos = post_pos;
+            }
+        }
     }
 
     /// Accepts a vector of tokens to be yielded completely before the inner
@@ -109,12 +116,9 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
     /// what the iterator's position should be when the buffer of tokens is
     /// exhausted completely.
     pub fn backup_buffered_tokens(&mut self, mut buf: Vec<Token>, post_buf_pos: SourcePos) {
-        debug_assert!(self.prev_buffered.is_empty());
-        debug_assert_eq!(self.post_buf_pos, None);
         buf.shrink_to_fit();
         buf.reverse();
-        self.prev_buffered = buf;
-        self.post_buf_pos = Some(self.pos);
+        self.prev_buffered.push((buf, self.pos));
         self.pos = post_buf_pos
     }
 
