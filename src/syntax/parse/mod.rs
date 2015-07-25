@@ -26,6 +26,11 @@ pub struct SourcePos {
 }
 
 impl SourcePos {
+    /// Constructs a new, starting, source position
+    pub fn new() -> SourcePos {
+        SourcePos { byte: 0, line: 1, col: 1 }
+    }
+
     /// Increments self using the length of the provided token.
     pub fn advance(&mut self, next: &Token) {
         let newlines = match *next {
@@ -358,11 +363,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             return self.function_declaration();
         }
 
-        match self.iter.multipeek(5) {
-            [Name(_), ParenOpen, ParenClose, ..]                               |
-            [Name(_), ParenOpen, Whitespace(_), ParenClose, ..]                |
-            [Name(_), Whitespace(_), ParenOpen, ParenClose, ..]                |
-            [Name(_), Whitespace(_), ParenOpen, Whitespace(_), ParenClose, ..] => self.function_declaration(),
+        match self.iter.multipeek(3) {
+            [Name(_), ParenOpen,  ..]               |
+            [Name(_), Whitespace(_), ParenOpen, ..] => self.function_declaration(),
 
             _ => self.simple_command(),
         }
@@ -1393,6 +1396,11 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         // reserved words, and thus the `command_list` method doesn't apply.
         let mut cmds = Vec::new();
         loop {
+            let comments = self.linebreak();
+            if !comments.is_empty() {
+                try!(self.builder.comments(comments));
+            }
+
             if let Some(&ParenClose) = self.iter.peek() { break; }
             match try!(self.complete_command()) {
                 Some(c) => cmds.push(c),
@@ -1741,10 +1749,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         let remaining_comments = self.linebreak();
         let pre_esac_comments = match pre_esac_comments {
             Some(mut comments) => {
-                comments.reserve(remaining_comments.len());
-                for c in remaining_comments {
-                    comments.push(c);
-                }
+                comments.extend(remaining_comments);
                 comments
             },
             None => remaining_comments,
@@ -1781,37 +1786,54 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             _ => unreachable!(),
         };
 
-        // There must be whitespace after the function name, UNLESS we find `()` immediately after,
-        // or we hit a newline if we have the `function` keyword (and parens are not needed).
-        match self.iter.multipeek(3) {
-            [Whitespace(_), ..]                        |
-            [ParenOpen, ParenClose, ..]                |
-            [ParenOpen, Whitespace(_), ParenClose, ..] => {},
-            [Newline, ..] if found_fn                  => {},
+        // If there is no whitespace after the function name, the only valid
+        // possibility is for `()` to appear.
+        let body = if Some(&ParenOpen) == self.iter.peek() {
+            eat!(self, { ParenOpen => {} });
+            self.skip_whitespace();
+            eat!(self, { ParenClose => {} });
+            None
+        } else {
+            if found_fn && Some(&Newline) == self.iter.peek() {
+                // Do nothing, function declaration satisfied
+                None
+            } else {
+                eat!(self, { Whitespace(_) => {} });
+                self.skip_whitespace();
 
-            _ => return Err(self.make_unexpected_err()),
-        }
+                // If we didn't find the function keyword, we MUST find `()` at this time
+                if !found_fn {
+                    eat!(self, { ParenOpen => {} });
+                    self.skip_whitespace();
+                    eat!(self, { ParenClose => {} });
+                    None
+                } else {
+                    if Some(&Newline) == self.iter.peek() {
+                        // Do nothing, function declaration satisfied
+                        None
+                    } else if Some(&ParenOpen) == self.iter.peek() {
+                        // Otherwise it is possible for there to be a subshell as the body
+                        let subshell = try!(self.subshell_internal(true));
+                        if subshell.is_empty() {
+                            // Case like `function foo () ...`
+                            None
+                        } else {
+                            // Case like `function foo (subshell)`
+                            Some(try!(self.builder.subshell(subshell, Vec::new())))
+                        }
+                    } else {
+                        None
+                    }
+                }
+            }
+        };
 
-        self.skip_whitespace();
-        match self.iter.multipeek(3) {
-            [ParenOpen, Whitespace(_), ParenClose, ..] => {
-                self.iter.next();
-                self.iter.next();
-                self.iter.next();
+        let body = match body {
+            Some(subshell) => subshell,
+            None => match try!(self.complete_command()) {
+                Some(c) => c,
+                None => return Err(self.make_unexpected_err()),
             },
-
-            [ParenOpen, ParenClose, ..] => {
-                self.iter.next();
-                self.iter.next();
-            },
-
-            // If no `function` keyword, we must find `()`
-            _ => if !found_fn { return Err(self.make_unexpected_err()) },
-        }
-
-        let body = match try!(self.complete_command()) {
-            Some(c) => c,
-            None => return Err(self.make_unexpected_err()),
         };
 
         Ok(try!(self.builder.function_declaration(name, body)))
@@ -2329,6 +2351,8 @@ pub mod test {
     fn test_parameter_command_substitution_valid_empty_substitution() {
         let correct = Word::Subst(Box::new(ParameterSubstitution::Command(vec!())));
         assert_eq!(correct, make_parser("$()").parameter().unwrap());
+        assert_eq!(correct, make_parser("$(     )").parameter().unwrap());
+        assert_eq!(correct, make_parser("$(\n\n)").parameter().unwrap());
     }
 
     #[test]
@@ -4554,6 +4578,27 @@ pub mod test {
     }
 
     #[test]
+    fn test_function_declaration_parens_can_be_subshell_if_function_keyword_present() {
+        let correct = Command::Function(
+            String::from("foo"),
+            Box::new(Compound(
+                Box::new(CompoundCommand::Subshell(vec!(Simple(Box::new(SimpleCommand {
+                    cmd: Some(Word::Literal(String::from("echo"))),
+                    args: vec!(Word::Literal(String::from("subshell"))),
+                    vars: vec!(),
+                    io: vec!(),
+                }))))),
+                vec!()
+            ))
+        );
+
+        assert_eq!(correct, make_parser("function foo (echo subshell)").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("function foo() (echo subshell)").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("function foo () (echo subshell)").function_declaration().unwrap());
+        assert_eq!(correct, make_parser("function foo\n(echo subshell)").function_declaration().unwrap());
+    }
+
+    #[test]
     fn test_function_declaration_invalid_newline_in_declaration() {
         let mut p = make_parser("function\nname() { echo body; }");
         assert_eq!(Err(Unexpected(Token::Newline, src(8,1,9))), p.function_declaration());
@@ -4580,7 +4625,7 @@ pub mod test {
         let mut p = make_parser("function name{ echo body; }");
         assert_eq!(Err(Unexpected(Token::CurlyOpen, src(13,1,14))), p.function_declaration());
         let mut p = make_parser("function name( echo body; )");
-        assert_eq!(Err(Unexpected(Token::ParenOpen, src(13,1,14))), p.function_declaration());
+        assert_eq!(Err(Unexpected(Token::Name(String::from("echo")), src(15,1,16))), p.function_declaration());
     }
 
     #[test]

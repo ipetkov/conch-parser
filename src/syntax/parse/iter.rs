@@ -49,11 +49,7 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
             iter: iter,
             prev_buffered: Vec::new(),
             peek_buf: Vec::new(),
-            pos: SourcePos {
-                byte: 0,
-                line: 1,
-                col: 1,
-            },
+            pos: SourcePos::new(),
         }
     }
 
