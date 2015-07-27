@@ -259,15 +259,6 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         }
     }
 
-    /// Creates a new Parser from a Token iterator, provided AST builder, and
-    /// provided starting posiiton.
-    fn with_builder_and_position(iter: I, builder: B, pos: SourcePos) -> Parser<I, B> {
-        Parser {
-            iter: iter::TokenIter::with_position(iter, pos),
-            builder: builder,
-        }
-    }
-
     /// Parses a single complete command.
     ///
     /// For example, `foo && bar; baz` will yield two complete
@@ -363,11 +354,25 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             return self.function_declaration();
         }
 
-        match self.iter.multipeek(3) {
-            [Name(_), ParenOpen,  ..]               |
-            [Name(_), Whitespace(_), ParenOpen, ..] => self.function_declaration(),
+        let is_fn = {
+            let mut peeked = self.iter.peek_many(3).into_iter();
+            if let Some(&Name(_)) = peeked.next() {
+                let second = peeked.next();
 
-            _ => self.simple_command(),
+                if let Some(&Whitespace(_)) = second {
+                    Some(&ParenOpen) == peeked.next()
+                } else {
+                    Some(&ParenOpen) == second
+                }
+            } else {
+                false
+            }
+        };
+
+        if is_fn {
+            self.function_declaration()
+        } else {
+            self.simple_command()
         }
     }
 
@@ -383,7 +388,16 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         loop {
             self.skip_whitespace();
-            if let [Name(_), Equals, ..] = self.iter.multipeek(2) {
+            let is_name = {
+                let mut peeked = self.iter.peek_many(2).into_iter();
+                if let Some(&Name(_)) = peeked.next() {
+                    Some(&Equals) == peeked.next()
+                } else {
+                    false
+                }
+            };
+
+            if is_name {
                 if let Some(Name(var)) = self.iter.next() {
                     self.iter.next(); // Consume the =
 
@@ -1130,8 +1144,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         let backtick_pos = self.iter.pos();
         eat!(self, { Backtick => {} });
 
-        let cmd_pos = self.iter.pos();
-        let tokens: Vec<Token> = try!(self.iter.backticked_remove_backslashes(backtick_pos).collect());
+        let tok_iter = try!(self.iter.token_iter_from_backticked_with_removed_backslashes(backtick_pos));
 
         // Dodge an "ICE": If we don't erase the type of the builder, the type of the parser
         // below will will be of type Parser<_, &mut B>, whose methods that create a sub-parser
@@ -1140,7 +1153,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         // fixed and rustc will remain happy :)
         let b = &mut self.builder
             as &mut Builder<Command=B::Command, Word=B::Word, Redirect=B::Redirect, Err=B::Err>;
-        let mut parser = Parser::with_builder_and_position(tokens.into_iter(), b, cmd_pos);
+        let mut parser = Parser::with_token_iter_and_builder(tok_iter, b);
 
         let mut cmds = Vec::new();
         while let Some(c) = try!(parser.complete_command()) {
@@ -1847,12 +1860,16 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 self.iter.next();
             }
 
-            match self.iter.multipeek(2) {
-                [Backslash, Newline, ..] => {
-                    self.iter.next();
-                    self.iter.next();
-                },
-                _ => break,
+            let found_backslash_newline = {
+                let mut peeked = self.iter.peek_many(2).into_iter();
+                Some(&Backslash) == peeked.next() && Some(&Newline) == peeked.next()
+            };
+
+            if found_backslash_newline {
+                self.iter.next();
+                self.iter.next();
+            } else {
+                break;
             }
         }
     }
@@ -1925,16 +1942,22 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         for _ in 0..num_tries {
             {
-                let tok = match self.iter.multipeek(2) {
-                    // Don't forget about delimiting through EOF!
-                    [ref kw] => kw,
-                    [ref kw, ref delim] if delim.is_word_delimiter() => kw,
-                    _ => continue,
+                let mut peeked = self.iter.peek_many(2).into_iter();
+                let tok = match peeked.next() {
+                    Some(tok) => tok,
+                    None => return None,
                 };
 
-                match tokens.iter().find(|&t| t == tok) {
-                    ret@Some(_) => return ret,
-                    None => {},
+                let is_delim = match peeked.next() {
+                    Some(delim) => delim.is_word_delimiter(),
+                    None => true, // EOF is also a valid delimeter
+                };
+
+                if is_delim {
+                    match tokens.iter().find(|&t| t == tok) {
+                        ret@Some(_) => return ret,
+                        None => {},
+                    }
                 }
             }
 
@@ -1959,12 +1982,18 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         }
 
         self.skip_whitespace();
-        let tok = match self.iter.multipeek(2) {
-            // Don't forget about delimiting through EOF!
-            [ref kw] => kw,
-            [ref kw, ref delim] if delim.is_word_delimiter() => kw,
-            _ => return None,
+        let mut peeked = self.iter.peek_many(2).into_iter();
+        let tok = match peeked.next() {
+            Some(kw) => kw,
+            None => return None,
         };
+
+        // EOF is a valid delimeter
+        if let Some(delim) = peeked.next() {
+            if !delim.is_word_delimiter() {
+                return None;
+            }
+        }
 
         match *tok {
             Name(ref kw) |
@@ -6067,28 +6096,53 @@ pub mod test {
     fn test_backticked_invalid_missing_closing_backtick() {
         let src = [
             // Missing outermost backtick
-            r#"`foo"#,
-            r#"`foo \`bar \\\\$\\\\$\`"#,
-            r#"`foo \`bar \\\`baz \\\\\\\\$\\\\\\\\$ \\\`\`"#,
-            r#"`foo \`bar \\\`baz \\\\\\\`qux \\\\\\\\\\\\\\\\$ \\\\\\\\\\\\\\\\$ \\\\\\\` \\\`\`"#,
+            (r#"`foo"#, src(0,1,1)),
+            (r#"`foo \`bar \\\\$\\\\$\`"#, src(0,1,1)),
+            (r#"`foo \`bar \\\`baz \\\\\\\\$\\\\\\\\$ \\\`\`"#, src(0,1,1)),
+            (r#"`foo \`bar \\\`baz \\\\\\\`qux \\\\\\\\\\\\\\\\$ \\\\\\\\\\\\\\\\$ \\\\\\\` \\\`\`"#, src(0,1,1)),
 
             // Missing second to last backtick
-            r#"`foo \`bar \\\\$\\\\$`"#,
-            r#"`foo \`bar \\\`baz \\\\\\\\$\\\\\\\\$ \\\``"#,
-            r#"`foo \`bar \\\`baz \\\\\\\`qux \\\\\\\\\\\\\\\\$ \\\\\\\\\\\\\\\\$ \\\\\\\` \\\``"#,
+            (r#"`foo \`bar \\\\$\\\\$`"#, src(6,1,7)),
+            (r#"`foo \`bar \\\`baz \\\\\\\\$\\\\\\\\$ \\\``"#, src(6,1,7)),
+            (r#"`foo \`bar \\\`baz \\\\\\\`qux \\\\\\\\\\\\\\\\$ \\\\\\\\\\\\\\\\$ \\\\\\\` \\\``"#, src(6,1,7)),
 
             // Missing third to last backtick
-            r#"`foo \`bar \\\`baz \\\\\\\\$\\\\\\\\$ \``"#,
-            r#"`foo \`bar \\\`baz \\\\\\\`qux \\\\\\\\\\\\\\\\$ \\\\\\\\\\\\\\\\$ \\\\\\\` \``"#,
+            (r#"`foo \`bar \\\`baz \\\\\\\\$\\\\\\\\$ \``"#, src(14,1,15)),
+            (r#"`foo \`bar \\\`baz \\\\\\\`qux \\\\\\\\\\\\\\\\$ \\\\\\\\\\\\\\\\$ \\\\\\\` \``"#, src(14,1,15)),
 
             // Missing fourth to last backtick
-            r#"`foo \`bar \\\`baz \\\\\\\`qux \\\\\\\\\\\\\\\\$ \\\\\\\\\\\\\\\\$ \\\`\``"#,
+            (r#"`foo \`bar \\\`baz \\\\\\\`qux \\\\\\\\\\\\\\\\$ \\\\\\\\\\\\\\\\$ \\\`\``"#, src(26,1,27)),
         ];
 
-        for s in src.iter() {
+        for &(s, p) in src.iter() {
+            let correct = Unmatched(Token::Backtick, p);
             match make_parser(s).backticked_command_substitution() {
                 Ok(w) => panic!("Unexpectedly parsed the source \"{}\" as\n{:?}", s, w),
-                Err(_) => {},
+                Err(ref err) => if err != &correct {
+                    panic!("Expected the source \"{}\" to return the error `{:?}`, but got `{:?}`",
+                           s, correct, err);
+                },
+            }
+        }
+    }
+
+    #[test]
+    fn test_backticked_invalid_maintains_accurate_source_positions() {
+        let src = [
+            (r#"`foo ${invalid param}`"#, src(14,1,15)),
+            (r#"`foo \`bar ${invalid param}\``"#, src(20,1,21)),
+            (r#"`foo \`bar \\\`baz ${invalid param} \\\`\``"#, src(28,1,29)),
+            (r#"`foo \`bar \\\`baz \\\\\\\`qux ${invalid param} \\\\\\\` \\\`\``"#, src(40,1,41)),
+        ];
+
+        for &(s, p) in src.iter() {
+            let correct = BadSubst(Token::Whitespace(String::from(" ")), p);
+            match make_parser(s).backticked_command_substitution() {
+                Ok(w) => panic!("Unexpectedly parsed the source \"{}\" as\n{:?}", s, w),
+                Err(ref err) => if err != &correct {
+                    panic!("Expected the source \"{}\" to return the error `{:?}`, but got `{:?}`",
+                           s, correct, err);
+                },
             }
         }
     }
