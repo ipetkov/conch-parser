@@ -74,6 +74,8 @@ pub enum ParseError<T: Error> {
     Unexpected(Token, SourcePos),
     /// Encountered the end of input while expecting additional tokens.
     UnexpectedEOF,
+    /// Parser functionality not yet implemented
+    Unimplemented(&'static str),
     /// An external error returned by the AST builder.
     External(T),
 }
@@ -88,6 +90,7 @@ impl<T: Error> Error for ParseError<T> {
             ParseError::IncompleteCmd(..)=> "incomplete command",
             ParseError::Unexpected(..)  => "unexpected token found",
             ParseError::UnexpectedEOF   => "unexpected end of input",
+            ParseError::Unimplemented(s)=> s,
             ParseError::External(ref e) => e.description(),
         }
     }
@@ -101,6 +104,7 @@ impl<T: Error> Error for ParseError<T> {
             ParseError::IncompleteCmd(..)|
             ParseError::Unexpected(..)   |
             ParseError::UnexpectedEOF    => None,
+            ParseError::Unimplemented(..)=> None,
             ParseError::External(ref e) => Some(e),
         }
     }
@@ -124,6 +128,7 @@ impl<T: Error> fmt::Display for ParseError<T> {
             ParseError::Unexpected(ref t, pos)   => write!(fmt, "found unexpected token on line {}: {}", pos, t),
 
             ParseError::UnexpectedEOF => fmt.write_str("unexpected end of input"),
+            ParseError::Unimplemented(s) => fmt.write_str(s),
             ParseError::External(ref e) => write!(fmt, "{}", e),
         }
     }
@@ -159,12 +164,13 @@ enum CompoundCmdKeyword {
 }
 
 impl<I: Iterator<Item = Token>, B: Builder> Iterator for Parser<I, B> {
-    type Item = B::Command;
+    type Item = Result<B::Command, ParseError<B::Err>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.complete_command() {
-            Ok(r) => r,
-            Err(e) => panic!("error: {}", e),
+            Ok(Some(c)) => Some(Ok(c)),
+            Ok(None) => None,
+            Err(e) => Some(Err(e)),
         }
     }
 }
@@ -1220,7 +1226,20 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         };
 
         let param = match self.iter.peek() {
-            Some(&ParenOpen) => return Ok(WordKind::Subst(Command(try!(self.subshell_internal(true))))),
+            Some(&ParenOpen) => {
+                let is_arith = {
+                    let mut peeked = self.iter.peek_many(2).into_iter();
+                    peeked.next();
+                    Some(&ParenOpen) == peeked.next()
+                };
+
+                if is_arith {
+                    // FIXME: Implement arithmetic expansions
+                    return Err(ParseError::Unimplemented("parsing of arithmetic expansions not yet implemented"))
+                } else {
+                    return Ok(WordKind::Subst(Command(try!(self.subshell_internal(true)))))
+                }
+            },
 
             Some(&CurlyOpen) => {
                 self.iter.next();
