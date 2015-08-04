@@ -449,14 +449,18 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         // "Blank" commands are only allowed if redirection occurs
         // or if there is some variable assignment
-        if cmd.is_none() {
-            debug_assert!(args.is_empty());
-            if vars.is_empty() && io.is_empty() {
-                try!(Err(self.make_unexpected_err()));
-            }
-        }
+        let cmd = match cmd {
+            Some(cmd) => Some((cmd, args)),
+            None => {
+                debug_assert!(args.is_empty());
+                if vars.is_empty() && io.is_empty() {
+                    try!(Err(self.make_unexpected_err()));
+                }
+                None
+            },
+        };
 
-        Ok(try!(self.builder.simple_command(vars, cmd, args, io)))
+        Ok(try!(self.builder.simple_command(vars, cmd, io)))
     }
 
     /// Parses a continuous list of redirections and will error if any words
@@ -2103,9 +2107,11 @@ pub mod test {
     }
 
     fn cmd_args_unboxed(cmd: &str, args: &[&str]) -> Command {
+        let cmd = Word::Literal(String::from(cmd));
+        let args = args.iter().map(|&a| Word::Literal(String::from(a))).collect();
+
         Simple(Box::new(SimpleCommand {
-            cmd: Some(Word::Literal(String::from(cmd))),
-            args: args.iter().map(|&a| Word::Literal(String::from(a))).collect(),
+            cmd: Some((cmd, args)),
             vars: vec!(),
             io: vec!(),
         }))
@@ -2127,13 +2133,12 @@ pub mod test {
         }
     }
 
-    pub fn sample_simple_command() -> (Option<Word>, Vec<Word>, Vec<(String, Option<Word>)>, Vec<Redirect>) {
+    pub fn sample_simple_command() -> (Option<(Word, Vec<Word>)>, Vec<(String, Option<Word>)>, Vec<Redirect>) {
         (
-            Some(Word::Literal(String::from("foo"))),
-            vec!(
+            Some((Word::Literal(String::from("foo")), vec!(
                 Word::Literal(String::from("bar")),
                 Word::Literal(String::from("baz")),
-            ),
+            ))),
             vec!(
                 (String::from("var"), Some(Word::Literal(String::from("val")))),
                 (String::from("ENV"), Some(Word::Literal(String::from("true")))),
@@ -3046,10 +3051,9 @@ pub mod test {
     fn test_parameter_substitution_command_close_paren_need_not_be_followed_by_word_delimeter() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(), io: vec!(),
-            cmd: Some(Word::Literal(String::from("foo"))),
-            args: vec!(Word::DoubleQuoted(vec!(
+            cmd: Some((Word::Literal(String::from("foo")), vec!(Word::DoubleQuoted(vec!(
                 Word::Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_unboxed("bar")))))
-            ))),
+            ))))),
         })));
         assert_eq!(correct, make_parser("foo \"$(bar)\"").complete_command().unwrap());
     }
@@ -3150,8 +3154,7 @@ pub mod test {
         let mut p = make_parser("foo 1>>out");
         let cmd = p.simple_command().unwrap();
         assert_eq!(cmd, Simple(Box::new(SimpleCommand {
-            cmd: Some(Word::Literal(String::from("foo"))),
-            args: vec!(),
+            cmd: Some((Word::Literal(String::from("foo")), vec!())),
             vars: vec!(),
             io: vec!(Redirect::Append(Some(Word::Literal(String::from("1"))), Word::Literal(String::from("out")))),
         })));
@@ -3162,8 +3165,7 @@ pub mod test {
         let mut p = make_parser("foo 1 <>out");
         let cmd = p.simple_command().unwrap();
         assert_eq!(cmd, Simple(Box::new(SimpleCommand {
-            cmd: Some(Word::Literal(String::from("foo"))),
-            args: vec!(Word::Literal(String::from("1"))),
+            cmd: Some((Word::Literal(String::from("foo")), vec!(Word::Literal(String::from("1"))))),
             vars: vec!(),
             io: vec!(Redirect::ReadWrite(None, Word::Literal(String::from("out")))),
         })));
@@ -3174,8 +3176,7 @@ pub mod test {
         let mut p = make_parser("foo 1>&2");
         let cmd = p.simple_command().unwrap();
         assert_eq!(cmd, Simple(Box::new(SimpleCommand {
-            cmd: Some(Word::Literal(String::from("foo"))),
-            args: vec!(),
+            cmd: Some((Word::Literal(String::from("foo")), vec!())),
             vars: vec!(),
             io: vec!(Redirect::DupWrite(Some(Word::Literal(String::from("1"))), Word::Literal(String::from("2")))),
         })));
@@ -3186,8 +3187,7 @@ pub mod test {
         let mut p = make_parser("foo 1 <&2");
         let cmd = p.simple_command().unwrap();
         assert_eq!(cmd, Simple(Box::new(SimpleCommand {
-            cmd: Some(Word::Literal(String::from("foo"))),
-            args: vec!(Word::Literal(String::from("1"))),
+            cmd: Some((Word::Literal(String::from("foo")), vec!(Word::Literal(String::from("1"))))),
             vars: vec!(),
             io: vec!(Redirect::DupRead(None, Word::Literal(String::from("2")))),
         })));
@@ -3198,8 +3198,7 @@ pub mod test {
         let mut p = make_parser("foo 1<& 2");
         let cmd = p.simple_command().unwrap();
         assert_eq!(cmd, Simple(Box::new(SimpleCommand {
-            cmd: Some(Word::Literal(String::from("foo"))),
-            args: vec!(),
+            cmd: Some((Word::Literal(String::from("foo")), vec!())),
             vars: vec!(),
             io: vec!(Redirect::DupRead(Some(Word::Literal(String::from("1"))), Word::Literal(String::from("2")))),
         })));
@@ -3248,8 +3247,7 @@ pub mod test {
 
         let cmd = p.simple_command().unwrap();
         assert_eq!(cmd, Simple(Box::new(SimpleCommand {
-            cmd: Some(Word::Literal(String::from("foo"))),
-            args: vec!(),
+            cmd: Some((Word::Literal(String::from("foo")), vec!())),
             vars: vec!(),
             io: vec!(Redirect::CloseRead(Some(Word::Literal(String::from("1234"))))),
         })));
@@ -3285,51 +3283,52 @@ pub mod test {
     #[test]
     fn test_simple_command_valid_assignments_at_start_of_command() {
         let mut p = make_parser("var=val ENV=true BLANK= foo bar baz");
-        let (cmd, args, vars, _) = sample_simple_command();
-        let correct = Simple(Box::new(SimpleCommand { cmd: cmd, args: args, vars: vars, io: vec!() }));
+        let (cmd, vars, _) = sample_simple_command();
+        let correct = Simple(Box::new(SimpleCommand { cmd: cmd, vars: vars, io: vec!() }));
         assert_eq!(correct, p.simple_command().unwrap());
     }
 
     #[test]
     fn test_simple_command_assignments_after_start_of_command_should_be_args() {
         let mut p = make_parser("var=val ENV=true BLANK= foo var2=val2 bar baz var3=val3");
-        let (cmd, mut args, vars, _) = sample_simple_command();
+        let (cmd, vars, _) = sample_simple_command();
+        let (cmd, mut args) = cmd.unwrap();
         args.insert(0, Word::Literal(String::from("var2=val2")));
         args.push(Word::Literal(String::from("var3=val3")));
-        let correct = Simple(Box::new(SimpleCommand { cmd: cmd, args: args, vars: vars, io: vec!() }));
+        let correct = Simple(Box::new(SimpleCommand { cmd: Some((cmd, args)), vars: vars, io: vec!() }));
         assert_eq!(correct, p.simple_command().unwrap());
     }
 
     #[test]
     fn test_simple_command_redirections_at_start_of_command() {
         let mut p = make_parser("2>|clob 3<>rw <in var=val ENV=true BLANK= foo bar baz");
-        let (cmd, args, vars, io) = sample_simple_command();
-        let correct = Simple(Box::new(SimpleCommand { cmd: cmd, args: args, vars: vars, io: io }));
+        let (cmd, vars, io) = sample_simple_command();
+        let correct = Simple(Box::new(SimpleCommand { cmd: cmd, vars: vars, io: io }));
         assert_eq!(correct, p.simple_command().unwrap());
     }
 
     #[test]
     fn test_simple_command_redirections_at_end_of_command() {
         let mut p = make_parser("var=val ENV=true BLANK= foo bar baz 2>|clob 3<>rw <in");
-        let (cmd, args, vars, io) = sample_simple_command();
-        let correct = Simple(Box::new(SimpleCommand { cmd: cmd, args: args, vars: vars, io: io }));
+        let (cmd, vars, io) = sample_simple_command();
+        let correct = Simple(Box::new(SimpleCommand { cmd: cmd, vars: vars, io: io }));
         assert_eq!(correct, p.simple_command().unwrap());
     }
 
     #[test]
     fn test_simple_command_redirections_throughout_the_command() {
         let mut p = make_parser("2>|clob var=val 3<>rw ENV=true BLANK= foo bar <in baz 4>&-");
-        let (cmd, args, vars, mut io) = sample_simple_command();
+        let (cmd, vars, mut io) = sample_simple_command();
         io.push(Redirect::CloseWrite(Some(Word::Literal(String::from("4")))));
-        let correct = Simple(Box::new(SimpleCommand { cmd: cmd, args: args, vars: vars, io: io }));
+        let correct = Simple(Box::new(SimpleCommand { cmd: cmd, vars: vars, io: io }));
         assert_eq!(correct, p.simple_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid() {
         let correct = Some(Simple(Box::new(SimpleCommand {
-            args: vec!(), vars: vec!(),
-            cmd: Some(Word::Literal(String::from("cat"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("cat")), vec!())),
             io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
             )
@@ -3341,8 +3340,8 @@ pub mod test {
     #[test]
     fn test_heredoc_valid_eof_after_delimiter_allowed() {
         let correct = Some(Simple(Box::new(SimpleCommand {
-            args: vec!(), vars: vec!(),
-            cmd: Some(Word::Literal(String::from("cat"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("cat")), vec!())),
             io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
             )
@@ -3354,8 +3353,8 @@ pub mod test {
     #[test]
     fn test_heredoc_valid_with_empty_body() {
         let correct = Some(Simple(Box::new(SimpleCommand {
-            args: vec!(), vars: vec!(),
-            cmd: Some(Word::Literal(String::from("cat"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("cat")), vec!())),
             io: vec!(Redirect::Heredoc(None, Word::Literal(String::new())))
         })));
 
@@ -3367,8 +3366,8 @@ pub mod test {
     #[test]
     fn test_heredoc_valid_eof_acceptable_as_delimeter() {
         let correct = Some(Simple(Box::new(SimpleCommand {
-            args: vec!(), vars: vec!(),
-            cmd: Some(Word::Literal(String::from("cat"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("cat")), vec!())),
             io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
             )
@@ -3380,14 +3379,14 @@ pub mod test {
     #[test]
     fn test_heredoc_valid_does_not_lose_tokens_up_to_next_newline() {
         let mut p = make_parser("cat <<eof1; cat 3<<eof2\nhello\neof1\nworld\neof2");
-        let cat = Some(Word::Literal(String::from("cat")));
+        let cat = Some((Word::Literal(String::from("cat")), vec!()));
         let first = Simple(Box::new(SimpleCommand {
-            cmd: cat.clone(), args: vec!(), vars: vec!(), io: vec!(
+            cmd: cat.clone(), vars: vec!(), io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
             )
         }));
         let second = Simple(Box::new(SimpleCommand {
-            cmd: cat.clone(), args: vec!(), vars: vec!(), io: vec!(
+            cmd: cat.clone(), vars: vec!(), io: vec!(
                 Redirect::Heredoc(Some(Word::Literal(String::from("3"))),
                     Word::Literal(String::from("world\n"))
                 )
@@ -3401,14 +3400,14 @@ pub mod test {
     #[test]
     fn test_heredoc_valid_space_before_delimeter_allowed() {
         let mut p = make_parser("cat <<   eof1; cat 3<<- eof2\nhello\neof1\nworld\neof2");
-        let cat = Some(Word::Literal(String::from("cat")));
+        let cat = Some((Word::Literal(String::from("cat")), vec!()));
         let first = Simple(Box::new(SimpleCommand {
-            cmd: cat.clone(), args: vec!(), vars: vec!(), io: vec!(
+            cmd: cat.clone(), vars: vec!(), io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
             )
         }));
         let second = Simple(Box::new(SimpleCommand {
-            cmd: cat.clone(), args: vec!(), vars: vec!(), io: vec!(
+            cmd: cat.clone(), vars: vec!(), io: vec!(
                 Redirect::Heredoc(Some(Word::Literal(String::from("3"))),
                     Word::Literal(String::from("world\n"))
                 )
@@ -3421,9 +3420,9 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_unquoted_delimeter_should_expand_body() {
-        let cat = Some(Word::Literal(String::from("cat")));
+        let cat = Some((Word::Literal(String::from("cat")), vec!()));
         let expanded = Some(Simple(Box::new(SimpleCommand {
-            cmd: cat.clone(), args: vec!(), vars: vec!(), io: vec!(
+            cmd: cat.clone(), vars: vec!(), io: vec!(
                 Redirect::Heredoc(None, Word::Concat(vec!(
                     Word::Param(Parameter::Dollar),
                     Word::Literal(String::from(" ")),
@@ -3435,7 +3434,7 @@ pub mod test {
             ))
         })));
         let literal = Some(Simple(Box::new(SimpleCommand {
-            cmd: cat.clone(), args: vec!(), vars: vec!(), io: vec!(
+            cmd: cat.clone(), vars: vec!(), io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("$$ ${#!} `foo`\n")))
             )
         })));
@@ -3450,14 +3449,14 @@ pub mod test {
     #[test]
     fn test_heredoc_valid_leading_tab_removal_works() {
         let mut p = make_parser("cat <<-eof1; cat 3<<-eof2\n\t\thello\n\teof1\n\t\t \t\nworld\n\t\teof2");
-        let cat = Some(Word::Literal(String::from("cat")));
+        let cat = Some((Word::Literal(String::from("cat")), vec!()));
         let first = Simple(Box::new(SimpleCommand {
-            cmd: cat.clone(), args: vec!(), vars: vec!(), io: vec!(
+            cmd: cat.clone(), vars: vec!(), io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
             )
         }));
         let second = Simple(Box::new(SimpleCommand {
-            cmd: cat.clone(), args: vec!(), vars: vec!(), io: vec!(
+            cmd: cat.clone(), vars: vec!(), io: vec!(
                 Redirect::Heredoc(Some(Word::Literal(String::from("3"))),
                     Word::Literal(String::from(" \t\nworld\n"))
                 )
@@ -3472,8 +3471,8 @@ pub mod test {
     fn test_heredoc_valid_leading_tab_removal_works_if_dash_immediately_after_dless() {
         let mut p = make_parser("cat 3<< -eof\n\t\t \t\nworld\n\t\teof\n\t\t-eof\n-eof");
         let correct = Simple(Box::new(SimpleCommand {
-            args: vec!(), vars: vec!(),
-            cmd: Some(Word::Literal(String::from("cat"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("cat")), vec!())),
             io: vec!(
                 Redirect::Heredoc(Some(Word::Literal(String::from("3"))),
                     Word::Literal(String::from("\t\t \t\nworld\n\t\teof\n\t\t-eof\n"))
@@ -3487,8 +3486,8 @@ pub mod test {
     #[test]
     fn test_heredoc_valid_unquoted_backslashes_in_delimeter_disappear() {
         let correct = Some(Simple(Box::new(SimpleCommand {
-            args: vec!(), vars: vec!(),
-            cmd: Some(Word::Literal(String::from("cat"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("cat")), vec!())),
             io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
             )
@@ -3500,8 +3499,8 @@ pub mod test {
     #[test]
     fn test_heredoc_valid_balanced_single_quotes_in_delimeter() {
         let correct = Some(Simple(Box::new(SimpleCommand {
-            args: vec!(), vars: vec!(),
-            cmd: Some(Word::Literal(String::from("cat"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("cat")), vec!())),
             io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
             )
@@ -3513,8 +3512,8 @@ pub mod test {
     #[test]
     fn test_heredoc_valid_balanced_double_quotes_in_delimeter() {
         let correct = Some(Simple(Box::new(SimpleCommand {
-            args: vec!(), vars: vec!(),
-            cmd: Some(Word::Literal(String::from("cat"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("cat")), vec!())),
             io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
             )
@@ -3526,8 +3525,8 @@ pub mod test {
     #[test]
     fn test_heredoc_valid_balanced_backticks_in_delimeter() {
         let correct = Some(Simple(Box::new(SimpleCommand {
-            args: vec!(), vars: vec!(),
-            cmd: Some(Word::Literal(String::from("cat"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("cat")), vec!())),
             io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
             )
@@ -3539,8 +3538,8 @@ pub mod test {
     #[test]
     fn test_heredoc_valid_balanced_parens_in_delimeter() {
         let correct = Some(Simple(Box::new(SimpleCommand {
-            args: vec!(), vars: vec!(),
-            cmd: Some(Word::Literal(String::from("cat"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("cat")), vec!())),
             io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
             )
@@ -3552,8 +3551,8 @@ pub mod test {
     #[test]
     fn test_heredoc_valid_cmd_subst_in_delimeter() {
         let correct = Some(Simple(Box::new(SimpleCommand {
-            args: vec!(), vars: vec!(),
-            cmd: Some(Word::Literal(String::from("cat"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("cat")), vec!())),
             io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
             )
@@ -3565,8 +3564,8 @@ pub mod test {
     #[test]
     fn test_heredoc_valid_param_subst_in_delimeter() {
         let correct = Some(Simple(Box::new(SimpleCommand {
-            args: vec!(), vars: vec!(),
-            cmd: Some(Word::Literal(String::from("cat"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("cat")), vec!())),
             io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("hello\n")))
             )
@@ -3578,8 +3577,9 @@ pub mod test {
     fn test_heredoc_valid_skip_past_newlines_in_single_quotes() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            args: vec!(Word::SingleQuoted(String::from("\n")), Word::Literal(String::from("arg"))),
-            cmd: Some(Word::Literal(String::from("cat"))),
+            cmd: Some((Word::Literal(String::from("cat")), vec!(
+                Word::SingleQuoted(String::from("\n")), Word::Literal(String::from("arg"))
+            ))),
             io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("here\n")))
             )
@@ -3591,11 +3591,10 @@ pub mod test {
     fn test_heredoc_valid_skip_past_newlines_in_double_quotes() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            args: vec!(
+            cmd: Some((Word::Literal(String::from("cat")), vec!(
                 Word::DoubleQuoted(vec!(Word::Literal(String::from("\n")))),
                 Word::Literal(String::from("arg"))
-            ),
-            cmd: Some(Word::Literal(String::from("cat"))),
+            ))),
             io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("here\n")))
             )
@@ -3607,11 +3606,10 @@ pub mod test {
     fn test_heredoc_valid_skip_past_newlines_in_backticks() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some(Word::Literal(String::from("cat"))),
-            args: vec!(
+            cmd: Some((Word::Literal(String::from("cat")), vec!(
                 Word::Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_unboxed("echo"))))),
                 Word::Literal(String::from("arg"))
-            ),
+            ))),
             io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("here\n")))
             )
@@ -3622,8 +3620,8 @@ pub mod test {
     #[test]
     fn test_heredoc_valid_skip_past_newlines_in_parens() {
         let correct = Some(Simple(Box::new(SimpleCommand {
-            vars: vec!(), args: vec!(),
-            cmd: Some(Word::Literal(String::from("cat"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("cat")), vec!())),
             io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("here\n")))
             )
@@ -3635,11 +3633,10 @@ pub mod test {
     fn test_heredoc_valid_skip_past_newlines_in_cmd_subst() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            args: vec!(
+            cmd: Some((Word::Literal(String::from("cat")), vec!(
                 Word::Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_unboxed("foo"))))),
                 Word::Literal(String::from("arg"))
-            ),
-            cmd: Some(Word::Literal(String::from("cat"))),
+            ))),
             io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("here\n")))
             )
@@ -3651,13 +3648,12 @@ pub mod test {
     fn test_heredoc_valid_skip_past_newlines_in_param_subst() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            args: vec!(
+            cmd: Some((Word::Literal(String::from("cat")), vec!(
                 Word::Subst(Box::new(ParameterSubstitution::Assign(false,
                     Parameter::Var(String::from("foo")),
                     Some(Word::Literal(String::from("\n")))))),
                 Word::Literal(String::from("arg"))
-            ),
-            cmd: Some(Word::Literal(String::from("cat"))),
+            ))),
             io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("here\n")))
             )
@@ -3669,8 +3665,7 @@ pub mod test {
     fn test_heredoc_valid_skip_past_escaped_newlines() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            args: vec!(Word::Literal(String::from("arg"))),
-            cmd: Some(Word::Literal(String::from("cat"))),
+            cmd: Some((Word::Literal(String::from("cat")), vec!(Word::Literal(String::from("arg"))))),
             io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("here\n")))
             )
@@ -3681,8 +3676,8 @@ pub mod test {
     #[test]
     fn test_heredoc_valid_double_quoted_delim_keeps_backslashe_except_after_specials() {
         let correct = Some(Simple(Box::new(SimpleCommand {
-            vars: vec!(), args: vec!(),
-            cmd: Some(Word::Literal(String::from("cat"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("cat")), vec!())),
             io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("here\n")))
             )
@@ -3694,8 +3689,8 @@ pub mod test {
     #[test]
     fn test_heredoc_valid_unquoting_only_removes_outer_quotes_and_backslashes() {
         let correct = Some(Simple(Box::new(SimpleCommand {
-            vars: vec!(), args: vec!(),
-            cmd: Some(Word::Literal(String::from("cat"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("cat")), vec!())),
             io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("here\n")))
             )
@@ -3708,8 +3703,7 @@ pub mod test {
     fn test_heredoc_valid_delimeter_can_be_followed_by_carriage_return_newline() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some(Word::Literal(String::from("cat"))),
-            args: vec!(Word::Literal(String::from("arg"))),
+            cmd: Some((Word::Literal(String::from("cat")), vec!(Word::Literal(String::from("arg"))))),
             io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("here\n")))
             )
@@ -3718,8 +3712,7 @@ pub mod test {
 
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some(Word::Literal(String::from("cat"))),
-            args: vec!(Word::Literal(String::from("arg"))),
+            cmd: Some((Word::Literal(String::from("cat")), vec!(Word::Literal(String::from("arg"))))),
             io: vec!(
                 Redirect::Heredoc(None, Word::Literal(String::from("here\r\n")))
             )
@@ -4133,32 +4126,32 @@ pub mod test {
     #[test]
     fn test_if_command_valid_with_else() {
         let guard1 = Simple(Box::new(SimpleCommand {
-            vars: vec!(), args: vec!(),
-            cmd: Some(Word::Literal(String::from("guard1"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("guard1")), vec!())),
             io: vec!(Redirect::Read(None, Word::Literal(String::from("in")))),
         }));
 
         let guard2 = Simple(Box::new(SimpleCommand {
-            vars: vec!(), args: vec!(),
-            cmd: Some(Word::Literal(String::from("guard2"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("guard2")), vec!())),
             io: vec!(Redirect::Write(None, Word::Literal(String::from("out")))),
         }));
 
         let guard3 = Simple(Box::new(SimpleCommand {
-            vars: vec!(), args: vec!(),
-            cmd: Some(Word::Literal(String::from("guard3"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("guard3")), vec!())),
             io: vec!(),
         }));
 
         let body1 = Simple(Box::new(SimpleCommand {
-            vars: vec!(), args: vec!(),
-            cmd: Some(Word::Literal(String::from("body1"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("body1")), vec!())),
             io: vec!(Redirect::Clobber(None, Word::Literal(String::from("clob")))),
         }));
 
         let body2 = Simple(Box::new(SimpleCommand {
-            vars: vec!(), args: vec!(),
-            cmd: Some(Word::Literal(String::from("body2"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("body2")), vec!())),
             io: vec!(Redirect::Append(Some(Word::Literal(String::from("2"))), Word::Literal(String::from("app")))),
         }));
 
@@ -4172,32 +4165,32 @@ pub mod test {
     #[test]
     fn test_if_command_valid_without_else() {
         let guard1 = Simple(Box::new(SimpleCommand {
-            vars: vec!(), args: vec!(),
-            cmd: Some(Word::Literal(String::from("guard1"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("guard1")), vec!())),
             io: vec!(Redirect::Read(None, Word::Literal(String::from("in")))),
         }));
 
         let guard2 = Simple(Box::new(SimpleCommand {
-            vars: vec!(), args: vec!(),
-            cmd: Some(Word::Literal(String::from("guard2"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("guard2")), vec!())),
             io: vec!(Redirect::Write(None, Word::Literal(String::from("out")))),
         }));
 
         let guard3 = Simple(Box::new(SimpleCommand {
-            vars: vec!(), args: vec!(),
-            cmd: Some(Word::Literal(String::from("guard3"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("guard3")), vec!())),
             io: vec!(),
         }));
 
         let body1 = Simple(Box::new(SimpleCommand {
-            vars: vec!(), args: vec!(),
-            cmd: Some(Word::Literal(String::from("body1"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("body1")), vec!())),
             io: vec!(Redirect::Clobber(None, Word::Literal(String::from("clob")))),
         }));
 
         let body2 = Simple(Box::new(SimpleCommand {
-            vars: vec!(), args: vec!(),
-            cmd: Some(Word::Literal(String::from("body2"))),
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("body2")), vec!())),
             io: vec!(Redirect::Append(Some(Word::Literal(String::from("2"))), Word::Literal(String::from("app")))),
         }));
 
@@ -4369,8 +4362,7 @@ pub mod test {
 
         let correct_body = vec!(Simple(Box::new(SimpleCommand {
             vars: vec!(), io: vec!(),
-            cmd: Some(Word::Literal(String::from("echo"))),
-            args: vec!(Word::Param(Parameter::Var(String::from("var"))))
+            cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Param(Parameter::Var(String::from("var"))))))
         })));
 
         assert_eq!(correct_body, body);
@@ -4387,8 +4379,7 @@ pub mod test {
 
         let correct_body = vec!(Simple(Box::new(SimpleCommand {
             vars: vec!(), io: vec!(),
-            cmd: Some(Word::Literal(String::from("echo"))),
-            args: vec!(Word::Param(Parameter::Var(String::from("var"))))
+            cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Param(Parameter::Var(String::from("var"))))))
         })));
 
         assert_eq!(correct_body, body);
@@ -4562,8 +4553,9 @@ pub mod test {
             String::from("foo"),
             Box::new(Compound(
                 Box::new(CompoundCommand::Brace(vec!(Simple(Box::new(SimpleCommand {
-                    cmd: Some(Word::Literal(String::from("echo"))),
-                    args: vec!(Word::Literal(String::from("body"))),
+                    cmd: Some((Word::Literal(String::from("echo")), vec!(
+                        Word::Literal(String::from("body"))
+                    ))),
                     vars: vec!(),
                     io: vec!(),
                 }))))),
@@ -4597,8 +4589,9 @@ pub mod test {
         let correct = Command::Function(
             String::from("foo"),
             Box::new(Simple(Box::new(SimpleCommand {
-                cmd: Some(Word::Literal(String::from("echo"))),
-                args: vec!(Word::Literal(String::from("body"))),
+                cmd: Some((Word::Literal(String::from("echo")), vec!(
+                    Word::Literal(String::from("body"))
+                ))),
                 vars: vec!(),
                 io: vec!(),
             })))
@@ -4631,8 +4624,9 @@ pub mod test {
             String::from("foo"),
             Box::new(Compound(
                 Box::new(CompoundCommand::Subshell(vec!(Simple(Box::new(SimpleCommand {
-                    cmd: Some(Word::Literal(String::from("echo"))),
-                    args: vec!(Word::Literal(String::from("subshell"))),
+                    cmd: Some((Word::Literal(String::from("echo")), vec!(
+                        Word::Literal(String::from("subshell"))
+                    ))),
                     vars: vec!(),
                     io: vec!(),
                 }))))),
@@ -4818,8 +4812,9 @@ pub mod test {
             (
                 (vec!(), vec!(Word::Literal(String::from("hello")), Word::Literal(String::from("goodbye"))), vec!()),
                 vec!(Simple(Box::new(SimpleCommand {
-                    cmd: Some(Word::Literal(String::from("echo"))),
-                    args: vec!(Word::Literal(String::from("greeting"))),
+                    cmd: Some((Word::Literal(String::from("echo")), vec!(
+                        Word::Literal(String::from("greeting"))
+                    ))),
                     io: vec!(),
                     vars: vec!(),
                 }))),
@@ -4827,8 +4822,9 @@ pub mod test {
             (
                 (vec!(), vec!(Word::Literal(String::from("world"))), vec!()),
                 vec!(Simple(Box::new(SimpleCommand {
-                    cmd: Some(Word::Literal(String::from("echo"))),
-                    args: vec!(Word::Literal(String::from("noun"))),
+                    cmd: Some((Word::Literal(String::from("echo")), vec!(
+                        Word::Literal(String::from("noun"))
+                    ))),
                     io: vec!(),
                     vars: vec!(),
                 }))),
@@ -4859,8 +4855,9 @@ pub mod test {
                     vec!(Newline(Some(String::from("#post_pat_1a"))), Newline(Some(String::from("#post_pat_1b")))),
                 ),
                 vec!(Simple(Box::new(SimpleCommand {
-                    cmd: Some(Word::Literal(String::from("echo"))),
-                    args: vec!(Word::Literal(String::from("greeting"))),
+                    cmd: Some((Word::Literal(String::from("echo")), vec!(
+                        Word::Literal(String::from("greeting"))
+                    ))),
                     io: vec!(),
                     vars: vec!(),
                 }))),
@@ -4872,8 +4869,9 @@ pub mod test {
                     vec!(Newline(Some(String::from("#post_pat_2a"))), Newline(Some(String::from("#post_pat_2b")))),
                 ),
                 vec!(Simple(Box::new(SimpleCommand {
-                    cmd: Some(Word::Literal(String::from("echo"))),
-                    args: vec!(Word::Literal(String::from("noun"))),
+                    cmd: Some((Word::Literal(String::from("echo")), vec!(
+                        Word::Literal(String::from("noun"))
+                    ))),
                     io: vec!(),
                     vars: vec!(),
                 }))),
@@ -6027,12 +6025,13 @@ pub mod test {
     fn test_backticked_valid_backslashes_removed_if_before_dollar_backslash_and_backtick() {
         let correct = Word::Subst(Box::new(ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
             vars: vec!(), io: vec!(),
-            cmd: Some(Word::Literal(String::from("foo"))),
-            args: vec!(Word::Concat(vec!(
-                Word::Param(Parameter::Dollar),
-                Word::Escaped(String::from("`")),
-                Word::Escaped(String::from("o")),
-            )))
+            cmd: Some((Word::Literal(String::from("foo")), vec!(
+                Word::Concat(vec!(
+                    Word::Param(Parameter::Dollar),
+                    Word::Escaped(String::from("`")),
+                    Word::Escaped(String::from("o")),
+                ))
+            ))),
         }))))));
         assert_eq!(correct, make_parser("`foo \\$\\$\\\\\\`\\o`").backticked_command_substitution().unwrap());
     }
@@ -6042,14 +6041,16 @@ pub mod test {
         let correct = Word::Subst(Box::new(ParameterSubstitution::Command(vec!(
             Simple(Box::new(SimpleCommand {
                 vars: vec!(), io: vec!(),
-                cmd: Some(Word::Literal(String::from("foo"))),
-                args: vec!(Word::Subst(Box::new(
-                    ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
-                        vars: vec!(), io: vec!(),
-                        cmd: Some(Word::Literal(String::from("bar"))),
-                        args: vec!(Word::Concat(vec!(Word::Escaped(String::from("$")), Word::Escaped(String::from("$")))))
-                    }))))
-                )))
+                cmd: Some((Word::Literal(String::from("foo")), vec!(
+                    Word::Subst(Box::new(
+                        ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
+                            vars: vec!(), io: vec!(),
+                            cmd: Some((Word::Literal(String::from("bar")), vec!(
+                                Word::Concat(vec!(Word::Escaped(String::from("$")), Word::Escaped(String::from("$"))))
+                            ))),
+                        }))))
+                    ))
+                ))),
             }))
         ))));
         assert_eq!(correct, make_parser(r#"`foo \`bar \\\\$\\\\$\``"#).backticked_command_substitution().unwrap());
@@ -6060,20 +6061,19 @@ pub mod test {
         let correct = Word::Subst(Box::new(ParameterSubstitution::Command(vec!(
             Simple(Box::new(SimpleCommand {
                 vars: vec!(), io: vec!(),
-                cmd: Some(Word::Literal(String::from("foo"))),
-                args: vec!(Word::Subst(Box::new(
+                cmd: Some((Word::Literal(String::from("foo")), vec!(Word::Subst(Box::new(
                     ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
                         vars: vec!(), io: vec!(),
-                        cmd: Some(Word::Literal(String::from("bar"))),
-                        args: vec!(Word::Subst(Box::new(
+                        cmd: Some((Word::Literal(String::from("bar")), vec!(Word::Subst(Box::new(
                             ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
                                 vars: vec!(), io: vec!(),
-                                cmd: Some(Word::Literal(String::from("baz"))),
-                                args: vec!(Word::Concat(vec!(Word::Escaped(String::from("$")), Word::Escaped(String::from("$")))))
+                                cmd: Some((Word::Literal(String::from("baz")), vec!(
+                                    Word::Concat(vec!(Word::Escaped(String::from("$")), Word::Escaped(String::from("$"))))
+                                )))
                             }))))
-                        ))),
+                        )))))
                     }))))
-                )))
+                )))))
             }))
         ))));
         assert_eq!(correct, make_parser(r#"`foo \`bar \\\`baz \\\\\\\\$\\\\\\\\$ \\\`\``"#).backticked_command_substitution().unwrap());
@@ -6084,26 +6084,24 @@ pub mod test {
         let correct = Word::Subst(Box::new(ParameterSubstitution::Command(vec!(
             Simple(Box::new(SimpleCommand {
                 vars: vec!(), io: vec!(),
-                cmd: Some(Word::Literal(String::from("foo"))),
-                args: vec!(Word::Subst(Box::new(
+                cmd: Some((Word::Literal(String::from("foo")), vec!(Word::Subst(Box::new(
                     ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
                         vars: vec!(), io: vec!(),
-                        cmd: Some(Word::Literal(String::from("bar"))),
-                        args: vec!(Word::Subst(Box::new(
+                        cmd: Some((Word::Literal(String::from("bar")), vec!(Word::Subst(Box::new(
                             ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
                                 vars: vec!(), io: vec!(),
-                                cmd: Some(Word::Literal(String::from("baz"))),
-                                args: vec!(Word::Subst(Box::new(
+                                cmd: Some((Word::Literal(String::from("baz")), vec!(Word::Subst(Box::new(
                                     ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
                                         vars: vec!(), io: vec!(),
-                                        cmd: Some(Word::Literal(String::from("qux"))),
-                                        args: vec!(Word::Concat(vec!(Word::Escaped(String::from("$")), Word::Escaped(String::from("$")))))
+                                        cmd: Some((Word::Literal(String::from("qux")), vec!(
+                                            Word::Concat(vec!(Word::Escaped(String::from("$")), Word::Escaped(String::from("$"))))
+                                        )))
                                     }))))
-                                ))),
+                                ))))),
                             }))))
-                        )))
+                        )))))
                     }))))
-                )))
+                )))))
             }))
         ))));
         assert_eq!(correct, make_parser(

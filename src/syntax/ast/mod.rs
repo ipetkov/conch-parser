@@ -187,12 +187,10 @@ pub enum CompoundCommand {
 /// environment variable assignments, and redirections.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SimpleCommand {
-    /// Name or path of the executable. It's possible to have to have a
-    /// command that is only an assigment which would set a value in the
-    /// global environment, making the executable optional.
-    pub cmd: Option<Word>,
-    /// Arguments supplied to the executable.
-    pub args: Vec<Word>,
+    /// Name or path of the executable along with any arguments. It's possible to
+    /// have to have a command that is only an assigment which would set a value
+    /// in the global environment, making the executable optional.
+    pub cmd: Option<(Word, Vec<Word>)>,
     /// Environment variable assignments for this command, bound as
     /// tuples of (var name, value).
     pub vars: Vec<(String, Option<Word>)>,

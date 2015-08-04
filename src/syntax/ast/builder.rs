@@ -219,14 +219,13 @@ pub trait Builder {
     ///
     /// # Arguments
     /// * env_vars: environment variables to be defined only for the command before it is run.
-    /// * cmd: the name of the command to be run. This value is optional since the shell grammar
-    /// permits that a simple command be made up of only env var definitions or redirects (or both).
-    /// * args: arguments to the command
+    /// * cmd: a tuple of the name of the command to be run and any arguments. This value is
+    /// optional since the shell grammar permits that a simple command be made up of only env
+    /// var definitions or redirects (or both).
     /// * redirects: redirection of any file descriptors to/from other file descriptors or files.
     fn simple_command(&mut self,
                       env_vars: Vec<(String, Option<Self::Word>)>,
-                      cmd: Option<Self::Word>,
-                      args: Vec<Self::Word>,
+                      cmd: Option<(Self::Word, Vec<Self::Word>)>,
                       redirects: Vec<Self::Redirect>)
         -> Result<Self::Command, Self::Err>;
 
@@ -424,19 +423,20 @@ impl Builder for DefaultBuilder {
     /// Constructs a `Command::Simple` node with the provided inputs.
     fn simple_command(&mut self,
                       mut env_vars: Vec<(String, Option<Word>)>,
-                      cmd: Option<Word>,
-                      mut args: Vec<Word>,
+                      mut cmd: Option<(Word, Vec<Word>)>,
                       mut redirects: Vec<Redirect>)
         -> Result<Command, Self::Err>
     {
         env_vars.shrink_to_fit();
-        args.shrink_to_fit();
         redirects.shrink_to_fit();
+
+        if let Some(&mut (_, ref mut args)) = cmd.as_mut() {
+            args.shrink_to_fit();
+        }
 
         Ok(Command::Simple(Box::new(SimpleCommand {
             cmd: cmd,
             vars: env_vars,
-            args: args,
             io: redirects,
         })))
     }
@@ -694,12 +694,11 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
 
     fn simple_command(&mut self,
                       env_vars: Vec<(String, Option<Self::Word>)>,
-                      cmd: Option<Self::Word>,
-                      args: Vec<Self::Word>,
+                      cmd: Option<(Self::Word, Vec<Self::Word>)>,
                       redirects: Vec<Self::Redirect>)
         -> Result<Self::Command, Self::Err>
     {
-        (**self).simple_command(env_vars, cmd, args, redirects)
+        (**self).simple_command(env_vars, cmd, redirects)
     }
 
     fn brace_group(&mut self,
