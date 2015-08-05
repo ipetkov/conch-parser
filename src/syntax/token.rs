@@ -46,6 +46,12 @@ pub enum Token {
     Colon,
     /// @
     At,
+    /// ^
+    Caret,
+    /// /
+    Slash,
+    /// ,
+    Comma,
 
     /// '
     SingleQuote,
@@ -132,6 +138,9 @@ impl fmt::Display for Token {
             Plus                => fmt.write_str("+"),
             Colon               => fmt.write_str(":"),
             At                  => fmt.write_str("@"),
+            Caret               => fmt.write_str("^"),
+            Slash               => fmt.write_str("/"),
+            Comma               => fmt.write_str(","),
             SingleQuote         => fmt.write_str("\'"),
             DoubleQuote         => fmt.write_str("\""),
             Backtick            => fmt.write_str("`"),
@@ -175,6 +184,9 @@ impl Token {
             Plus        |
             Colon       |
             At          |
+            Caret       |
+            Slash       |
+            Comma       |
             Semi        |
             Amp         |
             Less        |
@@ -242,6 +254,9 @@ impl Token {
             Plus               |
             Colon              |
             At                 |
+            Caret              |
+            Slash              |
+            Comma              |
             CurlyOpen          |
             CurlyClose         |
             SquareOpen         |

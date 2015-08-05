@@ -923,6 +923,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 Some(&Plus)               |
                 Some(&Colon)              |
                 Some(&At)                 |
+                Some(&Caret)              |
+                Some(&Slash)              |
+                Some(&Comma)              |
                 Some(&Name(_))            |
                 Some(&Literal(_))         => {},
 
@@ -975,6 +978,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 tok@Plus       |
                 tok@Colon      |
                 tok@At         |
+                tok@Caret      |
+                tok@Slash      |
+                tok@Comma      |
                 tok@CurlyOpen  |
                 tok@CurlyClose => builder::WordKind::Literal(tok.to_string()),
 
@@ -2410,9 +2416,9 @@ pub mod test {
 
     #[test]
     fn test_parameter_literal_dollar_if_no_param() {
-        let mut p = make_parser("$^asdf");
+        let mut p = make_parser("$%asdf");
         assert_eq!(Word::Literal(String::from("$")), p.parameter().unwrap());
-        assert_eq!(p.word().unwrap().unwrap(), Word::Literal(String::from("^asdf")));
+        assert_eq!(p.word().unwrap().unwrap(), Word::Literal(String::from("%asdf")));
     }
 
     #[test]
@@ -4465,7 +4471,7 @@ pub mod test {
         assert_eq!(Err(Unexpected(Token::SingleQuote, src(4, 1, 5))), p.for_command());
         let mut p = make_parser("for \"var\" in one two three\ndo echo $var; done");
         assert_eq!(Err(Unexpected(Token::DoubleQuote, src(4, 1, 5))), p.for_command());
-        let mut p = make_parser("for var*^ in one two three\ndo echo $var; done");
+        let mut p = make_parser("for var*% in one two three\ndo echo $var; done");
         assert_eq!(Err(Unexpected(Token::Star, src(7, 1, 8))), p.for_command());
     }
 
@@ -5918,8 +5924,8 @@ pub mod test {
 
     #[test]
     fn test_word_literal_dollar_if_not_param() {
-        let correct = Word::Literal(String::from("$^asdf"));
-        assert_eq!(correct, make_parser("$^asdf").word().unwrap().unwrap());
+        let correct = Word::Literal(String::from("$%asdf"));
+        assert_eq!(correct, make_parser("$%asdf").word().unwrap().unwrap());
     }
 
     #[test]

@@ -56,6 +56,9 @@ impl<I: Iterator<Item = char>> Lexer<I> {
             '+' => Plus,
             ':' => Colon,
             '@' => At,
+            '^' => Caret,
+            '/' => Slash,
+            ',' => Comma,
 
             // Make sure that we treat the next token as a single character,
             // preventing multi-char tokens from being recognized. This is
@@ -252,6 +255,9 @@ mod test {
     check_tok!(check_Plus, Plus);
     check_tok!(check_Colon, Colon);
     check_tok!(check_At, At);
+    check_tok!(check_Caret, Caret);
+    check_tok!(check_Slash, Slash);
+    check_tok!(check_Comma, Comma);
     check_tok!(check_Pound, Pound);
     check_tok!(check_DoubleQuote, DoubleQuote);
     check_tok!(check_Backtick, Backtick);
@@ -267,7 +273,7 @@ mod test {
     check_tok!(check_LessGreat, LessGreat);
     check_tok!(check_Whitespace, Whitespace(String::from(" \t\r")));
     check_tok!(check_Name, Name(String::from("abc_23_defg")));
-    check_tok!(check_Literal, Literal(String::from(",abcdefg80hijklmnop")));
+    check_tok!(check_Literal, Literal(String::from("5abcdefg80hijklmnop")));
     check_tok!(check_ParamPositional, ParamPositional(9));
 
     lex_str!(check_greedy_Amp,    "&&&",  AndIf, Amp);
@@ -283,16 +289,17 @@ mod test {
         Name(String::from("test"))
     );
 
-    lex_str!(check_Literal_and_Name_combo, "hello ,asdf5_ 6world __name ^.abc _test2",
+    lex_str!(check_Literal_and_Name_combo, "hello 5asdf5_ 6world __name ^.abc _test2",
              Name(String::from("hello")),
              Whitespace(String::from(" ")),
-             Literal(String::from(",asdf5_")),
+             Literal(String::from("5asdf5_")),
              Whitespace(String::from(" ")),
              Literal(String::from("6world")),
              Whitespace(String::from(" ")),
              Name(String::from("__name")),
              Whitespace(String::from(" ")),
-             Literal(String::from("^.abc")),
+             Caret,
+             Literal(String::from(".abc")),
              Whitespace(String::from(" ")),
              Name(String::from("_test2"))
      );
@@ -305,7 +312,7 @@ mod test {
     lex_str!(check_escape_ParamPositional, "\\$0",  Backslash, Dollar, Literal(String::from("0")));
     lex_str!(check_escape_Whitespace,      "\\  ",  Backslash, Whitespace(String::from(" ")), Whitespace(String::from(" ")));
     lex_str!(check_escape_Name,            "\\ab",  Backslash, Name(String::from("a")), Name(String::from("b")));
-    lex_str!(check_escape_Literal,         "\\^3",  Backslash, Literal(String::from("^")), Literal(String::from("3")));
+    lex_str!(check_escape_Literal,         "\\13",  Backslash, Literal(String::from("1")), Literal(String::from("3")));
 
     lex_str!(check_no_tokens_lost, "word\\'", Name(String::from("word")), Backslash, SingleQuote);
 }
