@@ -74,8 +74,6 @@ pub enum ParseError<T: Error> {
     Unexpected(Token, SourcePos),
     /// Encountered the end of input while expecting additional tokens.
     UnexpectedEOF,
-    /// Parser functionality not yet implemented
-    Unimplemented(&'static str),
     /// An external error returned by the AST builder.
     External(T),
 }
@@ -90,7 +88,6 @@ impl<T: Error> Error for ParseError<T> {
             ParseError::IncompleteCmd(..)=> "incomplete command",
             ParseError::Unexpected(..)  => "unexpected token found",
             ParseError::UnexpectedEOF   => "unexpected end of input",
-            ParseError::Unimplemented(s)=> s,
             ParseError::External(ref e) => e.description(),
         }
     }
@@ -104,7 +101,6 @@ impl<T: Error> Error for ParseError<T> {
             ParseError::IncompleteCmd(..)|
             ParseError::Unexpected(..)   |
             ParseError::UnexpectedEOF    => None,
-            ParseError::Unimplemented(..)=> None,
             ParseError::External(ref e) => Some(e),
         }
     }
@@ -128,7 +124,6 @@ impl<T: Error> fmt::Display for ParseError<T> {
             ParseError::Unexpected(ref t, pos)   => write!(fmt, "found unexpected token on line {}: {}", pos, t),
 
             ParseError::UnexpectedEOF => fmt.write_str("unexpected end of input"),
-            ParseError::Unimplemented(s) => fmt.write_str(s),
             ParseError::External(ref e) => write!(fmt, "{}", e),
         }
     }
@@ -196,11 +191,9 @@ macro_rules! eat {
     ($parser:expr, { $($tok:pat => $blk:block),+, }) => { eat!($parser, {$($tok => $blk),+}) };
 
     ($parser:expr, {$($tok:pat => $blk:block),+}) => {{
-        let pos = $parser.iter.pos();
         match $parser.iter.peek() {
             $(Some(&$tok) => {}),+,
-            Some(_) => return Err(ParseError::Unexpected($parser.iter.next().unwrap(), pos)),
-            None => return Err(ParseError::UnexpectedEOF),
+            Some(_) | None => return Err($parser.make_unexpected_err()),
         }
 
         match $parser.iter.next() {
@@ -237,8 +230,36 @@ macro_rules! eat_maybe {
                 $parser.iter.next();
                 $blk
             }),+
+            _ => {},
         }
     };
+}
+
+/// A macro that defines a function for parsing binary operations in arithmetic
+/// expressions.  It accepts a name for the function, a name for the subsequent
+/// expression (which has a higher precedence) to sub parse on, and a number of
+/// tokens which can be recognized as an operator for the binary operation and
+/// the appropriate AST constructor for said token/operator. All operators within
+/// the definition are considered to have identical precedence and are left-to-right
+/// associative.
+macro_rules! arith_parse {
+    ($fn_name:ident, $next_expr:ident, $($tok:pat => $constructor:path),+) => {
+        #[inline]
+        fn $fn_name(&mut self) -> Result<ast::Arith, ParseError<B::Err>> {
+            let mut expr = try!(self.$next_expr());
+            loop {
+                self.skip_whitespace();
+                eat_maybe!(self, {
+                    $($tok => {
+                        let next = try!(self.$next_expr());
+                        expr = $constructor(Box::new(expr), Box::new(next));
+                    }),+;
+                    _ => { break },
+                });
+            }
+            Ok(expr)
+        }
+    }
 }
 
 impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
@@ -1243,12 +1264,32 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     Some(&ParenOpen) == peeked.next()
                 };
 
-                if is_arith {
-                    // FIXME: Implement arithmetic expansions
-                    return Err(ParseError::Unimplemented("parsing of arithmetic expansions not yet implemented"))
+                let subst = if is_arith {
+                    eat!(self, { ParenOpen => {} });
+                    eat!(self, { ParenOpen => {} });
+
+                    // If we hit a paren right off the bat either the body is empty
+                    // or there is a stray paren which will result in an error either
+                    // when we look for the closing parens or sometime after.
+                    self.skip_whitespace();
+                    let subst = if let Some(&ParenClose) = self.iter.peek() {
+                        None
+                    } else {
+                        Some(try!(self.arithmetic_substitution()))
+                    };
+
+                    // Some shells allow the closing parens to have whitespace in between
+                    self.skip_whitespace();
+                    eat!(self, { ParenClose => {} });
+                    self.skip_whitespace();
+                    eat!(self, { ParenClose => {} });
+
+                    Arithmetic(subst)
                 } else {
-                    return Ok(WordKind::Subst(Command(try!(self.subshell_internal(true)))))
-                }
+                    Command(try!(self.subshell_internal(true)))
+                };
+
+                return Ok(WordKind::Subst(subst));
             },
 
             Some(&CurlyOpen) => {
@@ -2088,6 +2129,339 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             Err(self.make_unexpected_err())
         } else {
             Ok(cmds)
+        }
+    }
+
+    /// Parses the body of any arbitrary arithmetic expression, e.g. `x + $y << 5`.
+    /// The caller is responsible for parsing the external `$(( ))` tokens.
+    pub fn arithmetic_substitution(&mut self) -> Result<ast::Arith, ParseError<B::Err>> {
+        let mut exprs = Vec::new();
+        loop {
+            self.skip_whitespace();
+            exprs.push(try!(self.arith_assig()));
+
+            eat_maybe!(self, {
+                Comma => {};
+                _ => { break },
+            });
+        }
+
+        if exprs.len() == 1 {
+            Ok(exprs.pop().unwrap())
+        } else {
+            Ok(ast::Arith::Sequence(exprs))
+        }
+    }
+
+    /// Parses expressions such as `var = expr` or `var op= expr`, where `op` is
+    /// any of the following operators: *, /, %, +, -, <<, >>, &, |, ^.
+    fn arith_assig(&mut self) -> Result<ast::Arith, ParseError<B::Err>> {
+        self.skip_whitespace();
+
+        let assig = {
+            let mut peeked = self.iter.peek_many(5).into_iter().peekable();
+            if Some(&&Dollar) == peeked.peek() { peeked.next(); }
+
+            if let Some(&Name(_)) = peeked.next() {
+                if let Some(&&Whitespace(_)) = peeked.peek() { peeked.next(); }
+                match peeked.next() {
+                    Some(&Star)    |
+                    Some(&Slash)   |
+                    Some(&Percent) |
+                    Some(&Plus)    |
+                    Some(&Dash)    |
+                    Some(&DLess)   |
+                    Some(&DGreat)  |
+                    Some(&Amp)     |
+                    Some(&Pipe)    |
+                    Some(&Caret)   => Some(&Equals) == peeked.next(),
+
+                    // Make sure we only recognize $(( x = ...)) but NOT $(( x == ...))
+                    Some(&Equals)  => Some(&Equals) != peeked.next(),
+                    _ => false,
+                }
+            } else {
+                false
+            }
+        };
+
+        if !assig {
+            return self.arith_ternary();
+        }
+
+        let var = try!(self.arith_var());
+        self.skip_whitespace();
+        let op = match self.iter.next() {
+            Some(op@Star)    |
+            Some(op@Slash)   |
+            Some(op@Percent) |
+            Some(op@Plus)    |
+            Some(op@Dash)    |
+            Some(op@DLess)   |
+            Some(op@DGreat)  |
+            Some(op@Amp)     |
+            Some(op@Pipe)    |
+            Some(op@Caret)   => { eat!(self, { Equals => {} }); op },
+            Some(op@Equals)  => op,
+            _ => unreachable!(),
+        };
+
+        let value = Box::new(try!(self.arith_assig()));
+        let expr = match op {
+            Star    => Box::new(ast::Arith::Mult(Box::new(ast::Arith::Var(var.clone())), value)),
+            Slash   => Box::new(ast::Arith::Div(Box::new(ast::Arith::Var(var.clone())), value)),
+            Percent => Box::new(ast::Arith::Modulo(Box::new(ast::Arith::Var(var.clone())), value)),
+            Plus    => Box::new(ast::Arith::Add(Box::new(ast::Arith::Var(var.clone())), value)),
+            Dash    => Box::new(ast::Arith::Sub(Box::new(ast::Arith::Var(var.clone())), value)),
+            DLess   => Box::new(ast::Arith::ShiftLeft(Box::new(ast::Arith::Var(var.clone())), value)),
+            DGreat  => Box::new(ast::Arith::ShiftRight(Box::new(ast::Arith::Var(var.clone())), value)),
+            Amp     => Box::new(ast::Arith::BitwiseAnd(Box::new(ast::Arith::Var(var.clone())), value)),
+            Pipe    => Box::new(ast::Arith::BitwiseOr(Box::new(ast::Arith::Var(var.clone())), value)),
+            Caret   => Box::new(ast::Arith::BitwiseXor(Box::new(ast::Arith::Var(var.clone())), value)),
+            Equals  => value,
+            _ => unreachable!(),
+        };
+        Ok(ast::Arith::Assign(var, expr))
+    }
+
+    /// Parses expressions such as `expr ? expr : expr`.
+    fn arith_ternary(&mut self) -> Result<ast::Arith, ParseError<B::Err>> {
+        let guard = try!(self.arith_logical_or());
+        self.skip_whitespace();
+        eat_maybe!(self, {
+            Question => {
+                let body = try!(self.arith_ternary());
+                self.skip_whitespace();
+                eat!(self, { Colon => {} });
+                let els = try!(self.arith_ternary());
+                Ok(ast::Arith::Ternary(Box::new(guard), Box::new(body), Box::new(els)))
+            };
+            _ => { Ok(guard) },
+        })
+    }
+
+    /// Parses expressions such as `expr || expr`.
+    arith_parse!(arith_logical_or,  arith_logical_and, OrIf  => ast::Arith::LogicalOr);
+    /// Parses expressions such as `expr && expr`.
+    arith_parse!(arith_logical_and, arith_bitwise_or,  AndIf => ast::Arith::LogicalAnd);
+    /// Parses expressions such as `expr | expr`.
+    arith_parse!(arith_bitwise_or,  arith_bitwise_xor, Pipe  => ast::Arith::BitwiseOr);
+    /// Parses expressions such as `expr ^ expr`.
+    arith_parse!(arith_bitwise_xor, arith_bitwise_and, Caret => ast::Arith::BitwiseXor);
+    /// Parses expressions such as `expr & expr`.
+    arith_parse!(arith_bitwise_and, arith_eq,          Amp   => ast::Arith::BitwiseAnd);
+
+    /// Parses expressions such as `expr == expr` or `expr != expr`.
+    #[inline]
+    fn arith_eq(&mut self) -> Result<ast::Arith, ParseError<B::Err>> {
+        let mut expr = try!(self.arith_ineq());
+        loop {
+            self.skip_whitespace();
+            let eq_type = eat_maybe!(self, {
+                Equals => { true },
+                Bang => { false };
+                _ => { break }
+            });
+
+            eat!(self, { Equals => {} });
+            let next = try!(self.arith_ineq());
+            expr = if eq_type {
+                ast::Arith::Eq(Box::new(expr), Box::new(next))
+            } else {
+                ast::Arith::NotEq(Box::new(expr), Box::new(next))
+            };
+        }
+        Ok(expr)
+    }
+
+    /// Parses expressions such as `expr < expr`,`expr <= expr`,`expr > expr`,`expr >= expr`.
+    #[inline]
+    fn arith_ineq(&mut self) -> Result<ast::Arith, ParseError<B::Err>> {
+        let mut expr = try!(self.arith_shift());
+        loop {
+            self.skip_whitespace();
+            eat_maybe!(self, {
+                Less => {
+                    let eq = eat_maybe!(self, { Equals => { true }; _ => { false } });
+                    let next = try!(self.arith_shift());
+
+                    expr = if eq {
+                        ast::Arith::LessEq(Box::new(expr), Box::new(next))
+                    } else {
+                        ast::Arith::Less(Box::new(expr), Box::new(next))
+                    };
+                },
+                Great => {
+                    let eq = eat_maybe!(self, { Equals => { true }; _ => { false } });
+                    let next = try!(self.arith_shift());
+
+                    expr = if eq {
+                        ast::Arith::GreatEq(Box::new(expr), Box::new(next))
+                    } else {
+                        ast::Arith::Great(Box::new(expr), Box::new(next))
+                    };
+                };
+                _ => { break },
+            });
+        }
+        Ok(expr)
+    }
+
+    /// Parses expressions such as `expr << expr` or `expr >> expr`.
+    arith_parse!(arith_shift, arith_add,
+                 DLess  => ast::Arith::ShiftLeft,
+                 DGreat => ast::Arith::ShiftRight
+    );
+
+    /// Parses expressions such as `expr + expr` or `expr - expr`.
+    arith_parse!(arith_add, arith_mult,
+                 Plus => ast::Arith::Add,
+                 Dash => ast::Arith::Sub
+    );
+
+    /// Parses expressions such as `expr * expr`, `expr / expr`, or `expr % expr`.
+    arith_parse!(arith_mult, arith_pow,
+                 Star    => ast::Arith::Mult,
+                 Slash   => ast::Arith::Div,
+                 Percent => ast::Arith::Modulo
+    );
+
+    /// Parses expressions such as `expr ** expr`.
+    fn arith_pow(&mut self) -> Result<ast::Arith, ParseError<B::Err>> {
+        let expr = try!(self.arith_unary_misc());
+        self.skip_whitespace();
+
+        // We must be extra careful here because ** has a higher precedence
+        // than *, meaning power operations will be parsed before multiplication.
+        // Thus we should be absolutely certain we should parse a ** operator
+        // and avoid confusing it with a multiplication operation that is yet
+        // to be parsed.
+        if self.iter.peek_many(2) == [&Star, &Star] {
+            eat!(self, { Star => {} });
+            eat!(self, { Star => {} });
+            Ok(ast::Arith::Pow(Box::new(expr), Box::new(try!(self.arith_pow()))))
+        } else {
+            Ok(expr)
+        }
+    }
+
+    /// Parses expressions such as `!expr`, `~expr`, `+expr`, `-expr`, `++var` and `--var`.
+    fn arith_unary_misc(&mut self) -> Result<ast::Arith, ParseError<B::Err>> {
+        self.skip_whitespace();
+        let expr = eat_maybe!(self, {
+            Bang  => { ast::Arith::LogicalNot(Box::new(try!(self.arith_unary_misc()))) },
+            Tilde => { ast::Arith::BitwiseNot(Box::new(try!(self.arith_unary_misc()))) },
+            Plus  => {
+                eat_maybe!(self, {
+                    // Although we can optimize this out, we'll let the AST builder handle
+                    // optimizations, in case it is interested in such redundant situations.
+                    Dash => {
+                        let next = try!(self.arith_unary_misc());
+                        ast::Arith::UnaryPlus(Box::new(ast::Arith::UnaryMinus(Box::new(next))))
+                    },
+                    Plus => { ast::Arith::PreIncr(try!(self.arith_var())) };
+                    _ => { ast::Arith::UnaryPlus(Box::new(try!(self.arith_unary_misc()))) }
+                })
+            },
+
+            Dash  => {
+                eat_maybe!(self, {
+                    // Although we can optimize this out, we'll let the AST builder handle
+                    // optimizations, in case it is interested in such redundant situations.
+                    Plus => {
+                        let next = try!(self.arith_unary_misc());
+                        ast::Arith::UnaryMinus(Box::new(ast::Arith::UnaryPlus(Box::new(next))))
+                    },
+                    Dash => { ast::Arith::PreDecr(try!(self.arith_var())) };
+                    _ => { ast::Arith::UnaryMinus(Box::new(try!(self.arith_unary_misc()))) }
+                })
+            };
+
+            _ => { try!(self.arith_post_incr()) }
+        });
+        Ok(expr)
+    }
+
+    /// Parses expressions such as `(expr)`, numeric literals, `var`, `var++`, or `var--`.
+    /// Numeric literals must appear as a single `Literal` token. `Name` tokens will be
+    /// treated as variables.
+    #[inline]
+    fn arith_post_incr(&mut self) -> Result<ast::Arith, ParseError<B::Err>> {
+        self.skip_whitespace();
+        eat_maybe!(self, {
+            ParenOpen => {
+                let expr = try!(self.arithmetic_substitution());
+                self.skip_whitespace();
+                eat!(self, { ParenClose => {} });
+                return Ok(expr);
+            }
+        });
+
+        let num = if let Some(&Literal(ref s)) = self.iter.peek() {
+            if s.starts_with("0x") || s.starts_with("0X") {
+                // from_str_radix does not like it when 0x is present
+                // in the string to parse, thus we should strip it off.
+                // Also, if the string is empty from_str_radix will return
+                // an error; shells like bash and zsh treat `0x` as `0x0`
+                // so we will do the same.
+                let num = &s[2..];
+                if num.is_empty() {
+                    Some(0)
+                } else {
+                    isize::from_str_radix(&s[2..], 16).ok()
+                }
+            } else if s.starts_with("0") {
+                isize::from_str_radix(s, 8).ok()
+            } else {
+                isize::from_str_radix(s, 10).ok()
+            }
+        } else {
+            None
+        };
+
+        let expr = match num {
+            Some(num) => {
+                // Make sure we consume the Token::Literal which holds the number
+                self.iter.next();
+                ast::Arith::Literal(num)
+            },
+            None => {
+                let var = try!(self.arith_var());
+
+                // We must be extra careful here because post-increment has a higher precedence
+                // than addition/subtraction meaning post-increment operations will be parsed
+                // before addition. Thus we should be absolutely certain we should parse a
+                // post-increment operator and avoid confusing it with an addition operation
+                // that is yet to be parsed.
+                let post_incr = {
+                    self.skip_whitespace();
+                    let peeked = self.iter.peek_many(2);
+                    peeked == [&Plus, &Plus] || peeked == [&Dash, &Dash]
+                };
+
+                if post_incr {
+                    eat!(self, {
+                        Plus => { eat!(self, { Plus => { ast::Arith::PostIncr(var) } }) },
+                        Dash => { eat!(self, { Dash => { ast::Arith::PostDecr(var) } }) },
+                    })
+                } else {
+                    ast::Arith::Var(var)
+                }
+            }
+        };
+        Ok(expr)
+    }
+
+    /// Parses a variable name in the form `name` or `$name`.
+    #[inline]
+    fn arith_var(&mut self) -> Result<String, ParseError<B::Err>> {
+        self.skip_whitespace();
+        eat_maybe!(self, { Dollar => {} });
+
+        if let Some(&Name(_)) = self.iter.peek() {
+            if let Some(Name(n)) = self.iter.next() { Ok(n) } else { unreachable!() }
+        } else {
+            return Err(self.make_unexpected_err())
         }
     }
 }
@@ -6177,5 +6551,408 @@ pub mod test {
             Err(Unexpected(Token::Name(String::from("foo")), src(0,1,1))),
             p.backticked_command_substitution()
         );
+    }
+
+    #[test]
+    fn test_arithmetic_substitution_valid() {
+        use syntax::ast::Arith::*;
+
+        fn x() -> Box<Arith> { Box::new(Var(String::from("x"))) }
+        fn y() -> Box<Arith> { Box::new(Var(String::from("y"))) }
+        fn z() -> Box<Arith> { Box::new(Var(String::from("z"))) }
+
+        let cases = vec!(
+            ("$(( x ))", *x()),
+            ("$(( 5 ))",   Literal(5)),
+            ("$(( 0 ))",   Literal(0)),
+            ("$(( 010 ))", Literal(8)),
+            ("$(( 0xa ))", Literal(10)),
+            ("$(( 0Xa ))", Literal(10)),
+            ("$(( 0xA ))", Literal(10)),
+            ("$(( 0XA ))", Literal(10)),
+            ("$(( x++ ))", PostIncr(String::from("x"))),
+            ("$(( x-- ))", PostDecr(String::from("x"))),
+            ("$(( ++x ))", PreIncr(String::from("x"))),
+            ("$(( --x ))", PreDecr(String::from("x"))),
+            ("$(( +x ))", UnaryPlus(x())),
+            ("$(( -x ))", UnaryMinus(x())),
+            ("$(( !x ))", LogicalNot(x())),
+            ("$(( ~x ))", BitwiseNot(x())),
+            ("$(( x ** y))", Pow(x(), y())),
+            ("$(( x * y ))", Mult(x(), y())),
+            ("$(( x / y ))", Div(x(), y())),
+            ("$(( x % y ))", Modulo(x(), y())),
+            ("$(( x + y ))", Add(x(), y())),
+            ("$(( x - y ))", Sub(x(), y())),
+            ("$(( x << y ))", ShiftLeft(x(), y())),
+            ("$(( x >> y ))", ShiftRight(x(), y())),
+            ("$(( x < y ))", Less(x(), y())),
+            ("$(( x <= y ))", LessEq(x(), y())),
+            ("$(( x > y ))", Great(x(), y())),
+            ("$(( x >= y ))", GreatEq(x(), y())),
+            ("$(( x == y ))", Eq(x(), y())),
+            ("$(( x != y ))", NotEq(x(), y())),
+            ("$(( x & y ))", BitwiseAnd(x(), y())),
+            ("$(( x ^ y ))", BitwiseXor(x(), y())),
+            ("$(( x | y ))", BitwiseOr(x(), y())),
+            ("$(( x && y ))", LogicalAnd(x(), y())),
+            ("$(( x || y ))", LogicalOr(x(), y())),
+            ("$(( x ? y : z ))", Ternary(x(), y(), z())),
+            ("$(( x = y ))",   Assign(String::from("x"), y())),
+            ("$(( x *= y ))",  Assign(String::from("x"), Box::new(Mult(x(), y())))),
+            ("$(( x /= y ))",  Assign(String::from("x"), Box::new(Div(x(), y())))),
+            ("$(( x %= y ))",  Assign(String::from("x"), Box::new(Modulo(x(), y())))),
+            ("$(( x += y ))",  Assign(String::from("x"), Box::new(Add(x(), y())))),
+            ("$(( x -= y ))",  Assign(String::from("x"), Box::new(Sub(x(), y())))),
+            ("$(( x <<= y ))", Assign(String::from("x"), Box::new(ShiftLeft(x(), y())))),
+            ("$(( x >>= y ))", Assign(String::from("x"), Box::new(ShiftRight(x(), y())))),
+            ("$(( x &= y ))",  Assign(String::from("x"), Box::new(BitwiseAnd(x(), y())))),
+            ("$(( x ^= y ))",  Assign(String::from("x"), Box::new(BitwiseXor(x(), y())))),
+            ("$(( x |= y ))",  Assign(String::from("x"), Box::new(BitwiseOr(x(), y())))),
+            ("$(( x = 5, x + y ))", Sequence(vec!(
+                    Assign(String::from("x"), Box::new(Literal(5))),
+                    Add(x(), y())
+            ))),
+            ("$(( x + (y - z) ))", Add(x(), Box::new(Sub(y(), z())))),
+        );
+
+        for (s, a) in cases.into_iter() {
+            let correct = Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(a))));
+            match make_parser(s).parameter() {
+                Ok(w) => if w != correct {
+                    panic!("Unexpectedly parsed the source \"{}\" as\n{:?} instead of \n{:?}", s, w, correct)
+                },
+                Err(err) => panic!("Failed to parse the source \"{}\": {}", s, err),
+            }
+        }
+
+        let correct = Word::Subst(Box::new(ParameterSubstitution::Arithmetic(None)));
+        assert_eq!(correct, make_parser("$(( ))").parameter().unwrap());
+    }
+
+    #[test]
+    fn test_arithmetic_substitution_left_to_right_associativity() {
+        use syntax::ast::Arith::*;
+
+        fn x() -> Box<Arith> { Box::new(Var(String::from("x"))) }
+        fn y() -> Box<Arith> { Box::new(Var(String::from("y"))) }
+        fn z() -> Box<Arith> { Box::new(Var(String::from("z"))) }
+
+        macro_rules! check {
+            ($constructor:path, $op:tt) => {{
+                let correct = Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+                    $constructor(Box::new($constructor(x(), y())), z())
+                ))));
+
+                let src = format!("$((x {0} y {0} z))", stringify!($op));
+                match make_parser(&src).parameter() {
+                    Ok(w) => if w != correct {
+                        panic!("Unexpectedly parsed the source \"{}\" as\n{:?} instead of \n{:?}", src, w, correct)
+                    },
+                    Err(err) => panic!("Failed to parse the source \"{}\": {}", src, err),
+                }
+            }};
+
+            (assig: $constructor:path, $op:tt) => {{
+                let correct = Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+                    Assign(String::from("x"), Box::new(
+                        $constructor(x(), Box::new(Assign(String::from("y"), Box::new($constructor(y(), z())))))
+                    ))
+                ))));
+
+                let src = format!("$((x {0}= y {0}= z))", stringify!($op));
+                match make_parser(&src).parameter() {
+                    Ok(w) => if w != correct {
+                        panic!("Unexpectedly parsed the source \"{}\" as\n{:?} instead of \n{:?}", src, w, correct)
+                    },
+                    Err(err) => panic!("Failed to parse the source \"{}\": {}", src, err),
+                }
+            }};
+        }
+
+        check!(Mult,       * );
+        check!(Div,        / );
+        check!(Modulo,     % );
+        check!(Add,        + );
+        check!(Sub,        - );
+        check!(ShiftLeft,  <<);
+        check!(ShiftRight, >>);
+        check!(Less,       < );
+        check!(LessEq,     <=);
+        check!(Great ,     > );
+        check!(GreatEq,    >=);
+        check!(Eq,         ==);
+        check!(NotEq,      !=);
+        check!(BitwiseAnd, & );
+        check!(BitwiseXor, ^ );
+        check!(BitwiseOr,  | );
+        check!(LogicalAnd, &&);
+        check!(LogicalOr,  ||);
+
+        check!(assig: Mult,       * );
+        check!(assig: Div,        / );
+        check!(assig: Modulo,     % );
+        check!(assig: Add,        + );
+        check!(assig: Sub,        - );
+        check!(assig: ShiftLeft,  <<);
+        check!(assig: ShiftRight, >>);
+        check!(assig: BitwiseAnd, & );
+        check!(assig: BitwiseXor, ^ );
+        check!(assig: BitwiseOr,  | );
+
+        let correct = Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+            Assign(String::from("x"), Box::new(Assign(String::from("y"), z())))
+        ))));
+        assert_eq!(correct, make_parser("$(( x = y = z ))").parameter().unwrap());
+    }
+
+    #[test]
+    fn test_arithmetic_substitution_right_to_left_associativity() {
+        use syntax::ast::Arith::*;
+
+        fn x() -> Box<Arith> { Box::new(Var(String::from("x"))) }
+        fn y() -> Box<Arith> { Box::new(Var(String::from("y"))) }
+        fn z() -> Box<Arith> { Box::new(Var(String::from("z"))) }
+        fn w() -> Box<Arith> { Box::new(Var(String::from("w"))) }
+        fn v() -> Box<Arith> { Box::new(Var(String::from("v"))) }
+
+        let cases = vec!(
+            ("$(( x ** y ** z ))", Pow(x(), Box::new(Pow(y(), z())))),
+            ("$(( x ? y ? z : w : v ))", Ternary(x(), Box::new(Ternary(y(), z(), w())), v())),
+        );
+
+        for (s, a) in cases.into_iter() {
+            let correct = Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(a))));
+            match make_parser(s).parameter() {
+                Ok(w) => if w != correct {
+                    panic!("Unexpectedly parsed the source \"{}\" as\n{:?} instead of \n{:?}", s, w, correct)
+                },
+                Err(err) => panic!("Failed to parse the source \"{}\": {}", s, err),
+            }
+        }
+    }
+
+    #[test]
+    fn test_arithmetic_substitution_invalid() {
+        let cases = vec!(
+            // Pre/post increment/decrement must be applied on a variable
+            // Otherwise becomes `expr+(+expr)` or `expr-(-expr)`
+            ("$(( 5++ ))", Unexpected(Token::ParenClose, src(8,1,9))),
+            ("$(( 5-- ))", Unexpected(Token::ParenClose, src(8,1,9))),
+            ("$(( (x + y)++ ))", Unexpected(Token::ParenClose, src(14,1,15))),
+            ("$(( (x + y)-- ))", Unexpected(Token::ParenClose, src(14,1,15))),
+
+            // Pre/post increment/decrement must be applied on a variable
+            ("$(( ++5 ))", Unexpected(Token::Literal(String::from("5")), src(6,1,7))),
+            ("$(( --5 ))", Unexpected(Token::Literal(String::from("5")), src(6,1,7))),
+            ("$(( ++(x + y) ))", Unexpected(Token::ParenOpen, src(6,1,7))),
+            ("$(( --(x + y) ))", Unexpected(Token::ParenOpen, src(6,1,7))),
+
+            // Incomplete commands
+            ("$(( + ))", Unexpected(Token::ParenClose, src(6,1,7))),
+            ("$(( - ))", Unexpected(Token::ParenClose, src(6,1,7))),
+            ("$(( ! ))", Unexpected(Token::ParenClose, src(6,1,7))),
+            ("$(( ~ ))", Unexpected(Token::ParenClose, src(6,1,7))),
+            ("$(( x ** ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x *  ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x /  ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x %  ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x +  ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x -  ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x << ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x >> ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x <  ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x <= ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x >  ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x >= ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x == ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x != ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x &  ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x ^  ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x |  ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x && ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x || ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x =  ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x *= ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x /= ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x %= ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x += ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x -= ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x <<=))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x >>=))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x &= ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x ^= ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x |= ))", Unexpected(Token::ParenClose, src(9,1,10))),
+            ("$(( x ? y : ))", Unexpected(Token::ParenClose, src(12,1,13))),
+            ("$(( x ?     ))", Unexpected(Token::ParenClose, src(12,1,13))),
+            ("$(( x = 5, ))", Unexpected(Token::ParenClose, src(11,1,12))),
+            ("$(( x + () ))", Unexpected(Token::ParenClose, src(9,1,10))),
+
+            // Missing first operand
+            ("$(( ** y  ))", Unexpected(Token::Star, src(4,1,5))),
+            ("$(( * y   ))", Unexpected(Token::Star, src(4,1,5))),
+            ("$(( / y   ))", Unexpected(Token::Slash, src(4,1,5))),
+            ("$(( % y   ))", Unexpected(Token::Percent, src(4,1,5))),
+            ("$(( << y  ))", Unexpected(Token::DLess, src(4,1,5))),
+            ("$(( >> y  ))", Unexpected(Token::DGreat, src(4,1,5))),
+            ("$(( < y   ))", Unexpected(Token::Less, src(4,1,5))),
+            ("$(( <= y  ))", Unexpected(Token::Less, src(4,1,5))),
+            ("$(( > y   ))", Unexpected(Token::Great, src(4,1,5))),
+            ("$(( >= y  ))", Unexpected(Token::Great, src(4,1,5))),
+            ("$(( == y  ))", Unexpected(Token::Equals, src(4,1,5))),
+            ("$(( & y   ))", Unexpected(Token::Amp, src(4,1,5))),
+            ("$(( ^ y   ))", Unexpected(Token::Caret, src(4,1,5))),
+            ("$(( | y   ))", Unexpected(Token::Pipe, src(4,1,5))),
+            ("$(( && y  ))", Unexpected(Token::AndIf, src(4,1,5))),
+            ("$(( || y  ))", Unexpected(Token::OrIf, src(4,1,5))),
+            ("$(( = y   ))", Unexpected(Token::Equals, src(4,1,5))),
+            ("$(( *= y  ))", Unexpected(Token::Star, src(4,1,5))),
+            ("$(( /= y  ))", Unexpected(Token::Slash, src(4,1,5))),
+            ("$(( %= y  ))", Unexpected(Token::Percent, src(4,1,5))),
+            ("$(( <<= y ))", Unexpected(Token::DLess, src(4,1,5))),
+            ("$(( >>= y ))", Unexpected(Token::DGreat, src(4,1,5))),
+            ("$(( &= y  ))", Unexpected(Token::Amp, src(4,1,5))),
+            ("$(( ^= y  ))", Unexpected(Token::Caret, src(4,1,5))),
+            ("$(( |= y  ))", Unexpected(Token::Pipe, src(4,1,5))),
+            ("$(( ? y : z ))", Unexpected(Token::Question, src(4,1,5))),
+            ("$(( , x + y ))", Unexpected(Token::Comma, src(4,1,5))),
+
+            // Each of the following leading tokens will be parsed as unary
+            // operators, thus the error will occur on the `=`.
+            ("$(( != y  ))", Unexpected(Token::Equals, src(5,1,6))),
+            ("$(( += y  ))", Unexpected(Token::Equals, src(5,1,6))),
+            ("$(( -= y  ))", Unexpected(Token::Equals, src(5,1,6))),
+        );
+
+        for (s, correct) in cases.into_iter() {
+            match make_parser(s).parameter() {
+                Ok(w) => panic!("Unexpectedly parsed the source \"{}\" as\n{:?}", s, w),
+                Err(ref err) => if err != &correct {
+                    panic!("Expected the source \"{}\" to return the error `{:?}`, but got `{:?}`",
+                           s, correct, err);
+                },
+            }
+        }
+    }
+
+    #[test]
+    fn test_arithmetic_substitution_precedence() {
+        use syntax::ast::Arith::*;
+
+        fn var(x: &str) -> Box<Arith> { Box::new(Var(String::from(x))) }
+
+        let cases = vec!(
+            ("~o++",   BitwiseNot(Box::new(PostIncr(String::from("o"))))),
+            ("~(o+p)", BitwiseNot(Box::new(Add(var("o"), var("p"))))),
+            ("-o++",   UnaryMinus(Box::new(PostIncr(String::from("o"))))),
+            ("-(o+p)", UnaryMinus(Box::new(Add(var("o"), var("p"))))),
+            ("++o",    PreIncr(String::from("o"))),
+        );
+
+        for (s, end) in cases.into_iter() {
+            let correct = Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+                Sequence(vec!(
+                    *var("x"),
+                    Assign(String::from("a"), Box::new(
+                        Ternary(var("b"), var("c"), Box::new(
+                            LogicalOr(var("d"), Box::new(
+                                LogicalAnd(var("e"), Box::new(
+                                    BitwiseOr(var("f"), Box::new(
+                                        BitwiseXor(var("g"), Box::new(
+                                            BitwiseAnd(var("h"), Box::new(
+                                                Eq(var("i"), Box::new(
+                                                    Less(var("j"), Box::new(
+                                                        ShiftLeft(var("k"), Box::new(
+                                                            Add(var("l"), Box::new(
+                                                                Mult(var("m"), Box::new(
+                                                                    Pow(var("n"), Box::new(end))
+                                                                ))
+                                                            ))
+                                                        ))
+                                                    ))
+                                                ))
+                                            ))
+                                        ))
+                                    ))
+                                ))
+                            ))
+                        ))
+                    ))
+                ))
+            ))));
+
+            let src = format!("$(( x , a = b?c: d || e && f | g ^ h & i == j < k << l + m * n ** {} ))", s);
+            match make_parser(&src).parameter() {
+                Ok(w) => if w != correct {
+                    panic!("Unexpectedly parsed the source \"{}\" as\n{:?} instead of \n{:?}", src, w, correct)
+                },
+                Err(err) => panic!("Failed to parse the source \"{}\": {}", src, err),
+            }
+        }
+    }
+
+    #[test]
+    fn test_arithmetic_substitution_operators_of_equal_precedence() {
+        use syntax::ast::Arith::*;
+
+        fn x() -> Box<Arith> { Box::new(Var(String::from("x"))) }
+        fn y() -> Box<Arith> { Box::new(Var(String::from("y"))) }
+        fn z() -> Box<Arith> { Box::new(Var(String::from("z"))) }
+        fn w() -> Box<Arith> { Box::new(Var(String::from("w"))) }
+
+        let cases = vec!(
+            ("$(( x != y == z ))", Eq(Box::new(NotEq(x(), y())), z())),
+            ("$(( x == y != z ))", NotEq(Box::new(Eq(x(), y())), z())),
+
+            ("$(( x <  y < z ))", Less(Box::new(Less(x(), y())), z())),
+            ("$(( x <= y < z ))", Less(Box::new(LessEq(x(), y())), z())),
+            ("$(( x >  y < z ))", Less(Box::new(Great(x(), y())), z())),
+            ("$(( x >= y < z ))", Less(Box::new(GreatEq(x(), y())), z())),
+
+            ("$(( x << y >> z ))", ShiftRight(Box::new(ShiftLeft(x(), y())), z())),
+            ("$(( x >> y << z ))", ShiftLeft(Box::new(ShiftRight(x(), y())), z())),
+
+            ("$(( x + y - z ))", Sub(Box::new(Add(x(), y())), z())),
+            ("$(( x - y + z ))", Add(Box::new(Sub(x(), y())), z())),
+
+            ("$(( x * y / z % w ))", Modulo(Box::new(Div(Box::new(Mult(x(), y())), z())), w())),
+            ("$(( x * y % z / w ))", Div(Box::new(Modulo(Box::new(Mult(x(), y())), z())), w())),
+            ("$(( x / y * z % w ))", Modulo(Box::new(Mult(Box::new(Div(x(), y())), z())), w())),
+            ("$(( x / y % z * w ))", Mult(Box::new(Modulo(Box::new(Div(x(), y())), z())), w())),
+            ("$(( x % y * z / w ))", Div(Box::new(Mult(Box::new(Modulo(x(), y())), z())), w())),
+            ("$(( x % y / z * w ))", Mult(Box::new(Div(Box::new(Modulo(x(), y())), z())), w())),
+
+            ("$(( +!~x ))", UnaryPlus(Box::new(LogicalNot(Box::new(BitwiseNot(x())))))),
+            ("$(( +~!x ))", UnaryPlus(Box::new(BitwiseNot(Box::new(LogicalNot(x())))))),
+            ("$(( !+~x ))", LogicalNot(Box::new(UnaryPlus(Box::new(BitwiseNot(x())))))),
+            ("$(( !~+x ))", LogicalNot(Box::new(BitwiseNot(Box::new(UnaryPlus(x())))))),
+            ("$(( ~+!x ))", BitwiseNot(Box::new(UnaryPlus(Box::new(LogicalNot(x())))))),
+            ("$(( ~!+x ))", BitwiseNot(Box::new(LogicalNot(Box::new(UnaryPlus(x())))))),
+
+            ("$(( -!~x ))", UnaryMinus(Box::new(LogicalNot(Box::new(BitwiseNot(x())))))),
+            ("$(( -~!x ))", UnaryMinus(Box::new(BitwiseNot(Box::new(LogicalNot(x())))))),
+            ("$(( !-~x ))", LogicalNot(Box::new(UnaryMinus(Box::new(BitwiseNot(x())))))),
+            ("$(( !~-x ))", LogicalNot(Box::new(BitwiseNot(Box::new(UnaryMinus(x())))))),
+            ("$(( ~-!x ))", BitwiseNot(Box::new(UnaryMinus(Box::new(LogicalNot(x())))))),
+            ("$(( ~!-x ))", BitwiseNot(Box::new(LogicalNot(Box::new(UnaryMinus(x())))))),
+
+            ("$(( !~++x ))", LogicalNot(Box::new(BitwiseNot(Box::new(PreIncr(String::from("x"))))))),
+            ("$(( ~!++x ))", BitwiseNot(Box::new(LogicalNot(Box::new(PreIncr(String::from("x"))))))),
+            ("$(( !~--x ))", LogicalNot(Box::new(BitwiseNot(Box::new(PreDecr(String::from("x"))))))),
+            ("$(( ~!--x ))", BitwiseNot(Box::new(LogicalNot(Box::new(PreDecr(String::from("x"))))))),
+
+            ("$(( -+x ))", UnaryMinus(Box::new(UnaryPlus(x())))),
+            ("$(( +-x ))", UnaryPlus(Box::new(UnaryMinus(x())))),
+        );
+
+        for (s, a) in cases.into_iter() {
+            let correct = Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(a))));
+            match make_parser(s).parameter() {
+                Ok(w) => if w != correct {
+                    panic!("Unexpectedly parsed the source \"{}\" as\n{:?} instead of \n{:?}", s, w, correct)
+                },
+                Err(err) => panic!("Failed to parse the source \"{}\": {}", s, err),
+            }
+        }
     }
 }

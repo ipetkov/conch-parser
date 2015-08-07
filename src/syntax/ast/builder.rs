@@ -11,7 +11,8 @@
 
 use std::cmp::{PartialEq, Eq};
 use std::error::Error;
-use syntax::ast::{self, Command, CompoundCommand, Parameter, ParameterSubstitution, SimpleCommand, Redirect, Word};
+use syntax::ast::{self, Arith, Command, CompoundCommand, Parameter};
+use syntax::ast::{ParameterSubstitution, SimpleCommand, Redirect, Word};
 
 /// An indicator to the builder of how complete commands are separated.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -116,6 +117,8 @@ pub enum ParameterSubstitutionKind<C, W> {
     Command(Vec<C>),
     /// Returns the length of the value of a parameter, e.g. ${#param}
     Len(Parameter),
+    /// Returns the resulting value of an arithmetic subsitution, e.g. `$(( x++ ))`
+    Arithmetic(Option<Arith>),
     /// Use a provided value if the parameter is null or unset, e.g.
     /// `${param:-[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
@@ -610,6 +613,7 @@ impl Builder for DefaultBuilder {
             WordKind::Subst(s) => Word::Subst(Box::new(match s {
                 Len(p)                     => ParameterSubstitution::Len(p),
                 Command(c)                 => ParameterSubstitution::Command(c),
+                Arithmetic(a)              => ParameterSubstitution::Arithmetic(a),
                 Default(c, p, w)           => ParameterSubstitution::Default(c, p, map!(w)),
                 Assign(c, p, w)            => ParameterSubstitution::Assign(c, p, map!(w)),
                 Error(c, p, w)             => ParameterSubstitution::Error(c, p, map!(w)),
@@ -887,8 +891,9 @@ where C: PartialEq, W: PartialEq {
     fn eq(&self, other: &Self) -> bool {
         use self::ParameterSubstitutionKind::*;
         match (self, other) {
-            (&Command(ref v1), &Command(ref v2)) if v1 == v2 => true,
-            (&Len(ref s1),     &Len(ref s2))     if s1 == s2 => true,
+            (&Command(ref v1),    &Command(ref v2))    if v1 == v2 => true,
+            (&Len(ref s1),        &Len(ref s2))        if s1 == s2 => true,
+            (&Arithmetic(ref a1), &Arithmetic(ref a2)) if a1 == a2 => true,
 
             (&RemoveSmallestSuffix(ref p1, ref w1), &RemoveSmallestSuffix(ref p2, ref w2)) |
             (&RemoveLargestSuffix(ref p1, ref w1),  &RemoveLargestSuffix(ref p2, ref w2))  |
@@ -912,8 +917,9 @@ impl<C, W> Clone for ParameterSubstitutionKind<C, W> where C: Clone, W: Clone {
         use self::ParameterSubstitutionKind::*;
 
         match *self {
-            Command(ref v) => Command(v.clone()),
-            Len(ref s)     => Len(s.clone()),
+            Command(ref v)    => Command(v.clone()),
+            Len(ref s)        => Len(s.clone()),
+            Arithmetic(ref a) => Arithmetic(a.clone()),
 
             Default(c, ref p, ref w)     => Default(c, p.clone(), w.clone()),
             Assign(c, ref p, ref w)      => Assign(c, p.clone(), w.clone()),

@@ -33,6 +33,8 @@ pub enum ParameterSubstitution {
     Command(Vec<Command>),
     /// Returns the length of the value of a parameter, e.g. `${#param}`
     Len(Parameter),
+    /// Returns the resulting value of an arithmetic subsitution, e.g. `$(( x++ ))`
+    Arithmetic(Option<Arith>),
     /// Use a provided value if the parameter is null or unset, e.g.
     /// `${param:-[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
@@ -196,4 +198,76 @@ pub struct SimpleCommand {
     pub vars: Vec<(String, Option<Word>)>,
     /// All redirections that should be applied before running the command.
     pub io: Vec<Redirect>,
+}
+
+/// Represents an expression within an arithmetic subsitution.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum Arith {
+    /// The value of a variable, e.g. `$var` or `var`.
+    Var(String),
+    /// A numeric literal such as `42` or `0xdeadbeef`.
+    Literal(isize),
+    /// `left ** right`.
+    Pow(Box<Arith>, Box<Arith>),
+    /// Returns the current value of a variable,
+    /// and then increments its value immediately after, e.g. `var++`
+    PostIncr(String),
+    /// Returns the current value of a variable,
+    /// and then decrements its value immediately after, e.g. `var--`
+    PostDecr(String),
+    /// Increments the value of a variable and returns the new value, e.g. `++var`.
+    PreIncr(String),
+    /// Decrements the value of a variable and returns the new value, e.g. `--var`.
+    PreDecr(String),
+    /// Ensures the sign of the underlying result is positive, e.g. `+(1-2)`.
+    UnaryPlus(Box<Arith>),
+    /// Ensures the sign of the underlying result is negative, e.g. `-(1+2)`.
+    UnaryMinus(Box<Arith>),
+    /// Returns one if the underlying result is zero, or zero otherwise, e.g. `!expr`.
+    LogicalNot(Box<Arith>),
+    /// Flips all bits from the underlying result, e.g. `~expr`.
+    BitwiseNot(Box<Arith>),
+    /// `left * right`
+    Mult(Box<Arith>, Box<Arith>),
+    /// `left / right`
+    Div(Box<Arith>, Box<Arith>),
+    /// `left % right`
+    Modulo(Box<Arith>, Box<Arith>),
+    /// `left + right`
+    Add(Box<Arith>, Box<Arith>),
+    /// `left - right`
+    Sub(Box<Arith>, Box<Arith>),
+    /// `left << right`
+    ShiftLeft(Box<Arith>, Box<Arith>),
+    /// `left >> right`
+    ShiftRight(Box<Arith>, Box<Arith>),
+    /// `left < right`
+    Less(Box<Arith>, Box<Arith>),
+    /// `left <= right`
+    LessEq(Box<Arith>, Box<Arith>),
+    /// `left > right`
+    Great(Box<Arith>, Box<Arith>),
+    /// `left >= right`
+    GreatEq(Box<Arith>, Box<Arith>),
+    /// `left == right`
+    Eq(Box<Arith>, Box<Arith>),
+    /// `left != right`
+    NotEq(Box<Arith>, Box<Arith>),
+    /// `left & right`
+    BitwiseAnd(Box<Arith>, Box<Arith>),
+    /// `left ^ right`
+    BitwiseXor(Box<Arith>, Box<Arith>),
+    /// `left | right`
+    BitwiseOr(Box<Arith>, Box<Arith>),
+    /// `left && right`
+    LogicalAnd(Box<Arith>, Box<Arith>),
+    /// `left || right`
+    LogicalOr(Box<Arith>, Box<Arith>),
+    /// `first ? second : third`
+    Ternary(Box<Arith>, Box<Arith>, Box<Arith>),
+    /// Assigns the value of an underlying expression to a
+    /// variable and returns the value, e.g. `x = 5`, or `x += 2`.
+    Assign(String, Box<Arith>),
+    /// `expr[, expr[, ...]]`
+    Sequence(Vec<Arith>),
 }
