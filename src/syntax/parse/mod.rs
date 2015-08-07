@@ -172,6 +172,66 @@ impl<I: Iterator<Item = Token>, B: Builder> Iterator for Parser<I, B> {
 
 /// A parser for the shell language. It will parse shell commands from a
 /// stream of shell `Token`s, and pass them to an AST builder.
+///
+/// The parser implements the `Iterator` trait so that it can behave like
+/// a stream of parsed shell commands. Calling `Iterator::next()` on the parser
+/// will yield a complete shell command, or an error should one arise.
+///
+/// # Building
+///
+/// To construct a parser you need a stream of `Token`s and a `Builder`
+/// which will receive data from the parser and assemble an AST. This
+/// library provides both a default `Token` lexer, as well as an AST `Builder`.
+///
+/// ```no_run
+/// use shell_lang::syntax::ast::builder::{Builder, DefaultBuilder};
+/// use shell_lang::syntax::lexer::Lexer;
+/// use shell_lang::syntax::parse::Parser;
+///
+/// let source = "echo hello world";
+/// let lexer = Lexer::new(source.chars());
+/// let mut parser = Parser::with_builder(lexer, DefaultBuilder);
+/// assert!(parser.complete_command().unwrap().is_some());
+/// ```
+///
+/// If you want to use a parser with the default AST builder implementation
+/// you can also use the `DefaultParser` type alias for a simpler setup.
+///
+/// ```no_run
+/// use shell_lang::syntax::lexer::Lexer;
+/// use shell_lang::syntax::parse::DefaultParser;
+///
+/// let source = "echo hello world";
+/// let lexer = Lexer::new(source.chars());
+/// let mut parser = DefaultParser::new(lexer);
+/// assert!(parser.complete_command().unwrap().is_some());
+/// ```
+///
+/// # Token lexing
+///
+/// Lexer implementations are free to yield tokens in whatever manner they wish,
+/// however, there are a few considerations the lexer should take.
+///
+/// First, the lexer should consolidate consecutive tokens such as `Token::Name`,
+/// `Token::Literal`, and `Token::Whitespace` as densely as possible, e.g.
+/// `Literal(foobar)` is preferred over `[Literal(foo), Literal(bar)]`. Although
+/// such splitting of tokens will not cause problems while parsing most shell
+/// commands, certain situations require the parser to look-ahead some fixed
+/// number of tokens so it can avoid backtracking. When the tokens are consolidated
+/// the parser can look-ahead deterministically. If a lexer implementation chooses
+/// not to use this strategy, the parser may unsuccessfully parse certain inputs
+/// normally considered valid.
+///
+/// Second, the lexer can influence how token escaping is handled by the parser.
+/// The backslash token, `\` is used to escape, or make literal, any token which
+/// may or may not have a special meaning. Since the parser operates on tokens and
+/// not characters, the escaping of multi-character tokens is affected by how the
+/// lexer yields them. For example, the source `\<<` is normally considered by shells
+/// as `[Literal(<), Less]`. If this behavior is desired, the lexer should yield
+/// the tokens `[Backslash, Less, Less]` for that source. Otherwise if the lexer
+/// yields the tokens `[Backslash, DLess]`, the parser will treat the source as if
+/// it were `[Literal(<<)]`. The lexer's behavior need not be consistent between different
+/// multi-char tokens, as long as it is aware of the implications.
 pub struct Parser<I: Iterator<Item = Token>, B: Builder> {
     iter: iter::TokenIter<I>,
     builder: B,
