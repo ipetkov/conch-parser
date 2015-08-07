@@ -3439,6 +3439,43 @@ pub mod test {
     }
 
     #[test]
+    fn test_parameter_substitution_invalid() {
+        let cases = vec!(
+            ("$(( x",     UnexpectedEOF),
+            ("${foo",     UnexpectedEOF),
+            ("${ foo}",   BadSubst(Token::Whitespace(String::from(" ")), src(2,1,3))),
+            ("${foo }",   BadSubst(Token::Whitespace(String::from(" ")), src(5,1,6))),
+            ("${foo -}",  BadSubst(Token::Whitespace(String::from(" ")), src(5,1,6))),
+            ("${foo =}",  BadSubst(Token::Whitespace(String::from(" ")), src(5,1,6))),
+            ("${foo ?}",  BadSubst(Token::Whitespace(String::from(" ")), src(5,1,6))),
+            ("${foo +}",  BadSubst(Token::Whitespace(String::from(" ")), src(5,1,6))),
+            ("${foo :-}", BadSubst(Token::Whitespace(String::from(" ")), src(5,1,6))),
+            ("${foo :=}", BadSubst(Token::Whitespace(String::from(" ")), src(5,1,6))),
+            ("${foo :?}", BadSubst(Token::Whitespace(String::from(" ")), src(5,1,6))),
+            ("${foo :+}", BadSubst(Token::Whitespace(String::from(" ")), src(5,1,6))),
+            ("${foo: -}", BadSubst(Token::Whitespace(String::from(" ")), src(6,1,7))),
+            ("${foo: =}", BadSubst(Token::Whitespace(String::from(" ")), src(6,1,7))),
+            ("${foo: ?}", BadSubst(Token::Whitespace(String::from(" ")), src(6,1,7))),
+            ("${foo: +}", BadSubst(Token::Whitespace(String::from(" ")), src(6,1,7))),
+            ("${foo: %}", BadSubst(Token::Whitespace(String::from(" ")), src(6,1,7))),
+            ("${foo: #}", BadSubst(Token::Whitespace(String::from(" ")), src(6,1,7))),
+            ("${'foo'}",  BadSubst(Token::SingleQuote, src(2,1,3))),
+            ("${\"foo\"}", BadSubst(Token::DoubleQuote, src(2,1,3))),
+            ("${`foo`}",  BadSubst(Token::Backtick, src(2,1,3))),
+        );
+
+        for (s, correct) in cases.into_iter() {
+            match make_parser(s).parameter() {
+                Ok(w) => panic!("Unexpectedly parsed the source \"{}\" as\n{:?}", s, w),
+                Err(ref err) => if err != &correct {
+                    panic!("Expected the source \"{}\" to return the error `{:?}`, but got `{:?}`",
+                           s, correct, err);
+                },
+            }
+        }
+    }
+
+    #[test]
     fn test_redirect_valid_close_without_whitespace() {
         let mut p = make_parser(">&-");
         assert_eq!(Some(Ok(Redirect::CloseWrite(None))), p.redirect().unwrap());
