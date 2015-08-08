@@ -339,12 +339,18 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         }
     }
 
+    /// Creates a new Parser from a TokenIter and provided AST builder.
+    /// Useful for when we have a collection of tokens which might not be contiguous
+    /// but we don't want to lose the position information.
     fn with_token_iter_and_builder(iter: iter::TokenIter<I>, builder: B) -> Parser<I, B> {
         Parser {
             iter: iter,
             builder: builder,
         }
     }
+
+    /// Returns the parser's current position in the source.
+    pub fn pos(&self) -> SourcePos { self.iter.pos() }
 
     /// Parses a single complete command.
     ///
