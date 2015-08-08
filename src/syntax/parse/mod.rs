@@ -581,7 +581,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// will result if a redirect is found, `Ok(Some(Err(word)))` if a word is found,
     /// or `Ok(None)` if neither is found.
     pub fn redirect(&mut self) -> Result<Option<::std::result::Result<B::Redirect, B::Word>>, ParseError<B::Err>> {
-        fn is_maybe_numeric<C>(word: &builder::WordKind<C>, escapes_allowed: bool) -> bool {
+        fn could_be_numeric<C>(word: &builder::WordKind<C>) -> bool {
             match *word {
                 builder::WordKind::Star        |
                 builder::WordKind::Question    |
@@ -591,14 +591,14 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
                 // Literals and single quotes can be statically checked
                 // if they have non-numeric characters
+                builder::WordKind::Escaped(ref s) |
                 builder::WordKind::Literal(ref s) |
                 builder::WordKind::SingleQuoted(ref s) => s.chars().all(|c| c.is_digit(10)),
 
-                builder::WordKind::Escaped(ref s) => escapes_allowed && s.chars().all(|c| c.is_digit(10)),
-
                 builder::WordKind::Concat(ref fragments) |
-                builder::WordKind::DoubleQuoted(ref fragments) =>
-                    fragments.iter().all(|f| is_maybe_numeric(f, escapes_allowed)),
+                builder::WordKind::DoubleQuoted(ref fragments) => {
+                    fragments.iter().all(|f| could_be_numeric(f))
+                },
 
                 // These could end up evaluating to a numeric,
                 // but we'll have to see at runtime.
@@ -608,12 +608,41 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             }
         }
 
-        let src_fd = match try!(self.word_preserve_trailing_whitespace_raw()) {
-            None => None,
-            Some(w) => if is_maybe_numeric(&w, false) {
-                Some(try!(self.builder.word(w)))
-            } else {
-                return Ok(Some(Err(try!(self.builder.word(w)))))
+        fn as_num<C>(word: &builder::WordKind<C>) -> Option<u32> {
+            match *word {
+                builder::WordKind::Literal(ref s) => u32::from_str_radix(s, 10).ok(),
+                builder::WordKind::Concat(ref fragments) => {
+                    let mut buf = String::new();
+                    for w in fragments.iter() {
+                        if let &builder::WordKind::Literal(ref s) = w {
+                            buf.push_str(s);
+                        } else {
+                            return None;
+                        }
+                    }
+
+                    u32::from_str_radix(&buf, 10).ok()
+                },
+
+                builder::WordKind::Star            |
+                builder::WordKind::Question        |
+                builder::WordKind::Tilde           |
+                builder::WordKind::SquareOpen      |
+                builder::WordKind::SquareClose     |
+                builder::WordKind::SingleQuoted(_) |
+                builder::WordKind::Escaped(_)      |
+                builder::WordKind::DoubleQuoted(_) |
+                builder::WordKind::Param(_)        |
+                builder::WordKind::Subst(_)        |
+                builder::WordKind::CommandSubst(_) => None,
+            }
+        }
+
+        let (src_fd, src_fd_as_word) = match try!(self.word_preserve_trailing_whitespace_raw()) {
+            None => (None, None),
+            Some(w) => match as_num(&w) {
+                Some(num) => (Some(num), Some(w)),
+                None => return Ok(Some(Err(try!(self.builder.word(w))))),
             },
         };
 
@@ -629,8 +658,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             Some(&DLess)     |
             Some(&DLessDash) => return Ok(Some(Ok(try!(self.redirect_heredoc(src_fd))))),
 
-            _ => match src_fd {
-                Some(w) => return Ok(Some(Err(w))),
+            _ => match src_fd_as_word {
+                Some(w) => return Ok(Some(Err(try!(self.builder.word(w))))),
                 None => return Ok(None),
             },
         };
@@ -642,7 +671,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             (false, true, builder::WordKind::Literal(try!(self.reserved_token(&[Dash])).to_string()))
         } else {
             match try!(self.word_preserve_trailing_whitespace_raw()) {
-                Some(p) => (is_maybe_numeric(&p, true), false, p),
+                Some(p) => (could_be_numeric(&p), false, p),
                 None => return Err(self.make_unexpected_err()),
             }
         };
@@ -696,7 +725,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     ///
     /// Note: this method expects that the caller provide a potential file
     /// descriptor for redirection.
-    pub fn redirect_heredoc(&mut self, src_fd: Option<B::Word>) -> Result<B::Redirect, ParseError<B::Err>> {
+    pub fn redirect_heredoc(&mut self, src_fd: Option<u32>) -> Result<B::Redirect, ParseError<B::Err>> {
         let strip_tabs = eat!(self, {
             DLess => { false },
             DLessDash => { true },
@@ -2591,8 +2620,8 @@ pub mod test {
                 (String::from("BLANK"), None),
             ),
             vec!(
-                Redirect::Clobber(Some(Word::Literal(String::from("2"))), Word::Literal(String::from("clob"))),
-                Redirect::ReadWrite(Some(Word::Literal(String::from("3"))), Word::Literal(String::from("rw"))),
+                Redirect::Clobber(Some(2), Word::Literal(String::from("clob"))),
+                Redirect::ReadWrite(Some(3), Word::Literal(String::from("rw"))),
                 Redirect::Read(None, Word::Literal(String::from("in"))),
             ),
         )
@@ -3578,21 +3607,6 @@ pub mod test {
     }
 
     #[test]
-    fn test_redirect_valid_return_redirect_if_src_fd_is_possibly_numeric() {
-        let mut p = make_parser("123$$$(echo 2)`echo bar`>out");
-        let correct = Redirect::Write(
-            Some(Word::Concat(vec!(
-                Word::Literal(String::from("123")),
-                Word::Param(Parameter::Dollar),
-                Word::Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["2"]))))),
-                Word::Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["bar"]))))),
-            ))),
-            Word::Literal(String::from("out"))
-        );
-        assert_eq!(Some(Ok(correct)), p.redirect().unwrap());
-    }
-
-    #[test]
     fn test_redirect_valid_dst_fd_can_have_escaped_numerics() {
         let mut p = make_parser(">\\2");
         let correct = Redirect::Write(
@@ -3639,7 +3653,7 @@ pub mod test {
         assert_eq!(cmd, Simple(Box::new(SimpleCommand {
             cmd: Some((Word::Literal(String::from("foo")), vec!())),
             vars: vec!(),
-            io: vec!(Redirect::Append(Some(Word::Literal(String::from("1"))), Word::Literal(String::from("out")))),
+            io: vec!(Redirect::Append(Some(1), Word::Literal(String::from("out")))),
         })));
     }
 
@@ -3661,7 +3675,7 @@ pub mod test {
         assert_eq!(cmd, Simple(Box::new(SimpleCommand {
             cmd: Some((Word::Literal(String::from("foo")), vec!())),
             vars: vec!(),
-            io: vec!(Redirect::DupWrite(Some(Word::Literal(String::from("1"))), Word::Literal(String::from("2")))),
+            io: vec!(Redirect::DupWrite(Some(1), Word::Literal(String::from("2")))),
         })));
     }
 
@@ -3683,31 +3697,13 @@ pub mod test {
         assert_eq!(cmd, Simple(Box::new(SimpleCommand {
             cmd: Some((Word::Literal(String::from("foo")), vec!())),
             vars: vec!(),
-            io: vec!(Redirect::DupRead(Some(Word::Literal(String::from("1"))), Word::Literal(String::from("2")))),
+            io: vec!(Redirect::DupRead(Some(1), Word::Literal(String::from("2")))),
         })));
     }
 
     #[test]
-    fn test_redirect_valid_single_quoted_fd() {
-        let correct = Redirect::Append(
-            Some(Word::SingleQuoted(String::from("1"))),
-            Word::Literal(String::from("out"))
-        );
-        assert_eq!(Some(Ok(correct)), make_parser("'1'>>out").redirect().unwrap());
-    }
-
-    #[test]
-    fn test_redirect_valid_double_quoted_fd() {
-        let correct = Redirect::Append(
-            Some(Word::DoubleQuoted(vec!(Word::Literal(String::from("1"))))),
-            Word::Literal(String::from("out"))
-        );
-        assert_eq!(Some(Ok(correct)), make_parser("\"1\">>out").redirect().unwrap());
-    }
-
-    #[test]
     fn test_redirect_valid_single_quoted_dup_fd() {
-        let correct = Redirect::DupWrite(Some(Word::Literal(String::from("1"))), Word::SingleQuoted(String::from("2")));
+        let correct = Redirect::DupWrite(Some(1), Word::SingleQuoted(String::from("2")));
         assert_eq!(Some(Ok(correct)), make_parser("1>&'2'").redirect().unwrap());
     }
 
@@ -3732,7 +3728,7 @@ pub mod test {
         assert_eq!(cmd, Simple(Box::new(SimpleCommand {
             cmd: Some((Word::Literal(String::from("foo")), vec!())),
             vars: vec!(),
-            io: vec!(Redirect::CloseRead(Some(Word::Literal(String::from("1234"))))),
+            io: vec!(Redirect::CloseRead(Some(1234))),
         })));
     }
 
@@ -3802,7 +3798,7 @@ pub mod test {
     fn test_simple_command_redirections_throughout_the_command() {
         let mut p = make_parser("2>|clob var=val 3<>rw ENV=true BLANK= foo bar <in baz 4>&-");
         let (cmd, vars, mut io) = sample_simple_command();
-        io.push(Redirect::CloseWrite(Some(Word::Literal(String::from("4")))));
+        io.push(Redirect::CloseWrite(Some(4)));
         let correct = Simple(Box::new(SimpleCommand { cmd: cmd, vars: vars, io: io }));
         assert_eq!(correct, p.simple_command().unwrap());
     }
@@ -3870,7 +3866,7 @@ pub mod test {
         }));
         let second = Simple(Box::new(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(
-                Redirect::Heredoc(Some(Word::Literal(String::from("3"))),
+                Redirect::Heredoc(Some(3),
                     Word::Literal(String::from("world\n"))
                 )
             )
@@ -3891,7 +3887,7 @@ pub mod test {
         }));
         let second = Simple(Box::new(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(
-                Redirect::Heredoc(Some(Word::Literal(String::from("3"))),
+                Redirect::Heredoc(Some(3),
                     Word::Literal(String::from("world\n"))
                 )
             )
@@ -3940,7 +3936,7 @@ pub mod test {
         }));
         let second = Simple(Box::new(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(
-                Redirect::Heredoc(Some(Word::Literal(String::from("3"))),
+                Redirect::Heredoc(Some(3),
                     Word::Literal(String::from(" \t\nworld\n"))
                 )
             )
@@ -3957,7 +3953,7 @@ pub mod test {
             vars: vec!(),
             cmd: Some((Word::Literal(String::from("cat")), vec!())),
             io: vec!(
-                Redirect::Heredoc(Some(Word::Literal(String::from("3"))),
+                Redirect::Heredoc(Some(3),
                     Word::Literal(String::from("\t\t \t\nworld\n\t\teof\n\t\t-eof\n"))
                 )
             )
@@ -4250,9 +4246,9 @@ pub mod test {
         let mut p = make_parser("1>>out <& 2 2>&-");
         let io = p.redirect_list().unwrap();
         assert_eq!(io, vec!(
-            Redirect::Append(Some(Word::Literal(String::from("1"))), Word::Literal(String::from("out"))),
+            Redirect::Append(Some(1), Word::Literal(String::from("out"))),
             Redirect::DupRead(None, Word::Literal(String::from("2"))),
-            Redirect::CloseWrite(Some(Word::Literal(String::from("2")))),
+            Redirect::CloseWrite(Some(2)),
         ));
     }
 
@@ -4635,7 +4631,7 @@ pub mod test {
         let body2 = Simple(Box::new(SimpleCommand {
             vars: vec!(),
             cmd: Some((Word::Literal(String::from("body2")), vec!())),
-            io: vec!(Redirect::Append(Some(Word::Literal(String::from("2"))), Word::Literal(String::from("app")))),
+            io: vec!(Redirect::Append(Some(2), Word::Literal(String::from("app")))),
         }));
 
         let els = cmd_unboxed("else");
@@ -4674,7 +4670,7 @@ pub mod test {
         let body2 = Simple(Box::new(SimpleCommand {
             vars: vec!(),
             cmd: Some((Word::Literal(String::from("body2")), vec!())),
-            io: vec!(Redirect::Append(Some(Word::Literal(String::from("2"))), Word::Literal(String::from("app")))),
+            io: vec!(Redirect::Append(Some(2), Word::Literal(String::from("app")))),
         }));
 
         let correct = (vec!((vec!(guard1, guard2), vec!(body1)), (vec!(guard3), vec!(body2))), None);
@@ -5689,9 +5685,9 @@ pub mod test {
         for cmd in cases.iter() {
             match make_parser(cmd).compound_command() {
                 Ok(Compound(_, io)) => assert_eq!(io, vec!(
-                    Redirect::Append(Some(Word::Literal(String::from("1"))), Word::Literal(String::from("out"))),
+                    Redirect::Append(Some(1), Word::Literal(String::from("out"))),
                     Redirect::DupRead(None, Word::Literal(String::from("2"))),
-                    Redirect::CloseWrite(Some(Word::Literal(String::from("2")))),
+                    Redirect::CloseWrite(Some(2)),
                 )),
 
                 Ok(result) => panic!("Parsed \"{}\" as an unexpected command type:\n{:#?}", cmd, result),

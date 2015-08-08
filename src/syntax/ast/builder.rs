@@ -87,27 +87,27 @@ pub enum WordKind<C> {
 #[derive(Debug)]
 pub enum RedirectKind<W> {
     /// Open a file for reading, e.g. [n]< file
-    Read(Option<W>, W),
+    Read(Option<u32>, W),
     /// Open a file for writing after truncating, e.g. [n]> file
-    Write(Option<W>, W),
+    Write(Option<u32>, W),
     /// Open a file for reading and writing, e.g. [n]<> file
-    ReadWrite(Option<W>, W),
+    ReadWrite(Option<u32>, W),
     /// Open a file for writing, appending to the end, e.g. [n]>> file
-    Append(Option<W>, W),
+    Append(Option<u32>, W),
     /// Open a file for writing, failing if the `noclobber` shell option is set, e.g.[n]>| file
-    Clobber(Option<W>, W),
+    Clobber(Option<u32>, W),
     /// Lines contained in the source that should be provided by as input to a file descriptor.
-    Heredoc(Option<W>, W),
+    Heredoc(Option<u32>, W),
 
     /// Duplicate a file descriptor for reading, e.g. [n]<& n
-    DupRead(Option<W>, W),
+    DupRead(Option<u32>, W),
     /// Duplicate a file descriptor for writing, e.g. [n]>& n
-    DupWrite(Option<W>, W),
+    DupWrite(Option<u32>, W),
 
     /// Close a file descriptor for reading, e.g. [n]<&-
-    CloseRead(Option<W>),
+    CloseRead(Option<u32>),
     /// Close a file descriptor for writing, e.g. [n]>&-
-    CloseWrite(Option<W>),
+    CloseWrite(Option<u32>),
 }
 
 /// Represents the type of parameter that was parsed
