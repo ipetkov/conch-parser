@@ -4,5 +4,7 @@ version = "0.0.1"
 authors = ["Ivan Petkov <ivanppetkov@gmail.com>"]
 
 [dependencies]
-void = "*"
+glob = "0.2"
 itertools = "0.3"
+libc = "0.1"
+void = "*"
