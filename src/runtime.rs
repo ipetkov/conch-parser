@@ -8,11 +8,12 @@ use std::collections::HashMap;
 use std::convert::{From, Into};
 use std::default::Default;
 use std::error::Error;
-use std::io::Error as IoError;
-use std::io::ErrorKind as IoErrorKind;
+use std::io::{self, Error as IoError, ErrorKind as IoErrorKind, Write};
 use std::fmt;
 use std::process::{self, Command, Stdio};
 use std::rc::Rc;
+
+use void::Void;
 
 // Apparently importing Redirect before Word causes an ICE, when linking
 // to this crate, so this ordering is *very* crucial...
@@ -20,8 +21,10 @@ use std::rc::Rc;
 use syntax::ast::{Arith, CompoundCommand, SimpleCommand, Parameter, Word, Redirect};
 use syntax::ast::Command as AstCommand;
 
-const EXIT_SUCCESS: ExitStatus = ExitStatus::Code(0);
-const EXIT_ERROR: ExitStatus = ExitStatus::Code(1);
+const EXIT_SUCCESS:            ExitStatus = ExitStatus::Code(0);
+const EXIT_ERROR:              ExitStatus = ExitStatus::Code(1);
+const EXIT_CMD_NOT_EXECUTABLE: ExitStatus = ExitStatus::Code(126);
+const EXIT_CMD_NOT_FOUND:      ExitStatus = ExitStatus::Code(127);
 
 const COW_STR_EMPTY: Cow<'static, str> = Cow::Borrowed("");
 const IFS_DEFAULT: &'static str = " \t\n";
@@ -40,6 +43,8 @@ pub enum RuntimeError {
     NegativeExponent,
     /// Unable to find a command/function/builtin to execute.
     CommandNotFound(String),
+    /// Utility or script does not have executable permissions.
+    CommandNotExecutable(String),
     /// Runtime feature not currently supported.
     Unimplemented(&'static str),
 }
@@ -51,6 +56,7 @@ impl Error for RuntimeError {
             RuntimeError::DivideByZero => "attempted to divide by zero",
             RuntimeError::NegativeExponent => "attempted to raise to a negative power",
             RuntimeError::CommandNotFound(_) => "command not found",
+            RuntimeError::CommandNotExecutable(_) => "command not executable",
             RuntimeError::Unimplemented(s) => s,
         }
     }
@@ -62,7 +68,8 @@ impl Error for RuntimeError {
             RuntimeError::DivideByZero       |
             RuntimeError::NegativeExponent   |
             RuntimeError::Unimplemented(_)   |
-            RuntimeError::CommandNotFound(_) => None,
+            RuntimeError::CommandNotFound(_) |
+            RuntimeError::CommandNotExecutable(_) => None,
         }
     }
 }
@@ -76,6 +83,7 @@ impl fmt::Display for RuntimeError {
             RuntimeError::DivideByZero     |
             RuntimeError::NegativeExponent => write!(fmt, "{}", self.description()),
             RuntimeError::CommandNotFound(ref c) => write!(fmt, "{}: command not found", c),
+            RuntimeError::CommandNotExecutable(ref c) => write!(fmt, "{}: command not executable", c),
         }
     }
 }
@@ -210,8 +218,11 @@ impl<'a> Env<'a> {
         }
     }
 
-    fn walk_parent_chain<'b, T, F>(&'b self, cond: F) -> Option<T>
-        where F: Fn(&'b Self) -> Option<T>
+    /// Walks `self` and its entire chain of parent environments and
+    /// evaluates a closure on each. If the closure evaluates a `Some(_)`
+    /// the traversal is terminated early.
+    fn walk_parent_chain<'b, T, F>(&'b self, mut cond: F) -> Option<T>
+        where F: FnMut(&'b Self) -> Option<T>
     {
         let mut cur = self;
         loop {
@@ -260,6 +271,10 @@ pub trait Environment {
     fn args(&self) -> Vec<&str>;
     /// Get all current pairs of environment variables and their values.
     fn env(&self) -> Vec<(&str, &str)>;
+
+    fn report_error(&mut self, err: RuntimeError) {
+        write!(io::stderr(), "{}: {}", self.name(), err).ok();
+    }
 }
 
 impl<'a, T: Environment + ?Sized> Environment for &'a mut T {
@@ -277,6 +292,7 @@ impl<'a, T: Environment + ?Sized> Environment for &'a mut T {
     fn args_len(&self) -> usize { (**self).args_len() }
     fn args(&self) -> Vec<&str> { (**self).args() }
     fn env(&self) -> Vec<(&str, &str)> { (**self).env() }
+    fn report_error(&mut self, err: RuntimeError) { (**self).report_error(err) }
 }
 
 impl<'a> Environment for Env<'a> {
@@ -372,40 +388,54 @@ impl<'a> Environment for Env<'a> {
     }
 
     fn env(&self) -> Vec<(&str, &str)> {
-        self.env.iter().map(|(k,v)| (&**k, &**v)).collect()
+        let mut env = HashMap::new();
+        self.walk_parent_chain(|cur| -> Option<Void> {
+            for (k,v) in cur.env.iter().map(|(k,v)| (&**k, &**v)) {
+                // Since we are traversing the parent chain "backwards" we
+                // must be careful not to overwrite any variable with a
+                // "previous" value from a parent environment.
+                if !env.contains_key(k) { env.insert(k, v); }
+            }
+            None // Force the traversal to walk the entire chain
+        });
+        env.into_iter().collect()
     }
 }
 
 impl Parameter {
-    pub fn eval<'a>(&'a self, env: &'a Environment) -> Cow<'a, str> {
+    pub fn eval<'a>(&self, env: &'a Environment) -> Option<Cow<'a, str>> {
         match *self {
-            Parameter::At => env.args().join(" ").into(),
-            Parameter::Star => match env.var("IFS").unwrap_or(IFS_DEFAULT).chars().next() {
-                None => env.args().concat().into(),
-                Some(c) => {
-                    let mut sep = String::with_capacity(1);
-                    sep.push(c);
-                    env.args().join(&sep).into()
-                },
+            Parameter::At => if env.args_len() == 0 { None } else { Some(env.args().join(" ").into()) },
+            Parameter::Star => if env.args_len() == 0 {
+                None
+            } else {
+                Some(match env.var("IFS").unwrap_or(IFS_DEFAULT).chars().next() {
+                    None => env.args().concat().into(),
+                    Some(c) => {
+                        let mut sep = String::with_capacity(1);
+                        sep.push(c);
+                        env.args().join(&sep).into()
+                    },
+                })
             },
 
-            Parameter::Pound  => env.args_len().to_string().into(),
-            Parameter::Dollar => unsafe { libc::getpid().to_string().into() },
-            Parameter::Dash   => COW_STR_EMPTY,
-            Parameter::Bang   => COW_STR_EMPTY, // FIXME: eventual job control would be nice
+            Parameter::Pound  => Some(env.args_len().to_string().into()),
+            Parameter::Dollar => Some(unsafe { libc::getpid().to_string().into() }),
+            Parameter::Dash   => Some(COW_STR_EMPTY),
+            Parameter::Bang   => Some(COW_STR_EMPTY), // FIXME: eventual job control would be nice
 
-            Parameter::Question => match env.last_status() {
-                ExitStatus::Code(c) |
-                ExitStatus::Signal(c) => c.to_string().into()
-            },
+            Parameter::Question => Some(match env.last_status() {
+                ExitStatus::Code(c) => (c as u32).to_string().into(),
+                ExitStatus::Signal(c) => (c as u32 + 128).to_string().into(),
+            }),
 
             Parameter::Positional(p) => if p == 0 {
-                env.name().into()
+                Some(env.name().into())
             } else {
-                env.arg(p as usize).map_or(COW_STR_EMPTY, |s| s.into())
+                env.arg(p as usize).map(|s| s.into())
             },
 
-            Parameter::Var(ref var) => env.var(var).map_or(COW_STR_EMPTY, |s| s.into())
+            Parameter::Var(ref var) => env.var(var).map(|s| s.into()),
         }
     }
 }
@@ -417,53 +447,53 @@ impl Arith {
     pub fn eval(&self, env: &mut Environment) -> Result<isize> {
         use syntax::ast::Arith::*;
 
-        match *self {
-            Literal(lit) => Ok(lit),
-            Var(ref var) => Ok(env.var(var).and_then(|s| s.parse().ok()).unwrap_or(0)),
+        let ret = match *self {
+            Literal(lit) => lit,
+            Var(ref var) => env.var(var).and_then(|s| s.parse().ok()).unwrap_or(0),
 
             PostIncr(ref var) => {
                 let val = env.var(var).and_then(|s| s.parse().ok()).unwrap_or(0);
                 env.set_var(var.clone(), (val + 1).to_string());
-                Ok(val)
+                val
             },
 
             PostDecr(ref var) => {
                 let val = env.var(var).and_then(|s| s.parse().ok()).unwrap_or(0);
                 env.set_var(var.clone(), (val - 1).to_string());
-                Ok(val)
+                val
             },
 
             PreIncr(ref var) => {
                 let val = env.var(var).and_then(|s| s.parse().ok()).unwrap_or(0) + 1;
                 env.set_var(var.clone(), val.to_string());
-                Ok(val)
+                val
             },
 
             PreDecr(ref var) => {
                 let val = env.var(var).and_then(|s| s.parse().ok()).unwrap_or(0) - 1;
                 env.set_var(var.clone(), val.to_string());
-                Ok(val)
+                val
             },
 
-            UnaryPlus(ref expr)  => Ok(try!(expr.eval(env)).abs()),
-            UnaryMinus(ref expr) => Ok(-try!(expr.eval(env))),
-            BitwiseNot(ref expr) => Ok(try!(expr.eval(env)) ^ !0),
-            LogicalNot(ref expr) => if try!(expr.eval(env)) == 0 {Ok(1)} else {Ok(0)},
+            UnaryPlus(ref expr)  => try!(expr.eval(env)).abs(),
+            UnaryMinus(ref expr) => -try!(expr.eval(env)),
+            BitwiseNot(ref expr) => try!(expr.eval(env)) ^ !0,
+            LogicalNot(ref expr) => if try!(expr.eval(env)) == 0 { 1 } else { 0 },
 
-            Less(ref left, ref right)    => if try!(left.eval(env)) <  try!(right.eval(env)) {Ok(1)} else {Ok(0)},
-            LessEq(ref left, ref right)  => if try!(left.eval(env)) <= try!(right.eval(env)) {Ok(1)} else {Ok(0)},
-            Great(ref left, ref right)   => if try!(left.eval(env)) >  try!(right.eval(env)) {Ok(1)} else {Ok(0)},
-            GreatEq(ref left, ref right) => if try!(left.eval(env)) >= try!(right.eval(env)) {Ok(1)} else {Ok(0)},
-            Eq(ref left, ref right)      => if try!(left.eval(env)) == try!(right.eval(env)) {Ok(1)} else {Ok(0)},
-            NotEq(ref left, ref right)   => if try!(left.eval(env)) != try!(right.eval(env)) {Ok(1)} else {Ok(0)},
+            Less(ref left, ref right)    => if try!(left.eval(env)) <  try!(right.eval(env)) { 1 } else { 0 },
+            LessEq(ref left, ref right)  => if try!(left.eval(env)) <= try!(right.eval(env)) { 1 } else { 0 },
+            Great(ref left, ref right)   => if try!(left.eval(env)) >  try!(right.eval(env)) { 1 } else { 0 },
+            GreatEq(ref left, ref right) => if try!(left.eval(env)) >= try!(right.eval(env)) { 1 } else { 0 },
+            Eq(ref left, ref right)      => if try!(left.eval(env)) == try!(right.eval(env)) { 1 } else { 0 },
+            NotEq(ref left, ref right)   => if try!(left.eval(env)) != try!(right.eval(env)) { 1 } else { 0 },
 
             Pow(ref left, ref right) => {
                 let right = try!(right.eval(env));
                 if right.is_negative() {
                     env.set_last_status(EXIT_ERROR);
-                    Err(RuntimeError::NegativeExponent)
+                    return Err(RuntimeError::NegativeExponent);
                 } else {
-                    Ok(try!(left.eval(env)).pow(right as u32))
+                    try!(left.eval(env)).pow(right as u32)
                 }
             },
 
@@ -471,9 +501,9 @@ impl Arith {
                 let right = try!(right.eval(env));
                 if right == 0 {
                     env.set_last_status(EXIT_ERROR);
-                    Err(RuntimeError::DivideByZero)
+                    return Err(RuntimeError::DivideByZero);
                 } else {
-                    Ok(try!(left.eval(env)) / right)
+                    try!(left.eval(env)) / right
                 }
             },
 
@@ -481,43 +511,43 @@ impl Arith {
                 let right = try!(right.eval(env));
                 if right == 0 {
                     env.set_last_status(EXIT_ERROR);
-                    Err(RuntimeError::DivideByZero)
+                    return Err(RuntimeError::DivideByZero);
                 } else {
-                    Ok(try!(left.eval(env)) % right)
+                    try!(left.eval(env)) % right
                 }
             },
 
-            Mult(ref left, ref right)       => Ok(try!(left.eval(env)) *  try!(right.eval(env))),
-            Add(ref left, ref right)        => Ok(try!(left.eval(env)) +  try!(right.eval(env))),
-            Sub(ref left, ref right)        => Ok(try!(left.eval(env)) -  try!(right.eval(env))),
-            ShiftLeft(ref left, ref right)  => Ok(try!(left.eval(env)) << try!(right.eval(env))),
-            ShiftRight(ref left, ref right) => Ok(try!(left.eval(env)) >> try!(right.eval(env))),
-            BitwiseAnd(ref left, ref right) => Ok(try!(left.eval(env)) &  try!(right.eval(env))),
-            BitwiseXor(ref left, ref right) => Ok(try!(left.eval(env)) ^  try!(right.eval(env))),
-            BitwiseOr(ref left, ref right)  => Ok(try!(left.eval(env)) |  try!(right.eval(env))),
+            Mult(ref left, ref right)       => try!(left.eval(env)) *  try!(right.eval(env)),
+            Add(ref left, ref right)        => try!(left.eval(env)) +  try!(right.eval(env)),
+            Sub(ref left, ref right)        => try!(left.eval(env)) -  try!(right.eval(env)),
+            ShiftLeft(ref left, ref right)  => try!(left.eval(env)) << try!(right.eval(env)),
+            ShiftRight(ref left, ref right) => try!(left.eval(env)) >> try!(right.eval(env)),
+            BitwiseAnd(ref left, ref right) => try!(left.eval(env)) &  try!(right.eval(env)),
+            BitwiseXor(ref left, ref right) => try!(left.eval(env)) ^  try!(right.eval(env)),
+            BitwiseOr(ref left, ref right)  => try!(left.eval(env)) |  try!(right.eval(env)),
 
             LogicalAnd(ref left, ref right) => if try!(left.eval(env)) != 0 {
-                if try!(right.eval(env)) != 0 { Ok(1) } else { Ok(0) }
+                if try!(right.eval(env)) != 0 { 1 } else { 0 }
             } else {
-                Ok(0)
+                0
             },
 
             LogicalOr(ref left, ref right) => if try!(left.eval(env)) == 0 {
-                if try!(right.eval(env)) != 0 { Ok(1) } else { Ok(0) }
+                if try!(right.eval(env)) != 0 { 1 } else { 0 }
             } else {
-                Ok(1)
+                1
             },
 
             Ternary(ref guard, ref thn, ref els) => if try!(guard.eval(env)) != 0 {
-                thn.eval(env)
+                try!(thn.eval(env))
             } else {
-                els.eval(env)
+                try!(els.eval(env))
             },
 
             Assign(ref var, ref val) => {
                 let val = try!(val.eval(env));
                 env.set_var(var.clone(), val.to_string());
-                Ok(val)
+                val
             },
 
             Sequence(ref exprs) => {
@@ -525,15 +555,17 @@ impl Arith {
                 for e in exprs.iter() {
                     last = try!(e.eval(env));
                 }
-                Ok(last)
+                last
             },
-        }
+        };
+
+        Ok(ret)
     }
 }
 
 impl Word {
-    pub fn eval(&self, env: &mut Environment) -> Vec<Cow<str>> {
-        let pat_str = self.as_pattern_str(env);
+    pub fn eval(&self, env: &mut Environment) -> Result<Vec<Cow<str>>> {
+        let pat_str = try!(self.as_pattern_str(env));
         let match_opts = glob::MatchOptions {
             case_sensitive: true,
             require_literal_separator: true,
@@ -548,17 +580,17 @@ impl Word {
                 .collect();
 
             if !paths.is_empty() {
-                return paths;
+                return Ok(paths);
             }
         }
 
-        vec!(self.eval_as_literal(env))
+        Ok(vec!(try!(self.eval_as_literal(env))))
     }
 
-    pub fn eval_as_literal(&self, env: &mut Environment) -> Cow<str> {
+    pub fn eval_as_literal(&self, env: &mut Environment) -> Result<Cow<str>> {
         use syntax::ast::Word::*;
 
-        match *self {
+        let ret = match *self {
             Literal(ref s)      => (&**s).into(),
             SingleQuoted(ref s) => (&**s).into(),
             Escaped(ref s)      => (&**s).into(),
@@ -568,33 +600,34 @@ impl Word {
             SquareClose         => "[".into(),
             Tilde               => "~".into(),
 
+            Param(ref p) => p.eval(env).unwrap_or(COW_STR_EMPTY).into_owned().into(),
+            Subst(..) => unimplemented!(), // FIXME:
+
             Concat(ref v)       |
-            DoubleQuoted(ref v) => v.iter()
+            DoubleQuoted(ref v) => try!(v.iter()
                 .map(|w| w.eval_as_literal(env))
-                .collect::<Vec<Cow<str>>>()
+                .collect::<Result<Vec<Cow<str>>>>())
                 .concat()
                 .into(),
+        };
 
-            Param(..) => unimplemented!(),
-            Subst(..) => unimplemented!(),
-        }
+        Ok(ret)
     }
 
     /// Attempts to create a `glob::Pattern` from `self`, escaping any characters as appropriate.
-    pub fn as_pattern(&self, env: &mut Environment)
-        -> ::std::result::Result<glob::Pattern, glob::PatternError>
+    pub fn as_pattern(&self, env: &mut Environment) -> Result<Option<glob::Pattern>>
     {
-        glob::Pattern::new(&*self.as_pattern_str(env))
+        Ok(glob::Pattern::new(&*try!(self.as_pattern_str(env))).ok())
     }
 
     /// Wraps any literal/escaped words which could be (incorrectly)
     /// interpreted as part of a pattern.
-    fn as_pattern_str(&self, env: &mut Environment) -> Cow<str> {
-        match *self {
+    fn as_pattern_str(&self, env: &mut Environment) -> Result<Cow<str>> {
+        let ret = match *self {
             Word::Star        |
             Word::Question    |
             Word::SquareOpen  |
-            Word::SquareClose => self.eval_as_literal(env),
+            Word::SquareClose => try!(self.eval_as_literal(env)),
 
             Word::Tilde           |
             Word::Param(_)        |
@@ -602,14 +635,16 @@ impl Word {
             Word::Literal(_)      |
             Word::Escaped(_)      |
             Word::SingleQuoted(_) |
-            Word::DoubleQuoted(_) => glob::Pattern::escape(&self.eval_as_literal(env)).into(),
+            Word::DoubleQuoted(_) => glob::Pattern::escape(&*try!(self.eval_as_literal(env))).into(),
 
-            Word::Concat(ref v) => v.iter()
+            Word::Concat(ref v) => try!(v.iter()
                 .map(|w| w.as_pattern_str(env))
-                .collect::<Vec<Cow<str>>>()
+                .collect::<Result<Vec<Cow<str>>>>())
                 .concat()
                 .into(),
-        }
+        };
+
+        Ok(ret)
     }
 }
 
@@ -629,23 +664,30 @@ impl Run for SimpleCommand {
         if self.cmd.is_none() {
             // Any redirects set for this command have already been touched
             for &(ref var, ref val) in self.vars.iter() {
-                let val = val.as_ref().map(|w| w.eval(env).join(" ")).unwrap_or_default();
-                env.set_var(var.clone(), val);
+                if let Some(val) = val.as_ref() {
+                    let val = try!(val.eval(env)).join(" ");
+                    env.set_var(var.clone(), val);
+                }
             }
-            return Ok(EXIT_SUCCESS);
+            let exit = EXIT_SUCCESS;
+            env.set_last_status(exit);
+            return Ok(exit);
         }
 
         let &(ref cmd, ref args) = self.cmd.as_ref().unwrap();
 
         // bash and zsh just grab first field of an expansion
-        let cmd_name_fields = cmd.eval(env);
+        let cmd_name_fields = try!(cmd.eval(env));
         let cmd_name = match cmd_name_fields.get(0) {
             Some(exe) => exe,
-            None => return Err(RuntimeError::CommandNotFound(String::new())),
+            None => {
+                env.set_last_status(EXIT_CMD_NOT_FOUND);
+                return Err(RuntimeError::CommandNotFound(String::new()));
+            },
         };
 
-        let args: Vec<Cow<str>> = args.iter().flat_map(|arg| arg.eval(env)).collect();
-        let args: Vec<&str> = args.iter().map(|s| &**s).collect();
+        let args: Vec<Vec<Cow<str>>> = try!(args.iter().map(|arg| arg.eval(env)).collect());
+        let args: Vec<&str> = args.iter().flat_map(|v| v.iter()).map(|s| &**s).collect();
 
         if let Some(res) = env.run_function(cmd_name, &args) {
             return res;
@@ -667,23 +709,32 @@ impl Run for SimpleCommand {
 
         // Then do any local insertions/overrides
         for &(ref var, ref val) in self.vars.iter() {
-            let fields = val.as_ref().map(|w| w.eval(env)).unwrap_or_default();
+            let fields = match val.as_ref().map(|w| w.eval(env)) {
+                Some(Ok(f)) => f,
+                Some(Err(err)) => return Err(err),
+                None => Vec::new(),
+            };
+
             if fields.len() == 1 {
                 // Avoid an extra allocation if we have no fields to join
                 cmd.env(var, &*fields[0]);
             } else {
+                // FIXME: join with IFS?
                 cmd.env(var, fields.join(" "));
             }
         }
 
         match cmd.status() {
             Err(e) => {
-                env.set_last_status(EXIT_ERROR);
-                if IoErrorKind::NotFound == e.kind() {
-                    return Err(RuntimeError::CommandNotFound(cmd_name.to_string()));
+                let (exit, err) = if IoErrorKind::NotFound == e.kind() {
+                    (EXIT_CMD_NOT_FOUND, RuntimeError::CommandNotFound(cmd_name.to_string()))
+                } else if Some(libc::ENOEXEC) == e.raw_os_error() {
+                    (EXIT_CMD_NOT_EXECUTABLE, RuntimeError::CommandNotExecutable(cmd_name.to_string()))
                 } else {
-                    return Err(e.into());
-                }
+                    (EXIT_ERROR, e.into())
+                };
+                env.set_last_status(exit);
+                return Err(err);
             },
 
             Ok(exit) => {
@@ -778,10 +829,7 @@ impl Run for CompoundCommand {
                 exit
             },
 
-            Subshell(ref body) => {
-                let mut env = env.sub_env();
-                try!(body.run(&mut *env))
-            },
+            Subshell(ref body) => try!(body.run(&mut *env.sub_env())),
 
             For(ref var, ref in_words, ref body) => {
                 let run_with_val = |env: &Environment, val: &str| {
@@ -793,7 +841,7 @@ impl Run for CompoundCommand {
                 let mut exit = EXIT_SUCCESS;
                 match *in_words {
                     Some(ref words) => for w in words {
-                        for field in w.eval(env) {
+                        for field in try!(w.eval(env)) {
                             exit = try!(run_with_val(env, &field));
                         }
                     },
@@ -807,36 +855,26 @@ impl Run for CompoundCommand {
 
 
             Case(ref word, ref arms) => {
-                let found = {
-                    let match_opts = glob::MatchOptions {
-                        case_sensitive: true,
-                        require_literal_separator: false,
-                        require_literal_leading_dot: false,
-                    };
-
-                    let word = word.eval_as_literal(env);
-                    arms.iter().find(|&&(ref pats, _)| {
-                        for pat in pats {
-                            if let Ok(p) = pat.as_pattern(env) {
-                                if p.matches_with(&word, &match_opts) {
-                                    return true;
-                                }
-                            }
-
-                            if word == pat.eval_as_literal(env) {
-                                return true;
-                            }
-                        }
-
-                        false
-                    })
+                let match_opts = glob::MatchOptions {
+                    case_sensitive: true,
+                    require_literal_separator: false,
+                    require_literal_leading_dot: false,
                 };
 
-                if let Some(&(_, ref body)) = found {
-                    try!(body.run(env))
-                } else {
-                    EXIT_SUCCESS
+                let word = try!(word.eval_as_literal(env));
+
+                let mut exit = EXIT_SUCCESS;
+                for &(ref pats, ref body) in arms.iter() {
+                    for pat in pats {
+                        if try!(pat.as_pattern(env))
+                            .map_or(false, |p| p.matches_with(&word, &match_opts))
+                        || word == try!(pat.eval_as_literal(env)) {
+                            exit = try!(body.run(env));
+                            break;
+                        }
+                    }
                 }
+                exit
             },
         };
 
