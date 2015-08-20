@@ -1,4 +1,5 @@
 //! Defines abstract representations of the shell source.
+use std::fmt;
 
 pub mod builder;
 pub use syntax::ast::builder::Builder;
@@ -270,4 +271,66 @@ pub enum Arith {
     Assign(String, Box<Arith>),
     /// `expr[, expr[, ...]]`
     Sequence(Vec<Arith>),
+}
+
+impl fmt::Display for Parameter {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        use self::Parameter::*;
+
+        match *self {
+            At       => fmt.write_str("$@"),
+            Star     => fmt.write_str("$*"),
+            Pound    => fmt.write_str("$#"),
+            Question => fmt.write_str("$?"),
+            Dash     => fmt.write_str("$-"),
+            Dollar   => fmt.write_str("$$"),
+            Bang     => fmt.write_str("$!"),
+
+            Var(ref p)    => write!(fmt, "${{{}}}", p),
+            Positional(p) => if p <= 9 {
+                write!(fmt, "${}", p)
+            } else {
+                write!(fmt, "${{{}}}", p)
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_display_parameter() {
+        use super::Parameter::*;
+        use super::Word;
+        use syntax::parse::test::make_parser;
+
+        let params = vec!(
+            At,
+            Star,
+            Pound,
+            Question,
+            Dash,
+            Dollar,
+            Bang,
+            Positional(0),
+            Positional(10),
+            Positional(100),
+            Var(String::from("foo_bar123")),
+            );
+
+        for p in params {
+            let src = p.to_string();
+            let correct = Word::Param(p);
+
+            let parsed = match make_parser(&src).word() {
+                Ok(Some(w)) => w,
+                Ok(None) => panic!("The source \"{}\" generated from the command `{:#?}` failed to parse as anything", src, correct),
+                Err(e) => panic!("The source \"{}\" generated from the command `{:#?}` failed to parse: {}", src, correct, e),
+            };
+
+            if correct != parsed {
+                panic!("The source \"{}\" generated from the command `{:#?}` was parsed as `{:#?}`", src, correct, parsed);
+            }
+        }
+    }
 }

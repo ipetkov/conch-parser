@@ -18,7 +18,7 @@ use void::Void;
 // Apparently importing Redirect before Word causes an ICE, when linking
 // to this crate, so this ordering is *very* crucial...
 // 'assertion failed: bound_list_is_sorted(&bounds.projection_bounds)', ../src/librustc/middle/ty.rs:4028
-use syntax::ast::{Arith, CompoundCommand, SimpleCommand, Parameter, Word, Redirect};
+use syntax::ast::{Arith, CompoundCommand, SimpleCommand, Parameter, ParameterSubstitution, Word, Redirect};
 use syntax::ast::Command as AstCommand;
 
 const EXIT_SUCCESS:            ExitStatus = ExitStatus::Code(0);
@@ -41,6 +41,10 @@ pub enum RuntimeError {
     DivideByZero,
     /// Attempted to raise to a negative power in an arithmetic subsitution.
     NegativeExponent,
+    /// Attempted to assign a special parameter, e.g. `${!:-value}`.
+    BadAssig(Parameter),
+    /// Attempted to evaluate a null or unset parameter, i.e. `${var:?msg}`.
+    EmptyParameter(Parameter, String),
     /// Unable to find a command/function/builtin to execute.
     CommandNotFound(String),
     /// Utility or script does not have executable permissions.
@@ -55,6 +59,8 @@ impl Error for RuntimeError {
             RuntimeError::Io(ref e) => e.description(),
             RuntimeError::DivideByZero => "attempted to divide by zero",
             RuntimeError::NegativeExponent => "attempted to raise to a negative power",
+            RuntimeError::BadAssig(_) => "attempted to assign a special parameter",
+            RuntimeError::EmptyParameter(..) => "attempted to evaluate a null or unset parameter",
             RuntimeError::CommandNotFound(_) => "command not found",
             RuntimeError::CommandNotExecutable(_) => "command not executable",
             RuntimeError::Unimplemented(s) => s,
@@ -67,6 +73,8 @@ impl Error for RuntimeError {
 
             RuntimeError::DivideByZero       |
             RuntimeError::NegativeExponent   |
+            RuntimeError::BadAssig(_)        |
+            RuntimeError::EmptyParameter(..) |
             RuntimeError::Unimplemented(_)   |
             RuntimeError::CommandNotFound(_) |
             RuntimeError::CommandNotExecutable(_) => None,
@@ -84,6 +92,8 @@ impl fmt::Display for RuntimeError {
             RuntimeError::NegativeExponent => write!(fmt, "{}", self.description()),
             RuntimeError::CommandNotFound(ref c) => write!(fmt, "{}: command not found", c),
             RuntimeError::CommandNotExecutable(ref c) => write!(fmt, "{}: command not executable", c),
+            RuntimeError::BadAssig(ref p) => write!(fmt, "{}: cannot assign in this way", p),
+            RuntimeError::EmptyParameter(ref p, ref msg) => write!(fmt, "{}: {}", p, msg),
         }
     }
 }
@@ -254,6 +264,8 @@ pub trait Environment {
     fn var(&self, name: &str) -> Option<&str>;
     /// Set the value of some variable (including environment variables).
     fn set_var(&mut self, name: String, val: String);
+    /// Indicates if a funciton is currently defined with a given name.
+    fn has_function(&mut self, fn_name: &str) -> bool;
     /// Attempt to execute a function with a set of arguments if it has been defined.
     fn run_function(&mut self, fn_name: &str, args: &[&str]) -> Option<Result<ExitStatus>>;
     /// Define a function with some `Run`able body.
@@ -282,6 +294,7 @@ impl<'a, T: Environment + ?Sized> Environment for &'a mut T {
     fn name(&self) -> &str { (**self).name() }
     fn var(&self, name: &str) -> Option<&str> { (**self).var(name) }
     fn set_var(&mut self, name: String, val: String) { (**self).set_var(name, val) }
+    fn has_function(&mut self, fn_name: &str) -> bool { (**self).has_function(fn_name) }
     fn run_function(&mut self, fn_name: &str, args: &[&str]) -> Option<Result<ExitStatus>> {
         (**self).run_function(fn_name, args)
     }
@@ -325,6 +338,12 @@ impl<'a> Environment for Env<'a> {
         } else {
             self.vars.insert(name, val);
         }
+    }
+
+    fn has_function(&mut self, fn_name: &str) -> bool {
+        self.walk_parent_chain(|cur| {
+            if cur.functions.contains_key(fn_name) { Some(()) } else { None }
+        }).is_some()
     }
 
     fn run_function(&mut self, fn_name: &str, args: &[&str]) -> Option<Result<ExitStatus>> {
@@ -437,6 +456,222 @@ impl Parameter {
 
             Parameter::Var(ref var) => env.var(var).map(|s| s.into()),
         }
+    }
+}
+
+impl ParameterSubstitution {
+    pub fn eval<'a>(&'a self, env: &'a mut Environment) -> Result<Cow<'a, str>> {
+        use syntax::ast::ParameterSubstitution::*;
+
+        let match_opts = glob::MatchOptions {
+            case_sensitive: true,
+            require_literal_separator: false,
+            require_literal_leading_dot: false,
+        };
+
+        fn remove_pattern<'a, F>(param: &Parameter,
+                                 pat: &Option<Word>,
+                                 env: &'a mut Environment,
+                                 remove_fn: F) -> Result<Cow<'a, str>>
+            where F: FnOnce(Cow<'a, str>, glob::Pattern) -> Result<Cow<'a, str>>
+        {
+            // Only command substitutions can mutate the environment, however,
+            // they always run in a sub-environment, making it safe to evaluate
+            // the pattern before we have evaluated the actual parameter.
+            let pat = match *pat {
+                Some(ref w) => try!(w.as_pattern(env)),
+                None => None,
+            };
+
+            let param = param.eval(env);
+            match param {
+                None => Ok(COW_STR_EMPTY),
+                Some(s) => match pat {
+                    None => Ok(s),
+                    Some(pat) => remove_fn(s, pat),
+                },
+            }
+        }
+
+        let ret = match *self {
+            Command(_) => unimplemented!(),
+
+            Len(ref p) => match p {
+                &Parameter::At |
+                &Parameter::Star => env.args_len().to_string().into(),
+                p => p.eval(env).map_or(0, |s| s.len()).to_string().into(),
+            },
+
+            Arithmetic(ref a) => match a {
+                &Some(ref a) => try!(a.eval(env)).to_string().into(),
+                &None => COW_STR_EMPTY,
+            },
+
+            // FIXME: unfortunately I wasn't able to find a way to
+            // make the borrow of `env` due to evaluating the parameter
+            // NOT last the entire match arm (which makes it impossible
+            // to evaluate the associated word since it requires &mut env).
+            // Thus we're forced to clone the evaluated string to appease
+            // the borrow checker. Hopefully the eventual non-lexical
+            // borrows will fix the problem...
+            Default(strict, ref p, ref default) => {
+                if let Some(p) = p.eval(env).map(|s| s.into_owned()) {
+                    if !(p.is_empty() && strict) {
+                        return Ok(p.into());
+                    }
+                }
+
+                match *default {
+                    Some(ref w) => try!(w.eval_as_literal(env)),
+                    None => COW_STR_EMPTY,
+                }
+            },
+
+            // FIXME: unfortunately I wasn't able to find a way to
+            // make the borrow of `env` due to evaluating the parameter
+            // NOT last the entire match arm (which makes it impossible
+            // to evaluate the associated word since it requires &mut env).
+            // Thus we're forced to clone the evaluated string to appease
+            // the borrow checker. Hopefully the eventual non-lexical
+            // borrows will fix the problem...
+            Assign(strict, ref p, ref assig) => {
+                if let Some(p) = p.eval(env).map(|s| s.into_owned()) {
+                    if !(p.is_empty() && strict) {
+                        return Ok(p.into());
+                    }
+                }
+
+                match p {
+                    p@&Parameter::At       |
+                    p@&Parameter::Star     |
+                    p@&Parameter::Pound    |
+                    p@&Parameter::Question |
+                    p@&Parameter::Dash     |
+                    p@&Parameter::Dollar   |
+                    p@&Parameter::Bang     |
+                    p@&Parameter::Positional(_) => return Err(RuntimeError::BadAssig(p.clone())),
+
+                    &Parameter::Var(ref name) => {
+                        let val = match *assig {
+                            Some(ref w) => try!(w.eval_as_literal(env)).into_owned(),
+                            None => String::new(),
+                        };
+
+                        env.set_var(name.clone(), val.clone());
+                        val.into()
+                    },
+                }
+            },
+
+            // FIXME: unfortunately I wasn't able to find a way to
+            // make the borrow of `env` due to evaluating the parameter
+            // NOT last the entire match arm (which makes it impossible
+            // to evaluate the associated word since it requires &mut env).
+            // Thus we're forced to clone the evaluated string to appease
+            // the borrow checker. Hopefully the eventual non-lexical
+            // borrows will fix the problem...
+            Error(strict, ref p, ref msg) => {
+                if let Some(p) = p.eval(env).map(|s| s.into_owned()) {
+                    if !(p.is_empty() && strict) {
+                        return Ok(p.into());
+                    }
+                }
+
+                let msg = match *msg {
+                    Some(ref w) => try!(w.eval_as_literal(env)),
+                    None => "parameter null or not set".into(),
+                };
+
+                return Err(RuntimeError::EmptyParameter(p.clone(), msg.into_owned()));
+            },
+
+            Alternative(strict, ref p, ref alt) => match p.eval(env).map(|s| s.len()) {
+                None => COW_STR_EMPTY,
+                Some(0) if strict => COW_STR_EMPTY,
+                Some(_) => match *alt {
+                    Some(ref w) => try!(w.eval_as_literal(env)),
+                    None => COW_STR_EMPTY,
+                },
+            },
+
+            RemoveSmallestSuffix(ref p, ref pat) => try!(remove_pattern(p, pat, env, |s, pat| {
+                if s.is_empty() { return Ok(s) }
+
+                let len = s.len();
+                for idx in 0..len {
+                    let idx = len - idx - 1;
+                    if pat.matches_with(&s[idx..], &match_opts) {
+                        let bytes = s[0..idx].bytes().collect();
+                        let ret = unsafe { String::from_utf8_unchecked(bytes) };
+                        return Ok(ret.into());
+                    }
+                }
+                Ok(s)
+            })),
+
+            RemoveLargestSuffix(ref p, ref pat) => try!(remove_pattern(p, pat, env, |s, pat| {
+                if s.is_empty() { return Ok(s) }
+
+                let mut longest_start = None;
+                let len = s.len();
+                for idx in 0..len {
+                    let idx = len - idx - 1;
+                    if pat.matches_with(&s[idx..], &match_opts) {
+                        longest_start = Some(idx);
+                    }
+                }
+
+                match longest_start {
+                    None => Ok(s),
+                    Some(idx) => {
+                        let bytes = s[0..idx].bytes().collect();
+                        let ret = unsafe { String::from_utf8_unchecked(bytes) };
+                        Ok(ret.into())
+                    },
+                }
+            })),
+
+            RemoveSmallestPrefix(ref p, ref pat) => try!(remove_pattern(p, pat, env, |s, pat| {
+                for idx in 0..s.len() {
+                    if pat.matches_with(&s[0..idx], &match_opts) {
+                        let bytes = s[idx..].bytes().collect();
+                        let ret = unsafe { String::from_utf8_unchecked(bytes) };
+                        return Ok(ret.into());
+                    }
+                }
+
+                // Don't forget to check the entire string for a match
+                if pat.matches_with(&s, &match_opts) {
+                    Ok(COW_STR_EMPTY)
+                } else {
+                    Ok(s)
+                }
+            })),
+
+            RemoveLargestPrefix(ref p, ref pat) => try!(remove_pattern(p, pat, env, |s, pat| {
+                if pat.matches_with(&s, &match_opts) {
+                    return Ok(COW_STR_EMPTY)
+                }
+
+                let mut longest_end = None;
+                for idx in 0..s.len() {
+                    if pat.matches_with(&s[0..idx], &match_opts) {
+                        longest_end = Some(idx);
+                    }
+                }
+
+                match longest_end {
+                    None => Ok(s),
+                    Some(idx) => {
+                        let bytes = s[idx..].bytes().collect();
+                        let ret = unsafe { String::from_utf8_unchecked(bytes) };
+                        Ok(ret.into())
+                    },
+                }
+            })),
+        };
+
+        Ok(ret)
     }
 }
 
@@ -564,30 +799,32 @@ impl Arith {
 }
 
 impl Word {
-    pub fn eval(&self, env: &mut Environment) -> Result<Vec<Cow<str>>> {
-        let pat_str = try!(self.as_pattern_str(env));
-        let match_opts = glob::MatchOptions {
-            case_sensitive: true,
-            require_literal_separator: true,
-            require_literal_leading_dot: true,
-        };
+    pub fn eval<'a>(&'a self, env: &'a mut Environment) -> Result<Vec<Cow<'a, str>>> {
+        {
+            let pat_str = try!(self.as_pattern_str(env));
+            let match_opts = glob::MatchOptions {
+                case_sensitive: true,
+                require_literal_separator: true,
+                require_literal_leading_dot: true,
+            };
 
-        if let Ok(globs) = glob::glob_with(&*pat_str, &match_opts) {
-            let paths: Vec<Cow<str>> = globs.into_iter()
-                .filter_map(|glob| glob.ok())
-                .filter_map(|path| path.to_str().map(|s| s.to_string()))
-                .map(|s| s.into())
-                .collect();
+            if let Ok(globs) = glob::glob_with(&*pat_str, &match_opts) {
+                let paths: Vec<Cow<str>> = globs.into_iter()
+                    .filter_map(|glob| glob.ok())
+                    .filter_map(|path| path.to_str().map(|s| s.to_string()))
+                    .map(|s| s.into())
+                    .collect();
 
-            if !paths.is_empty() {
-                return Ok(paths);
+                if !paths.is_empty() {
+                    return Ok(paths);
+                }
             }
         }
 
         Ok(vec!(try!(self.eval_as_literal(env))))
     }
 
-    pub fn eval_as_literal(&self, env: &mut Environment) -> Result<Cow<str>> {
+    pub fn eval_as_literal<'a>(&'a self, env: &'a mut Environment) -> Result<Cow<'a, str>> {
         use syntax::ast::Word::*;
 
         let ret = match *self {
@@ -600,15 +837,22 @@ impl Word {
             SquareClose         => "[".into(),
             Tilde               => "~".into(),
 
-            Param(ref p) => p.eval(env).unwrap_or(COW_STR_EMPTY).into_owned().into(),
-            Subst(..) => unimplemented!(), // FIXME:
+            Param(ref p) => p.eval(env).unwrap_or(COW_STR_EMPTY),
+            Subst(ref s) => try!(s.eval(env)),
 
             Concat(ref v)       |
-            DoubleQuoted(ref v) => try!(v.iter()
-                .map(|w| w.eval_as_literal(env))
-                .collect::<Result<Vec<Cow<str>>>>())
-                .concat()
-                .into(),
+            DoubleQuoted(ref v) => if v.len() <= 1 {
+                match v.last() {
+                    Some(w) => try!(w.eval_as_literal(env)),
+                    None => COW_STR_EMPTY,
+                }
+            } else {
+                let mut word = String::new();
+                for w in v.iter() {
+                    word.push_str(&*try!(w.eval_as_literal(env)));
+                }
+                word.into()
+            },
         };
 
         Ok(ret)
@@ -622,7 +866,7 @@ impl Word {
 
     /// Wraps any literal/escaped words which could be (incorrectly)
     /// interpreted as part of a pattern.
-    fn as_pattern_str(&self, env: &mut Environment) -> Result<Cow<str>> {
+    fn as_pattern_str<'a>(&'a self, env: &'a mut Environment) -> Result<Cow<'a, str>> {
         let ret = match *self {
             Word::Star        |
             Word::Question    |
@@ -637,11 +881,18 @@ impl Word {
             Word::SingleQuoted(_) |
             Word::DoubleQuoted(_) => glob::Pattern::escape(&*try!(self.eval_as_literal(env))).into(),
 
-            Word::Concat(ref v) => try!(v.iter()
-                .map(|w| w.as_pattern_str(env))
-                .collect::<Result<Vec<Cow<str>>>>())
-                .concat()
-                .into(),
+            Word::Concat(ref v) => if v.len() <= 1 {
+                match v.last() {
+                    Some(w) => try!(w.as_pattern_str(env)),
+                    None => COW_STR_EMPTY,
+                }
+            } else {
+                let mut word = String::new();
+                for w in v.iter() {
+                    word.push_str(&*try!(w.as_pattern_str(env)));
+                }
+                word.into()
+            },
         };
 
         Ok(ret)
@@ -677,8 +928,8 @@ impl Run for SimpleCommand {
         let &(ref cmd, ref args) = self.cmd.as_ref().unwrap();
 
         // bash and zsh just grab first field of an expansion
-        let cmd_name_fields = try!(cmd.eval(env));
-        let cmd_name = match cmd_name_fields.get(0) {
+        let cmd_name = try!(cmd.eval(env)).into_iter().next().map(|exe| exe.into_owned());
+        let cmd_name = match cmd_name {
             Some(exe) => exe,
             None => {
                 env.set_last_status(EXIT_CMD_NOT_FOUND);
@@ -686,16 +937,28 @@ impl Run for SimpleCommand {
             },
         };
 
-        let args: Vec<Vec<Cow<str>>> = try!(args.iter().map(|arg| arg.eval(env)).collect());
-        let args: Vec<&str> = args.iter().flat_map(|v| v.iter()).map(|s| &**s).collect();
+        if env.has_function(&cmd_name) {
+            let mut fn_args = Vec::new();
+            for arg in args.iter() {
+                fn_args.extend(try!(arg.eval(env)).into_iter().map(|s| s.into_owned()));
+            }
 
-        if let Some(res) = env.run_function(cmd_name, &args) {
-            return res;
+            let fn_args: Vec<&str> = fn_args.iter().map(|s| &**s).collect();
+            match env.run_function(&cmd_name, &fn_args) {
+                Some(ret) => return ret,
+                None => {
+                    env.set_last_status(EXIT_CMD_NOT_FOUND);
+                    return Err(RuntimeError::CommandNotFound(cmd_name));
+                }
+            }
         }
 
-        let mut cmd = Command::new(&**cmd_name);
+        let mut cmd = Command::new(&cmd_name);
+
         for arg in args {
-            cmd.arg(arg);
+            for field in try!(arg.eval(env)) {
+                cmd.arg(&*field);
+            }
         }
 
         cmd.stdin(Stdio::inherit())
@@ -727,9 +990,9 @@ impl Run for SimpleCommand {
         match cmd.status() {
             Err(e) => {
                 let (exit, err) = if IoErrorKind::NotFound == e.kind() {
-                    (EXIT_CMD_NOT_FOUND, RuntimeError::CommandNotFound(cmd_name.to_string()))
+                    (EXIT_CMD_NOT_FOUND, RuntimeError::CommandNotFound(cmd_name))
                 } else if Some(libc::ENOEXEC) == e.raw_os_error() {
-                    (EXIT_CMD_NOT_EXECUTABLE, RuntimeError::CommandNotExecutable(cmd_name.to_string()))
+                    (EXIT_CMD_NOT_EXECUTABLE, RuntimeError::CommandNotExecutable(cmd_name))
                 } else {
                     (EXIT_ERROR, e.into())
                 };
@@ -832,22 +1095,24 @@ impl Run for CompoundCommand {
             Subshell(ref body) => try!(body.run(&mut *env.sub_env())),
 
             For(ref var, ref in_words, ref body) => {
-                let run_with_val = |env: &Environment, val: &str| {
+                let run_with_val = |env: &Environment, val| {
                     let mut env = env.sub_env();
-                    env.set_var(var.clone(), val.to_string());
+                    env.set_var(var.clone(), val);
                     body.run(&mut *env)
                 };
 
                 let mut exit = EXIT_SUCCESS;
                 match *in_words {
                     Some(ref words) => for w in words {
-                        for field in try!(w.eval(env)) {
-                            exit = try!(run_with_val(env, &field));
+                        let fields: Vec<String> = try!(w.eval(env)).into_iter()
+                            .map(|s| s.into_owned()).collect();
+                        for field in fields {
+                            exit = try!(run_with_val(env, field));
                         }
                     },
 
                     None => for w in env.args() {
-                        exit = try!(run_with_val(env, w))
+                        exit = try!(run_with_val(env, w.to_string()))
                     },
                 }
                 exit
@@ -861,7 +1126,7 @@ impl Run for CompoundCommand {
                     require_literal_leading_dot: false,
                 };
 
-                let word = try!(word.eval_as_literal(env));
+                let word = try!(word.eval_as_literal(env)).into_owned();
 
                 let mut exit = EXIT_SUCCESS;
                 for &(ref pats, ref body) in arms.iter() {
