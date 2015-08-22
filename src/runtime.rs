@@ -9,9 +9,11 @@ use std::convert::{From, Into};
 use std::default::Default;
 use std::error::Error;
 use std::io::{self, Error as IoError, ErrorKind as IoErrorKind, Write};
+use std::iter::{IntoIterator, Iterator};
 use std::fmt;
 use std::process::{self, Command, Stdio};
 use std::rc::Rc;
+use std::vec;
 
 use void::Void;
 
@@ -27,6 +29,7 @@ const EXIT_CMD_NOT_EXECUTABLE: ExitStatus = ExitStatus::Code(126);
 const EXIT_CMD_NOT_FOUND:      ExitStatus = ExitStatus::Code(127);
 
 const COW_STR_EMPTY: Cow<'static, str> = Cow::Borrowed("");
+const NULL_FIELD: Fields<'static> = Fields::Single(COW_STR_EMPTY);
 const IFS_DEFAULT: &'static str = " \t\n";
 
 /// A specialized `Result` type for shell runtime operations.
@@ -144,6 +147,73 @@ impl From<process::ExitStatus> for ExitStatus {
         match exit.code() {
             Some(code) => ExitStatus::Code(code),
             None => get_signal(exit).map_or(EXIT_ERROR, |s| ExitStatus::Signal(s)),
+        }
+    }
+}
+
+/// Represents the types of fields that may result from evaluating a `Word`.
+/// It is important to maintain such distinctions because evaluating parameters
+/// such as `$@` and `$*` have different behaviors in different contexts.
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub enum Fields<'a> {
+    /// A single field.
+    Single(Cow<'a, str>),
+    /// Any number of fields resulting from evaluating the `$@` special parameter.
+    At(Vec<Cow<'a, str>>),
+    /// Any number of fields resulting from evaluating the `$*` special parameter.
+    Star(Vec<Cow<'a, str>>),
+    /// A non-zero number of fields that do not have any special meaning.
+    Many(Vec<Cow<'a, str>>),
+}
+
+impl<'a> Fields<'a> {
+    /// Indicates if a set of fields is considered null.
+    ///
+    /// A set of fields is null if every single string
+    /// it holds is the empty string.
+    pub fn is_null(&self) -> bool {
+        match *self {
+            Fields::Single(ref s) => s.is_empty(),
+
+            Fields::At(ref v)   |
+            Fields::Star(ref v) |
+            Fields::Many(ref v) => v.iter().all(|s| s.is_empty()),
+        }
+    }
+
+    /// Converts all internal Cow strings into owned ones
+    pub fn into_owned<'b>(self) -> Fields<'b> {
+        let map = |v: Vec<Cow<str>>| v.into_iter().map(|s| s.into_owned().into()).collect();
+
+        match self {
+            Fields::Single(s) => Fields::Single(s.into_owned().into()),
+            Fields::At(v)   => Fields::At(  map(v)),
+            Fields::Star(v) => Fields::Star(map(v)),
+            Fields::Many(v) => Fields::Many(map(v)),
+        }
+    }
+
+    /// Joins all fields using a space.
+    pub fn join(self) -> String {
+        match self {
+            Fields::Single(s) => s.into_owned(),
+            Fields::At(v)   |
+            Fields::Star(v) |
+            Fields::Many(v) => v.join(" "),
+        }
+    }
+}
+
+impl<'a> IntoIterator for Fields<'a> {
+    type Item = Cow<'a, str>;
+    type IntoIter = vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            Fields::Single(s) => vec!(s).into_iter(),
+            Fields::At(v)   |
+            Fields::Star(v) |
+            Fields::Many(v) => v.into_iter(),
         }
     }
 }
@@ -289,25 +359,6 @@ pub trait Environment {
     }
 }
 
-impl<'a, T: Environment + ?Sized> Environment for &'a mut T {
-    fn sub_env<'b>(&'b self) -> Box<Environment + 'b> { (**self).sub_env() }
-    fn name(&self) -> &str { (**self).name() }
-    fn var(&self, name: &str) -> Option<&str> { (**self).var(name) }
-    fn set_var(&mut self, name: String, val: String) { (**self).set_var(name, val) }
-    fn has_function(&mut self, fn_name: &str) -> bool { (**self).has_function(fn_name) }
-    fn run_function(&mut self, fn_name: &str, args: &[&str]) -> Option<Result<ExitStatus>> {
-        (**self).run_function(fn_name, args)
-    }
-    fn set_function(&mut self, name: String, func: Box<Run>) { (**self).set_function(name, func) }
-    fn last_status(&self) -> ExitStatus { (**self).last_status() }
-    fn set_last_status(&mut self, status: ExitStatus) { (**self).set_last_status(status) }
-    fn arg(&self, idx: usize) -> Option<&str> { (**self).arg(idx) }
-    fn args_len(&self) -> usize { (**self).args_len() }
-    fn args(&self) -> Vec<&str> { (**self).args() }
-    fn env(&self) -> Vec<(&str, &str)> { (**self).env() }
-    fn report_error(&mut self, err: RuntimeError) { (**self).report_error(err) }
-}
-
 impl<'a> Environment for Env<'a> {
     fn sub_env<'b>(&'b self) -> Box<Environment + 'b> {
         Box::new(Env {
@@ -422,45 +473,38 @@ impl<'a> Environment for Env<'a> {
 }
 
 impl Parameter {
-    pub fn eval<'a>(&self, env: &'a Environment) -> Option<Cow<'a, str>> {
+    /// Evaluates a parameter in the context of some environment.
+    ///
+    /// Any fields as a result of evaluating `$@` or `$*` will not be
+    /// split further. This is left for the caller to perform.
+    pub fn eval<'a>(&self, env: &'a Environment) -> Option<Fields<'a>> {
         match *self {
-            Parameter::At => if env.args_len() == 0 { None } else { Some(env.args().join(" ").into()) },
-            Parameter::Star => if env.args_len() == 0 {
-                None
-            } else {
-                Some(match env.var("IFS").unwrap_or(IFS_DEFAULT).chars().next() {
-                    None => env.args().concat().into(),
-                    Some(c) => {
-                        let mut sep = String::with_capacity(1);
-                        sep.push(c);
-                        env.args().join(&sep).into()
-                    },
-                })
-            },
+            Parameter::At   => Some(Fields::At(  env.args().into_iter().map(|s| s.into()).collect())),
+            Parameter::Star => Some(Fields::Star(env.args().into_iter().map(|s| s.into()).collect())),
 
-            Parameter::Pound  => Some(env.args_len().to_string().into()),
-            Parameter::Dollar => Some(unsafe { libc::getpid().to_string().into() }),
-            Parameter::Dash   => Some(COW_STR_EMPTY),
-            Parameter::Bang   => Some(COW_STR_EMPTY), // FIXME: eventual job control would be nice
+            Parameter::Pound  => Some(Fields::Single(env.args_len().to_string().into())),
+            Parameter::Dollar => Some(Fields::Single(unsafe { libc::getpid() }.to_string().into())),
+            Parameter::Dash   => None,
+            Parameter::Bang   => None, // FIXME: eventual job control would be nice
 
-            Parameter::Question => Some(match env.last_status() {
-                ExitStatus::Code(c) => (c as u32).to_string().into(),
-                ExitStatus::Signal(c) => (c as u32 + 128).to_string().into(),
-            }),
+            Parameter::Question => Some(Fields::Single(match env.last_status() {
+                ExitStatus::Code(c)   => c as u32,
+                ExitStatus::Signal(c) => c as u32 + 128,
+            }.to_string().into())),
 
-            Parameter::Positional(p) => if p == 0 {
-                Some(env.name().into())
-            } else {
-                env.arg(p as usize).map(|s| s.into())
-            },
-
-            Parameter::Var(ref var) => env.var(var).map(|s| s.into()),
+            Parameter::Positional(0) => Some(Fields::Single(env.name().into())),
+            Parameter::Positional(p) => env.arg(p as usize).map(|s| Fields::Single(s.into())),
+            Parameter::Var(ref var)  => env.var(var).map(|s| Fields::Single(s.into())),
         }
     }
 }
 
 impl ParameterSubstitution {
-    pub fn eval<'a>(&'a self, env: &'a mut Environment) -> Result<Cow<'a, str>> {
+    /// Evaluates a parameter subsitution in the context of some environment.
+    ///
+    /// No field *splitting* will be performed, and is left for the caller to
+    /// implement. However, multiple fields can occur if `$@` or $*` is evaluated.
+    pub fn eval<'a>(&'a self, env: &'a mut Environment) -> Result<Fields<'a>> {
         use syntax::ast::ParameterSubstitution::*;
 
         let match_opts = glob::MatchOptions {
@@ -472,75 +516,87 @@ impl ParameterSubstitution {
         fn remove_pattern<'a, F>(param: &Parameter,
                                  pat: &Option<Word>,
                                  env: &'a mut Environment,
-                                 remove_fn: F) -> Result<Cow<'a, str>>
-            where F: FnOnce(Cow<'a, str>, glob::Pattern) -> Result<Cow<'a, str>>
+                                 remove: F) -> Result<Fields<'a>>
+            where F: Fn(String, &glob::Pattern) -> String
         {
-            // Only command substitutions can mutate the environment, however,
-            // they always run in a sub-environment, making it safe to evaluate
-            // the pattern before we have evaluated the actual parameter.
-            let pat = match *pat {
-                Some(ref w) => try!(w.as_pattern(env)),
-                None => None,
+            let map = |vec: Vec<Cow<str>>, pat: &Word, env| -> Result<Vec<Cow<str>>> {
+                // We are forced to clone the parameter's value here since evaluating
+                // the pattern may mutate the environment.
+                let pat = try!(pat.as_pattern(env));
+                Ok(vec.into_iter().map(|field| remove(field.into_owned(), &pat).into()).collect())
             };
 
-            let param = param.eval(env);
-            match param {
-                None => Ok(COW_STR_EMPTY),
-                Some(s) => match pat {
-                    None => Ok(s),
-                    Some(pat) => remove_fn(s, pat),
-                },
-            }
+            let ret = match *pat {
+                None => param.eval(env).unwrap_or(NULL_FIELD),
+                Some(ref pat) => match param.eval(env).unwrap_or(NULL_FIELD).into_owned() {
+                    Fields::Single(s) => Fields::Single(
+                        remove(s.into_owned(), &try!(pat.as_pattern(env))).into()
+                    ),
+
+                    Fields::At(v)   => Fields::At(  try!(map(v, pat, env))),
+                    Fields::Star(v) => Fields::Star(try!(map(v, pat, env))),
+                    Fields::Many(v) => Fields::Many(try!(map(v, pat, env))),
+                }
+            };
+
+            Ok(ret)
+        }
+
+        // A macro that evaluates a parameter in some environment and immediately
+        // returns the result as long as there is at least one non-empty field inside.
+        // If all fields from the evaluated result are empty and the evaluation is
+        // considered NON-strict, an empty vector is returned to the caller.
+        macro_rules! check_param_subst {
+            ($param:expr, $env:expr, $strict:expr) => {{
+                // FIXME: unfortunately I wasn't able to find a way to
+                // make the borrow of `env` due to evaluating the parameter
+                // NOT last the entire match arm (which makes it impossible
+                // to evaluate the associated word since it requires &mut env).
+                // Thus we're forced to clone the evaluated string to appease
+                // the borrow checker. Hopefully the eventual non-lexical
+                // borrows will fix the problem...
+
+                let fields: Option<Fields> = $param.eval($env).map(|f| f.into_owned());
+                if let Some(p) = fields {
+                    if !$strict && p.is_null() {
+                        return Ok(NULL_FIELD);
+                    } else {
+                        return Ok(p);
+                    }
+                }
+            }}
         }
 
         let ret = match *self {
             Command(_) => unimplemented!(),
 
-            Len(ref p) => match p {
-                &Parameter::At |
-                &Parameter::Star => env.args_len().to_string().into(),
-                p => p.eval(env).map_or(0, |s| s.len()).to_string().into(),
-            },
+            Len(ref p) => Fields::Single(match p.eval(env) {
+                None => "0".into(),
+                Some(Fields::Single(s)) => s.len().to_string().into(),
 
-            Arithmetic(ref a) => match a {
+                Some(Fields::At(v))   |
+                Some(Fields::Star(v)) => v.len().to_string().into(),
+
+                // Evaluating a pure parameter should not be performing
+                // field expansions, so this variant should never occur.
+                Some(Fields::Many(_)) => unreachable!(),
+            }),
+
+            Arithmetic(ref a) => Fields::Single(match a {
                 &Some(ref a) => try!(a.eval(env)).to_string().into(),
-                &None => COW_STR_EMPTY,
-            },
+                &None => "0".into(),
+            }),
 
-            // FIXME: unfortunately I wasn't able to find a way to
-            // make the borrow of `env` due to evaluating the parameter
-            // NOT last the entire match arm (which makes it impossible
-            // to evaluate the associated word since it requires &mut env).
-            // Thus we're forced to clone the evaluated string to appease
-            // the borrow checker. Hopefully the eventual non-lexical
-            // borrows will fix the problem...
             Default(strict, ref p, ref default) => {
-                if let Some(p) = p.eval(env).map(|s| s.into_owned()) {
-                    if !(p.is_empty() && strict) {
-                        return Ok(p.into());
-                    }
-                }
-
+                check_param_subst!(p, env, strict);
                 match *default {
-                    Some(ref w) => try!(w.eval_as_literal(env)),
-                    None => COW_STR_EMPTY,
+                    Some(ref w) => try!(w.eval(env)),
+                    None => NULL_FIELD,
                 }
             },
 
-            // FIXME: unfortunately I wasn't able to find a way to
-            // make the borrow of `env` due to evaluating the parameter
-            // NOT last the entire match arm (which makes it impossible
-            // to evaluate the associated word since it requires &mut env).
-            // Thus we're forced to clone the evaluated string to appease
-            // the borrow checker. Hopefully the eventual non-lexical
-            // borrows will fix the problem...
             Assign(strict, ref p, ref assig) => {
-                if let Some(p) = p.eval(env).map(|s| s.into_owned()) {
-                    if !(p.is_empty() && strict) {
-                        return Ok(p.into());
-                    }
-                }
-
+                check_param_subst!(p, env, strict);
                 match p {
                     p@&Parameter::At       |
                     p@&Parameter::Star     |
@@ -553,65 +609,52 @@ impl ParameterSubstitution {
 
                     &Parameter::Var(ref name) => {
                         let val = match *assig {
-                            Some(ref w) => try!(w.eval_as_literal(env)).into_owned(),
+                            Some(ref w) => try!(w.eval_as_assignment(env)),
                             None => String::new(),
                         };
 
                         env.set_var(name.clone(), val.clone());
-                        val.into()
+                        Fields::Single(val.into())
                     },
                 }
             },
 
-            // FIXME: unfortunately I wasn't able to find a way to
-            // make the borrow of `env` due to evaluating the parameter
-            // NOT last the entire match arm (which makes it impossible
-            // to evaluate the associated word since it requires &mut env).
-            // Thus we're forced to clone the evaluated string to appease
-            // the borrow checker. Hopefully the eventual non-lexical
-            // borrows will fix the problem...
             Error(strict, ref p, ref msg) => {
-                if let Some(p) = p.eval(env).map(|s| s.into_owned()) {
-                    if !(p.is_empty() && strict) {
-                        return Ok(p.into());
+                check_param_subst!(p, env, strict);
+                let msg = match *msg {
+                    None => String::from("parameter null or not set"),
+                    Some(ref w) => try!(w.eval(env)).join(),
+                };
+
+                return Err(RuntimeError::EmptyParameter(p.clone(), msg));
+            },
+
+            Alternative(strict, ref p, ref alt) => {
+                {
+                    let val = p.eval(env);
+                    if val.is_none() || (strict && val.unwrap().is_null()) {
+                        return Ok(NULL_FIELD);
                     }
                 }
 
-                let msg = match *msg {
-                    Some(ref w) => try!(w.eval_as_literal(env)),
-                    None => "parameter null or not set".into(),
-                };
-
-                return Err(RuntimeError::EmptyParameter(p.clone(), msg.into_owned()));
-            },
-
-            Alternative(strict, ref p, ref alt) => match p.eval(env).map(|s| s.len()) {
-                None => COW_STR_EMPTY,
-                Some(0) if strict => COW_STR_EMPTY,
-                Some(_) => match *alt {
-                    Some(ref w) => try!(w.eval_as_literal(env)),
-                    None => COW_STR_EMPTY,
-                },
+                match *alt {
+                    Some(ref w) => try!(w.eval(env)),
+                    None => NULL_FIELD,
+                }
             },
 
             RemoveSmallestSuffix(ref p, ref pat) => try!(remove_pattern(p, pat, env, |s, pat| {
-                if s.is_empty() { return Ok(s) }
-
                 let len = s.len();
                 for idx in 0..len {
                     let idx = len - idx - 1;
                     if pat.matches_with(&s[idx..], &match_opts) {
-                        let bytes = s[0..idx].bytes().collect();
-                        let ret = unsafe { String::from_utf8_unchecked(bytes) };
-                        return Ok(ret.into());
+                        return String::from(&s[0..idx]);
                     }
                 }
-                Ok(s)
+                s
             })),
 
             RemoveLargestSuffix(ref p, ref pat) => try!(remove_pattern(p, pat, env, |s, pat| {
-                if s.is_empty() { return Ok(s) }
-
                 let mut longest_start = None;
                 let len = s.len();
                 for idx in 0..len {
@@ -622,35 +665,29 @@ impl ParameterSubstitution {
                 }
 
                 match longest_start {
-                    None => Ok(s),
-                    Some(idx) => {
-                        let bytes = s[0..idx].bytes().collect();
-                        let ret = unsafe { String::from_utf8_unchecked(bytes) };
-                        Ok(ret.into())
-                    },
+                    None => s,
+                    Some(idx) => String::from(&s[0..idx]),
                 }
             })),
 
             RemoveSmallestPrefix(ref p, ref pat) => try!(remove_pattern(p, pat, env, |s, pat| {
                 for idx in 0..s.len() {
                     if pat.matches_with(&s[0..idx], &match_opts) {
-                        let bytes = s[idx..].bytes().collect();
-                        let ret = unsafe { String::from_utf8_unchecked(bytes) };
-                        return Ok(ret.into());
+                        return String::from(&s[idx..]);
                     }
                 }
 
                 // Don't forget to check the entire string for a match
                 if pat.matches_with(&s, &match_opts) {
-                    Ok(COW_STR_EMPTY)
+                    String::new()
                 } else {
-                    Ok(s)
+                    s
                 }
             })),
 
             RemoveLargestPrefix(ref p, ref pat) => try!(remove_pattern(p, pat, env, |s, pat| {
                 if pat.matches_with(&s, &match_opts) {
-                    return Ok(COW_STR_EMPTY)
+                    return String::new();
                 }
 
                 let mut longest_end = None;
@@ -661,12 +698,8 @@ impl ParameterSubstitution {
                 }
 
                 match longest_end {
-                    None => Ok(s),
-                    Some(idx) => {
-                        let bytes = s[idx..].bytes().collect();
-                        let ret = unsafe { String::from_utf8_unchecked(bytes) };
-                        Ok(ret.into())
-                    },
+                    None => s,
+                    Some(idx) => String::from(&s[idx..]),
                 }
             })),
         };
@@ -799,103 +832,170 @@ impl Arith {
 }
 
 impl Word {
-    pub fn eval<'a>(&'a self, env: &'a mut Environment) -> Result<Vec<Cow<'a, str>>> {
-        {
-            let pat_str = try!(self.as_pattern_str(env));
-            let match_opts = glob::MatchOptions {
-                case_sensitive: true,
-                require_literal_separator: true,
-                require_literal_leading_dot: true,
-            };
-
-            if let Ok(globs) = glob::glob_with(&*pat_str, &match_opts) {
-                let paths: Vec<Cow<str>> = globs.into_iter()
-                    .filter_map(|glob| glob.ok())
-                    .filter_map(|path| path.to_str().map(|s| s.to_string()))
-                    .map(|s| s.into())
-                    .collect();
-
-                if !paths.is_empty() {
-                    return Ok(paths);
-                }
-            }
-        }
-
-        Ok(vec!(try!(self.eval_as_literal(env))))
+    /// Evaluates a word in a given environment and performs all expansions.
+    ///
+    /// Tilde, parameter, command substitution, and arithmetic expansions are
+    /// performed first. All resulting fields are then further split based on
+    /// the contents of the `IFS` variable (no splitting is performed if `IFS`
+    /// is set to be the empty or null string). Finally, quotes and escaping
+    /// backslashes are removed from the original word (unless they themselves
+    /// have been quoted).
+    pub fn eval<'a>(&'a self, env: &'a mut Environment) -> Result<Fields<'a>> {
+        self.eval_with_config(env, true)
     }
 
-    pub fn eval_as_literal<'a>(&'a self, env: &'a mut Environment) -> Result<Cow<'a, str>> {
+    /// Evaluates a word in a given environment without doing field and pathname expansions.
+    ///
+    /// Tilde, parameter, command substitution, arithmetic expansions, and quote removals
+    /// will be performed, however. In addition, if multiple fields arise as a result
+    /// of evaluating `$@` or `$*`, the fields will be joined with a single space.
+    pub fn eval_as_assignment<'a>(&'a self, env: &'a mut Environment) -> Result<String> {
+        self.eval_with_config(env, false).map(|f| f.join())
+    }
+
+    fn eval_with_config<'a>(&'a self,
+                            env: &'a mut Environment,
+                            split_fields_further: bool)
+        -> Result<Fields<'a>>
+    {
         use syntax::ast::Word::*;
 
-        let ret = match *self {
-            Literal(ref s)      => (&**s).into(),
-            SingleQuoted(ref s) => (&**s).into(),
-            Escaped(ref s)      => (&**s).into(),
-            Star                => "*".into(),
-            Question            => "?".into(),
-            SquareOpen          => "]".into(),
-            SquareClose         => "[".into(),
-            Tilde               => "~".into(),
+        /// Splits a vector of fields further based on the contents of the `IFS`
+        /// variable (i.e. as long as it is non-empty). Any empty fields, original
+        /// or otherwise newly created will be discarded.
+        fn split_fields<'a>(ifs: &str, words: Vec<Cow<'a, str>>) -> Vec<Cow<'a, str>> {
+            // If IFS is set but null, there is nothing left to split
+            if ifs.is_empty() {
+                return words;
+            }
 
-            Param(ref p) => p.eval(env).unwrap_or(COW_STR_EMPTY),
-            Subst(ref s) => try!(s.eval(env)),
+            let whitespace: Vec<char> = ifs.chars().filter(|c| c.is_whitespace()).collect();
 
-            Concat(ref v)       |
-            DoubleQuoted(ref v) => if v.len() <= 1 {
-                match v.last() {
-                    Some(w) => try!(w.eval_as_literal(env)),
-                    None => COW_STR_EMPTY,
+            let mut fields = Vec::with_capacity(words.len());
+            'word: for word in words {
+                if word.is_empty() {
+                    continue;
                 }
-            } else {
-                let mut word = String::new();
-                for w in v.iter() {
-                    word.push_str(&*try!(w.eval_as_literal(env)));
+
+                let mut iter = word.chars().enumerate();
+                loop {
+                    let start;
+                    loop {
+                        match iter.next() {
+                            // We are still skipping leading whitespace, if we hit the
+                            // end of the word there are no fields to create, even empty ones.
+                            None => continue 'word,
+                            Some((idx, c)) => if !whitespace.contains(&c) {
+                                start = idx;
+                                break;
+                            },
+                        }
+                    }
+
+                    let end;
+                    loop {
+                        match iter.next() {
+                            None => {
+                                end = None;
+                                break;
+                            },
+                            Some((idx, c)) => if ifs.contains(c) {
+                                end = Some(idx);
+                                break;
+                            },
+                        }
+                    }
+
+                    // Since we are creating new fields which are always strictly substrings
+                    // of the original words/fields, we can just borrow a bunch of strs within
+                    // the lifetime of our other borrows without having to reallocate.
+                    // However, we do have to be careful with any owned Strings created along
+                    // the way, which aren't "anchored" to some living memory. Thus to make sure
+                    // we can safely pass them up to our caller(s), we'll have to make copies here.
+                    let field = match (&word, end) {
+                        (&Cow::Borrowed(s), None)       => Cow::Borrowed(&s[start..]),
+                        (&Cow::Borrowed(s), Some(end))  => Cow::Borrowed(&s[start..end]),
+                        (&Cow::Owned(ref s), None)      => Cow::Owned(String::from(&s[start..])),
+                        (&Cow::Owned(ref s), Some(end)) => Cow::Owned(String::from(&s[start..end])),
+                    };
+
+                    // Make sure we "delete" any empty fields we generate.
+                    if !field.is_empty() {
+                        fields.push(field);
+                    }
                 }
-                word.into()
-            },
+            }
+
+            fields.shrink_to_fit();
+            fields
+        }
+
+        fn get_ifs<'a>(env: &'a Environment) -> &'a str {
+            env.var("IFS").unwrap_or(IFS_DEFAULT)
+        }
+
+        fn ifs_char<'a>(env: &'a Environment) -> &'a str {
+            let ifs = get_ifs(env);
+            if ifs.is_empty() { "" } else { &ifs[0..1] }
+        }
+
+        fn copy_ifs(env: &Environment) -> String {
+            get_ifs(env).to_string()
+        }
+
+        fn maybe_split_fields<'a, F>(split: bool,
+                              env: &'a mut Environment,
+                              closure: F) -> Result<Fields>
+            where F: FnOnce(&'a mut Environment) -> Result<Fields<'a>>
+        {
+            let ifs = if split { Some(copy_ifs(env)) } else { None };
+            let fields = try!(closure(env));
+            let fields = match ifs {
+                None => fields,
+                Some(ref ifs) => match fields {
+                    Fields::At(fs)   => Fields::At(split_fields(ifs, fs)),
+                    Fields::Star(fs) => Fields::Star(split_fields(ifs, fs)),
+                    Fields::Many(fs) => Fields::Many(split_fields(ifs, fs)),
+
+                    Fields::Single(f) => {
+                        let mut fields = split_fields(ifs, vec!(f));
+                        if fields.len() == 1 {
+                            Fields::Single(fields.pop().unwrap())
+                        } else {
+                            Fields::Many(fields)
+                        }
+                    },
+                },
+            };
+            Ok(fields)
         };
 
-        Ok(ret)
+
+        let fields = match *self {
+            Literal(ref s)      => Fields::Single((&**s).into()),
+            SingleQuoted(ref s) => Fields::Single((&**s).into()),
+            Escaped(ref s)      => Fields::Single((&**s).into()),
+            Star                => Fields::Single("*".into()),
+            Question            => Fields::Single("?".into()),
+            SquareOpen          => Fields::Single("]".into()),
+            SquareClose         => Fields::Single("[".into()),
+            Tilde               => Fields::Single(env.var("HOME").map_or(COW_STR_EMPTY, |s| s.into())),
+
+            Subst(ref s) => try!(maybe_split_fields(split_fields_further, env, |env| s.eval(env))),
+            Param(ref p) => try!(maybe_split_fields(split_fields_further, env, |env| {
+                Ok(p.eval(env).unwrap_or(NULL_FIELD))
+            })),
+
+            Concat(ref v) => unimplemented!(),
+            DoubleQuoted(ref v) => unimplemented!(),
+        };
+
+        Ok(fields)
     }
 
-    /// Attempts to create a `glob::Pattern` from `self`, escaping any characters as appropriate.
-    pub fn as_pattern(&self, env: &mut Environment) -> Result<Option<glob::Pattern>>
+    pub fn as_pattern(&self, env: &mut Environment) -> Result<glob::Pattern>
     {
-        Ok(glob::Pattern::new(&*try!(self.as_pattern_str(env))).ok())
-    }
-
-    /// Wraps any literal/escaped words which could be (incorrectly)
-    /// interpreted as part of a pattern.
-    fn as_pattern_str<'a>(&'a self, env: &'a mut Environment) -> Result<Cow<'a, str>> {
-        let ret = match *self {
-            Word::Star        |
-            Word::Question    |
-            Word::SquareOpen  |
-            Word::SquareClose => try!(self.eval_as_literal(env)),
-
-            Word::Tilde           |
-            Word::Param(_)        |
-            Word::Subst(_)        |
-            Word::Literal(_)      |
-            Word::Escaped(_)      |
-            Word::SingleQuoted(_) |
-            Word::DoubleQuoted(_) => glob::Pattern::escape(&*try!(self.eval_as_literal(env))).into(),
-
-            Word::Concat(ref v) => if v.len() <= 1 {
-                match v.last() {
-                    Some(w) => try!(w.as_pattern_str(env)),
-                    None => COW_STR_EMPTY,
-                }
-            } else {
-                let mut word = String::new();
-                for w in v.iter() {
-                    word.push_str(&*try!(w.as_pattern_str(env)));
-                }
-                word.into()
-            },
-        };
-
-        Ok(ret)
+        unimplemented!()
     }
 }
 
@@ -911,12 +1011,11 @@ impl<'a, T: Run + ?Sized> Run for &'a T {
 
 impl Run for SimpleCommand {
     fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
-
         if self.cmd.is_none() {
             // Any redirects set for this command have already been touched
             for &(ref var, ref val) in self.vars.iter() {
                 if let Some(val) = val.as_ref() {
-                    let val = try!(val.eval(env)).join(" ");
+                    let val = try!(val.eval_as_assignment(env));
                     env.set_var(var.clone(), val);
                 }
             }
@@ -972,19 +1071,12 @@ impl Run for SimpleCommand {
 
         // Then do any local insertions/overrides
         for &(ref var, ref val) in self.vars.iter() {
-            let fields = match val.as_ref().map(|w| w.eval(env)) {
-                Some(Ok(f)) => f,
-                Some(Err(err)) => return Err(err),
-                None => Vec::new(),
+            match try!(val.as_ref().map(|w| w.eval(env)).unwrap_or(Ok(NULL_FIELD))) {
+                Fields::Single(s) => cmd.env(var, &*s),
+                f@Fields::At(_)   |
+                f@Fields::Star(_) |
+                f@Fields::Many(_) => cmd.env(var, f.join()),
             };
-
-            if fields.len() == 1 {
-                // Avoid an extra allocation if we have no fields to join
-                cmd.env(var, &*fields[0]);
-            } else {
-                // FIXME: join with IFS?
-                cmd.env(var, fields.join(" "));
-            }
         }
 
         match cmd.status() {
@@ -1126,14 +1218,12 @@ impl Run for CompoundCommand {
                     require_literal_leading_dot: false,
                 };
 
-                let word = try!(word.eval_as_literal(env)).into_owned();
+                let word = try!(word.eval_with_config(env, false)).join();
 
                 let mut exit = EXIT_SUCCESS;
                 for &(ref pats, ref body) in arms.iter() {
                     for pat in pats {
-                        if try!(pat.as_pattern(env))
-                            .map_or(false, |p| p.matches_with(&word, &match_opts))
-                        || word == try!(pat.eval_as_literal(env)) {
+                        if try!(pat.as_pattern(env)).matches_with(&word, &match_opts) {
                             exit = try!(body.run(env));
                             break;
                         }
