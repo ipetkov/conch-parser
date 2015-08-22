@@ -421,10 +421,13 @@ impl<'a> Environment for Env<'a> {
         // fun in that?
         let args: Vec<Cow<str>> = args.iter().map(|&s| s.into()).collect();
         unsafe {
+            let mut fn_name: Cow<'a, str> = mem::transmute(Cow::Borrowed(fn_name));
             let mut args: Vec<Cow<'a, str>> = mem::transmute(args);
+            mem::swap(&mut self.shell_name, &mut fn_name);
             mem::swap(&mut self.args, &mut args);
             let ret = func.run(self);
             mem::swap(&mut self.args, &mut args);
+            mem::swap(&mut self.shell_name, &mut fn_name);
             Some(ret)
         }
     }
