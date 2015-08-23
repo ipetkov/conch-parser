@@ -5,6 +5,7 @@ use libc;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::convert::{From, Into};
 use std::default::Default;
 use std::error::Error;
@@ -241,12 +242,23 @@ impl<'a> Default for EnvConfig<'a> {
 
 /// A shell environment containing any relevant variable, file descriptor, and other information.
 pub struct Env<'a> {
+    /// The current name of the shell/script/function executing.
     shell_name: Cow<'a, str>,
+    /// The current arguments of the shell/script/function.
     args: Vec<Cow<'a, str>>,
-    functions: HashMap<String, Rc<Box<Run>>>,
-    env: HashMap<String, String>,
-    vars: HashMap<String, String>,
+    /// A mapping of all defined function names and executable bodies.
+    /// The function bodies are stored as `Options` to properly distinguish functions
+    /// that were explicitly unset and functions that are simply defined in a parent
+    /// environment.
+    functions: HashMap<String, Option<Rc<Box<Run>>>>,
+    /// A mapping of variable names to their values.
+    /// The values are stored as `Options` to properly distinguish variables that were
+    /// explicitly unset and variables that are simply defined in a parent environment.
+    /// The tupled boolean indicates if a variable should be exported to other commands.
+    vars: HashMap<String, Option<(String, bool)>>,
+    /// The exit status of the last command that was executed.
     last_status: ExitStatus,
+    /// A parent environment for looking up previously set values.
     parent_env: Option<&'a Env<'a>>,
 }
 
@@ -279,39 +291,41 @@ impl<'a> Env<'a> {
 
         let args = cfg.args.map(|args| args.into_iter().map(|s| s.into()).collect()).unwrap_or_default();
 
-        let env = cfg.env.map_or_else(|| {
+        let vars = cfg.env.map_or_else(|| {
             vars_os().map(|(k, v)| (k.into_string(), v.into_string()))
                 .filter_map(|(k, v)| match (k,v) {
-                    (Ok(k), Ok(v)) => Some((k,v)),
+                    (Ok(k), Ok(v)) => Some((k, Some((v, true)))),
                     _ => None,
                 }).collect()
-        }, |pairs| pairs.into_iter().collect());
+        }, |pairs| pairs.into_iter().map(|(k,v)| (k, Some((v, true)))).collect());
 
         Env {
             shell_name: name.into(),
             args: args,
-            env: env,
             functions: HashMap::new(),
-            vars: HashMap::new(),
+            vars: vars,
             last_status: EXIT_SUCCESS,
             parent_env: None,
         }
     }
 
-    /// Walks `self` and its entire chain of parent environments and
-    /// evaluates a closure on each. If the closure evaluates a `Some(_)`
-    /// the traversal is terminated early.
+    /// Walks `self` and its entire chain of parent environments and evaluates a closure on each.
+    ///
+    /// If the closure evaluates a `Ok(Some(x))` value, then `Some(x)` is returned.
+    /// If the closure evaluates a `Err(_)` value, then `None` is returned.
+    /// If the closure evaluates a `Ok(None)` value, then the traversal continues.
     fn walk_parent_chain<'b, T, F>(&'b self, mut cond: F) -> Option<T>
-        where F: FnMut(&'b Self) -> Option<T>
+        where F: FnMut(&'b Self) -> ::std::result::Result<Option<T>, ()>
     {
         let mut cur = self;
         loop {
             match cond(cur) {
-                Some(res) => return Some(res),
-                None => match cur.parent_env {
+                Err(()) => return None,
+                Ok(Some(res)) => return Some(res),
+                Ok(None) => match cur.parent_env {
                     Some(ref parent) => cur = *parent,
                     None => return None,
-                }
+                },
             }
         }
     }
@@ -365,7 +379,6 @@ impl<'a> Environment for Env<'a> {
             shell_name: (&*self.shell_name).into(),
             args: self.args.iter().map(|s| (&**s).into()).collect(),
 
-            env: HashMap::new(),
             functions: HashMap::new(),
             vars: HashMap::new(),
             last_status: self.last_status,
@@ -378,29 +391,43 @@ impl<'a> Environment for Env<'a> {
     }
 
     fn var(&self, name: &str) -> Option<&str> {
-        self.walk_parent_chain(|cur| {
-            cur.env.get(name).or_else(|| cur.vars.get(name)).map(|s| &**s)
+        self.walk_parent_chain(|cur| match cur.vars.get(name) {
+            Some(&Some((ref s, _))) => Ok(Some(&**s)), // found the var
+            Some(&None) => Err(()), // var was unset, break the walk
+            None => Ok(None), // neither set nor unset, keep walking
         })
     }
 
     fn set_var(&mut self, name: String, val: String) {
-        if self.env.contains_key(&name) {
-            self.env.insert(name, val);
-        } else {
-            self.vars.insert(name, val);
+        match self.vars.entry(name) {
+            Entry::Vacant(entry) => {
+                entry.insert(Some((val, false)));
+            },
+            Entry::Occupied(mut entry) => {
+                let exported = entry.get().as_ref().map_or(false, |&(_, e)| e);
+                entry.insert(Some((val, exported)));
+            },
         }
     }
 
     fn has_function(&mut self, fn_name: &str) -> bool {
-        self.walk_parent_chain(|cur| {
-            if cur.functions.contains_key(fn_name) { Some(()) } else { None }
+        self.walk_parent_chain(|cur| match cur.functions.get(fn_name) {
+            Some(&Some(_)) => Ok(Some(())), // found the fn
+            Some(&None) => Err(()), // fn was unset, break the walk
+            None => Ok(None), // neither set nor unset, keep walking
         }).is_some()
     }
 
     fn run_function(&mut self, fn_name: &str, args: &[&str]) -> Option<Result<ExitStatus>> {
         use std::mem;
 
-        let func = match self.walk_parent_chain(|cur| cur.functions.get(fn_name).cloned()) {
+        let func = self.walk_parent_chain(|cur| match cur.functions.get(fn_name) {
+            Some(&Some(ref body)) => Ok(Some(body.clone())), // found the fn
+            Some(&None) => Err(()), // fn was unset, break the walk
+            None => Ok(None), // neither set nor unset, keep walking
+        });
+
+        let func = match func {
             Some(f) => f,
             None => return None,
         };
@@ -433,7 +460,7 @@ impl<'a> Environment for Env<'a> {
     }
 
     fn set_function(&mut self, name: String, func: Box<Run>) {
-        self.functions.insert(name, Rc::new(func));
+        self.functions.insert(name, Some(Rc::new(func)));
     }
 
     fn last_status(&self) -> ExitStatus {
@@ -462,16 +489,21 @@ impl<'a> Environment for Env<'a> {
 
     fn env(&self) -> Vec<(&str, &str)> {
         let mut env = HashMap::new();
-        self.walk_parent_chain(|cur| -> Option<Void> {
-            for (k,v) in cur.env.iter().map(|(k,v)| (&**k, &**v)) {
+        self.walk_parent_chain(|cur| -> ::std::result::Result<Option<Void>, ()> {
+            for (k,v) in cur.vars.iter().map(|(k,v)| (&**k, v)) {
                 // Since we are traversing the parent chain "backwards" we
                 // must be careful not to overwrite any variable with a
                 // "previous" value from a parent environment.
                 if !env.contains_key(k) { env.insert(k, v); }
             }
-            None // Force the traversal to walk the entire chain
+            Ok(None) // Force the traversal to walk the entire chain
         });
-        env.into_iter().collect()
+
+        env.into_iter().filter_map(|(k, v)| match v {
+            &Some((ref v, true)) => Some((k, &**v)),
+            &Some((_, false)) => None,
+            &None => None,
+        }).collect()
     }
 }
 
