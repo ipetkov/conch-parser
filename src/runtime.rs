@@ -182,7 +182,7 @@ impl<'a> Fields<'a> {
         }
     }
 
-    /// Converts all internal Cow strings into owned ones
+    /// Converts all internal Cow strings into owned ones.
     pub fn into_owned<'b>(self) -> Fields<'b> {
         let map = |v: Vec<Cow<str>>| v.into_iter().map(|s| s.into_owned().into()).collect();
 
@@ -252,6 +252,7 @@ pub struct Env<'a> {
     /// environment.
     functions: HashMap<String, Option<Rc<Box<Run>>>>,
     /// A mapping of variable names to their values.
+    ///
     /// The values are stored as `Options` to properly distinguish variables that were
     /// explicitly unset and variables that are simply defined in a parent environment.
     /// The tupled boolean indicates if a variable should be exported to other commands.
@@ -750,31 +751,33 @@ impl Arith {
     pub fn eval(&self, env: &mut Environment) -> Result<isize> {
         use syntax::ast::Arith::*;
 
+        let get_var = |env: &Environment, var| env.var(var).and_then(|s| s.parse().ok()).unwrap_or(0);
+
         let ret = match *self {
             Literal(lit) => lit,
-            Var(ref var) => env.var(var).and_then(|s| s.parse().ok()).unwrap_or(0),
+            Var(ref var) => get_var(env, var),
 
             PostIncr(ref var) => {
-                let val = env.var(var).and_then(|s| s.parse().ok()).unwrap_or(0);
-                env.set_var(var.clone(), (val + 1).to_string());
+                let val = get_var(env, var);
+                env.set_var(var.clone(), (val + 1).to_string().into());
                 val
             },
 
             PostDecr(ref var) => {
-                let val = env.var(var).and_then(|s| s.parse().ok()).unwrap_or(0);
-                env.set_var(var.clone(), (val - 1).to_string());
+                let val = get_var(env, var);
+                env.set_var(var.clone(), (val - 1).to_string().into());
                 val
             },
 
             PreIncr(ref var) => {
-                let val = env.var(var).and_then(|s| s.parse().ok()).unwrap_or(0) + 1;
-                env.set_var(var.clone(), val.to_string());
+                let val = get_var(env, var) + 1;
+                env.set_var(var.clone(), val.to_string().into());
                 val
             },
 
             PreDecr(ref var) => {
-                let val = env.var(var).and_then(|s| s.parse().ok()).unwrap_or(0) - 1;
-                env.set_var(var.clone(), val.to_string());
+                let val = get_var(env, var) - 1;
+                env.set_var(var.clone(), val.to_string().into());
                 val
             },
 
@@ -849,7 +852,7 @@ impl Arith {
 
             Assign(ref var, ref val) => {
                 let val = try!(val.eval(env));
-                env.set_var(var.clone(), val.to_string());
+                env.set_var(var.clone(), val.to_string().into());
                 val
             },
 
@@ -969,42 +972,34 @@ impl Word {
             env.var("IFS").unwrap_or(IFS_DEFAULT)
         }
 
-        fn ifs_char<'a>(env: &'a Environment) -> &'a str {
-            let ifs = get_ifs(env);
-            if ifs.is_empty() { "" } else { &ifs[0..1] }
+        fn ifs_char<'a>(env: &'a Environment) -> Option<char> {
+            get_ifs(env).chars().next()
         }
 
         fn copy_ifs(env: &Environment) -> String {
             get_ifs(env).to_string()
         }
 
-        fn maybe_split_fields<'a, F>(split: bool,
-                              env: &'a mut Environment,
-                              closure: F) -> Result<Fields>
-            where F: FnOnce(&'a mut Environment) -> Result<Fields<'a>>
+        fn maybe_split_fields<'a>(split: bool,
+                                  fields: Fields<'a>,
+                                  env: &mut Environment) -> Fields<'a>
         {
-            let ifs = if split { Some(copy_ifs(env)) } else { None };
-            let fields = try!(closure(env));
-            let fields = match ifs {
-                None => fields,
-                Some(ref ifs) => match fields {
-                    Fields::At(fs)   => Fields::At(split_fields(ifs, fs)),
-                    Fields::Star(fs) => Fields::Star(split_fields(ifs, fs)),
-                    Fields::Many(fs) => Fields::Many(split_fields(ifs, fs)),
+            let ifs = get_ifs(env);
+            match fields {
+                Fields::At(fs)   => Fields::At(split_fields(ifs, fs)),
+                Fields::Star(fs) => Fields::Star(split_fields(ifs, fs)),
+                Fields::Many(fs) => Fields::Many(split_fields(ifs, fs)),
 
-                    Fields::Single(f) => {
-                        let mut fields = split_fields(ifs, vec!(f));
-                        if fields.len() == 1 {
-                            Fields::Single(fields.pop().unwrap())
-                        } else {
-                            Fields::Many(fields)
-                        }
-                    },
+                Fields::Single(f) => {
+                    let mut fields = split_fields(ifs, vec!(f));
+                    if fields.len() == 1 {
+                        Fields::Single(fields.pop().unwrap())
+                    } else {
+                        Fields::Many(fields)
+                    }
                 },
-            };
-            Ok(fields)
+            }
         };
-
 
         let fields = match *self {
             Literal(ref s)      => Fields::Single((&**s).into()),
@@ -1016,10 +1011,10 @@ impl Word {
             SquareClose         => Fields::Single("[".into()),
             Tilde               => Fields::Single(env.var("HOME").map_or(COW_STR_EMPTY, |s| s.into())),
 
-            Subst(ref s) => try!(maybe_split_fields(split_fields_further, env, |env| s.eval(env))),
-            Param(ref p) => try!(maybe_split_fields(split_fields_further, env, |env| {
-                Ok(p.eval(env).unwrap_or(NULL_FIELD))
-            })),
+            Subst(ref s) => maybe_split_fields(split_fields_further, try!(s.eval(env)).into_owned(), env),
+            Param(ref p) => maybe_split_fields(split_fields_further,
+                                               p.eval(env).map_or(NULL_FIELD, |f| f.into_owned()),
+                                               env),
 
             Concat(ref v) => unimplemented!(),
             DoubleQuoted(ref v) => unimplemented!(),
@@ -1071,7 +1066,7 @@ impl Run for SimpleCommand {
             },
         };
 
-        if env.has_function(&cmd_name) {
+        if !cmd_name.contains('/') && env.has_function(&cmd_name) {
             let mut fn_args = Vec::new();
             for arg in args.iter() {
                 fn_args.extend(try!(arg.eval(env)).into_iter().map(|s| s.into_owned()));
@@ -1095,12 +1090,13 @@ impl Run for SimpleCommand {
             }
         }
 
+        // FIXME: use appropriate redirects
         cmd.stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
 
         // First inherit all default ENV variables
-        for (var, val) in env.env().into_iter() {
+        for (var, val) in env.env() {
             cmd.env(var, val);
         }
 
@@ -1222,25 +1218,21 @@ impl Run for CompoundCommand {
             Subshell(ref body) => try!(body.run(&mut *env.sub_env())),
 
             For(ref var, ref in_words, ref body) => {
-                let run_with_val = |env: &Environment, val| {
-                    let mut env = env.sub_env();
-                    env.set_var(var.clone(), val);
-                    body.run(&mut *env)
+                let mut exit = EXIT_SUCCESS;
+                let values = match *in_words {
+                    Some(ref words) => {
+                        let mut values = Vec::with_capacity(words.len());
+                        for w in words {
+                            values.extend(try!(w.eval(env)).into_iter().map(|s| s.into_owned()));
+                        }
+                        values
+                    },
+                    None => env.args().iter().map(|&s| String::from(s)).collect(),
                 };
 
-                let mut exit = EXIT_SUCCESS;
-                match *in_words {
-                    Some(ref words) => for w in words {
-                        let fields: Vec<String> = try!(w.eval(env)).into_iter()
-                            .map(|s| s.into_owned()).collect();
-                        for field in fields {
-                            exit = try!(run_with_val(env, field));
-                        }
-                    },
-
-                    None => for w in env.args() {
-                        exit = try!(run_with_val(env, w.to_string()))
-                    },
+                for val in values {
+                    env.set_var(var.clone(), val);
+                    exit = try!(body.run(env));
                 }
                 exit
             },
