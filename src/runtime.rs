@@ -29,8 +29,6 @@ const EXIT_ERROR:              ExitStatus = ExitStatus::Code(1);
 const EXIT_CMD_NOT_EXECUTABLE: ExitStatus = ExitStatus::Code(126);
 const EXIT_CMD_NOT_FOUND:      ExitStatus = ExitStatus::Code(127);
 
-const COW_STR_EMPTY: Cow<'static, str> = Cow::Borrowed("");
-const NULL_FIELD: Fields<'static> = Fields::Single(COW_STR_EMPTY);
 const IFS_DEFAULT: &'static str = " \t\n";
 
 /// A specialized `Result` type for shell runtime operations.
@@ -48,11 +46,11 @@ pub enum RuntimeError {
     /// Attempted to assign a special parameter, e.g. `${!:-value}`.
     BadAssig(Parameter),
     /// Attempted to evaluate a null or unset parameter, i.e. `${var:?msg}`.
-    EmptyParameter(Parameter, String),
+    EmptyParameter(Parameter, Rc<String>),
     /// Unable to find a command/function/builtin to execute.
-    CommandNotFound(String),
+    CommandNotFound(Rc<String>),
     /// Utility or script does not have executable permissions.
-    CommandNotExecutable(String),
+    CommandNotExecutable(Rc<String>),
     /// Runtime feature not currently supported.
     Unimplemented(&'static str),
 }
@@ -156,18 +154,18 @@ impl From<process::ExitStatus> for ExitStatus {
 /// It is important to maintain such distinctions because evaluating parameters
 /// such as `$@` and `$*` have different behaviors in different contexts.
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub enum Fields<'a> {
+pub enum Fields {
     /// A single field.
-    Single(Cow<'a, str>),
+    Single(Rc<String>),
     /// Any number of fields resulting from evaluating the `$@` special parameter.
-    At(Vec<Cow<'a, str>>),
+    At(Vec<Rc<String>>),
     /// Any number of fields resulting from evaluating the `$*` special parameter.
-    Star(Vec<Cow<'a, str>>),
+    Star(Vec<Rc<String>>),
     /// A non-zero number of fields that do not have any special meaning.
-    Many(Vec<Cow<'a, str>>),
+    Many(Vec<Rc<String>>),
 }
 
-impl<'a> Fields<'a> {
+impl Fields {
     /// Indicates if a set of fields is considered null.
     ///
     /// A set of fields is null if every single string
@@ -182,31 +180,19 @@ impl<'a> Fields<'a> {
         }
     }
 
-    /// Converts all internal Cow strings into owned ones.
-    pub fn into_owned<'b>(self) -> Fields<'b> {
-        let map = |v: Vec<Cow<str>>| v.into_iter().map(|s| s.into_owned().into()).collect();
-
-        match self {
-            Fields::Single(s) => Fields::Single(s.into_owned().into()),
-            Fields::At(v)   => Fields::At(  map(v)),
-            Fields::Star(v) => Fields::Star(map(v)),
-            Fields::Many(v) => Fields::Many(map(v)),
-        }
-    }
-
     /// Joins all fields using a space.
-    pub fn join(self) -> String {
+    pub fn join(self) -> Rc<String> {
         match self {
-            Fields::Single(s) => s.into_owned(),
+            Fields::Single(s) => s,
             Fields::At(v)   |
             Fields::Star(v) |
-            Fields::Many(v) => v.join(" "),
+            Fields::Many(v) => Rc::new(v.iter().map(|s| &***s).collect::<Vec<&str>>().join(" ")),
         }
     }
 }
 
-impl<'a> IntoIterator for Fields<'a> {
-    type Item = Cow<'a, str>;
+impl IntoIterator for Fields {
+    type Item = Rc<String>;
     type IntoIter = vec::IntoIter<Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -219,33 +205,12 @@ impl<'a> IntoIterator for Fields<'a> {
     }
 }
 
-/// A helper struct for selectively configuring the creation of a new `Env`.
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct EnvConfig<'a> {
-    /// The name of the shell/script currently executing.
-    pub name: Option<&'a str>,
-    /// Any arguments the current environment was invoked with (e.g. script or function)
-    pub args: Option<Vec<&'a str>>,
-    /// Any environment variables the environment should start out with.
-    pub env: Option<Vec<(String, String)>>,
-}
-
-impl<'a> Default for EnvConfig<'a> {
-    fn default() -> Self {
-        EnvConfig {
-            name: None,
-            args: None,
-            env: None,
-        }
-    }
-}
-
 /// A shell environment containing any relevant variable, file descriptor, and other information.
 pub struct Env<'a> {
     /// The current name of the shell/script/function executing.
-    shell_name: Cow<'a, str>,
+    shell_name: Rc<String>,
     /// The current arguments of the shell/script/function.
-    args: Vec<Cow<'a, str>>,
+    args: Vec<Rc<String>>,
     /// A mapping of all defined function names and executable bodies.
     /// The function bodies are stored as `Options` to properly distinguish functions
     /// that were explicitly unset and functions that are simply defined in a parent
@@ -256,7 +221,7 @@ pub struct Env<'a> {
     /// The values are stored as `Options` to properly distinguish variables that were
     /// explicitly unset and variables that are simply defined in a parent environment.
     /// The tupled boolean indicates if a variable should be exported to other commands.
-    vars: HashMap<String, Option<(String, bool)>>,
+    vars: HashMap<String, Option<(Rc<String>, bool)>>,
     /// The exit status of the last command that was executed.
     last_status: ExitStatus,
     /// A parent environment for looking up previously set values.
@@ -267,7 +232,7 @@ impl<'a> Env<'a> {
     /// Creates a new default environment.
     /// See the docs for `Env::with_config` for more information.
     pub fn new() -> Self {
-        Self::with_config(Default::default())
+        Self::with_config(None, None, None)
     }
 
     /// Creates an environment using provided overrides, or data from the
@@ -282,26 +247,28 @@ impl<'a> Env<'a> {
     ///
     /// Note: Any data taken from the current process (e.g. environment
     /// variables) which is not valid Unicode will be ignored.
-    pub fn with_config(cfg: EnvConfig<'a>) -> Self {
+    pub fn with_config(name: Option<String>,
+                       args: Option<Vec<String>>,
+                       env: Option<Vec<(String, String)>>) -> Self
+    {
         use ::std::env::{args_os, vars_os};
 
-        let name = cfg.name.map_or_else(
-            || args_os().next().map_or(String::new(), |s| s.to_str().unwrap_or("").to_string()),
-            |n| n.to_string()
-        );
+        let name = name.unwrap_or_else(|| {
+            args_os().next().map(|s| s.to_str().unwrap_or("").to_string()).unwrap_or_default()
+        });
 
-        let args = cfg.args.map(|args| args.into_iter().map(|s| s.into()).collect()).unwrap_or_default();
+        let args = args.map_or(Vec::new(), |args| args.into_iter().map(|s| Rc::new(s)).collect());
 
-        let vars = cfg.env.map_or_else(|| {
+        let vars = env.map_or_else(|| {
             vars_os().map(|(k, v)| (k.into_string(), v.into_string()))
                 .filter_map(|(k, v)| match (k,v) {
-                    (Ok(k), Ok(v)) => Some((k, Some((v, true)))),
+                    (Ok(k), Ok(v)) => Some((k, Some((Rc::new(v), true)))),
                     _ => None,
                 }).collect()
-        }, |pairs| pairs.into_iter().map(|(k,v)| (k, Some((v, true)))).collect());
+        }, |pairs| pairs.into_iter().map(|(k,v)| (k, Some((Rc::new(v), true)))).collect());
 
         Env {
-            shell_name: name.into(),
+            shell_name: Rc::new(String::from(name)),
             args: args,
             functions: HashMap::new(),
             vars: vars,
@@ -343,16 +310,16 @@ pub trait Environment {
     /// but any information not present in the sub-env will be looked up in the parent.
     fn sub_env<'a>(&'a self) -> Box<Environment + 'a>;
     /// Get the shell's current name.
-    fn name(&self) -> &str;
+    fn name(&self) -> Rc<String>;
     /// Get the value of some variable. The values of both shell-only
     /// variables will be looked up and returned.
-    fn var(&self, name: &str) -> Option<&str>;
+    fn var(&self, name: &str) -> Option<Rc<String>>;
     /// Set the value of some variable (including environment variables).
-    fn set_var(&mut self, name: String, val: String);
+    fn set_var(&mut self, name: String, val: Rc<String>);
     /// Indicates if a funciton is currently defined with a given name.
     fn has_function(&mut self, fn_name: &str) -> bool;
     /// Attempt to execute a function with a set of arguments if it has been defined.
-    fn run_function(&mut self, fn_name: &str, args: &[&str]) -> Option<Result<ExitStatus>>;
+    fn run_function(&mut self, fn_name: Rc<String>, args: Vec<Rc<String>>) -> Option<Result<ExitStatus>>;
     /// Define a function with some `Run`able body.
     fn set_function(&mut self, name: String, func: Box<Run>);
     /// Get the exit status of the previous command.
@@ -361,11 +328,11 @@ pub trait Environment {
     fn set_last_status(&mut self, status: ExitStatus);
     /// Get an argument at any index. Arguments are 1-indexed since the shell variable `$0`
     /// to the shell's name. Thus the first real argument starts at index 1.
-    fn arg(&self, idx: usize) -> Option<&str>;
+    fn arg(&self, idx: usize) -> Option<Rc<String>>;
     /// Get the number of current arguments, NOT including the shell name.
     fn args_len(&self) -> usize;
     /// Get all current arguments as a vector.
-    fn args(&self) -> Vec<&str>;
+    fn args(&self) -> &[Rc<String>];
     /// Get all current pairs of environment variables and their values.
     fn env(&self) -> Vec<(&str, &str)>;
 
@@ -377,8 +344,8 @@ pub trait Environment {
 impl<'a> Environment for Env<'a> {
     fn sub_env<'b>(&'b self) -> Box<Environment + 'b> {
         Box::new(Env {
-            shell_name: (&*self.shell_name).into(),
-            args: self.args.iter().map(|s| (&**s).into()).collect(),
+            shell_name: self.shell_name.clone(),
+            args: self.args.clone(),
 
             functions: HashMap::new(),
             vars: HashMap::new(),
@@ -387,19 +354,19 @@ impl<'a> Environment for Env<'a> {
         })
     }
 
-    fn name(&self) -> &str {
-        &self.shell_name
+    fn name(&self) -> Rc<String> {
+        self.shell_name.clone()
     }
 
-    fn var(&self, name: &str) -> Option<&str> {
+    fn var(&self, name: &str) -> Option<Rc<String>> {
         self.walk_parent_chain(|cur| match cur.vars.get(name) {
-            Some(&Some((ref s, _))) => Ok(Some(&**s)), // found the var
+            Some(&Some((ref s, _))) => Ok(Some(s.clone())), // found the var
             Some(&None) => Err(()), // var was unset, break the walk
             None => Ok(None), // neither set nor unset, keep walking
         })
     }
 
-    fn set_var(&mut self, name: String, val: String) {
+    fn set_var(&mut self, name: String, val: Rc<String>) {
         match self.vars.entry(name) {
             Entry::Vacant(entry) => {
                 entry.insert(Some((val, false)));
@@ -419,10 +386,12 @@ impl<'a> Environment for Env<'a> {
         }).is_some()
     }
 
-    fn run_function(&mut self, fn_name: &str, args: &[&str]) -> Option<Result<ExitStatus>> {
+    fn run_function(&mut self, mut fn_name: Rc<String>, mut args: Vec<Rc<String>>)
+        -> Option<Result<ExitStatus>>
+    {
         use std::mem;
 
-        let func = self.walk_parent_chain(|cur| match cur.functions.get(fn_name) {
+        let func = self.walk_parent_chain(|cur| match cur.functions.get(&*fn_name) {
             Some(&Some(ref body)) => Ok(Some(body.clone())), // found the fn
             Some(&None) => Err(()), // fn was unset, break the walk
             None => Ok(None), // neither set nor unset, keep walking
@@ -433,31 +402,12 @@ impl<'a> Environment for Env<'a> {
             None => return None,
         };
 
-        // Since functions run in the same environment as they are called in we
-        // can't get away with creating a sub environment here, since any
-        // changes the function body may make will be lost when that sub env
-        // goes away. Thus we could try temporarily swapping our own args with
-        // the new ones until the body executes and then swap them back.
-        // Unfortunately the compiler won't let us do that because `self` and
-        // `args` have different lifetimes, and we could theoretically forget
-        // to swap them back and cause nasty memory bugs. But, since we know
-        // better, we'll pretend their lifetimes at the same and get away with
-        // our hack.
-        //
-        // Of course we can always take a performance hit and clone the provided
-        // arguments, which the compiler will happily accept, but where is the
-        // fun in that?
-        let args: Vec<Cow<str>> = args.iter().map(|&s| s.into()).collect();
-        unsafe {
-            let mut fn_name: Cow<'a, str> = mem::transmute(Cow::Borrowed(fn_name));
-            let mut args: Vec<Cow<'a, str>> = mem::transmute(args);
-            mem::swap(&mut self.shell_name, &mut fn_name);
-            mem::swap(&mut self.args, &mut args);
-            let ret = func.run(self);
-            mem::swap(&mut self.args, &mut args);
-            mem::swap(&mut self.shell_name, &mut fn_name);
-            Some(ret)
-        }
+        mem::swap(&mut self.shell_name, &mut fn_name);
+        mem::swap(&mut self.args, &mut args);
+        let ret = func.run(self);
+        mem::swap(&mut self.args, &mut args);
+        mem::swap(&mut self.shell_name, &mut fn_name);
+        Some(ret)
     }
 
     fn set_function(&mut self, name: String, func: Box<Run>) {
@@ -472,11 +422,11 @@ impl<'a> Environment for Env<'a> {
         self.last_status = status;
     }
 
-    fn arg(&self, idx: usize) -> Option<&str> {
+    fn arg(&self, idx: usize) -> Option<Rc<String>> {
         if idx == 0 {
             Some(self.name())
         } else {
-            self.args.get(idx - 1).map(|s| &**s)
+            self.args.get(idx - 1).cloned()
         }
     }
 
@@ -484,8 +434,8 @@ impl<'a> Environment for Env<'a> {
         self.args.len()
     }
 
-    fn args(&self) -> Vec<&str> {
-        self.args.iter().map(|s| &**s).collect()
+    fn args(&self) -> &[Rc<String>] {
+        &self.args
     }
 
     fn env(&self) -> Vec<(&str, &str)> {
@@ -501,7 +451,7 @@ impl<'a> Environment for Env<'a> {
         });
 
         env.into_iter().filter_map(|(k, v)| match v {
-            &Some((ref v, true)) => Some((k, &**v)),
+            &Some((ref v, true)) => Some((k, &***v)),
             &Some((_, false)) => None,
             &None => None,
         }).collect()
@@ -513,24 +463,24 @@ impl Parameter {
     ///
     /// Any fields as a result of evaluating `$@` or `$*` will not be
     /// split further. This is left for the caller to perform.
-    pub fn eval<'a>(&self, env: &'a Environment) -> Option<Fields<'a>> {
+    pub fn eval(&self, env: &Environment) -> Option<Fields> {
         match *self {
-            Parameter::At   => Some(Fields::At(  env.args().into_iter().map(|s| s.into()).collect())),
-            Parameter::Star => Some(Fields::Star(env.args().into_iter().map(|s| s.into()).collect())),
+            Parameter::At   => Some(Fields::At(  env.args().iter().cloned().collect())),
+            Parameter::Star => Some(Fields::Star(env.args().iter().cloned().collect())),
 
-            Parameter::Pound  => Some(Fields::Single(env.args_len().to_string().into())),
-            Parameter::Dollar => Some(Fields::Single(unsafe { libc::getpid() }.to_string().into())),
+            Parameter::Pound  => Some(Fields::Single(Rc::new(env.args_len().to_string()))),
+            Parameter::Dollar => Some(Fields::Single(Rc::new(unsafe { libc::getpid() }.to_string()))),
             Parameter::Dash   => None,
             Parameter::Bang   => None, // FIXME: eventual job control would be nice
 
-            Parameter::Question => Some(Fields::Single(match env.last_status() {
+            Parameter::Question => Some(Fields::Single(Rc::new(match env.last_status() {
                 ExitStatus::Code(c)   => c as u32,
                 ExitStatus::Signal(c) => c as u32 + 128,
-            }.to_string().into())),
+            }.to_string()))),
 
-            Parameter::Positional(0) => Some(Fields::Single(env.name().into())),
-            Parameter::Positional(p) => env.arg(p as usize).map(|s| Fields::Single(s.into())),
-            Parameter::Var(ref var)  => env.var(var).map(|s| Fields::Single(s.into())),
+            Parameter::Positional(0) => Some(Fields::Single(env.name())),
+            Parameter::Positional(p) => env.arg(p as usize).map(Fields::Single),
+            Parameter::Var(ref var)  => env.var(var).map(Fields::Single),
         }
     }
 }
@@ -540,42 +490,39 @@ impl ParameterSubstitution {
     ///
     /// No field *splitting* will be performed, and is left for the caller to
     /// implement. However, multiple fields can occur if `$@` or $*` is evaluated.
-    pub fn eval<'a>(&'a self, env: &'a mut Environment) -> Result<Fields<'a>> {
+    pub fn eval(&self, env: &mut Environment) -> Result<Fields> {
         use syntax::ast::ParameterSubstitution::*;
 
+        let null_str   = Rc::new(String::new());
+        let null_field = Fields::Single(null_str.clone());
         let match_opts = glob::MatchOptions {
             case_sensitive: true,
             require_literal_separator: false,
             require_literal_leading_dot: false,
         };
 
-        fn remove_pattern<'a, F>(param: &Parameter,
-                                 pat: &Option<Word>,
-                                 env: &'a mut Environment,
-                                 remove: F) -> Result<Fields<'a>>
-            where F: Fn(String, &glob::Pattern) -> String
+        fn remove_pattern<F>(param: &Parameter,
+                             pat: &Option<Word>,
+                             env: &mut Environment,
+                             remove: F) -> Result<Option<Fields>>
+            where F: Fn(Rc<String>, &glob::Pattern) -> Rc<String>
         {
-            let map = |vec: Vec<Cow<str>>, pat: &Word, env| -> Result<Vec<Cow<str>>> {
-                // We are forced to clone the parameter's value here since evaluating
-                // the pattern may mutate the environment.
-                let pat = try!(pat.as_pattern(env));
-                Ok(vec.into_iter().map(|field| remove(field.into_owned(), &pat).into()).collect())
-            };
+            let map = |v: Vec<Rc<String>>, p| v.into_iter().map(|f| remove(f, &p)).collect();
+            let param = param.eval(env);
 
-            let ret = match *pat {
-                None => param.eval(env).unwrap_or(NULL_FIELD),
-                Some(ref pat) => match param.eval(env).unwrap_or(NULL_FIELD).into_owned() {
-                    Fields::Single(s) => Fields::Single(
-                        remove(s.into_owned(), &try!(pat.as_pattern(env))).into()
-                    ),
+            match *pat {
+                None => Ok(param),
+                Some(ref pat) => {
+                    let pat = try!(pat.as_pattern(env));
+                    Ok(param.map(|p| match p {
+                        Fields::Single(s) => Fields::Single(remove(s, &pat)),
 
-                    Fields::At(v)   => Fields::At(  try!(map(v, pat, env))),
-                    Fields::Star(v) => Fields::Star(try!(map(v, pat, env))),
-                    Fields::Many(v) => Fields::Many(try!(map(v, pat, env))),
-                }
-            };
-
-            Ok(ret)
+                        Fields::At(v)   => Fields::At(  map(v, pat)),
+                        Fields::Star(v) => Fields::Star(map(v, pat)),
+                        Fields::Many(v) => Fields::Many(map(v, pat)),
+                    }))
+                },
+            }
         }
 
         // A macro that evaluates a parameter in some environment and immediately
@@ -584,20 +531,11 @@ impl ParameterSubstitution {
         // considered NON-strict, an empty vector is returned to the caller.
         macro_rules! check_param_subst {
             ($param:expr, $env:expr, $strict:expr) => {{
-                // FIXME: unfortunately I wasn't able to find a way to
-                // make the borrow of `env` due to evaluating the parameter
-                // NOT last the entire match arm (which makes it impossible
-                // to evaluate the associated word since it requires &mut env).
-                // Thus we're forced to clone the evaluated string to appease
-                // the borrow checker. Hopefully the eventual non-lexical
-                // borrows will fix the problem...
-
-                let fields: Option<Fields> = $param.eval($env).map(|f| f.into_owned());
-                if let Some(p) = fields {
-                    if !$strict && p.is_null() {
-                        return Ok(NULL_FIELD);
+                if let Some(fields) = $param.eval($env) {
+                    if !$strict && fields.is_null() {
+                        return Ok(null_field);
                     } else {
-                        return Ok(p);
+                        return Ok(fields);
                     }
                 }
             }}
@@ -606,28 +544,28 @@ impl ParameterSubstitution {
         let ret = match *self {
             Command(_) => unimplemented!(),
 
-            Len(ref p) => Fields::Single(match p.eval(env) {
-                None => "0".into(),
-                Some(Fields::Single(s)) => s.len().to_string().into(),
+            Len(ref p) => Fields::Single(Rc::new(match p.eval(env) {
+                None => String::from("0"),
+                Some(Fields::Single(s)) => s.len().to_string(),
 
                 Some(Fields::At(v))   |
-                Some(Fields::Star(v)) => v.len().to_string().into(),
+                Some(Fields::Star(v)) => v.len().to_string(),
 
                 // Evaluating a pure parameter should not be performing
                 // field expansions, so this variant should never occur.
                 Some(Fields::Many(_)) => unreachable!(),
-            }),
+            })),
 
-            Arithmetic(ref a) => Fields::Single(match a {
-                &Some(ref a) => try!(a.eval(env)).to_string().into(),
-                &None => "0".into(),
-            }),
+            Arithmetic(ref a) => Fields::Single(Rc::new(match a {
+                &Some(ref a) => try!(a.eval(env)).to_string(),
+                &None => String::from("0"),
+            })),
 
             Default(strict, ref p, ref default) => {
                 check_param_subst!(p, env, strict);
                 match *default {
                     Some(ref w) => try!(w.eval(env)),
-                    None => NULL_FIELD,
+                    None => null_field,
                 }
             },
 
@@ -646,11 +584,11 @@ impl ParameterSubstitution {
                     &Parameter::Var(ref name) => {
                         let val = match *assig {
                             Some(ref w) => try!(w.eval_as_assignment(env)),
-                            None => String::new(),
+                            None => Rc::new(String::new()),
                         };
 
                         env.set_var(name.clone(), val.clone());
-                        Fields::Single(val.into())
+                        Fields::Single(val)
                     },
                 }
             },
@@ -658,7 +596,7 @@ impl ParameterSubstitution {
             Error(strict, ref p, ref msg) => {
                 check_param_subst!(p, env, strict);
                 let msg = match *msg {
-                    None => String::from("parameter null or not set"),
+                    None => Rc::new(String::from("parameter null or not set")),
                     Some(ref w) => try!(w.eval(env)).join(),
                 };
 
@@ -666,16 +604,14 @@ impl ParameterSubstitution {
             },
 
             Alternative(strict, ref p, ref alt) => {
-                {
-                    let val = p.eval(env);
-                    if val.is_none() || (strict && val.unwrap().is_null()) {
-                        return Ok(NULL_FIELD);
-                    }
+                let val = p.eval(env);
+                if val.is_none() || (strict && val.unwrap().is_null()) {
+                    return Ok(null_field);
                 }
 
                 match *alt {
                     Some(ref w) => try!(w.eval(env)),
-                    None => NULL_FIELD,
+                    None => null_field,
                 }
             },
 
@@ -684,11 +620,11 @@ impl ParameterSubstitution {
                 for idx in 0..len {
                     let idx = len - idx - 1;
                     if pat.matches_with(&s[idx..], &match_opts) {
-                        return String::from(&s[0..idx]);
+                        return Rc::new(String::from(&s[0..idx]));
                     }
                 }
                 s
-            })),
+            })).unwrap_or_else(|| null_field.clone()),
 
             RemoveLargestSuffix(ref p, ref pat) => try!(remove_pattern(p, pat, env, |s, pat| {
                 let mut longest_start = None;
@@ -702,28 +638,28 @@ impl ParameterSubstitution {
 
                 match longest_start {
                     None => s,
-                    Some(idx) => String::from(&s[0..idx]),
+                    Some(idx) => Rc::new(String::from(&s[0..idx])),
                 }
-            })),
+            })).unwrap_or_else(|| null_field.clone()),
 
             RemoveSmallestPrefix(ref p, ref pat) => try!(remove_pattern(p, pat, env, |s, pat| {
                 for idx in 0..s.len() {
                     if pat.matches_with(&s[0..idx], &match_opts) {
-                        return String::from(&s[idx..]);
+                        return Rc::new(String::from(&s[idx..]));
                     }
                 }
 
                 // Don't forget to check the entire string for a match
                 if pat.matches_with(&s, &match_opts) {
-                    String::new()
+                    null_str.clone()
                 } else {
                     s
                 }
-            })),
+            })).unwrap_or_else(|| null_field.clone()),
 
             RemoveLargestPrefix(ref p, ref pat) => try!(remove_pattern(p, pat, env, |s, pat| {
                 if pat.matches_with(&s, &match_opts) {
-                    return String::new();
+                    return null_str.clone();
                 }
 
                 let mut longest_end = None;
@@ -735,9 +671,9 @@ impl ParameterSubstitution {
 
                 match longest_end {
                     None => s,
-                    Some(idx) => String::from(&s[idx..]),
+                    Some(idx) => Rc::new(String::from(&s[idx..])),
                 }
-            })),
+            })).unwrap_or_else(|| null_field.clone()),
         };
 
         Ok(ret)
@@ -759,25 +695,25 @@ impl Arith {
 
             PostIncr(ref var) => {
                 let val = get_var(env, var);
-                env.set_var(var.clone(), (val + 1).to_string().into());
+                env.set_var(var.clone(), Rc::new((val + 1).to_string()));
                 val
             },
 
             PostDecr(ref var) => {
                 let val = get_var(env, var);
-                env.set_var(var.clone(), (val - 1).to_string().into());
+                env.set_var(var.clone(), Rc::new((val - 1).to_string()));
                 val
             },
 
             PreIncr(ref var) => {
                 let val = get_var(env, var) + 1;
-                env.set_var(var.clone(), val.to_string().into());
+                env.set_var(var.clone(), Rc::new(val.to_string()));
                 val
             },
 
             PreDecr(ref var) => {
                 let val = get_var(env, var) - 1;
-                env.set_var(var.clone(), val.to_string().into());
+                env.set_var(var.clone(), Rc::new(val.to_string()));
                 val
             },
 
@@ -852,7 +788,7 @@ impl Arith {
 
             Assign(ref var, ref val) => {
                 let val = try!(val.eval(env));
-                env.set_var(var.clone(), val.to_string().into());
+                env.set_var(var.clone(), Rc::new(val.to_string()));
                 val
             },
 
@@ -878,7 +814,7 @@ impl Word {
     /// is set to be the empty or null string). Finally, quotes and escaping
     /// backslashes are removed from the original word (unless they themselves
     /// have been quoted).
-    pub fn eval<'a>(&'a self, env: &'a mut Environment) -> Result<Fields<'a>> {
+    pub fn eval(&self, env: &mut Environment) -> Result<Fields> {
         self.eval_with_config(env, true)
     }
 
@@ -887,22 +823,30 @@ impl Word {
     /// Tilde, parameter, command substitution, arithmetic expansions, and quote removals
     /// will be performed, however. In addition, if multiple fields arise as a result
     /// of evaluating `$@` or `$*`, the fields will be joined with a single space.
-    pub fn eval_as_assignment<'a>(&'a self, env: &'a mut Environment) -> Result<String> {
+    pub fn eval_as_assignment(&self, env: &mut Environment) -> Result<Rc<String>> {
         self.eval_with_config(env, false).map(|f| f.join())
     }
 
-    fn eval_with_config<'a>(&'a self,
-                            env: &'a mut Environment,
-                            split_fields_further: bool)
-        -> Result<Fields<'a>>
+    fn eval_with_config(&self,
+                        env: &mut Environment,
+                        split_fields_further: bool) -> Result<Fields>
     {
         use syntax::ast::Word::*;
 
+        fn get_ifs(env: &Environment) -> Rc<String> {
+            env.var("IFS").unwrap_or_else(|| Rc::new(String::from(IFS_DEFAULT)))
+        };
+
+        fn ifs_char(env: &Environment) -> Option<char> {
+            get_ifs(env).chars().next()
+        };
+
         /// Splits a vector of fields further based on the contents of the `IFS`
         /// variable (i.e. as long as it is non-empty). Any empty fields, original
-        /// or otherwise newly created will be discarded.
-        fn split_fields<'a>(ifs: &str, words: Vec<Cow<'a, str>>) -> Vec<Cow<'a, str>> {
+        /// or otherwise created will be discarded.
+        fn split_fields(words: Vec<Rc<String>>, env: &Environment) -> Vec<Rc<String>> {
             // If IFS is set but null, there is nothing left to split
+            let ifs = get_ifs(env);
             if ifs.is_empty() {
                 return words;
             }
@@ -944,23 +888,12 @@ impl Word {
                         }
                     }
 
-                    // Since we are creating new fields which are always strictly substrings
-                    // of the original words/fields, we can just borrow a bunch of strs within
-                    // the lifetime of our other borrows without having to reallocate.
-                    // However, we do have to be careful with any owned Strings created along
-                    // the way, which aren't "anchored" to some living memory. Thus to make sure
-                    // we can safely pass them up to our caller(s), we'll have to make copies here.
-                    let field = match (&word, end) {
-                        (&Cow::Borrowed(s), None)       => Cow::Borrowed(&s[start..]),
-                        (&Cow::Borrowed(s), Some(end))  => Cow::Borrowed(&s[start..end]),
-                        (&Cow::Owned(ref s), None)      => Cow::Owned(String::from(&s[start..])),
-                        (&Cow::Owned(ref s), Some(end)) => Cow::Owned(String::from(&s[start..end])),
+                    let field = match end {
+                        Some(end) => &word[start..end],
+                        None      => &word[start..],
                     };
 
-                    // Make sure we "delete" any empty fields we generate.
-                    if !field.is_empty() {
-                        fields.push(field);
-                    }
+                    fields.push(Rc::new(String::from(field)));
                 }
             }
 
@@ -968,30 +901,18 @@ impl Word {
             fields
         }
 
-        fn get_ifs<'a>(env: &'a Environment) -> &'a str {
-            env.var("IFS").unwrap_or(IFS_DEFAULT)
-        }
+        let maybe_split_fields = |fields, env: &mut Environment| {
+            if !split_fields_further {
+                return fields;
+            }
 
-        fn ifs_char<'a>(env: &'a Environment) -> Option<char> {
-            get_ifs(env).chars().next()
-        }
-
-        fn copy_ifs(env: &Environment) -> String {
-            get_ifs(env).to_string()
-        }
-
-        fn maybe_split_fields<'a>(split: bool,
-                                  fields: Fields<'a>,
-                                  env: &mut Environment) -> Fields<'a>
-        {
-            let ifs = get_ifs(env);
             match fields {
-                Fields::At(fs)   => Fields::At(split_fields(ifs, fs)),
-                Fields::Star(fs) => Fields::Star(split_fields(ifs, fs)),
-                Fields::Many(fs) => Fields::Many(split_fields(ifs, fs)),
+                Fields::At(fs)   => Fields::At(split_fields(fs, env)),
+                Fields::Star(fs) => Fields::Star(split_fields(fs, env)),
+                Fields::Many(fs) => Fields::Many(split_fields(fs, env)),
 
                 Fields::Single(f) => {
-                    let mut fields = split_fields(ifs, vec!(f));
+                    let mut fields = split_fields(vec!(f), env);
                     if fields.len() == 1 {
                         Fields::Single(fields.pop().unwrap())
                     } else {
@@ -1001,20 +922,22 @@ impl Word {
             }
         };
 
-        let fields = match *self {
-            Literal(ref s)      => Fields::Single((&**s).into()),
-            SingleQuoted(ref s) => Fields::Single((&**s).into()),
-            Escaped(ref s)      => Fields::Single((&**s).into()),
-            Star                => Fields::Single("*".into()),
-            Question            => Fields::Single("?".into()),
-            SquareOpen          => Fields::Single("]".into()),
-            SquareClose         => Fields::Single("[".into()),
-            Tilde               => Fields::Single(env.var("HOME").map_or(COW_STR_EMPTY, |s| s.into())),
+        let null_field = Fields::Single(Rc::new(String::new()));
 
-            Subst(ref s) => maybe_split_fields(split_fields_further, try!(s.eval(env)).into_owned(), env),
-            Param(ref p) => maybe_split_fields(split_fields_further,
-                                               p.eval(env).map_or(NULL_FIELD, |f| f.into_owned()),
-                                               env),
+        let fields = match *self {
+            Literal(ref s)      |
+            SingleQuoted(ref s) |
+            Escaped(ref s)      => Fields::Single(Rc::new(s.clone())),
+
+            Star        => Fields::Single(Rc::new(String::from("*"))),
+            Question    => Fields::Single(Rc::new(String::from("?"))),
+            SquareOpen  => Fields::Single(Rc::new(String::from("]"))),
+            SquareClose => Fields::Single(Rc::new(String::from("["))),
+
+            Tilde => env.var("HOME").map_or(null_field, |f| Fields::Single(f)),
+
+            Subst(ref s) => maybe_split_fields(try!(s.eval(env)), env),
+            Param(ref p) => maybe_split_fields(p.eval(env).unwrap_or(null_field), env),
 
             Concat(ref v) => unimplemented!(),
             DoubleQuoted(ref v) => unimplemented!(),
@@ -1057,23 +980,25 @@ impl Run for SimpleCommand {
         let &(ref cmd, ref args) = self.cmd.as_ref().unwrap();
 
         // bash and zsh just grab first field of an expansion
-        let cmd_name = try!(cmd.eval(env)).into_iter().next().map(|exe| exe.into_owned());
+        let cmd_name = try!(cmd.eval(env)).into_iter().next();
         let cmd_name = match cmd_name {
             Some(exe) => exe,
             None => {
                 env.set_last_status(EXIT_CMD_NOT_FOUND);
-                return Err(RuntimeError::CommandNotFound(String::new()));
+                return Err(RuntimeError::CommandNotFound(Rc::new(String::new())));
             },
         };
 
-        if !cmd_name.contains('/') && env.has_function(&cmd_name) {
-            let mut fn_args = Vec::new();
+        let cmd_args = {
+            let mut cmd_args = Vec::new();
             for arg in args.iter() {
-                fn_args.extend(try!(arg.eval(env)).into_iter().map(|s| s.into_owned()));
+                cmd_args.extend(try!(arg.eval(env)))
             }
+            cmd_args
+        };
 
-            let fn_args: Vec<&str> = fn_args.iter().map(|s| &**s).collect();
-            match env.run_function(&cmd_name, &fn_args) {
+        if !cmd_name.contains('/') && env.has_function(&cmd_name) {
+            match env.run_function(cmd_name.clone(), cmd_args) {
                 Some(ret) => return ret,
                 None => {
                     env.set_last_status(EXIT_CMD_NOT_FOUND);
@@ -1082,12 +1007,9 @@ impl Run for SimpleCommand {
             }
         }
 
-        let mut cmd = Command::new(&cmd_name);
-
-        for arg in args {
-            for field in try!(arg.eval(env)) {
-                cmd.arg(&*field);
-            }
+        let mut cmd = Command::new(&*cmd_name);
+        for arg in cmd_args {
+            cmd.arg(&*arg);
         }
 
         // FIXME: use appropriate redirects
@@ -1102,12 +1024,14 @@ impl Run for SimpleCommand {
 
         // Then do any local insertions/overrides
         for &(ref var, ref val) in self.vars.iter() {
-            match try!(val.as_ref().map(|w| w.eval(env)).unwrap_or(Ok(NULL_FIELD))) {
-                Fields::Single(s) => cmd.env(var, &*s),
-                f@Fields::At(_)   |
-                f@Fields::Star(_) |
-                f@Fields::Many(_) => cmd.env(var, f.join()),
-            };
+            if let &Some(ref w) = val {
+                match try!(w.eval(env)) {
+                    Fields::Single(s) => cmd.env(var, &*s),
+                    f@Fields::At(_)   |
+                    f@Fields::Star(_) |
+                    f@Fields::Many(_) => cmd.env(var, &*f.join()),
+                };
+            }
         }
 
         match cmd.status() {
@@ -1223,11 +1147,11 @@ impl Run for CompoundCommand {
                     Some(ref words) => {
                         let mut values = Vec::with_capacity(words.len());
                         for w in words {
-                            values.extend(try!(w.eval(env)).into_iter().map(|s| s.into_owned()));
+                            values.extend(try!(w.eval(env)).into_iter());
                         }
                         values
                     },
-                    None => env.args().iter().map(|&s| String::from(s)).collect(),
+                    None => env.args().iter().cloned().collect(),
                 };
 
                 for val in values {
