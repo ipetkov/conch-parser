@@ -583,12 +583,12 @@ impl ParameterSubstitution {
 
                     &Parameter::Var(ref name) => {
                         let val = match *assig {
-                            Some(ref w) => try!(w.eval_as_assignment(env)),
-                            None => Rc::new(String::new()),
+                            Some(ref w) => try!(w.eval(env)),
+                            None => null_field,
                         };
 
-                        env.set_var(name.clone(), val.clone());
-                        Fields::Single(val)
+                        env.set_var(name.clone(), val.clone().join());
+                        val
                     },
                 }
             },
