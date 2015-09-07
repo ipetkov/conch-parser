@@ -608,9 +608,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             }
         }
 
-        fn as_num<C>(word: &builder::WordKind<C>) -> Option<u32> {
+        fn as_num<C>(word: &builder::WordKind<C>) -> Option<u16> {
             match *word {
-                builder::WordKind::Literal(ref s) => u32::from_str_radix(s, 10).ok(),
+                builder::WordKind::Literal(ref s) => u16::from_str_radix(s, 10).ok(),
                 builder::WordKind::Concat(ref fragments) => {
                     let mut buf = String::new();
                     for w in fragments.iter() {
@@ -621,7 +621,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                         }
                     }
 
-                    u32::from_str_radix(&buf, 10).ok()
+                    u16::from_str_radix(&buf, 10).ok()
                 },
 
                 builder::WordKind::Star            |
@@ -725,7 +725,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     ///
     /// Note: this method expects that the caller provide a potential file
     /// descriptor for redirection.
-    pub fn redirect_heredoc(&mut self, src_fd: Option<u32>) -> Result<B::Redirect, ParseError<B::Err>> {
+    pub fn redirect_heredoc(&mut self, src_fd: Option<u16>) -> Result<B::Redirect, ParseError<B::Err>> {
         let strip_tabs = eat!(self, {
             DLess => { false },
             DLessDash => { true },

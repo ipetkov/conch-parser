@@ -8,14 +8,17 @@ use std::collections::hash_map::Entry;
 use std::convert::{From, Into};
 use std::default::Default;
 use std::error::Error;
-use std::io::{self, Error as IoError, ErrorKind as IoErrorKind, Write};
+use std::io as std_io;
+use std::io::Error as IoError;
+use std::io::ErrorKind as IoErrorKind;
+use std::io::Write;
 use std::iter::{IntoIterator, Iterator};
 use std::fmt;
 use std::process::{self, Command, Stdio};
 use std::rc::Rc;
 use std::vec;
 
-use void::Void;
+use runtime::io::{FileDesc, Permissions};
 
 // Apparently importing Redirect before Word causes an ICE, when linking
 // to this crate, so this ordering is *very* crucial...
@@ -23,10 +26,16 @@ use void::Void;
 use syntax::ast::{Arith, CompoundCommand, SimpleCommand, Parameter, ParameterSubstitution, Word, Redirect};
 use syntax::ast::Command as AstCommand;
 
+use void::Void;
+
+pub mod io;
+
 const EXIT_SUCCESS:            ExitStatus = ExitStatus::Code(0);
 const EXIT_ERROR:              ExitStatus = ExitStatus::Code(1);
 const EXIT_CMD_NOT_EXECUTABLE: ExitStatus = ExitStatus::Code(126);
 const EXIT_CMD_NOT_FOUND:      ExitStatus = ExitStatus::Code(127);
+
+const EXIT_SIGNAL_OFFSET: u32 = 128;
 
 const IFS_DEFAULT: &'static str = " \t\n";
 
@@ -211,16 +220,22 @@ pub struct Env<'a> {
     /// The current arguments of the shell/script/function.
     args: Vec<Rc<String>>,
     /// A mapping of all defined function names and executable bodies.
-    /// The function bodies are stored as `Options` to properly distinguish functions
+    /// The function bodies are stored as `Option`s to properly distinguish functions
     /// that were explicitly unset and functions that are simply defined in a parent
     /// environment.
     functions: HashMap<String, Option<Rc<Box<Run>>>>,
     /// A mapping of variable names to their values.
     ///
-    /// The values are stored as `Options` to properly distinguish variables that were
+    /// The values are stored as `Option`s to properly distinguish variables that were
     /// explicitly unset and variables that are simply defined in a parent environment.
     /// The tupled boolean indicates if a variable should be exported to other commands.
     vars: HashMap<String, Option<(Rc<String>, bool)>>,
+    /// A mapping of file descriptors and their OS handles.
+    ///
+    /// The values are stored as `Option`s to properly distinguish descriptors that
+    /// were explicitly closed and descriptors that may have been opened in a parent
+    /// environment. The tupled value also holds the permissions of the descriptor.
+    fds: HashMap<u16, Option<(FileDesc, Permissions)>>,
     /// The exit status of the last command that was executed.
     last_status: ExitStatus,
     /// A parent environment for looking up previously set values.
@@ -271,6 +286,7 @@ impl<'a> Env<'a> {
             args: args,
             functions: HashMap::new(),
             vars: vars,
+            fds: HashMap::new(),
             last_status: EXIT_SUCCESS,
             parent_env: None,
         }
@@ -336,7 +352,7 @@ pub trait Environment {
     fn env(&self) -> Vec<(&str, &str)>;
 
     fn report_error(&mut self, err: RuntimeError) {
-        write!(io::stderr(), "{}: {}", self.name(), err).ok();
+        write!(std_io::stderr(), "{}: {}", self.name(), err).ok();
     }
 }
 
@@ -348,6 +364,7 @@ impl<'a> Environment for Env<'a> {
 
             functions: HashMap::new(),
             vars: HashMap::new(),
+            fds: HashMap::new(),
             last_status: self.last_status,
             parent_env: Some(self),
         })
@@ -474,7 +491,7 @@ impl Parameter {
 
             Parameter::Question => Some(Fields::Single(Rc::new(match env.last_status() {
                 ExitStatus::Code(c)   => c as u32,
-                ExitStatus::Signal(c) => c as u32 + 128,
+                ExitStatus::Signal(c) => c as u32 + EXIT_SIGNAL_OFFSET,
             }.to_string()))),
 
             Parameter::Positional(0) => Some(Fields::Single(env.name())),
@@ -814,7 +831,7 @@ impl Word {
     /// backslashes are removed from the original word (unless they themselves
     /// have been quoted).
     pub fn eval(&self, env: &mut Environment) -> Result<Fields> {
-        self.eval_with_config(env, true)
+        self.eval_with_config(env, true, true)
     }
 
     /// Evaluates a word in a given environment without doing field and pathname expansions.

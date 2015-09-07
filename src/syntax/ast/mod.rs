@@ -101,27 +101,27 @@ pub enum Word {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Redirect {
     /// Open a file for reading, e.g. [n]< file
-    Read(Option<u32>, Word),
+    Read(Option<u16>, Word),
     /// Open a file for writing after truncating, e.g. [n]> file
-    Write(Option<u32>, Word),
+    Write(Option<u16>, Word),
     /// Open a file for reading and writing, e.g. [n]<> file
-    ReadWrite(Option<u32>, Word),
+    ReadWrite(Option<u16>, Word),
     /// Open a file for writing, appending to the end, e.g. [n]>> file
-    Append(Option<u32>, Word),
+    Append(Option<u16>, Word),
     /// Open a file for writing, failing if the `noclobber` shell option is set, e.g.[n]>| file
-    Clobber(Option<u32>, Word),
+    Clobber(Option<u16>, Word),
     /// Lines contained in the source that should be provided by as input to a file descriptor.
-    Heredoc(Option<u32>, Word),
+    Heredoc(Option<u16>, Word),
 
     /// Duplicate a file descriptor for reading, e.g. [n]<& n
-    DupRead(Option<u32>, Word),
+    DupRead(Option<u16>, Word),
     /// Duplicate a file descriptor for writing, e.g. [n]>& n
-    DupWrite(Option<u32>, Word),
+    DupWrite(Option<u16>, Word),
 
     /// Close a file descriptor for reading, e.g. [n]<&-
-    CloseRead(Option<u32>),
+    CloseRead(Option<u16>),
     /// Close a file descriptor for writing, e.g. [n]>&-
-    CloseWrite(Option<u32>),
+    CloseWrite(Option<u16>),
 }
 
 /// Represents any valid shell command.
