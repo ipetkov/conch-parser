@@ -97,6 +97,16 @@ impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
 
         ret
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (low_hint, hi) = self.iter.size_hint();
+        let low = if self.prev_buffered.is_empty() && self.peek_buf.is_empty() {
+            low_hint
+        } else {
+            self.prev_buffered.len() + self.peek_buf.len()
+        };
+        (low, hi)
+    }
 }
 
 impl<I: Iterator<Item = Token>> TokenIter<I> {
@@ -375,6 +385,12 @@ impl<'a, I: 'a + Iterator<Item=Token>> Iterator for Balanced<'a, I> {
         self.pos = self.iter.pos();
         ret
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        // Our best guess is as good as the internal token iterator's...
+        self.iter.size_hint()
+    }
+
 }
 
 pub struct BacktickBackslashRemover<'a, I> where I: 'a + Iterator<Item=Token> {
@@ -483,5 +499,12 @@ impl<'a, I: 'a + Iterator<Item=Token>> Iterator for BacktickBackslashRemover<'a,
                 None
             },
         }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        // The number of tokens we actually yield will never be
+        // more than those of the underlying iterator, and will
+        // probably be less, but this is a good enough estimate.
+        self.iter.size_hint()
     }
 }

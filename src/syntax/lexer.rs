@@ -201,6 +201,18 @@ impl<I: Iterator<Item = char>> Iterator for Lexer<I> {
             },
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        // The number of actual tokens we yield will never exceed
+        // the amount of characters we are processing. In practice
+        // the caller will probably see a lot fewer tokens than
+        // number of characters processed, however, they can prepare
+        // themselves for the worst possible case. A high estimate
+        // is better than no estimate.
+        let (_, hi) = self.inner.size_hint();
+        let low = if self.peeked.is_some() { 1 } else { 0 };
+        (low, hi)
+    }
 }
 
 #[cfg(test)]
