@@ -86,28 +86,22 @@ pub enum WordKind<C> {
 /// Represents redirecting a command's file descriptors.
 #[derive(Debug)]
 pub enum RedirectKind<W> {
-    /// Open a file for reading, e.g. [n]< file
+    /// Open a file for reading, e.g. `[n]< file`.
     Read(Option<u16>, W),
-    /// Open a file for writing after truncating, e.g. [n]> file
+    /// Open a file for writing after truncating, e.g. `[n]> file`.
     Write(Option<u16>, W),
-    /// Open a file for reading and writing, e.g. [n]<> file
+    /// Open a file for reading and writing, e.g. `[n]<> file`.
     ReadWrite(Option<u16>, W),
-    /// Open a file for writing, appending to the end, e.g. [n]>> file
+    /// Open a file for writing, appending to the end, e.g. `[n]>> file`.
     Append(Option<u16>, W),
-    /// Open a file for writing, failing if the `noclobber` shell option is set, e.g.[n]>| file
+    /// Open a file for writing, failing if the `noclobber` shell option is set, e.g. `[n]>| file`.
     Clobber(Option<u16>, W),
     /// Lines contained in the source that should be provided by as input to a file descriptor.
     Heredoc(Option<u16>, W),
-
-    /// Duplicate a file descriptor for reading, e.g. [n]<& n
+    /// Duplicate a file descriptor for reading, e.g. `[n]<& [n|-]`.
     DupRead(Option<u16>, W),
-    /// Duplicate a file descriptor for writing, e.g. [n]>& n
+    /// Duplicate a file descriptor for writing, e.g. `[n]>& [n|-]`.
     DupWrite(Option<u16>, W),
-
-    /// Close a file descriptor for reading, e.g. [n]<&-
-    CloseRead(Option<u16>),
-    /// Close a file descriptor for writing, e.g. [n]>&-
-    CloseWrite(Option<u16>),
 }
 
 /// Represents the type of parameter that was parsed
@@ -654,8 +648,6 @@ impl Builder for DefaultBuilder {
             RedirectKind::Heredoc(fd, body)   => Redirect::Heredoc(fd, body),
             RedirectKind::DupRead(src, dst)   => Redirect::DupRead(src, dst),
             RedirectKind::DupWrite(src, dst)  => Redirect::DupWrite(src, dst),
-            RedirectKind::CloseRead(src)      => Redirect::CloseRead(src),
-            RedirectKind::CloseWrite(src)     => Redirect::CloseWrite(src),
         };
 
         Ok(io)
@@ -815,8 +807,6 @@ impl<W> PartialEq<RedirectKind<W>> for RedirectKind<W> where W: PartialEq<W> {
             (&Heredoc(ref fd1, ref b1),   &Clobber(ref fd2, ref b2))   => fd1 == fd2 && b1 == b2,
             (&DupRead(ref fd1, ref w1),   &DupRead(ref fd2, ref w2))   => fd1 == fd2 && w1 == w2,
             (&DupWrite(ref fd1, ref w1),  &DupWrite(ref fd2, ref w2))  => fd1 == fd2 && w1 == w2,
-            (&CloseRead(ref fd1),         &CloseRead(ref fd2))         => fd1 == fd2,
-            (&CloseWrite(ref fd1),        &CloseWrite(ref fd2))        => fd1 == fd2,
             _ => false,
         }
     }
@@ -834,8 +824,6 @@ impl<W> Clone for RedirectKind<W> where W: Clone {
             Heredoc(ref fd, ref b)   => Clobber(fd.clone(), b.clone()),
             DupRead(ref fd, ref w)   => DupRead(fd.clone(), w.clone()),
             DupWrite(ref fd, ref w)  => DupWrite(fd.clone(), w.clone()),
-            CloseRead(ref fd)        => CloseRead(fd.clone()),
-            CloseWrite(ref fd)       => CloseWrite(fd.clone()),
         }
     }
 }

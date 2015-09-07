@@ -665,34 +665,44 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         };
 
         self.skip_whitespace();
-        let path_start_pos = self.iter.pos();
 
-        let (is_num, close, path) = if self.peek_reserved_token(&[Dash]).is_some() {
-            (false, true, builder::WordKind::Literal(try!(self.reserved_token(&[Dash])).to_string()))
-        } else {
-            match try!(self.word_preserve_trailing_whitespace_raw()) {
-                Some(p) => (could_be_numeric(&p), false, p),
-                None => return Err(self.make_unexpected_err()),
+        macro_rules! get_path {
+            ($parser:expr) => {
+                match try!($parser.word_preserve_trailing_whitespace_raw()) {
+                    Some(p) => try!($parser.builder.word(p)),
+                    None => return Err(self.make_unexpected_err()),
+                }
             }
-        };
+        }
 
-        let path = try!(self.builder.word(path));
+        macro_rules! get_dup_path {
+            ($parser:expr) => {{
+                let path = if $parser.peek_reserved_token(&[Dash]).is_some() {
+                    builder::WordKind::Literal(try!($parser.reserved_token(&[Dash])).to_string())
+                } else {
+                    let path_start_pos = $parser.iter.pos();
+                    match try!($parser.word_preserve_trailing_whitespace_raw()) {
+                        Some(p) => if could_be_numeric(&p) {
+                            p
+                        } else {
+                            return Err(ParseError::BadFd(path_start_pos, self.iter.pos()));
+                        },
+                        None => return Err($parser.make_unexpected_err()),
+                    }
+                };
+                try!($parser.builder.word(path))
+            }}
+        }
 
         let redirect = match redir_tok {
-            Less      => builder::RedirectKind::Read(src_fd, path),
-            Great     => builder::RedirectKind::Write(src_fd, path),
-            DGreat    => builder::RedirectKind::Append(src_fd, path),
-            Clobber   => builder::RedirectKind::Clobber(src_fd, path),
-            LessGreat => builder::RedirectKind::ReadWrite(src_fd, path),
+            Less      => builder::RedirectKind::Read(src_fd, get_path!(self)),
+            Great     => builder::RedirectKind::Write(src_fd, get_path!(self)),
+            DGreat    => builder::RedirectKind::Append(src_fd, get_path!(self)),
+            Clobber   => builder::RedirectKind::Clobber(src_fd, get_path!(self)),
+            LessGreat => builder::RedirectKind::ReadWrite(src_fd, get_path!(self)),
 
-            LessAnd   if close  => builder::RedirectKind::CloseRead(src_fd),
-            GreatAnd  if close  => builder::RedirectKind::CloseWrite(src_fd),
-            LessAnd   if is_num => builder::RedirectKind::DupRead(src_fd, path),
-            GreatAnd  if is_num => builder::RedirectKind::DupWrite(src_fd, path),
-
-            // Duplication fd is not valid
-            LessAnd  |
-            GreatAnd => return Err(ParseError::BadFd(path_start_pos, self.iter.pos())),
+            LessAnd   => builder::RedirectKind::DupRead(src_fd, get_dup_path!(self)),
+            GreatAnd  => builder::RedirectKind::DupWrite(src_fd, get_dup_path!(self)),
 
             _ => unreachable!(),
         };
@@ -3573,13 +3583,35 @@ pub mod test {
     #[test]
     fn test_redirect_valid_close_without_whitespace() {
         let mut p = make_parser(">&-");
-        assert_eq!(Some(Ok(Redirect::CloseWrite(None))), p.redirect().unwrap());
+        assert_eq!(Some(Ok(Redirect::DupWrite(None, Word::Literal(String::from("-"))))), p.redirect().unwrap());
     }
 
     #[test]
     fn test_redirect_valid_close_with_whitespace() {
         let mut p = make_parser("<&       -");
-        assert_eq!(Some(Ok(Redirect::CloseRead(None))), p.redirect().unwrap());
+        assert_eq!(Some(Ok(Redirect::DupRead(None, Word::Literal(String::from("-"))))), p.redirect().unwrap());
+    }
+
+    #[test]
+    fn test_redirect_valid_start_with_dash_if_not_dup() {
+        let path = Word::Literal(String::from("-test"));
+        let cases = vec!(
+            ("4<-test",  Redirect::Read(Some(4), path.clone())),
+            ("4>-test",  Redirect::Write(Some(4), path.clone())),
+            ("4<>-test", Redirect::ReadWrite(Some(4), path.clone())),
+            ("4>>-test", Redirect::Append(Some(4), path.clone())),
+            ("4>|-test", Redirect::Clobber(Some(4), path.clone())),
+        );
+
+        for (s, correct) in cases.into_iter() {
+            match make_parser(s).redirect() {
+                Ok(Some(Ok(ref r))) if *r == correct => {},
+                Ok(r) => {
+                    panic!("Unexpectedly parsed the source \"{}\" as\n{:?} instead of \n{:?}", s, r, correct)
+                },
+                Err(err) => panic!("Failed to parse the source \"{}\": {}", s, err),
+            }
+        }
     }
 
     #[test]
@@ -3728,7 +3760,7 @@ pub mod test {
         assert_eq!(cmd, Simple(Box::new(SimpleCommand {
             cmd: Some((Word::Literal(String::from("foo")), vec!())),
             vars: vec!(),
-            io: vec!(Redirect::CloseRead(Some(1234))),
+            io: vec!(Redirect::DupRead(Some(1234), Word::Literal(String::from("-")))),
         })));
     }
 
@@ -3798,7 +3830,7 @@ pub mod test {
     fn test_simple_command_redirections_throughout_the_command() {
         let mut p = make_parser("2>|clob var=val 3<>rw ENV=true BLANK= foo bar <in baz 4>&-");
         let (cmd, vars, mut io) = sample_simple_command();
-        io.push(Redirect::CloseWrite(Some(4)));
+        io.push(Redirect::DupWrite(Some(4), Word::Literal(String::from("-"))));
         let correct = Simple(Box::new(SimpleCommand { cmd: cmd, vars: vars, io: io }));
         assert_eq!(correct, p.simple_command().unwrap());
     }
@@ -4200,6 +4232,27 @@ pub mod test {
     }
 
     #[test]
+    fn test_heredoc_valid_delimiter_can_start_with() {
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("cat")), vec!())),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("\thello\n\t\tworld\n"))),
+            )
+        })));
+        assert_eq!(correct, make_parser("cat << -EOF\n\thello\n\t\tworld\n-EOF").complete_command().unwrap());
+
+        let correct = Some(Simple(Box::new(SimpleCommand {
+            vars: vec!(),
+            cmd: Some((Word::Literal(String::from("cat")), vec!())),
+            io: vec!(
+                Redirect::Heredoc(None, Word::Literal(String::from("hello\nworld\n"))),
+            )
+        })));
+        assert_eq!(correct, make_parser("cat <<--EOF\n\thello\n\t\tworld\n-EOF").complete_command().unwrap());
+    }
+
+    #[test]
     fn test_heredoc_invalid_missing_delimeter() {
         assert_eq!(Err(Unexpected(Token::Semi, src(7, 1, 8))), make_parser("cat << ;").complete_command());
     }
@@ -4248,7 +4301,7 @@ pub mod test {
         assert_eq!(io, vec!(
             Redirect::Append(Some(1), Word::Literal(String::from("out"))),
             Redirect::DupRead(None, Word::Literal(String::from("2"))),
-            Redirect::CloseWrite(Some(2)),
+            Redirect::DupWrite(Some(2), Word::Literal(String::from("-"))),
         ));
     }
 
@@ -5687,7 +5740,7 @@ pub mod test {
                 Ok(Compound(_, io)) => assert_eq!(io, vec!(
                     Redirect::Append(Some(1), Word::Literal(String::from("out"))),
                     Redirect::DupRead(None, Word::Literal(String::from("2"))),
-                    Redirect::CloseWrite(Some(2)),
+                    Redirect::DupWrite(Some(2), Word::Literal(String::from("-"))),
                 )),
 
                 Ok(result) => panic!("Parsed \"{}\" as an unexpected command type:\n{:#?}", cmd, result),
