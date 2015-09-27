@@ -8,6 +8,7 @@ use std::collections::hash_map::Entry;
 use std::convert::{From, Into};
 use std::default::Default;
 use std::error::Error;
+use std::fs::{File, OpenOptions};
 use std::io as std_io;
 use std::io::Error as IoError;
 use std::io::ErrorKind as IoErrorKind;
@@ -39,8 +40,15 @@ const EXIT_SIGNAL_OFFSET: u32 = 128;
 
 const IFS_DEFAULT: &'static str = " \t\n";
 
+const STDIN_FILENO: Fd = 0;
+const STDOUT_FILENO: Fd = 1;
+const STDERR_FILENO: Fd = 2;
+
 /// A specialized `Result` type for shell runtime operations.
 pub type Result<T> = ::std::result::Result<T, RuntimeError>;
+
+/// The type that represents a file descriptor within shell scripts.
+pub type Fd = u16;
 
 /// An error which may arise while executing commands.
 #[derive(Debug)]
@@ -61,6 +69,14 @@ pub enum RuntimeError {
     CommandNotExecutable(Rc<String>),
     /// Runtime feature not currently supported.
     Unimplemented(&'static str),
+
+    /// A redirect path evaluated to multiple fields.
+    RedirectAmbiguous(Vec<Rc<String>>),
+    /// Attempted to duplicate an invalid file descriptor.
+    RedirectBadFdSrc(Rc<String>),
+    /// Attempted to duplicate a file descriptor with Read/Write
+    /// access that differs from the original.
+    RedirectBadFdPerms(Fd, Permissions /* new perms */),
 }
 
 impl Error for RuntimeError {
@@ -74,6 +90,10 @@ impl Error for RuntimeError {
             RuntimeError::CommandNotFound(_) => "command not found",
             RuntimeError::CommandNotExecutable(_) => "command not executable",
             RuntimeError::Unimplemented(s) => s,
+            RuntimeError::RedirectAmbiguous(_) => "a redirect path evaluated to multiple fields",
+            RuntimeError::RedirectBadFdSrc(_) => "attempted to duplicate an invalid file descriptor",
+            RuntimeError::RedirectBadFdPerms(..) =>
+                "attmpted to duplicate a file descritpr with Read/Write access that differs from the original",
         }
     }
 
@@ -87,7 +107,10 @@ impl Error for RuntimeError {
             RuntimeError::EmptyParameter(..) |
             RuntimeError::Unimplemented(_)   |
             RuntimeError::CommandNotFound(_) |
-            RuntimeError::CommandNotExecutable(_) => None,
+            RuntimeError::CommandNotExecutable(_) |
+            RuntimeError::RedirectAmbiguous(_) |
+            RuntimeError::RedirectBadFdSrc(_)  |
+            RuntimeError::RedirectBadFdPerms(..) => None,
         }
     }
 }
@@ -104,6 +127,17 @@ impl fmt::Display for RuntimeError {
             RuntimeError::CommandNotExecutable(ref c) => write!(fmt, "{}: command not executable", c),
             RuntimeError::BadAssig(ref p) => write!(fmt, "{}: cannot assign in this way", p),
             RuntimeError::EmptyParameter(ref p, ref msg) => write!(fmt, "{}: {}", p, msg),
+            RuntimeError::RedirectAmbiguous(ref v) => {
+                try!(write!(fmt, "{}: ", self.description()));
+                let mut iter = v.iter();
+                if let Some(s) = iter.next() { try!(write!(fmt, "{}", s)); }
+                for s in iter { try!(write!(fmt, " {}", s)); }
+                Ok(())
+            },
+
+            RuntimeError::RedirectBadFdSrc(ref fd) => write!(fmt, "{}: {}", self.description(), fd),
+            RuntimeError::RedirectBadFdPerms(fd, perms) =>
+                write!(fmt, "{}: {}, desired permissions: {}", self.description(), fd, perms),
         }
     }
 }
@@ -235,7 +269,7 @@ pub struct Env<'a> {
     /// The values are stored as `Option`s to properly distinguish descriptors that
     /// were explicitly closed and descriptors that may have been opened in a parent
     /// environment. The tupled value also holds the permissions of the descriptor.
-    fds: HashMap<u16, Option<(FileDesc, Permissions)>>,
+    fds: HashMap<Fd, Option<(Rc<FileDesc>, Permissions)>>,
     /// The exit status of the last command that was executed.
     last_status: ExitStatus,
     /// A parent environment for looking up previously set values.
@@ -350,9 +384,17 @@ pub trait Environment {
     fn args(&self) -> &[Rc<String>];
     /// Get all current pairs of environment variables and their values.
     fn env(&self) -> Vec<(&str, &str)>;
-
+    /// Get the permissions and OS handle associated with an opened file descriptor.
+    fn file_desc(&self, fd: Fd) -> Option<(&Rc<FileDesc>, Permissions)>;
+    /// Associate a file descriptor with a given OS handle and permissions.
+    fn set_file_desc(&mut self, fd: Fd, fdes: Rc<FileDesc>, perms: Permissions);
+    /// Treat the specified file descriptor as closed for the current environment.
+    fn close_file_desc(&mut self, fd: Fd);
+    /// Consumes `RuntimeError`s and reports them as appropriate, e.g. print to stderr.
     fn report_error(&mut self, err: RuntimeError) {
-        write!(std_io::stderr(), "{}: {}", self.name(), err).ok();
+        self.file_desc(STDERR_FILENO).map(|(fd, _)| {
+            (&*fd).duplicate().and_then(|mut fd| write!(fd, "{}: {}", self.name(), err))
+        });
     }
 }
 
@@ -471,6 +513,30 @@ impl<'a> Environment for Env<'a> {
             &Some((_, false)) => None,
             &None => None,
         }).collect()
+    }
+
+    fn file_desc(&self, fd: Fd) -> Option<(&Rc<FileDesc>, Permissions)> {
+        self.walk_parent_chain(|cur| match cur.fds.get(&fd) {
+            Some(&Some((ref fdes, perm))) => Ok(Some((fdes, perm))), // found an open fd
+            Some(&None) => Err(()), // fd already closed, break the walk
+            None => Ok(None), // neither closed nor open, keep walking
+        })
+    }
+
+    fn set_file_desc(&mut self, fd: Fd, fdes: Rc<FileDesc>, perms: Permissions) {
+        self.fds.insert(fd, Some((fdes, perms)));
+    }
+
+    fn close_file_desc(&mut self, fd: Fd) {
+        match self.parent_env {
+            // If we have a parent environment the specified fd could
+            // have been opened there, so to avoid clobbering it,
+            // we'll just ensure the current env treats this fd as closed.
+            Some(_) => self.fds.insert(fd, None),
+            // Otherwise if we are a root env we are the only possible
+            // source of the fd so we can actually remove it from the container.
+            None => self.fds.remove(&fd),
+        };
     }
 }
 
@@ -1093,6 +1159,111 @@ impl Word {
     }
 }
 
+impl Redirect {
+    /// Evaluates a redirection path and opens the appropriate redirect.
+    ///
+    /// Newly opened/closed/duplicated file descriptors are NOT updated
+    /// in the environment, and thus it is up to the caller to update the
+    /// environment as appropriate.
+    ///
+    /// On success the affected file descriptor (from the script's perspective)
+    /// is returned, along with an Optional file handle and the respective
+    /// permissions. A `Some` value indicates a newly opened or duplicated descriptor
+    /// while a `None` indicates that that descriptor should be closed.
+    pub fn eval(&self, env: &mut Environment) -> Result<(Fd, Option<(Rc<FileDesc>, Permissions)>)> {
+        fn eval_path(path: &Word, env: &mut Environment) -> Result<Rc<String>> {
+            match try!(path.eval_with_config(env, true, false)) {
+                Fields::Single(path) => Ok(path),
+                Fields::At(mut v) |
+                Fields::Star(mut v) |
+                Fields::Many(mut v) => if v.len() == 1 {
+                    Ok(v.pop().unwrap())
+                } else {
+                    return Err(RuntimeError::RedirectAmbiguous(v))
+                },
+            }
+        };
+
+        fn dup_fd(dst_fd: Fd, src_fd: &Word, readable: bool, env: &mut Environment)
+            -> Result<(Fd, Option<(Rc<FileDesc>, Permissions)>)>
+        {
+            let src_fd = try!(eval_path(src_fd, env));
+
+            if *src_fd == "-" {
+                return Ok((dst_fd, None));
+            }
+
+            let src_fdes = match Fd::from_str_radix(&src_fd, 10) {
+                Ok(fd) => match env.file_desc(fd) {
+                    Some((fdes, perms)) => {
+                        if (readable && perms.readable()) || (!readable && perms.writable()) {
+                            Ok(fdes.clone())
+                        } else {
+                            Err(RuntimeError::RedirectBadFdPerms(fd, perms))
+                        }
+                    },
+
+                    None => Err(RuntimeError::RedirectBadFdSrc(src_fd)),
+                },
+
+                Err(_) => Err(RuntimeError::RedirectBadFdSrc(src_fd)),
+            };
+
+            let src_fdes = match src_fdes {
+                Ok(fd) => fd,
+                Err(e) => {
+                    env.set_last_status(EXIT_ERROR);
+                    return Err(e);
+                },
+            };
+
+            let perms = if readable { Permissions::Read } else { Permissions::Write };
+            Ok((dst_fd, Some((src_fdes, perms))))
+        };
+
+        let ret = match *self {
+            Redirect::Read(fd, ref path) |
+            Redirect::ReadWrite(fd, ref path) => {
+                let mut options = OpenOptions::new();
+                options.read(true);
+
+                let perms = if let Redirect::ReadWrite(_, _) = *self {
+                    options.write(true).create(true);
+                    Permissions::ReadWrite
+                } else {
+                    Permissions::Read
+                };
+
+                let file = try!(options.open(&**try!(eval_path(path, env)))).into();
+                (fd.unwrap_or(STDIN_FILENO), Some((Rc::new(file), perms)))
+            },
+
+            Redirect::Write(fd, ref path) |
+            Redirect::Clobber(fd, ref path) |
+            Redirect::Append(fd, ref path) => {
+                let mut options = OpenOptions::new();
+                options.write(true).create(true);
+
+                if let Redirect::Append(_, _) = *self {
+                    options.append(true);
+                } else {
+                    options.truncate(true);
+                }
+
+                let file = try!(options.open(&**try!(eval_path(path, env)))).into();
+                (fd.unwrap_or(STDOUT_FILENO), Some((Rc::new(file), Permissions::Write)))
+            },
+
+            Redirect::DupRead(fd, ref src)  => try!(dup_fd(fd.unwrap_or(STDIN_FILENO), src, true, env)),
+            Redirect::DupWrite(fd, ref src) => try!(dup_fd(fd.unwrap_or(STDOUT_FILENO), src, false, env)),
+
+            Redirect::Heredoc(fd, ref body) => unimplemented!(),
+        };
+
+        Ok(ret)
+    }
+}
+
 /// An interface for anything that can be executed within an `Environment`.
 pub trait Run {
     /// Executes `self` in the provided environment.
@@ -1105,14 +1276,42 @@ impl<'a, T: Run + ?Sized> Run for &'a T {
 
 impl Run for SimpleCommand {
     fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
+        fn open_io(io: &[Redirect], env: &mut Environment)
+            -> Result<HashMap<Fd, Option<Rc<FileDesc>>>>
+        {
+            // Make sure we don't actually clobber the real environment
+            let mut env = env.sub_env();
+            let env = &mut *env;
+
+            let mut map = HashMap::with_capacity(io.len());
+            for redirect in io.iter() {
+                match try!(redirect.eval(env)) {
+                    (fd, Some((fdes, perms))) => {
+                        env.set_file_desc(fd, fdes.clone(), perms);
+                        map.insert(fd, Some(fdes));
+                    },
+                    (fd, None) => {
+                        env.close_file_desc(fd);
+                        map.insert(fd, None);
+                    },
+                };
+            }
+
+            Ok(map)
+        }
+
         if self.cmd.is_none() {
-            // Any redirects set for this command have already been touched
             for &(ref var, ref val) in self.vars.iter() {
                 if let Some(val) = val.as_ref() {
                     let val = try!(val.eval_as_assignment(env));
                     env.set_var(var.clone(), val);
                 }
             }
+
+            // Make sure we "touch" any local redirections, as this
+            // will have side effects (possibly desired by the script).
+            let _ = try!(open_io(&self.io, env));
+
             let exit = EXIT_SUCCESS;
             env.set_last_status(exit);
             return Ok(exit);
@@ -1153,11 +1352,6 @@ impl Run for SimpleCommand {
             cmd.arg(&*arg);
         }
 
-        // FIXME: use appropriate redirects
-        cmd.stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
-
         // First inherit all default ENV variables
         for (var, val) in env.env() {
             cmd.env(var, val);
@@ -1174,6 +1368,31 @@ impl Run for SimpleCommand {
                 };
             }
         }
+
+        let unwrap_fdes = |fdes: Rc<FileDesc>| Rc::try_unwrap(fdes).or_else(|rc| rc.duplicate());
+
+        let mut io = try!(open_io(&self.io, env));
+        let mut get_redirect = |fd, env: & Environment| -> Result<Stdio> {
+            let ret = match io.remove(&fd) {
+                // redirect specified
+                Some(Some(fdes)) => try!(unwrap_fdes(fdes)).into(),
+                // fd close specified
+                Some(None) => Stdio::null(),
+                // Nothing specified
+                None => match env.file_desc(fd) {
+                    // If the environment has that fd, use it
+                    Some((fdes, _)) => try!(unwrap_fdes(fdes.clone())).into(),
+                    // Otherwise just inherit from the current process
+                    None => Stdio::inherit(),
+                },
+            };
+            Ok(ret)
+        };
+
+        // FIXME: we should eventually inherit all fds in the environment (at least on UNIX)
+        cmd.stdin(try!(get_redirect(STDIN_FILENO, env)));
+        cmd.stdout(try!(get_redirect(STDOUT_FILENO, env)));
+        cmd.stderr(try!(get_redirect(STDERR_FILENO, env)));
 
         match cmd.status() {
             Err(e) => {
@@ -1224,7 +1443,89 @@ impl Run for AstCommand {
             },
 
             AstCommand::Compound(ref cmd, ref redirects) => {
-                try!(cmd.run(env))
+                // We're in a tricky situation here: any nested commands
+                // and their own nested commands must see the provided
+                // redirects (sort of as if they are in their own sub
+                // environment) (unless they override them, that is).
+                //
+                // However, the commands should NOT be in an actual sub
+                // environment (e.g. variables set should be reflected in
+                // the current environment).
+                //
+                // Thus we'll swap the descriptors here temporarily
+                // and hope the environment implementation doesn't mind
+                // our shenanigans before we return them.
+                let num_redirects = redirects.len();
+                // Old fds that will be locally overridden, but must be restored
+                // once the compound command has finished executing.
+                let mut fdes_backup = HashMap::with_capacity(num_redirects);
+                // Newly opened fds only for this compound command. They must all
+                // be removed from the environement when the compound command finishes.
+                let mut fdes_new = Vec::with_capacity(num_redirects);
+
+                let mut io_err = None;
+                for io in redirects {
+                    match io.eval(env) {
+                        // Make sure we cleanup and restore the environment
+                        // before propagating any errors to the caller.
+                        Err(e) => {
+                            io_err = Some(e);
+                            break;
+                        },
+
+                        Ok((fd, fdes_and_perms)) => {
+                            // Backup any descriptor we are about to override so
+                            // that we can restore it before returning.
+                            if let Some((old_fdes, old_perms)) = env.file_desc(fd) {
+                                let old_backup = fdes_backup.insert(fd, (old_fdes.clone(), old_perms));
+                                // Sanity check that we aren't somehow "doubly-backing up" descriptors
+                                // which would be an indication of us doing something wrong...
+                                debug_assert!(old_backup.is_none());
+                            }
+
+                            env.close_file_desc(fd);
+
+                            // We can't insert these directly in the environment rhgt now
+                            // because if the script redirects to the same fd twice, we don't
+                            // want to accidentally backup any fd which wasn't in the env
+                            // before we were called.
+                            //
+                            // Fds to be "closed" for the compound command will simply
+                            // not exist in the environment when the command runs.
+                            match fdes_and_perms {
+                                Some((fdes, perms)) => fdes_new.push((fd, fdes, perms)),
+                                None => {},
+                            }
+                        },
+                    }
+                }
+
+                let ret = if let Some(err) = io_err {
+                    env.set_last_status(EXIT_ERROR);
+                    Err(err)
+                } else {
+                    let local_fds: Vec<Fd> = fdes_new.into_iter().map(|(fd, fdes, perms)| {
+                        env.set_file_desc(fd, fdes, perms);
+                        fd
+                    }).collect();
+
+                    // Again, we can't bail out until we've restored the old env.
+                    let ret = cmd.run(env);
+
+                    // We have to make sure we actually close all newly inserted
+                    // fds before returning, restoring the old ones won't be enough.
+                    for fd in local_fds {
+                        env.close_file_desc(fd);
+                    }
+
+                    ret
+                };
+
+                for (fd, (fdes, perms)) in fdes_backup {
+                    env.set_file_desc(fd, fdes, perms);
+                }
+
+                try!(ret)
             },
 
             AstCommand::Simple(ref cmd) => try!(cmd.run(env)),

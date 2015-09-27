@@ -5,9 +5,8 @@
 #[cfg(windows)]
 #[path = "windows.rs"] mod os;
 
-use std::io::{Error, Read, Result, Write};
-use std::num::One;
-use std::ops::Neg;
+use std::fmt;
+use std::io::{Read, Result, Write};
 use std::process::Stdio;
 
 /// An indicator of the read/write permissions of an OS file primitive.
@@ -36,6 +35,12 @@ impl Permissions {
             Permissions::Write |
             Permissions::ReadWrite => true,
         }
+    }
+}
+
+impl fmt::Display for Permissions {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        write!(fmt, "{:?}", self)
     }
 }
 
@@ -82,12 +87,8 @@ impl Write for FileDesc {
     fn flush(&mut self) -> Result<()> { Ok(()) }
 }
 
-// Taken from rust: libstd/sys/unix/mod.rs
-fn cvt<T: One + PartialEq + Neg<Output=T>>(t: T) -> Result<T> {
-    let one: T = T::one();
-    if t == -one {
-        Err(Error::last_os_error())
-    } else {
-        Ok(t)
-    }
+/// Creates and returns a `(reader, writer)` pipe pair.
+pub fn pipe() -> Result<(FileDesc, FileDesc)> {
+    let (reader, writer) = try!(os::pipe());
+    Ok((FileDesc(reader), FileDesc(writer)))
 }
