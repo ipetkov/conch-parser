@@ -359,10 +359,10 @@ pub trait Environment {
     /// but any information not present in the sub-env will be looked up in the parent.
     fn sub_env<'a>(&'a self) -> Box<Environment + 'a>;
     /// Get the shell's current name.
-    fn name(&self) -> Rc<String>;
+    fn name(&self) -> &Rc<String>;
     /// Get the value of some variable. The values of both shell-only
     /// variables will be looked up and returned.
-    fn var(&self, name: &str) -> Option<Rc<String>>;
+    fn var(&self, name: &str) -> Option<&Rc<String>>;
     /// Set the value of some variable (including environment variables).
     fn set_var(&mut self, name: String, val: Rc<String>);
     /// Indicates if a funciton is currently defined with a given name.
@@ -377,7 +377,7 @@ pub trait Environment {
     fn set_last_status(&mut self, status: ExitStatus);
     /// Get an argument at any index. Arguments are 1-indexed since the shell variable `$0`
     /// to the shell's name. Thus the first real argument starts at index 1.
-    fn arg(&self, idx: usize) -> Option<Rc<String>>;
+    fn arg(&self, idx: usize) -> Option<&Rc<String>>;
     /// Get the number of current arguments, NOT including the shell name.
     fn args_len(&self) -> usize;
     /// Get all current arguments as a vector.
@@ -412,13 +412,13 @@ impl<'a> Environment for Env<'a> {
         })
     }
 
-    fn name(&self) -> Rc<String> {
-        self.shell_name.clone()
+    fn name(&self) -> &Rc<String> {
+        &self.shell_name
     }
 
-    fn var(&self, name: &str) -> Option<Rc<String>> {
+    fn var(&self, name: &str) -> Option<&Rc<String>> {
         self.walk_parent_chain(|cur| match cur.vars.get(name) {
-            Some(&Some((ref s, _))) => Ok(Some(s.clone())), // found the var
+            Some(&Some((ref s, _))) => Ok(Some(s)), // found the var
             Some(&None) => Err(()), // var was unset, break the walk
             None => Ok(None), // neither set nor unset, keep walking
         })
@@ -480,11 +480,11 @@ impl<'a> Environment for Env<'a> {
         self.last_status = status;
     }
 
-    fn arg(&self, idx: usize) -> Option<Rc<String>> {
+    fn arg(&self, idx: usize) -> Option<&Rc<String>> {
         if idx == 0 {
             Some(self.name())
         } else {
-            self.args.get(idx - 1).cloned()
+            self.args.get(idx - 1)
         }
     }
 
@@ -560,9 +560,9 @@ impl Parameter {
                 ExitStatus::Signal(c) => c as u32 + EXIT_SIGNAL_OFFSET,
             }.to_string()))),
 
-            Parameter::Positional(0) => Some(Fields::Single(env.name())),
-            Parameter::Positional(p) => env.arg(p as usize).map(Fields::Single),
-            Parameter::Var(ref var)  => env.var(var).map(Fields::Single),
+            Parameter::Positional(0) => Some(Fields::Single(env.name().clone())),
+            Parameter::Positional(p) => env.arg(p as usize).cloned().map(Fields::Single),
+            Parameter::Var(ref var)  => env.var(var).cloned().map(Fields::Single),
         }
     }
 }
@@ -935,7 +935,7 @@ impl Word {
         /// or otherwise created will be discarded.
         fn split_fields(words: Vec<Rc<String>>, env: &Environment) -> Vec<Rc<String>> {
             // If IFS is set but null, there is nothing left to split
-            let ifs = env.var("IFS").unwrap_or_else(|| Rc::new(String::from(IFS_DEFAULT)));
+            let ifs = env.var("IFS").map_or(IFS_DEFAULT, |s| &s);
             if ifs.is_empty() {
                 return words;
             }
@@ -1024,7 +1024,7 @@ impl Word {
             SquareClose => Fields::Single(Rc::new(String::from("["))),
 
             Tilde => if expand_tilde {
-                env.var("HOME").map_or(null_field, |f| Fields::Single(f))
+                env.var("HOME").map_or(null_field, |f| Fields::Single(f.clone()))
             } else {
                 Fields::Single(Rc::new(String::from("~")))
             },
