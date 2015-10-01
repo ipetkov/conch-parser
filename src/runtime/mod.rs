@@ -8,8 +8,7 @@ use std::collections::hash_map::Entry;
 use std::convert::{From, Into};
 use std::default::Default;
 use std::error::Error;
-use std::fs::{File, OpenOptions};
-use std::io as std_io;
+use std::fs::OpenOptions;
 use std::io::Error as IoError;
 use std::io::ErrorKind as IoErrorKind;
 use std::io::Write;
@@ -228,7 +227,13 @@ impl Fields {
             Fields::Single(s) => s,
             Fields::At(v)   |
             Fields::Star(v) |
-            Fields::Many(v) => Rc::new(v.iter().map(|s| &***s).collect::<Vec<&str>>().join(" ")),
+            Fields::Many(v) => Rc::new(v.iter().filter_map(|s| {
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(&***s)
+                }
+            }).collect::<Vec<&str>>().join(" ")),
         }
     }
 }
@@ -299,21 +304,18 @@ impl<'a> Env<'a> {
                        args: Option<Vec<String>>,
                        env: Option<Vec<(String, String)>>) -> Self
     {
-        use ::std::env::{args_os, vars_os};
+        use ::std::env;
 
-        let name = name.unwrap_or_else(|| {
-            args_os().next().map(|s| s.to_str().unwrap_or("").to_string()).unwrap_or_default()
-        });
+        let name = name.unwrap_or_else(|| env::current_exe().ok().and_then(|path| {
+            path.file_name().and_then(|os_str| os_str.to_str().map(|s| s.to_string()))
+        }).unwrap_or_default());
 
         let args = args.map_or(Vec::new(), |args| args.into_iter().map(|s| Rc::new(s)).collect());
 
-        let vars = env.map_or_else(|| {
-            vars_os().map(|(k, v)| (k.into_string(), v.into_string()))
-                .filter_map(|(k, v)| match (k,v) {
-                    (Ok(k), Ok(v)) => Some((k, Some((Rc::new(v), true)))),
-                    _ => None,
-                }).collect()
-        }, |pairs| pairs.into_iter().map(|(k,v)| (k, Some((Rc::new(v), true)))).collect());
+        let vars = env.map_or_else(
+            || env::vars().map(|(k, v)| (k, Some((Rc::new(v), true)))).collect(),
+            |pairs| pairs.into_iter().map(|(k,v)| (k, Some((Rc::new(v), true)))).collect()
+        );
 
         Env {
             shell_name: Rc::new(String::from(name)),
@@ -1639,5 +1641,512 @@ impl Run for [AstCommand] {
         }
         env.set_last_status(exit);
         Ok(exit)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::fs::OpenOptions;
+    use super::{EXIT_ERROR, EXIT_SUCCESS, STDIN_FILENO};
+    use super::io::{FileDesc, Permissions};
+    use super::*;
+
+    struct MockFn<F: FnMut(&mut Environment) -> Result<ExitStatus>> {
+        callback: RefCell<F>,
+    }
+
+    impl<F: FnMut(&mut Environment) -> Result<ExitStatus>> MockFn<F> {
+        fn new(f: F) -> Box<Self> {
+            Box::new(MockFn { callback: RefCell::new(f) })
+        }
+    }
+
+    impl<F: FnMut(&mut Environment) -> Result<ExitStatus>> Run for MockFn<F> {
+        fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
+            (&mut *self.callback.borrow_mut())(env)
+        }
+    }
+
+    struct MockFnRecursive<F: Fn(&mut Environment) -> Result<ExitStatus>> {
+        callback: F,
+    }
+
+    impl<F: Fn(&mut Environment) -> Result<ExitStatus>> MockFnRecursive<F> {
+        fn new(f: F) -> Box<Self> {
+            Box::new(MockFnRecursive { callback: f })
+        }
+    }
+
+    impl<F: Fn(&mut Environment) -> Result<ExitStatus>> Run for MockFnRecursive<F> {
+        fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
+            (self.callback)(env)
+        }
+    }
+
+    fn file_desc() -> FileDesc {
+        let path = if cfg!(windows) { "NUL" } else { "/dev/null" };
+        OpenOptions::new().read(true).write(true).open(path).unwrap().into()
+    }
+
+    #[test]
+    fn test_fields_is_null_single_empty_string() {
+        assert_eq!(Fields::Single(Rc::new(String::from(""))).is_null(), true);
+    }
+
+    #[test]
+    fn test_fields_is_null_single_non_empty_string() {
+        assert_eq!(Fields::Single(Rc::new(String::from("foo"))).is_null(), false);
+    }
+
+    #[test]
+    fn test_fields_is_null_many_one_empty_string() {
+        let strs = vec!(
+            Rc::new(String::from("foo")),
+            Rc::new(String::from("")),
+            Rc::new(String::from("bar")),
+        );
+        let fields = vec!(
+            Fields::At(strs.clone()),
+            Fields::Star(strs.clone()),
+            Fields::Many(strs.clone()),
+        );
+
+        for f in fields {
+            assert_eq!(f.is_null(), false);
+        }
+    }
+
+    #[test]
+    fn test_fields_is_null_many_empty_string() {
+        let empty = Rc::new(String::from(""));
+        let strs = vec!(
+            empty.clone(),
+            empty.clone(),
+            empty.clone(),
+        );
+
+        let fields = vec!(
+            Fields::At(strs.clone()),
+            Fields::Star(strs.clone()),
+            Fields::Many(strs.clone()),
+        );
+
+        for f in fields {
+            assert_eq!(f.is_null(), true);
+        }
+    }
+
+    #[test]
+    fn test_fields_join_single() {
+        let s = Rc::new(String::from("foo"));
+        assert_eq!(Fields::Single(s.clone()).join(), s);
+    }
+
+    #[test]
+    fn test_fields_join_multiple_only_keeps_non_empty_strings_before_joining_with_space() {
+        let strs = vec!(
+            Rc::new(String::from("foo")),
+            Rc::new(String::from("")),
+            Rc::new(String::from("bar")),
+        );
+
+        let fields = vec!(
+            Fields::At(strs.clone()),
+            Fields::Star(strs.clone()),
+            Fields::Many(strs.clone()),
+        );
+
+        for f in fields {
+            assert_eq!(&*f.join(), "foo bar");
+        }
+    }
+
+    #[test]
+    fn test_env_name() {
+        let name = "shell";
+        let env = Env::with_config(Some(String::from(name)), None, None);
+        assert_eq!(&**env.name(), name);
+        assert_eq!(&**env.arg(0).unwrap(), name);
+    }
+
+    #[test]
+    fn test_env_name_should_be_same_in_child_environment() {
+        let name = "shell";
+        let env = Env::with_config(Some(String::from(name)), None, None);
+        let child = env.sub_env();
+        assert_eq!(&**child.name(), name);
+        assert_eq!(&**child.arg(0).unwrap(), name);
+    }
+
+    #[test]
+    fn test_env_set_and_get_var() {
+        let name = "var";
+        let value = "value";
+        let mut env = Env::new();
+        assert_eq!(env.var(name), None);
+        env.set_var(String::from(name), Rc::new(String::from(value)));
+        assert_eq!(&**env.var(name).unwrap(), value);
+    }
+
+    #[test]
+    fn test_env_set_var_in_parent_visible_in_child() {
+        let name = "var";
+        let value = "value";
+        let mut parent = Env::new();
+        parent.set_var(String::from(name), Rc::new(String::from(value)));
+        assert_eq!(&**parent.sub_env().var(name).unwrap(), value);
+    }
+
+    #[test]
+    fn test_env_set_var_in_child_should_not_affect_parent() {
+        let parent_name = "parent-var";
+        let parent_value = "parent-value";
+        let child_name = "child-var";
+        let child_value = "child-value";
+
+        let mut parent = Env::new();
+        parent.set_var(String::from(parent_name), Rc::new(String::from(parent_value)));
+
+        {
+            let mut child = parent.sub_env();
+            child.set_var(String::from(parent_name), Rc::new(String::from(child_value)));
+            child.set_var(String::from(child_name), Rc::new(String::from(child_value)));
+            assert_eq!(&**child.var(parent_name).unwrap(), child_value);
+            assert_eq!(&**child.var(child_name).unwrap(), child_value);
+
+            assert_eq!(&**parent.var(parent_name).unwrap(), parent_value);
+            assert_eq!(parent.var(child_name), None);
+        }
+
+        assert_eq!(&**parent.var(parent_name).unwrap(), parent_value);
+        assert_eq!(parent.var(child_name), None);
+    }
+
+    #[test]
+    fn test_env_set_and_get_last_status() {
+        let exit = ExitStatus::Signal(9);
+        let mut env = Env::new();
+        env.set_last_status(exit);
+        assert_eq!(env.last_status(), exit);
+    }
+
+    #[test]
+    fn test_env_set_last_status_in_parent_visible_in_child() {
+        let exit = ExitStatus::Signal(9);
+        let mut parent = Env::new();
+        parent.set_last_status(exit);
+        assert_eq!(parent.sub_env().last_status(), exit);
+    }
+
+    #[test]
+    fn test_env_set_last_status_in_child_should_not_affect_parent() {
+        let parent_exit = ExitStatus::Signal(9);
+        let mut parent = Env::new();
+        parent.set_last_status(parent_exit);
+
+        {
+            let child_exit = EXIT_ERROR;
+            let mut child = parent.sub_env();
+            assert_eq!(child.last_status(), parent_exit);
+
+            child.set_last_status(child_exit);
+            assert_eq!(child.last_status(), child_exit);
+
+            assert_eq!(parent.last_status(), parent_exit);
+        }
+
+        assert_eq!(parent.last_status(), parent_exit);
+    }
+
+    #[test]
+    fn test_env_set_and_run_function() {
+        let fn_name_owned = String::from("foo");
+        let fn_name = Rc::new(fn_name_owned.clone());
+
+        let exit = EXIT_ERROR;
+        let mut env = Env::new();
+        assert_eq!(env.has_function(&*fn_name), false);
+        assert!(env.run_function(fn_name.clone(), vec!()).is_none());
+
+        env.set_function(fn_name_owned, MockFn::new(move |_| Ok(exit)));
+        assert_eq!(env.has_function(&*fn_name), true);
+        assert_eq!(env.run_function(fn_name, vec!()).unwrap().unwrap(), exit);
+    }
+
+    #[test]
+    fn test_env_set_function_in_parent_visible_in_child() {
+        let fn_name_owned = String::from("foo");
+        let fn_name = Rc::new(fn_name_owned.clone());
+
+        let exit = EXIT_ERROR;
+        let mut parent = Env::new();
+        parent.set_function(fn_name_owned, MockFn::new(move |_| Ok(exit)));
+
+        {
+            let mut child = parent.sub_env();
+            assert_eq!(child.has_function(&*fn_name), true);
+            assert_eq!(child.run_function(fn_name, vec!()).unwrap().unwrap(), exit);
+        }
+    }
+
+    #[test]
+    fn test_env_set_function_in_child_should_not_affect_parent() {
+        let fn_name_owned = String::from("foo");
+        let fn_name = Rc::new(fn_name_owned.clone());
+
+        let exit = EXIT_ERROR;
+        let mut parent = Env::new();
+
+        {
+            let mut child = parent.sub_env();
+            child.set_function(fn_name_owned, MockFn::new(move |_| Ok(exit)));
+            assert_eq!(child.has_function(&*fn_name), true);
+            assert_eq!(child.run_function(fn_name.clone(), vec!()).unwrap().unwrap(), exit);
+        }
+
+        assert_eq!(parent.has_function(&*fn_name), false);
+        assert!(parent.run_function(fn_name, vec!()).is_none());
+    }
+
+    #[test]
+    fn test_env_run_function_should_affect_arguments_and_name_within_function() {
+        let shell_name_owned = String::from("shell");
+        let shell_name = Rc::new(shell_name_owned.clone());
+        let parent_args = vec!(
+            String::from("parent arg1"),
+            String::from("parent arg2"),
+            String::from("parent arg3"),
+        );
+
+        let mut env = Env::with_config(Some(shell_name_owned), Some(parent_args.clone()), None);
+
+        let fn_name_owned = String::from("fn name");
+        let fn_name = Rc::new(fn_name_owned.clone());
+        let args = vec!(
+            Rc::new(String::from("child arg1")),
+            Rc::new(String::from("child arg2")),
+            Rc::new(String::from("child arg3")),
+        );
+
+        {
+            let args = args.clone();
+            let fn_name = fn_name.clone();
+            env.set_function(fn_name_owned, MockFn::new(move |env| {
+                assert_eq!(env.args(), &*args);
+                assert_eq!(env.args_len(), args.len());
+                assert_eq!(env.name(), &fn_name);
+                assert_eq!(env.arg(0), Some(&fn_name));
+
+                let mut env_args = Vec::with_capacity(args.len());
+                for idx in 0..args.len() {
+                    env_args.push(env.arg(idx+1).unwrap());
+                }
+
+                let args: Vec<&Rc<String>> = args.iter().collect();
+                assert_eq!(env_args, args);
+                assert_eq!(env.arg(args.len()+1), None);
+                Ok(EXIT_SUCCESS)
+            }));
+        }
+
+        env.run_function(fn_name, args.clone());
+
+        let parent_args: Vec<Rc<String>> = parent_args.into_iter().map(Rc::new).collect();
+        assert_eq!(env.args(), &*parent_args);
+        assert_eq!(env.args_len(), parent_args.len());
+        assert_eq!(env.name(), &shell_name);
+        assert_eq!(env.arg(0), Some(&shell_name));
+
+        let mut env_parent_args = Vec::with_capacity(parent_args.len());
+        for idx in 0..parent_args.len() {
+            env_parent_args.push(env.arg(idx+1).unwrap());
+        }
+
+        assert_eq!(env_parent_args, parent_args.iter().collect::<Vec<&Rc<String>>>());
+        assert_eq!(env.arg(parent_args.len()+1), None);
+    }
+
+    #[test]
+    fn test_env_run_function_can_be_recursive() {
+        let fn_name_owned = String::from("fn name");
+        let fn_name = Rc::new(fn_name_owned.clone());
+
+        let mut env = Env::new();
+        {
+            let fn_name = fn_name.clone();
+            let num_calls = 3usize;
+            let depth = ::std::cell::Cell::new(num_calls);
+
+            env.set_function(fn_name_owned, MockFnRecursive::new(move |env| {
+                let num_calls = depth.get().saturating_sub(1);
+                env.set_var(format!("var{}", num_calls), Rc::new(num_calls.to_string()));
+
+                if num_calls != 0 {
+                    depth.set(num_calls);
+                    env.run_function(fn_name.clone(), vec!()).unwrap()
+                } else {
+                    Ok(EXIT_SUCCESS)
+                }
+            }));
+        }
+
+        assert_eq!(env.var("var0"), None);
+        assert_eq!(env.var("var1"), None);
+        assert_eq!(env.var("var2"), None);
+
+        assert!(env.run_function(fn_name.clone(), vec!()).unwrap().unwrap().success());
+
+        assert_eq!(&**env.var("var0").unwrap(), "0");
+        assert_eq!(&**env.var("var1").unwrap(), "1");
+        assert_eq!(&**env.var("var2").unwrap(), "2");
+    }
+
+    #[test]
+    fn test_env_run_function_nested_calls_do_not_destroy_upper_args() {
+        let fn_name_owned = String::from("fn name");
+        let fn_name = Rc::new(fn_name_owned.clone());
+
+        let mut env = Env::new();
+        {
+            let fn_name = fn_name.clone();
+            let num_calls = 3usize;
+            let depth = ::std::cell::Cell::new(num_calls);
+
+            env.set_function(fn_name_owned, MockFnRecursive::new(move |env| {
+                let num_calls = depth.get().saturating_sub(1);
+
+                if num_calls != 0 {
+                    depth.set(num_calls);
+                    let cur_args: Vec<_> = env.args().iter().cloned().collect();
+
+                    let mut next_args = cur_args.clone();
+                    next_args.reverse();
+                    next_args.push(Rc::new(format!("arg{}", num_calls)));
+
+                    let ret = env.run_function(fn_name.clone(), next_args).unwrap();
+                    assert_eq!(cur_args, env.args());
+                    ret
+                } else {
+                    Ok(EXIT_SUCCESS)
+                }
+            }));
+        }
+
+        assert!(env.run_function(fn_name.clone(), vec!(
+            Rc::new(String::from("first")),
+            Rc::new(String::from("second")),
+            Rc::new(String::from("third")),
+        )).unwrap().unwrap().success());
+    }
+
+    #[test]
+    fn test_env_inherit_env_vars_if_not_overridden() {
+        let env = Env::new();
+
+        let mut vars: Vec<(String, String)> = ::std::env::vars().collect();
+        vars.sort();
+        let vars: Vec<(&str, &str)> = vars.iter().map(|&(ref k, ref v)| (&**k, &**v)).collect();
+        let mut env_vars = env.env();
+        env_vars.sort();
+        assert_eq!(vars, env_vars);
+    }
+
+    #[test]
+    fn test_env_get_env_var_visible_in_parent_and_child() {
+        let name1 = "var1";
+        let value1 = "value1";
+        let name2 = "var2";
+        let value2 = "value2";
+
+        let env_vars = {
+            let mut env_vars = vec!(
+                (name1, value1),
+                (name2, value2),
+            );
+
+            env_vars.sort();
+            env_vars
+        };
+
+        let owned_vars = env_vars.iter().map(|&(k, v)| (String::from(k), String::from(v))).collect();
+        let env = Env::with_config(None, None, Some(owned_vars));
+        let mut vars = env.env();
+        vars.sort();
+        assert_eq!(vars, env_vars);
+        let child = env.sub_env();
+        let mut vars = child.env();
+        vars.sort();
+        assert_eq!(vars, env_vars);
+    }
+
+    #[test]
+    fn test_env_set_get_and_close_file_desc() {
+        let fd = STDIN_FILENO;
+        let perms = Permissions::ReadWrite;
+        let file_desc = Rc::new(file_desc());
+
+        let mut env = Env::new();
+        assert!(env.file_desc(fd).is_none());
+        env.set_file_desc(fd, file_desc.clone(), perms);
+        {
+            let (got_file_desc, got_perms) = env.file_desc(fd).unwrap();
+            assert_eq!(got_perms, perms);
+            assert_eq!(&**got_file_desc as *const _, &*file_desc as *const _);
+        }
+        env.close_file_desc(fd);
+        assert!(env.file_desc(fd).is_none());
+    }
+
+    #[test]
+    fn test_env_set_file_desc_in_parent_visible_in_child() {
+        let fd = STDIN_FILENO;
+        let perms = Permissions::ReadWrite;
+        let file_desc = Rc::new(file_desc());
+
+        let mut env = Env::new();
+        env.set_file_desc(fd, file_desc.clone(), perms);
+        let child = env.sub_env();
+        let (got_file_desc, got_perms) = child.file_desc(fd).unwrap();
+        assert_eq!(got_perms, perms);
+        assert_eq!(&**got_file_desc as *const _, &*file_desc as *const _);
+    }
+
+    #[test]
+    fn test_env_set_file_desc_in_child_should_not_affect_parent() {
+        let fd = STDIN_FILENO;
+
+        let parent = Env::new();
+        assert!(parent.file_desc(fd).is_none());
+        {
+            let perms = Permissions::ReadWrite;
+            let file_desc = Rc::new(file_desc());
+            let mut child = parent.sub_env();
+            child.set_file_desc(fd, file_desc.clone(), perms);
+            let (got_file_desc, got_perms) = child.file_desc(fd).unwrap();
+            assert_eq!(got_perms, perms);
+            assert_eq!(&**got_file_desc as *const _, &*file_desc as *const _);
+        }
+        assert!(parent.file_desc(fd).is_none());
+    }
+
+    #[test]
+    fn test_env_close_file_desc_in_child_should_not_affect_parent() {
+        let fd = STDIN_FILENO;
+        let perms = Permissions::ReadWrite;
+        let file_desc = Rc::new(file_desc());
+
+        let mut parent = Env::new();
+        parent.set_file_desc(fd, file_desc.clone(), perms);
+        {
+            let mut child = parent.sub_env();
+            assert!(child.file_desc(fd).is_some());
+            child.close_file_desc(fd);
+            assert!(child.file_desc(fd).is_none());
+        }
+        let (got_file_desc, got_perms) = parent.file_desc(fd).unwrap();
+        assert_eq!(got_perms, perms);
+        assert_eq!(&**got_file_desc as *const _, &*file_desc as *const _);
     }
 }
