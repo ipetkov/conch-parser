@@ -292,7 +292,7 @@ impl<'a> Env<'a> {
     /// current process if the respective override is not provided.
     ///
     /// Unless otherwise specified, the environment's name will become
-    /// the name of the current process (e.g. the 0th OS arg).
+    /// the basename of the current process (e.g. the 0th OS arg).
     ///
     /// Unless otherwise specified, all environment variables of the
     /// current process will be inherited as environment variables
@@ -1652,6 +1652,7 @@ mod tests {
     use super::{EXIT_ERROR, EXIT_SUCCESS, STDIN_FILENO};
     use super::io::{FileDesc, Permissions};
     use super::*;
+    use syntax::ast::Parameter;
 
     struct MockFn<F: FnMut(&mut Environment) -> Result<ExitStatus>> {
         callback: RefCell<F>,
@@ -2148,5 +2149,58 @@ mod tests {
         let (got_file_desc, got_perms) = parent.file_desc(fd).unwrap();
         assert_eq!(got_perms, perms);
         assert_eq!(&**got_file_desc as *const _, &*file_desc as *const _);
+    }
+
+    #[test]
+    fn test_eval_parameter_with_set_vars() {
+        let var1 = Rc::new(String::from("var1_value"));
+        let var2 = Rc::new(String::from("var2_value"));
+        let var3 = Rc::new(String::from("var3_value"));
+
+        let arg1 = String::from("arg1_value");
+        let arg2 = String::from("arg2_value");
+        let arg3 = String::from("arg3_value");
+
+        let args = vec!(
+            arg1.clone(),
+            arg2.clone(),
+            arg3.clone(),
+        );
+
+        let mut env = Env::with_config(None, Some(args.clone()), None);
+        env.set_var(String::from("var1"), var1.clone());
+        env.set_var(String::from("var2"), var2.clone());
+        env.set_var(String::from("var3"), var3.clone());
+
+        let args: Vec<Rc<String>> = args.into_iter().map(Rc::new).collect();
+        assert_eq!(Parameter::At.eval(&mut env), Some(Fields::At(args.clone())));
+        assert_eq!(Parameter::Star.eval(&mut env), Some(Fields::Star(args.clone())));
+
+        assert_eq!(Parameter::Dollar.eval(&mut env), Some(Fields::Single(Rc::new(unsafe {
+            ::libc::getpid().to_string()
+        }))));
+
+        // FIXME: test these
+        //assert_eq!(Parameter::Dash.eval(&mut env), ...);
+        //assert_eq!(Parameter::Bang.eval(&mut env), ...);
+
+        // Before anything is run it should be considered a success
+        assert_eq!(Parameter::Question.eval(&mut env), Some(Fields::Single(Rc::new(String::from("0")))));
+        env.set_last_status(ExitStatus::Code(3));
+        assert_eq!(Parameter::Question.eval(&mut env), Some(Fields::Single(Rc::new(String::from("3")))));
+        // Signals should have 128 added to them
+        env.set_last_status(ExitStatus::Signal(5));
+        assert_eq!(Parameter::Question.eval(&mut env), Some(Fields::Single(Rc::new(String::from("133")))));
+
+        assert_eq!(Parameter::Positional(0).eval(&mut env), Some(Fields::Single(env.name().clone())));
+        assert_eq!(Parameter::Positional(1).eval(&mut env), Some(Fields::Single(Rc::new(arg1))));
+        assert_eq!(Parameter::Positional(2).eval(&mut env), Some(Fields::Single(Rc::new(arg2))));
+        assert_eq!(Parameter::Positional(3).eval(&mut env), Some(Fields::Single(Rc::new(arg3))));
+
+        assert_eq!(Parameter::Var(String::from("var1")).eval(&mut env), Some(Fields::Single(var1.clone())));
+        assert_eq!(Parameter::Var(String::from("var2")).eval(&mut env), Some(Fields::Single(var2.clone())));
+        assert_eq!(Parameter::Var(String::from("var3")).eval(&mut env), Some(Fields::Single(var3.clone())));
+
+        assert_eq!(Parameter::Pound.eval(&mut env), Some(Fields::Single(Rc::new(String::from("3")))));
     }
 }
