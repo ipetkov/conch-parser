@@ -78,6 +78,31 @@ pub enum RuntimeError {
     RedirectBadFdPerms(Fd, Permissions /* new perms */),
 }
 
+impl ::std::cmp::Eq for RuntimeError {}
+impl ::std::cmp::PartialEq<RuntimeError> for RuntimeError {
+    fn eq(&self, other: &Self) -> bool {
+        use self::RuntimeError::*;
+
+        match (self, other) {
+            (&Io(ref a),                   &Io(ref b))        => a.kind() == b.kind(),
+            (&DivideByZero,                &DivideByZero)     => true,
+            (&NegativeExponent,            &NegativeExponent) => true,
+
+            (&BadAssig(ref a),             &BadAssig(ref b))             => a == b,
+            (&CommandNotFound(ref a),      &CommandNotFound(ref b))      => a == b,
+            (&CommandNotExecutable(ref a), &CommandNotExecutable(ref b)) => a == b,
+            (&Unimplemented(ref a),        &Unimplemented(ref b))        => a == b,
+            (&RedirectAmbiguous(ref a),    &RedirectAmbiguous(ref b))    => a == b,
+            (&RedirectBadFdSrc(ref a),     &RedirectBadFdSrc(ref b))     => a == b,
+
+            (&EmptyParameter(ref a1, ref a2),     &EmptyParameter(ref b1, ref b2))     => a1 == b1 && a2 == b2,
+            (&RedirectBadFdPerms(ref a1, ref a2), &RedirectBadFdPerms(ref b1, ref b2)) => a1 == b1 && a2 == b2,
+
+            _ => false,
+        }
+    }
+}
+
 impl Error for RuntimeError {
     fn description(&self) -> &str {
         match *self {
@@ -1652,7 +1677,7 @@ mod tests {
     use super::{EXIT_ERROR, EXIT_SUCCESS, STDIN_FILENO};
     use super::io::{FileDesc, Permissions};
     use super::*;
-    use syntax::ast::Parameter;
+    use syntax::ast::{Arith, Parameter};
 
     struct MockFn<F: FnMut(&mut Environment) -> Result<ExitStatus>> {
         callback: RefCell<F>,
@@ -2202,5 +2227,136 @@ mod tests {
         assert_eq!(Parameter::Var(String::from("var3")).eval(&mut env), Some(Fields::Single(var3.clone())));
 
         assert_eq!(Parameter::Pound.eval(&mut env), Some(Fields::Single(Rc::new(String::from("3")))));
+    }
+
+    #[test]
+    fn test_eval_arith() {
+        use ::std::isize::MAX;
+
+        macro_rules! lit {
+            ($lit:expr) => { Box::new(Arith::Literal($lit)) }
+        }
+
+        let mut env = Env::new();
+        let env = &mut env;
+        let var = String::from("var name");
+        let var_value = 10;
+        let var_string = String::from("var string");
+        let var_string_value = "asdf";
+
+        env.set_var(var.clone(),        Rc::new(String::from(var_value.to_string())));
+        env.set_var(var_string.clone(), Rc::new(String::from(var_string_value.to_string())));
+
+        assert_eq!(Arith::Literal(5).eval(env), Ok(5));
+
+        assert_eq!(Arith::Var(var.clone()).eval(env), Ok(var_value));
+        assert_eq!(Arith::Var(var_string.clone()).eval(env), Ok(0));
+        assert_eq!(Arith::Var(String::from("missing var")).eval(env), Ok(0));
+
+        assert_eq!(Arith::PostIncr(var.clone()).eval(env), Ok(var_value));
+        assert_eq!(&**env.var(&var).unwrap(), &*(var_value + 1).to_string());
+        assert_eq!(Arith::PostDecr(var.clone()).eval(env), Ok(var_value + 1));
+        assert_eq!(&**env.var(&var).unwrap(), &*var_value.to_string());
+
+        assert_eq!(Arith::PreIncr(var.clone()).eval(env), Ok(var_value + 1));
+        assert_eq!(&**env.var(&var).unwrap(), &*(var_value + 1).to_string());
+        assert_eq!(Arith::PreDecr(var.clone()).eval(env), Ok(var_value));
+        assert_eq!(&**env.var(&var).unwrap(), &*var_value.to_string());
+
+        assert_eq!(Arith::UnaryPlus(lit!(5)).eval(env), Ok(5));
+        assert_eq!(Arith::UnaryPlus(lit!(-5)).eval(env), Ok(5));
+
+        assert_eq!(Arith::UnaryMinus(lit!(5)).eval(env), Ok(-5));
+        assert_eq!(Arith::UnaryMinus(lit!(-5)).eval(env), Ok(5));
+
+        assert_eq!(Arith::BitwiseNot(lit!(5)).eval(env), Ok(!5));
+        assert_eq!(Arith::BitwiseNot(lit!(0)).eval(env), Ok(!0));
+
+        assert_eq!(Arith::LogicalNot(lit!(5)).eval(env), Ok(0));
+        assert_eq!(Arith::LogicalNot(lit!(0)).eval(env), Ok(1));
+
+        assert_eq!(Arith::Less(lit!(1), lit!(1)).eval(env), Ok(0));
+        assert_eq!(Arith::Less(lit!(1), lit!(0)).eval(env), Ok(0));
+        assert_eq!(Arith::Less(lit!(0), lit!(1)).eval(env), Ok(1));
+
+        assert_eq!(Arith::LessEq(lit!(1), lit!(1)).eval(env), Ok(1));
+        assert_eq!(Arith::LessEq(lit!(1), lit!(0)).eval(env), Ok(0));
+        assert_eq!(Arith::LessEq(lit!(0), lit!(1)).eval(env), Ok(1));
+
+        assert_eq!(Arith::Great(lit!(1), lit!(1)).eval(env), Ok(0));
+        assert_eq!(Arith::Great(lit!(1), lit!(0)).eval(env), Ok(1));
+        assert_eq!(Arith::Great(lit!(0), lit!(1)).eval(env), Ok(0));
+
+        assert_eq!(Arith::GreatEq(lit!(1), lit!(1)).eval(env), Ok(1));
+        assert_eq!(Arith::GreatEq(lit!(1), lit!(0)).eval(env), Ok(1));
+        assert_eq!(Arith::GreatEq(lit!(0), lit!(1)).eval(env), Ok(0));
+
+        assert_eq!(Arith::Eq(lit!(0), lit!(1)).eval(env), Ok(0));
+        assert_eq!(Arith::Eq(lit!(1), lit!(1)).eval(env), Ok(1));
+
+        assert_eq!(Arith::NotEq(lit!(0), lit!(1)).eval(env), Ok(1));
+        assert_eq!(Arith::NotEq(lit!(1), lit!(1)).eval(env), Ok(0));
+
+        assert_eq!(Arith::Pow(lit!(4), lit!(3)).eval(env), Ok(64));
+        assert_eq!(Arith::Pow(lit!(4), lit!(0)).eval(env), Ok(1));
+        assert_eq!(Arith::Pow(lit!(4), lit!(-2)).eval(env), Err(RuntimeError::NegativeExponent));
+
+        assert_eq!(Arith::Div(lit!(6), lit!(2)).eval(env), Ok(3));
+        assert_eq!(Arith::Div(lit!(1), lit!(0)).eval(env), Err(RuntimeError::DivideByZero));
+
+        assert_eq!(Arith::Modulo(lit!(6), lit!(5)).eval(env), Ok(1));
+        assert_eq!(Arith::Modulo(lit!(1), lit!(0)).eval(env), Err(RuntimeError::DivideByZero));
+
+        assert_eq!(Arith::Mult(lit!(3), lit!(2)).eval(env), Ok(6));
+        assert_eq!(Arith::Mult(lit!(1), lit!(0)).eval(env), Ok(0));
+
+        assert_eq!(Arith::Add(lit!(3), lit!(2)).eval(env), Ok(5));
+        assert_eq!(Arith::Add(lit!(1), lit!(0)).eval(env), Ok(1));
+
+        assert_eq!(Arith::Sub(lit!(3), lit!(2)).eval(env), Ok(1));
+        assert_eq!(Arith::Sub(lit!(0), lit!(1)).eval(env), Ok(-1));
+
+        assert_eq!(Arith::ShiftLeft(lit!(4), lit!(3)).eval(env), Ok(32));
+
+        assert_eq!(Arith::ShiftRight(lit!(32), lit!(2)).eval(env), Ok(8));
+
+        assert_eq!(Arith::BitwiseAnd(lit!(135), lit!(97)).eval(env), Ok(1));
+        assert_eq!(Arith::BitwiseAnd(lit!(135), lit!(0)).eval(env), Ok(0));
+        assert_eq!(Arith::BitwiseAnd(lit!(135), lit!(MAX)).eval(env), Ok(135));
+
+        assert_eq!(Arith::BitwiseXor(lit!(135), lit!(150)).eval(env), Ok(17));
+        assert_eq!(Arith::BitwiseXor(lit!(135), lit!(0)).eval(env), Ok(135));
+        assert_eq!(Arith::BitwiseXor(lit!(135), lit!(MAX)).eval(env), Ok(135 ^ MAX));
+
+        assert_eq!(Arith::BitwiseOr(lit!(135), lit!(97)).eval(env), Ok(231));
+        assert_eq!(Arith::BitwiseOr(lit!(135), lit!(0)).eval(env), Ok(135));
+        assert_eq!(Arith::BitwiseOr(lit!(135), lit!(MAX)).eval(env), Ok(MAX));
+
+        assert_eq!(Arith::LogicalAnd(lit!(135), lit!(97)).eval(env), Ok(1));
+        assert_eq!(Arith::LogicalAnd(lit!(135), lit!(0)).eval(env), Ok(0));
+        assert_eq!(Arith::LogicalAnd(lit!(0), lit!(0)).eval(env), Ok(0));
+
+        assert_eq!(Arith::LogicalOr(lit!(135), lit!(97)).eval(env), Ok(1));
+        assert_eq!(Arith::LogicalOr(lit!(135), lit!(0)).eval(env), Ok(1));
+        assert_eq!(Arith::LogicalOr(lit!(0), lit!(0)).eval(env), Ok(0));
+
+        assert_eq!(Arith::Ternary(lit!(2), lit!(4), lit!(5)).eval(env), Ok(4));
+        assert_eq!(Arith::Ternary(lit!(0), lit!(4), lit!(5)).eval(env), Ok(5));
+
+        assert_eq!(&**env.var(&var).unwrap(), &*(var_value).to_string());
+        assert_eq!(Arith::Assign(var.clone(), lit!(42)).eval(env), Ok(42));
+        assert_eq!(&**env.var(&var).unwrap(), "42");
+
+        assert_eq!(Arith::Sequence(vec!(
+            Arith::Assign(String::from("x"), lit!(5)),
+            Arith::Assign(String::from("y"), lit!(10)),
+            Arith::Add(
+                Box::new(Arith::PreIncr(String::from("x"))),
+                Box::new(Arith::PostDecr(String::from("y")))
+            ),
+        )).eval(env), Ok(16));
+
+        assert_eq!(&**env.var("x").unwrap(), "6");
+        assert_eq!(&**env.var("y").unwrap(), "9");
     }
 }
