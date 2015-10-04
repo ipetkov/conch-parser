@@ -67,6 +67,20 @@ impl FileDesc {
     pub fn duplicate(&self) -> Result<Self> {
         self.0.duplicate().map(FileDesc)
     }
+
+    // Performs a read operation on the underlying OS handle without
+    // guaranteeing the caller has unique access to it.
+    #[doc(hidden)]
+    pub unsafe fn unsafe_read(&self, buf: &mut [u8]) -> Result<usize> {
+        self.0.unsafe_read(buf)
+    }
+
+    // Performs a write operation on the underlying OS handle without
+    // guaranteeing the caller has unique access to it.
+    #[doc(hidden)]
+    pub unsafe fn unsafe_write(&self, buf: &[u8]) -> Result<usize> {
+        self.0.unsafe_write(buf)
+    }
 }
 
 impl Into<Stdio> for FileDesc {
@@ -87,8 +101,35 @@ impl Write for FileDesc {
     fn flush(&mut self) -> Result<()> { Ok(()) }
 }
 
-/// Creates and returns a `(reader, writer)` pipe pair.
-pub fn pipe() -> Result<(FileDesc, FileDesc)> {
-    let (reader, writer) = try!(os::pipe());
-    Ok((FileDesc(reader), FileDesc(writer)))
+/// A wrapper for a reader and writer OS pipe pair.
+pub struct Pipe {
+    pub reader: FileDesc,
+    pub writer: FileDesc,
+}
+
+impl Pipe {
+    /// Creates and returns a new pipe pair.
+    pub fn new() -> Result<Pipe> {
+        let (reader, writer) = try!(os::pipe());
+        Ok(Pipe {
+            reader: FileDesc(reader),
+            writer: FileDesc(writer),
+        })
+    }
+}
+
+impl Read for Pipe {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        self.reader.read(buf)
+    }
+}
+
+impl Write for Pipe {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> {
+        self.writer.write(buf)
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        self.writer.flush()
+    }
 }

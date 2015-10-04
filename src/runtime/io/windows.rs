@@ -89,14 +89,24 @@ impl RawIo {
     }
 
     /// Reads from the underlying HANDLE.
-    // Taken from rust: libstd/sys/windows/handle.rs
     pub fn read(&self, buf: &mut [u8]) -> Result<usize> {
+        unsafe { self.unsafe_read(buf) }
+    }
+
+    /// Writes to the underlying HANDLE.
+    pub fn write(&self, buf: &[u8]) -> Result<usize> {
+        unsafe { self.unsafe_write(buf) }
+    }
+
+    // Performs a read operation on the underlying HANDLE without
+    // guaranteeing the caller has unique access to it.
+    // Taken from rust: libstd/sys/windows/handle.rs
+    #[doc(hidden)]
+    pub unsafe fn unsafe_read(&self, buf: &mut [u8]) -> Result<usize> {
         let mut read = 0;
-        let res = cvt(unsafe {
-            libc::ReadFile(self.handle, buf.as_ptr() as libc::LPVOID,
-                           buf.len() as libc::DWORD, &mut read,
-                           ptr::null_mut())
-        });
+        let res = cvt(libc::ReadFile(self.handle, buf.as_ptr() as libc::LPVOID,
+                                     buf.len() as libc::DWORD, &mut read,
+                                     ptr::null_mut()));
 
         match res {
             Ok(_) => Ok(read as usize),
@@ -111,15 +121,15 @@ impl RawIo {
         }
     }
 
-    /// Writes to the underlying HANDLE.
+    // Performs a write operation on the underlying HANDLE without
+    // guaranteeing the caller has unique access to it.
     // Taken from rust: libstd/sys/windows/handle.rs
-    pub fn write(&self, buf: &[u8]) -> Result<usize> {
+    #[doc(hidden)]
+    pub unsafe fn unsafe_write(&self, buf: &[u8]) -> Result<usize> {
         let mut amt = 0;
-        try!(cvt(unsafe {
-            libc::WriteFile(self.handle, buf.as_ptr() as libc::LPVOID,
-                            buf.len() as libc::DWORD, &mut amt,
-                            ptr::null_mut())
-        }));
+        try!(cvt(libc::WriteFile(self.handle, buf.as_ptr() as libc::LPVOID,
+                                 buf.len() as libc::DWORD, &mut amt,
+                                 ptr::null_mut())));
         Ok(amt as usize)
     }
 }
@@ -148,7 +158,7 @@ pub fn pipe() -> Result<(RawIo, RawIo)> {
     unsafe {
         let mut reader = 0;
         let mut writer = 0;
-        try!(cvt(|| { CreatePipe(&mut reader, &mut writer, ptr::null(), 0) }));
+        try!(cvt(CreatePipe(&mut reader, &mut writer, ptr::null(), 0)));
         Ok((RawIo::new(reader), RawIo::new(writer)))
     }
 }

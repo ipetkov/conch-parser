@@ -75,24 +75,34 @@ impl RawIo {
     }
 
     /// Reads from the underlying file descriptor.
-    // Taken from rust: libstd/sys/unix/fd.rs
     pub fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let ret = try!(cvt(unsafe {
-            libc::read(self.fd,
-                       buf.as_mut_ptr() as *mut c_void,
-                       buf.len() as size_t)
-        }));
-        Ok(ret as usize)
+        unsafe { self.unsafe_read(buf) }
     }
 
     /// Writes to the underlying file descriptor.
-    // Taken from rust: libstd/sys/unix/fd.rs
     pub fn write(&mut self, buf: &[u8]) -> Result<usize> {
-        let ret = try!(cvt(unsafe {
-            libc::write(self.fd,
-                        buf.as_ptr() as *const c_void,
-                        buf.len() as size_t)
-        }));
+        unsafe { self.unsafe_write(buf) }
+    }
+
+    // Performs a read operation on the underlying file descriptor without
+    // guaranteeing the caller has unique access to it.
+    // Taken from rust: libstd/sys/unix/fd.rs
+    #[doc(hidden)]
+    pub unsafe fn unsafe_read(&self, buf: &mut [u8]) -> Result<usize> {
+        let ret = try!(cvt(libc::read(self.fd,
+                                      buf.as_mut_ptr() as *mut c_void,
+                                      buf.len() as size_t)));
+        Ok(ret as usize)
+    }
+
+    // Performs a write operation on the underlying file descriptor without
+    // guaranteeing the caller has unique access to it.
+    // Taken from rust: libstd/sys/unix/fd.rs
+    #[doc(hidden)]
+    pub unsafe fn unsafe_write(&self, buf: &[u8]) -> Result<usize> {
+        let ret = try!(cvt(libc::write(self.fd,
+                                       buf.as_ptr() as *const c_void,
+                                       buf.len() as size_t)));
         Ok(ret as usize)
     }
 }

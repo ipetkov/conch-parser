@@ -39,9 +39,9 @@ const EXIT_SIGNAL_OFFSET: u32 = 128;
 
 const IFS_DEFAULT: &'static str = " \t\n";
 
-const STDIN_FILENO: Fd = 0;
-const STDOUT_FILENO: Fd = 1;
-const STDERR_FILENO: Fd = 2;
+pub const STDIN_FILENO: Fd = 0;
+pub const STDOUT_FILENO: Fd = 1;
+pub const STDERR_FILENO: Fd = 2;
 
 /// A specialized `Result` type for shell runtime operations.
 pub type Result<T> = ::std::result::Result<T, RuntimeError>;
@@ -419,8 +419,27 @@ pub trait Environment {
     fn close_file_desc(&mut self, fd: Fd);
     /// Consumes `RuntimeError`s and reports them as appropriate, e.g. print to stderr.
     fn report_error(&mut self, err: RuntimeError) {
+        // We *could* duplicate the handle here and ensure that we are the only
+        // owners of that *copy*, but it won't make much difference. On Unix
+        // sytems file descriptor duplication is effectively just an alias, and
+        // we really *do* want to write into whatever stderr is. Plus our error
+        // description should safely fall well within the system's size for atomic
+        // writes so we (hopefully) shouldn't observe any interleaving of data.
+        //
+        // Tl;dr: duplicating the handle won't offer us any extra safety, so we
+        // can avoid the overhead.
         self.file_desc(STDERR_FILENO).map(|(fd, _)| {
-            (&*fd).duplicate().and_then(|mut fd| write!(fd, "{}: {}", self.name(), err))
+            let msg = format!("{}: {}", self.name(), err).into_bytes();
+            let mut buf = &*msg;
+
+            while !buf.is_empty() {
+                match unsafe { fd.unsafe_write(buf) } {
+                    Ok(0) => break, // Looks like we failed to write anything, so we'll give up
+                    Ok(n) => buf = &buf[n..],
+                    Err(ref e) if e.kind() == IoErrorKind::Interrupted => {}
+                    Err(_) => break,
+                }
+            }
         });
     }
 }
@@ -1672,9 +1691,11 @@ impl Run for [AstCommand] {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::io::{Read, Write};
     use std::rc::Rc;
     use std::fs::OpenOptions;
-    use super::{EXIT_ERROR, EXIT_SUCCESS, STDIN_FILENO};
+    use std::thread;
+    use super::{EXIT_ERROR, EXIT_SUCCESS};
     use super::io::{FileDesc, Permissions};
     use super::*;
     use syntax::ast::{Arith, Parameter};
@@ -1898,7 +1919,7 @@ mod tests {
 
         env.set_function(fn_name_owned, MockFn::new(move |_| Ok(exit)));
         assert_eq!(env.has_function(&*fn_name), true);
-        assert_eq!(env.run_function(fn_name, vec!()).unwrap().unwrap(), exit);
+        assert_eq!(env.run_function(fn_name, vec!()), Some(Ok(exit)));
     }
 
     #[test]
@@ -1913,7 +1934,7 @@ mod tests {
         {
             let mut child = parent.sub_env();
             assert_eq!(child.has_function(&*fn_name), true);
-            assert_eq!(child.run_function(fn_name, vec!()).unwrap().unwrap(), exit);
+            assert_eq!(child.run_function(fn_name, vec!()), Some(Ok(exit)));
         }
     }
 
@@ -1929,7 +1950,7 @@ mod tests {
             let mut child = parent.sub_env();
             child.set_function(fn_name_owned, MockFn::new(move |_| Ok(exit)));
             assert_eq!(child.has_function(&*fn_name), true);
-            assert_eq!(child.run_function(fn_name.clone(), vec!()).unwrap().unwrap(), exit);
+            assert_eq!(child.run_function(fn_name.clone(), vec!()), Some(Ok(exit)));
         }
 
         assert_eq!(parent.has_function(&*fn_name), false);
@@ -2174,6 +2195,27 @@ mod tests {
         let (got_file_desc, got_perms) = parent.file_desc(fd).unwrap();
         assert_eq!(got_perms, perms);
         assert_eq!(&**got_file_desc as *const _, &*file_desc as *const _);
+    }
+
+    #[test]
+    fn test_env_report_error() {
+        let io::Pipe { mut reader, writer } = io::Pipe::new().unwrap();
+
+        let guard = thread::spawn(move || {
+            let mut env = Env::new();
+            let writer = Rc::new(writer);
+            env.set_file_desc(STDERR_FILENO, writer.clone(), Permissions::Write);
+            env.report_error(RuntimeError::DivideByZero);
+            env.close_file_desc(STDERR_FILENO);
+            let mut writer = Rc::try_unwrap(writer).unwrap();
+            writer.flush().unwrap();
+            drop(writer);
+        });
+
+        let mut msg = String::new();
+        reader.read_to_string(&mut msg).unwrap();
+        guard.join().unwrap();
+        assert!(msg.contains(&format!("{}", RuntimeError::DivideByZero)));
     }
 
     #[test]
