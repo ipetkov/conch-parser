@@ -555,7 +555,6 @@ impl Builder for DefaultBuilder {
             kind: WordKind<Command>)
         -> Result<Word, Self::Err>
     {
-        use itertools::Itertools;
         use self::ParameterSubstitutionKind::*;
 
         macro_rules! map {
@@ -567,16 +566,66 @@ impl Builder for DefaultBuilder {
             }
         }
 
-        macro_rules! compress {
-            ($vec:expr) => {
-                $vec.into_iter().flat_map(|w| match w {
-                    WordKind::Concat(v) => v.into_iter(),
-                    w => vec!(w).into_iter(),
-                }).coalesce(coalesce)
+        struct Coalesce<I: Iterator, F> {
+            iter: I,
+            cur: Option<I::Item>,
+            func: F,
+        }
+
+        impl<I: Iterator, F> Coalesce<I, F> {
+            fn new(iter: I, func: F) -> Self {
+                Coalesce {
+                    iter: iter,
+                    cur: None,
+                    func: func,
+                }
             }
         }
 
-        fn coalesce(a: WordKind<ast::Command>, b: WordKind<ast::Command>)
+        impl<I, F> Iterator for Coalesce<I, F>
+            where I: Iterator,
+                  F: FnMut(I::Item, I::Item) -> Result<I::Item, (I::Item, I::Item)> {
+            type Item = I::Item;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                let cur = self.cur.take().or_else(|| self.iter.next());
+                let (mut left, mut right) = match (cur, self.iter.next()) {
+                    (Some(l), Some(r)) => (l, r),
+                    (Some(l), None) |
+                    (None, Some(l)) => return Some(l),
+                    (None, None) => return None,
+                };
+
+                loop {
+                    match (self.func)(left, right) {
+                        Ok(combined) => match self.iter.next() {
+                            Some(next) => {
+                                left = combined;
+                                right = next;
+                            },
+                            None => return Some(combined),
+                        },
+
+                        Err((left, right)) => {
+                            debug_assert!(self.cur.is_none());
+                            self.cur = Some(right);
+                            return Some(left);
+                        },
+                    }
+                }
+            }
+        }
+
+        macro_rules! compress {
+            ($vec:expr) => {
+                Coalesce::new($vec.into_iter().flat_map(|w| match w {
+                    WordKind::Concat(v) => v.into_iter(),
+                    w => vec!(w).into_iter(),
+                }), coalesce_fn)
+            }
+        }
+
+        fn coalesce_fn(a: WordKind<ast::Command>, b: WordKind<ast::Command>)
             -> Result<WordKind<ast::Command>, (WordKind<ast::Command>, WordKind<ast::Command>)>
         {
             match (a, b) {

@@ -4,7 +4,6 @@
 #![cfg_attr(feature = "runtime", feature(zero_one))]
 
 #[cfg(feature = "runtime")] extern crate glob;
-extern crate itertools;
 #[cfg(feature = "runtime")] extern crate libc;
 extern crate void;
 

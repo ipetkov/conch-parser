@@ -7,7 +7,6 @@ authors = ["Ivan Petkov <ivanppetkov@gmail.com>"]
 runtime = ["glob", "libc"]
 
 [dependencies]
-itertools = "0.3"
 void = "*"
 
 [dependencies.glob]
