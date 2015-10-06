@@ -1267,37 +1267,35 @@ impl Redirect {
             Ok((dst_fd, Some((src_fdes, perms))))
         };
 
+        let open_path_with_options = |path, env, fd, options: OpenOptions, permissions|
+            -> Result<(Fd, Option<(Rc<FileDesc>, Permissions)>)>
+        {
+            let file = try!(options.open(&**try!(eval_path(path, env)))).into();
+            Ok((fd, Some((Rc::new(file), permissions))))
+        };
+
+        let open_path = |path, env, fd, permissions: Permissions| ->
+            Result<(Fd, Option<(Rc<FileDesc>, Permissions)>)>
+        {
+            open_path_with_options(path, env, fd, permissions.into(), permissions)
+        };
+
         let ret = match *self {
-            Redirect::Read(fd, ref path) |
-            Redirect::ReadWrite(fd, ref path) => {
-                let mut options = OpenOptions::new();
-                options.read(true);
+            Redirect::Read(fd, ref path) =>
+                try!(open_path(path, env, fd.unwrap_or(STDIN_FILENO), Permissions::Read)),
 
-                let perms = if let Redirect::ReadWrite(_, _) = *self {
-                    options.write(true).create(true);
-                    Permissions::ReadWrite
-                } else {
-                    Permissions::Read
-                };
-
-                let file = try!(options.open(&**try!(eval_path(path, env)))).into();
-                (fd.unwrap_or(STDIN_FILENO), Some((Rc::new(file), perms)))
-            },
+            Redirect::ReadWrite(fd, ref path) =>
+                try!(open_path(path, env, fd.unwrap_or(STDIN_FILENO), Permissions::ReadWrite)),
 
             Redirect::Write(fd, ref path) |
-            Redirect::Clobber(fd, ref path) |
+            Redirect::Clobber(fd, ref path) =>
+                try!(open_path(path, env, fd.unwrap_or(STDOUT_FILENO), Permissions::Write)),
+
             Redirect::Append(fd, ref path) => {
-                let mut options = OpenOptions::new();
-                options.write(true).create(true);
-
-                if let Redirect::Append(_, _) = *self {
-                    options.append(true);
-                } else {
-                    options.truncate(true);
-                }
-
-                let file = try!(options.open(&**try!(eval_path(path, env)))).into();
-                (fd.unwrap_or(STDOUT_FILENO), Some((Rc::new(file), Permissions::Write)))
+                let perms = Permissions::Write;
+                let mut options: OpenOptions = perms.into();
+                options.append(true);
+                try!(open_path_with_options(path, env, fd.unwrap_or(STDOUT_FILENO), options, perms))
             },
 
             Redirect::DupRead(fd, ref src)  => try!(dup_fd(fd.unwrap_or(STDIN_FILENO), src, true, env)),

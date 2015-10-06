@@ -6,7 +6,9 @@
 #[path = "windows.rs"] mod os;
 
 use std::fmt;
+use std::fs;
 use std::io::{Read, Result, Write};
+use std::path;
 use std::process::Stdio;
 
 /// An indicator of the read/write permissions of an OS file primitive.
@@ -18,6 +20,18 @@ pub enum Permissions {
     Write,
     /// A file was opened for both reading and writing.
     ReadWrite,
+}
+
+impl Into<fs::OpenOptions> for Permissions {
+    fn into(self) -> fs::OpenOptions {
+        let mut options = fs::OpenOptions::new();
+        match self {
+            Permissions::Read => options.read(true),
+            Permissions::Write => options.write(true).create(true).truncate(true),
+            Permissions::ReadWrite => options.read(true).write(true).create(true),
+        };
+        options
+    }
 }
 
 impl Permissions {
@@ -35,6 +49,11 @@ impl Permissions {
             Permissions::Write |
             Permissions::ReadWrite => true,
         }
+    }
+
+    pub fn open<P: AsRef<path::Path>>(self, path: P) -> Result<fs::File> {
+        let options: fs::OpenOptions = self.into();
+        options.open(path)
     }
 }
 
