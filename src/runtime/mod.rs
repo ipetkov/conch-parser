@@ -288,7 +288,7 @@ pub struct Env<'a> {
     /// The function bodies are stored as `Option`s to properly distinguish functions
     /// that were explicitly unset and functions that are simply defined in a parent
     /// environment.
-    functions: HashMap<String, Option<Rc<Box<Run>>>>,
+    functions: HashMap<String, Option<Rc<Run>>>,
     /// A mapping of variable names to their values.
     ///
     /// The values are stored as `Option`s to properly distinguish variables that were
@@ -398,7 +398,7 @@ pub trait Environment {
     /// Attempt to execute a function with a set of arguments if it has been defined.
     fn run_function(&mut self, fn_name: Rc<String>, args: Vec<Rc<String>>) -> Option<Result<ExitStatus>>;
     /// Define a function with some `Run`able body.
-    fn set_function(&mut self, name: String, func: Box<Run>);
+    fn set_function(&mut self, name: String, func: Rc<Run>);
     /// Get the exit status of the previous command.
     fn last_status(&self) -> ExitStatus;
     /// Set the exit status of the previously run command.
@@ -505,8 +505,8 @@ impl<'a> Environment for Env<'a> {
         Some(ret)
     }
 
-    fn set_function(&mut self, name: String, func: Box<Run>) {
-        self.functions.insert(name, Some(Rc::new(func)));
+    fn set_function(&mut self, name: String, func: Rc<Run>) {
+        self.functions.insert(name, Some(func));
     }
 
     fn last_status(&self) -> ExitStatus {
@@ -1694,8 +1694,8 @@ mod tests {
     }
 
     impl<F: FnMut(&mut Environment) -> Result<ExitStatus>> MockFn<F> {
-        fn new(f: F) -> Box<Self> {
-            Box::new(MockFn { callback: RefCell::new(f) })
+        fn new(f: F) -> Rc<Self> {
+            Rc::new(MockFn { callback: RefCell::new(f) })
         }
     }
 
@@ -1710,8 +1710,8 @@ mod tests {
     }
 
     impl<F: Fn(&mut Environment) -> Result<ExitStatus>> MockFnRecursive<F> {
-        fn new(f: F) -> Box<Self> {
-            Box::new(MockFnRecursive { callback: f })
+        fn new(f: F) -> Rc<Self> {
+            Rc::new(MockFnRecursive { callback: f })
         }
     }
 

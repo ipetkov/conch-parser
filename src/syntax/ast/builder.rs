@@ -11,6 +11,7 @@
 
 use std::cmp::{PartialEq, Eq};
 use std::error::Error;
+use std::rc::Rc;
 use syntax::ast::{self, Arith, Command, CompoundCommand, Parameter};
 use syntax::ast::{ParameterSubstitution, SimpleCommand, Redirect, Word};
 
@@ -539,7 +540,7 @@ impl Builder for DefaultBuilder {
                             body: Command)
         -> Result<Command, Self::Err>
     {
-        Ok(Command::Function(name, Box::new(body)))
+        Ok(Command::Function(name, Rc::new(body)))
     }
 
     /// Ignored by the builder.

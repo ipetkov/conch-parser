@@ -2573,6 +2573,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
 #[cfg(test)]
 pub mod test {
+    use std::rc::Rc;
     use syntax::lexer::Lexer;
 
     use syntax::ast::*;
@@ -5083,7 +5084,7 @@ pub mod test {
     fn test_function_declaration_valid() {
         let correct = Command::Function(
             String::from("foo"),
-            Box::new(Compound(
+            Rc::new(Compound(
                 Box::new(CompoundCommand::Brace(vec!(Simple(Box::new(SimpleCommand {
                     cmd: Some((Word::Literal(String::from("echo")), vec!(
                         Word::Literal(String::from("body"))
@@ -5120,7 +5121,7 @@ pub mod test {
     fn test_function_declaration_valid_body_need_not_be_a_compound_command() {
         let correct = Command::Function(
             String::from("foo"),
-            Box::new(Simple(Box::new(SimpleCommand {
+            Rc::new(Simple(Box::new(SimpleCommand {
                 cmd: Some((Word::Literal(String::from("echo")), vec!(
                     Word::Literal(String::from("body"))
                 ))),
@@ -5154,7 +5155,7 @@ pub mod test {
     fn test_function_declaration_parens_can_be_subshell_if_function_keyword_present() {
         let correct = Command::Function(
             String::from("foo"),
-            Box::new(Compound(
+            Rc::new(Compound(
                 Box::new(CompoundCommand::Subshell(vec!(Simple(Box::new(SimpleCommand {
                     cmd: Some((Word::Literal(String::from("echo")), vec!(
                         Word::Literal(String::from("subshell"))
@@ -5964,7 +5965,7 @@ pub mod test {
             "foo(    )           { echo body; }",
         ];
 
-        let correct = Function(String::from("foo"), Box::new(Compound(Box::new(Brace(vec!(cmd_args_unboxed("echo", &["body"])))), vec!())));
+        let correct = Function(String::from("foo"), Rc::new(Compound(Box::new(Brace(vec!(cmd_args_unboxed("echo", &["body"])))), vec!())));
 
         for cmd in commands.iter() {
             match make_parser(cmd).command() {

@@ -1,5 +1,6 @@
 //! Defines abstract representations of the shell source.
 use std::fmt;
+use std::rc::Rc;
 
 pub mod builder;
 pub use syntax::ast::builder::Builder;
@@ -141,7 +142,7 @@ pub enum Command {
     Compound(Box<CompoundCommand>, Vec<Redirect>),
     /// A function declaration, associating a name with a group of commands,
     /// e.g. `function foo() { echo foo function; }`.
-    Function(String, Box<Command>),
+    Function(String, Rc<Command>),
     /// The simplest possible command: an executable with arguments,
     /// environment variable assignments, and redirections.
     Simple(Box<SimpleCommand>),
