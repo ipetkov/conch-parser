@@ -3,6 +3,7 @@
 use glob;
 use libc;
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::convert::{From, Into};
@@ -408,7 +409,7 @@ pub trait Environment {
     /// Get the number of current arguments, NOT including the shell name.
     fn args_len(&self) -> usize;
     /// Get all current arguments as a vector.
-    fn args(&self) -> &[Rc<String>];
+    fn args(&self) -> Cow<[Rc<String>]>;
     /// Get all current pairs of environment variables and their values.
     fn env(&self) -> Vec<(&str, &str)>;
     /// Get the permissions and OS handle associated with an opened file descriptor.
@@ -528,8 +529,8 @@ impl<'a> Environment for Env<'a> {
         self.args.len()
     }
 
-    fn args(&self) -> &[Rc<String>] {
-        &self.args
+    fn args(&self) -> Cow<[Rc<String>]> {
+        Cow::Borrowed(&self.args)
     }
 
     fn env(&self) -> Vec<(&str, &str)> {
@@ -2061,7 +2062,7 @@ mod tests {
                     next_args.push(Rc::new(format!("arg{}", num_calls)));
 
                     let ret = env.run_function(fn_name.clone(), next_args).unwrap();
-                    assert_eq!(cur_args, env.args());
+                    assert_eq!(&*cur_args, &*env.args());
                     ret
                 } else {
                     Ok(EXIT_SUCCESS)
