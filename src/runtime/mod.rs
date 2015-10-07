@@ -428,18 +428,8 @@ pub trait Environment {
         //
         // Tl;dr: duplicating the handle won't offer us any extra safety, so we
         // can avoid the overhead.
-        self.file_desc(STDERR_FILENO).map(|(fd, _)| {
-            let msg = format!("{}: {}", self.name(), err).into_bytes();
-            let mut buf = &*msg;
-
-            while !buf.is_empty() {
-                match unsafe { fd.unsafe_write(buf) } {
-                    Ok(0) => break, // Looks like we failed to write anything, so we'll give up
-                    Ok(n) => buf = &buf[n..],
-                    Err(ref e) if e.kind() == IoErrorKind::Interrupted => {}
-                    Err(_) => break,
-                }
-            }
+        self.file_desc(STDERR_FILENO).map(|(fd, _)| unsafe {
+            fd.unsafe_write().write_all(&format!("{}: {}", self.name(), err).into_bytes())
         });
     }
 }

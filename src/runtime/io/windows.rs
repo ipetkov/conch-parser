@@ -2,7 +2,7 @@
 
 use libc;
 use std::fs::File;
-use std::io::{Error, Result};
+use std::io::{Error, Read, Result, Write};
 use std::num::Zero;
 use std::os::windows::io::{RawHandle, FromRawHandle, IntoRawHandle};
 use std::process::Stdio;
@@ -41,11 +41,11 @@ impl FromRawHandle for FileDesc {
 }
 
 impl AsRawHandle for FileDesc {
-    fn as_raw_handle(&self) -> RawHandle { self.0.inner() }
+    fn as_raw_handle(&self) -> RawHandle { self.inner().inner() }
 }
 
 impl IntoRawHandle for FileDesc {
-    fn into_raw_handle(self) -> RawHandle { self.0.into_inner() }
+    fn into_raw_handle(self) -> RawHandle { self.into_inner().into_inner() }
 }
 
 impl From<File> for FileDesc {
@@ -89,24 +89,14 @@ impl RawIo {
     }
 
     /// Reads from the underlying HANDLE.
-    pub fn read(&self, buf: &mut [u8]) -> Result<usize> {
-        unsafe { self.unsafe_read(buf) }
-    }
-
-    /// Writes to the underlying HANDLE.
-    pub fn write(&self, buf: &[u8]) -> Result<usize> {
-        unsafe { self.unsafe_write(buf) }
-    }
-
-    // Performs a read operation on the underlying HANDLE without
-    // guaranteeing the caller has unique access to it.
     // Taken from rust: libstd/sys/windows/handle.rs
-    #[doc(hidden)]
-    pub unsafe fn unsafe_read(&self, buf: &mut [u8]) -> Result<usize> {
+    pub fn read_inner(&self, buf: &mut [u8]) -> Result<usize> {
         let mut read = 0;
-        let res = cvt(libc::ReadFile(self.handle, buf.as_ptr() as libc::LPVOID,
-                                     buf.len() as libc::DWORD, &mut read,
-                                     ptr::null_mut()));
+        let res = cvt(unsafe {
+            libc::ReadFile(self.handle, buf.as_ptr() as libc::LPVOID,
+                           buf.len() as libc::DWORD, &mut read,
+                           ptr::null_mut())
+        });
 
         match res {
             Ok(_) => Ok(read as usize),
@@ -115,23 +105,37 @@ impl RawIo {
             // pipe semantics, which yields this error when *reading* from
             // a pipe after the other end has closed; we interpret that as
             // EOF on the pipe.
-                Err(ref e) if e.kind() == ErrorKind::BrokenPipe => Ok(0),
+            Err(ref e) if e.kind() == ErrorKind::BrokenPipe => Ok(0),
 
             Err(e) => Err(e)
         }
     }
 
-    // Performs a write operation on the underlying HANDLE without
-    // guaranteeing the caller has unique access to it.
+    /// Writes to the underlying HANDLE.
     // Taken from rust: libstd/sys/windows/handle.rs
-    #[doc(hidden)]
-    pub unsafe fn unsafe_write(&self, buf: &[u8]) -> Result<usize> {
+    pub fn write_inner(&self, buf: &[u8]) -> Result<usize> {
         let mut amt = 0;
-        try!(cvt(libc::WriteFile(self.handle, buf.as_ptr() as libc::LPVOID,
-                                 buf.len() as libc::DWORD, &mut amt,
-                                 ptr::null_mut())));
+        try!(cvt(unsafe {
+            libc::WriteFile(self.handle, buf.as_ptr() as libc::LPVOID,
+                            buf.len() as libc::DWORD, &mut amt,
+                            ptr::null_mut())
+        }));
         Ok(amt as usize)
     }
+}
+
+impl Read for RawIo {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        self.read_inner(buf)
+    }
+}
+
+impl Write for RawIo {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> {
+        self.write_inner(buf)
+    }
+
+    fn flush(&mut self) -> Result<()> { Ok(()) }
 }
 
 impl Drop for RawIo {

@@ -5,6 +5,7 @@
 #[cfg(windows)]
 #[path = "windows.rs"] mod os;
 
+use std::cell::UnsafeCell;
 use std::fmt;
 use std::fs;
 use std::io::{Read, Result, Write};
@@ -66,58 +67,75 @@ impl fmt::Display for Permissions {
 /// A wrapper around an owned OS file primitive. The wrapper
 /// allows reading from or writing to the OS file primitive, and
 /// will close it once it goes out of scope.
-#[derive(Debug)]
-pub struct FileDesc(os::RawIo);
+pub struct FileDesc(UnsafeCell<os::RawIo>);
 
 impl FileDesc {
     #[cfg(unix)]
     /// Takes ownership of and wraps an OS file primitive.
     pub unsafe fn new(fd: ::std::os::unix::io::RawFd) -> Self {
-        FileDesc(os::RawIo::new(fd))
+        FileDesc(UnsafeCell::new(os::RawIo::new(fd)))
     }
 
     #[cfg(windows)]
     /// Takes ownership of and wraps an OS file primitive.
     pub unsafe fn new(handle: ::std::os::windows::io::RawHandle) -> Self {
-        FileDesc(os::RawIo::new(handle))
+        FileDesc(UnsafeCell::new(os::RawIo::new(handle)))
     }
 
     /// Duplicates the underlying OS file primitive.
     pub fn duplicate(&self) -> Result<Self> {
-        self.0.duplicate().map(FileDesc)
+        Ok(FileDesc(UnsafeCell::new(try!(self.inner().duplicate()))))
     }
 
-    // Performs a read operation on the underlying OS handle without
-    // guaranteeing the caller has unique access to it.
-    #[doc(hidden)]
-    pub unsafe fn unsafe_read(&self, buf: &mut [u8]) -> Result<usize> {
-        self.0.unsafe_read(buf)
+    /// Allows for performing read operations on the underlying OS file
+    /// handle without requiring unique access to the handle.
+    pub unsafe fn unsafe_read(&self) -> &mut Read {
+        self.inner_mut()
     }
 
-    // Performs a write operation on the underlying OS handle without
-    // guaranteeing the caller has unique access to it.
-    #[doc(hidden)]
-    pub unsafe fn unsafe_write(&self, buf: &[u8]) -> Result<usize> {
-        self.0.unsafe_write(buf)
+    /// Allows for performing write operations on the underlying OS file
+    /// handle without requiring unique access to the handle.
+    pub unsafe fn unsafe_write(&self) -> &mut Write {
+        self.inner_mut()
+    }
+
+    fn inner(&self) -> &os::RawIo {
+        unsafe { &*self.0.get() }
+    }
+
+    fn inner_mut(&self) -> &mut os::RawIo {
+        unsafe { &mut *self.0.get() }
+    }
+
+    fn into_inner(self) -> os::RawIo {
+        unsafe { self.0.into_inner() }
     }
 }
 
 impl Into<Stdio> for FileDesc {
-    fn into(self) -> Stdio { self.0.into() }
+    fn into(self) -> Stdio { self.into_inner().into() }
 }
 
 impl Read for FileDesc {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        self.0.read(buf)
+        self.inner_mut().read(buf)
     }
 }
 
 impl Write for FileDesc {
     fn write(&mut self, buf: &[u8]) -> Result<usize> {
-        self.0.write(buf)
+        self.inner_mut().write(buf)
     }
 
-    fn flush(&mut self) -> Result<()> { Ok(()) }
+    fn flush(&mut self) -> Result<()> {
+        self.inner_mut().flush()
+    }
+}
+
+impl fmt::Debug for FileDesc {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "FileDesc({:?})", self.inner())
+    }
 }
 
 /// A wrapper for a reader and writer OS pipe pair.
@@ -131,8 +149,8 @@ impl Pipe {
     pub fn new() -> Result<Pipe> {
         let (reader, writer) = try!(os::pipe());
         Ok(Pipe {
-            reader: FileDesc(reader),
-            writer: FileDesc(writer),
+            reader: FileDesc(UnsafeCell::new(reader)),
+            writer: FileDesc(UnsafeCell::new(writer)),
         })
     }
 }

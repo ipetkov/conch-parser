@@ -2,7 +2,7 @@
 
 use libc::{self, c_void, size_t};
 use std::fs::File;
-use std::io::{Error, ErrorKind, Result};
+use std::io::{Error, ErrorKind, Read, Result, Write};
 use std::num::One;
 use std::ops::Neg;
 use std::os::unix::io::{RawFd, AsRawFd, FromRawFd, IntoRawFd};
@@ -34,11 +34,11 @@ impl FromRawFd for FileDesc {
 }
 
 impl AsRawFd for FileDesc {
-    fn as_raw_fd(&self) -> RawFd { self.0.inner() }
+    fn as_raw_fd(&self) -> RawFd { self.inner().inner() }
 }
 
 impl IntoRawFd for FileDesc {
-    fn into_raw_fd(self) -> RawFd { unsafe { self.0.into_inner() } }
+    fn into_raw_fd(self) -> RawFd { unsafe { self.into_inner().into_inner() } }
 }
 
 impl From<File> for FileDesc {
@@ -75,36 +75,40 @@ impl RawIo {
     }
 
     /// Reads from the underlying file descriptor.
-    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        unsafe { self.unsafe_read(buf) }
+    // Taken from rust: libstd/sys/unix/fd.rs
+    pub fn read_inner(&self, buf: &mut [u8]) -> Result<usize> {
+        let ret = try!(cvt(unsafe {
+            libc::read(self.fd,
+                       buf.as_mut_ptr() as *mut c_void,
+                       buf.len() as size_t)
+        }));
+        Ok(ret as usize)
     }
 
     /// Writes to the underlying file descriptor.
-    pub fn write(&mut self, buf: &[u8]) -> Result<usize> {
-        unsafe { self.unsafe_write(buf) }
-    }
-
-    // Performs a read operation on the underlying file descriptor without
-    // guaranteeing the caller has unique access to it.
     // Taken from rust: libstd/sys/unix/fd.rs
-    #[doc(hidden)]
-    pub unsafe fn unsafe_read(&self, buf: &mut [u8]) -> Result<usize> {
-        let ret = try!(cvt(libc::read(self.fd,
-                                      buf.as_mut_ptr() as *mut c_void,
-                                      buf.len() as size_t)));
+    pub fn write_inner(&self, buf: &[u8]) -> Result<usize> {
+        let ret = try!(cvt(unsafe {
+            libc::write(self.fd,
+                        buf.as_ptr() as *const c_void,
+                        buf.len() as size_t)
+        }));
         Ok(ret as usize)
     }
+}
 
-    // Performs a write operation on the underlying file descriptor without
-    // guaranteeing the caller has unique access to it.
-    // Taken from rust: libstd/sys/unix/fd.rs
-    #[doc(hidden)]
-    pub unsafe fn unsafe_write(&self, buf: &[u8]) -> Result<usize> {
-        let ret = try!(cvt(libc::write(self.fd,
-                                       buf.as_ptr() as *const c_void,
-                                       buf.len() as size_t)));
-        Ok(ret as usize)
+impl Read for RawIo {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        self.read_inner(buf)
     }
+}
+
+impl Write for RawIo {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> {
+        self.write_inner(buf)
+    }
+
+    fn flush(&mut self) -> Result<()> { Ok(()) }
 }
 
 impl Drop for RawIo {
