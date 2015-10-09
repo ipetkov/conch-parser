@@ -155,18 +155,178 @@ impl Pipe {
     }
 }
 
-impl Read for Pipe {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        self.reader.read(buf)
-    }
-}
+#[cfg(test)]
+mod tests {
+    extern crate tempdir;
 
-impl Write for Pipe {
-    fn write(&mut self, buf: &[u8]) -> Result<usize> {
-        self.writer.write(buf)
+    use self::tempdir::TempDir;
+    use std::fs::File;
+    use std::io::{Read, Write};
+    use std::path::PathBuf;
+    use std::thread;
+    use super::*;
+
+    macro_rules! mktmp {
+        () => {
+            TempDir::new(concat!("test-", module_path!(), "-", line!(), "-", column!())).unwrap()
+        }
     }
 
-    fn flush(&mut self) -> Result<()> {
-        self.writer.flush()
+    #[test]
+    fn test_permissions_readable() {
+        assert_eq!(Permissions::Read.readable(), true);
+        assert_eq!(Permissions::ReadWrite.readable(), true);
+        assert_eq!(Permissions::Write.readable(), false);
+    }
+
+    #[test]
+    fn test_permissions_writable() {
+        assert_eq!(Permissions::Read.writable(), false);
+        assert_eq!(Permissions::ReadWrite.writable(), true);
+        assert_eq!(Permissions::Write.writable(), true);
+    }
+
+    #[test]
+    fn test_permissions_open_read() {
+        let msg = "hello world!\n";
+        let tempdir = mktmp!();
+
+        let mut file_path = PathBuf::new();
+        file_path.push(tempdir.path());
+        file_path.push("test_open_read");
+
+        {
+            let mut file = File::create(&file_path).unwrap();
+            file.write_all(msg.as_bytes()).unwrap();
+            file.sync_data().unwrap();
+            thread::sleep_ms(100);
+        }
+
+        {
+            let mut file = Permissions::Read.open(&file_path).unwrap();
+            let mut read = String::new();
+            file.read_to_string(&mut read).unwrap();
+            assert_eq!(msg, read);
+        }
+
+        tempdir.close().unwrap();
+    }
+
+    #[test]
+    fn test_permissions_open_write() {
+        let msg = "hello world!\n";
+        let tempdir = mktmp!();
+
+        let mut file_path = PathBuf::new();
+        file_path.push(tempdir.path());
+        file_path.push("test_open_write");
+
+        {
+            let mut file = Permissions::Write.open(&file_path).unwrap();
+            file.write_all(msg.as_bytes()).unwrap();
+            file.sync_data().unwrap();
+            thread::sleep_ms(100);
+        }
+
+        {
+            let mut file = File::open(&file_path).unwrap();
+            let mut read = String::new();
+            file.read_to_string(&mut read).unwrap();
+            assert_eq!(msg, read);
+        }
+
+        tempdir.close().unwrap();
+    }
+
+    #[test]
+    fn test_permissions_open_readwrite() {
+        let msg1 = "hello world!\n";
+        let msg2 = "goodbye world!\n";
+
+        let tempdir = mktmp!();
+
+        let mut file_path = PathBuf::new();
+        file_path.push(tempdir.path());
+        file_path.push("test_open_readwrite");
+
+        let mut file1 = Permissions::ReadWrite.open(&file_path).unwrap();
+        let mut file2 = Permissions::ReadWrite.open(&file_path).unwrap();
+
+        file1.write_all(msg1.as_bytes()).unwrap();
+        file1.sync_data().unwrap();
+        thread::sleep_ms(100);
+
+        let mut read = String::new();
+        file2.read_to_string(&mut read).unwrap();
+        assert_eq!(msg1, read);
+
+        file2.write_all(msg2.as_bytes()).unwrap();
+        file2.sync_data().unwrap();
+        thread::sleep_ms(100);
+
+        let mut read = String::new();
+        file1.read_to_string(&mut read).unwrap();
+        assert_eq!(msg2, read);
+
+        tempdir.close().unwrap();
+    }
+
+    #[test]
+    fn test_pipe() {
+        let msg = "pipe message";
+        let Pipe { mut reader, mut writer } = Pipe::new().unwrap();
+
+        let guard = thread::spawn(move || {
+            writer.write_all(msg.as_bytes()).unwrap();
+            writer.flush().unwrap();
+            drop(writer);
+        });
+
+        let mut read = String::new();
+        reader.read_to_string(&mut read).unwrap();
+        guard.join().unwrap();
+        assert_eq!(msg, read);
+    }
+
+    #[test]
+    fn test_file_desc_duplicate() {
+        let msg1 = "pipe message one\n";
+        let msg2 = "pipe message two\n";
+        let Pipe { mut reader, mut writer } = Pipe::new().unwrap();
+
+        let guard = thread::spawn(move || {
+            writer.write_all(msg1.as_bytes()).unwrap();
+            writer.flush().unwrap();
+
+            let mut dup = writer.duplicate().unwrap();
+            drop(writer);
+
+            dup.write_all(msg2.as_bytes()).unwrap();
+            dup.flush().unwrap();
+            drop(dup);
+        });
+
+        let mut read = String::new();
+        reader.read_to_string(&mut read).unwrap();
+        guard.join().unwrap();
+        assert_eq!(format!("{}{}", msg1, msg2), read);
+    }
+
+    #[test]
+    fn test_file_desc_unsafe_read_and_write() {
+        let msg = "pipe message";
+        let Pipe { reader, writer } = Pipe::new().unwrap();
+
+        let guard = thread::spawn(move || {
+            let mut writer = unsafe { writer.unsafe_write() };
+            writer.write_all(msg.as_bytes()).unwrap();
+            writer.flush().unwrap();
+            drop(writer);
+        });
+
+        let mut read = String::new();
+        unsafe { reader.unsafe_read().read_to_string(&mut read).unwrap(); }
+        guard.join().unwrap();
+        assert_eq!(msg, read);
     }
 }
