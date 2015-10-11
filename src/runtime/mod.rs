@@ -8,28 +8,28 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::convert::{From, Into};
 use std::default::Default;
-use std::error::Error;
+use std::fmt;
 use std::fs::OpenOptions;
-use std::io::Error as IoError;
 use std::io::ErrorKind as IoErrorKind;
 use std::io::Write;
 use std::iter::{IntoIterator, Iterator};
-use std::fmt;
 use std::process::{self, Command, Stdio};
 use std::rc::Rc;
+use std::result;
 use std::vec;
-
-use runtime::io::{FileDesc, Permissions};
 
 // Apparently importing Redirect before Word causes an ICE, when linking
 // to this crate, so this ordering is *very* crucial...
 // 'assertion failed: bound_list_is_sorted(&bounds.projection_bounds)', ../src/librustc/middle/ty.rs:4028
 use syntax::ast::{Arith, CompoundCommand, SimpleCommand, Parameter, ParameterSubstitution, Word, Redirect};
 use syntax::ast::Command as AstCommand;
-
+use runtime::io::{FileDesc, Permissions};
 use void::Void;
 
+mod errors;
+
 pub mod io;
+pub use self::errors::*;
 
 const EXIT_SUCCESS:            ExitStatus = ExitStatus::Code(0);
 const EXIT_ERROR:              ExitStatus = ExitStatus::Code(1);
@@ -45,133 +45,10 @@ pub const STDOUT_FILENO: Fd = 1;
 pub const STDERR_FILENO: Fd = 2;
 
 /// A specialized `Result` type for shell runtime operations.
-pub type Result<T> = ::std::result::Result<T, RuntimeError>;
+pub type Result<T> = result::Result<T, RuntimeError>;
 
 /// The type that represents a file descriptor within shell scripts.
 pub type Fd = u16;
-
-/// An error which may arise while executing commands.
-#[derive(Debug)]
-pub enum RuntimeError {
-    /// Any I/O error returned by the OS during execution.
-    Io(IoError),
-    /// Attempted to divide by zero in an arithmetic subsitution.
-    DivideByZero,
-    /// Attempted to raise to a negative power in an arithmetic subsitution.
-    NegativeExponent,
-    /// Attempted to assign a special parameter, e.g. `${!:-value}`.
-    BadAssig(Parameter),
-    /// Attempted to evaluate a null or unset parameter, i.e. `${var:?msg}`.
-    EmptyParameter(Parameter, Rc<String>),
-    /// Unable to find a command/function/builtin to execute.
-    CommandNotFound(Rc<String>),
-    /// Utility or script does not have executable permissions.
-    CommandNotExecutable(Rc<String>),
-    /// Runtime feature not currently supported.
-    Unimplemented(&'static str),
-
-    /// A redirect path evaluated to multiple fields.
-    RedirectAmbiguous(Vec<Rc<String>>),
-    /// Attempted to duplicate an invalid file descriptor.
-    RedirectBadFdSrc(Rc<String>),
-    /// Attempted to duplicate a file descriptor with Read/Write
-    /// access that differs from the original.
-    RedirectBadFdPerms(Fd, Permissions /* new perms */),
-}
-
-impl ::std::cmp::Eq for RuntimeError {}
-impl ::std::cmp::PartialEq<RuntimeError> for RuntimeError {
-    fn eq(&self, other: &Self) -> bool {
-        use self::RuntimeError::*;
-
-        match (self, other) {
-            (&Io(ref a),                   &Io(ref b))        => a.kind() == b.kind(),
-            (&DivideByZero,                &DivideByZero)     => true,
-            (&NegativeExponent,            &NegativeExponent) => true,
-
-            (&BadAssig(ref a),             &BadAssig(ref b))             => a == b,
-            (&CommandNotFound(ref a),      &CommandNotFound(ref b))      => a == b,
-            (&CommandNotExecutable(ref a), &CommandNotExecutable(ref b)) => a == b,
-            (&Unimplemented(ref a),        &Unimplemented(ref b))        => a == b,
-            (&RedirectAmbiguous(ref a),    &RedirectAmbiguous(ref b))    => a == b,
-            (&RedirectBadFdSrc(ref a),     &RedirectBadFdSrc(ref b))     => a == b,
-
-            (&EmptyParameter(ref a1, ref a2),     &EmptyParameter(ref b1, ref b2))     => a1 == b1 && a2 == b2,
-            (&RedirectBadFdPerms(ref a1, ref a2), &RedirectBadFdPerms(ref b1, ref b2)) => a1 == b1 && a2 == b2,
-
-            _ => false,
-        }
-    }
-}
-
-impl Error for RuntimeError {
-    fn description(&self) -> &str {
-        match *self {
-            RuntimeError::Io(ref e) => e.description(),
-            RuntimeError::DivideByZero => "attempted to divide by zero",
-            RuntimeError::NegativeExponent => "attempted to raise to a negative power",
-            RuntimeError::BadAssig(_) => "attempted to assign a special parameter",
-            RuntimeError::EmptyParameter(..) => "attempted to evaluate a null or unset parameter",
-            RuntimeError::CommandNotFound(_) => "command not found",
-            RuntimeError::CommandNotExecutable(_) => "command not executable",
-            RuntimeError::Unimplemented(s) => s,
-            RuntimeError::RedirectAmbiguous(_) => "a redirect path evaluated to multiple fields",
-            RuntimeError::RedirectBadFdSrc(_) => "attempted to duplicate an invalid file descriptor",
-            RuntimeError::RedirectBadFdPerms(..) =>
-                "attmpted to duplicate a file descritpr with Read/Write access that differs from the original",
-        }
-    }
-
-    fn cause(&self) -> Option<&Error> {
-        match *self {
-            RuntimeError::Io(ref e) => Some(e),
-
-            RuntimeError::DivideByZero       |
-            RuntimeError::NegativeExponent   |
-            RuntimeError::BadAssig(_)        |
-            RuntimeError::EmptyParameter(..) |
-            RuntimeError::Unimplemented(_)   |
-            RuntimeError::CommandNotFound(_) |
-            RuntimeError::CommandNotExecutable(_) |
-            RuntimeError::RedirectAmbiguous(_) |
-            RuntimeError::RedirectBadFdSrc(_)  |
-            RuntimeError::RedirectBadFdPerms(..) => None,
-        }
-    }
-}
-
-impl fmt::Display for RuntimeError {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            RuntimeError::Io(ref e)        => write!(fmt, "{}", e),
-            RuntimeError::Unimplemented(e) => write!(fmt, "{}", e),
-
-            RuntimeError::DivideByZero     |
-            RuntimeError::NegativeExponent => write!(fmt, "{}", self.description()),
-            RuntimeError::CommandNotFound(ref c) => write!(fmt, "{}: command not found", c),
-            RuntimeError::CommandNotExecutable(ref c) => write!(fmt, "{}: command not executable", c),
-            RuntimeError::BadAssig(ref p) => write!(fmt, "{}: cannot assign in this way", p),
-            RuntimeError::EmptyParameter(ref p, ref msg) => write!(fmt, "{}: {}", p, msg),
-            RuntimeError::RedirectAmbiguous(ref v) => {
-                try!(write!(fmt, "{}: ", self.description()));
-                let mut iter = v.iter();
-                if let Some(s) = iter.next() { try!(write!(fmt, "{}", s)); }
-                for s in iter { try!(write!(fmt, " {}", s)); }
-                Ok(())
-            },
-
-            RuntimeError::RedirectBadFdSrc(ref fd) => write!(fmt, "{}: {}", self.description(), fd),
-            RuntimeError::RedirectBadFdPerms(fd, perms) =>
-                write!(fmt, "{}: {}, desired permissions: {}", self.description(), fd, perms),
-        }
-    }
-}
-
-impl From<IoError> for RuntimeError {
-    fn from(err: IoError) -> Self {
-        RuntimeError::Io(err)
-    }
-}
 
 /// Describes the result of a process after it has terminated.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -360,7 +237,7 @@ impl<'a> Env<'a> {
     /// If the closure evaluates a `Err(_)` value, then `None` is returned.
     /// If the closure evaluates a `Ok(None)` value, then the traversal continues.
     fn walk_parent_chain<'b, T, F>(&'b self, mut cond: F) -> Option<T>
-        where F: FnMut(&'b Self) -> ::std::result::Result<Option<T>, ()>
+        where F: FnMut(&'b Self) -> result::Result<Option<T>, ()>
     {
         let mut cur = self;
         loop {
@@ -535,7 +412,7 @@ impl<'a> Environment for Env<'a> {
 
     fn env(&self) -> Vec<(&str, &str)> {
         let mut env = HashMap::new();
-        self.walk_parent_chain(|cur| -> ::std::result::Result<Option<Void>, ()> {
+        self.walk_parent_chain(|cur| -> result::Result<Option<Void>, ()> {
             for (k,v) in cur.vars.iter().map(|(k,v)| (&**k, v)) {
                 // Since we are traversing the parent chain "backwards" we
                 // must be careful not to overwrite any variable with a
@@ -698,7 +575,7 @@ impl ParameterSubstitution {
                     p@&Parameter::Dash     |
                     p@&Parameter::Dollar   |
                     p@&Parameter::Bang     |
-                    p@&Parameter::Positional(_) => return Err(RuntimeError::BadAssig(p.clone())),
+                    p@&Parameter::Positional(_) => return Err(ExpansionError::BadAssig(p.clone()).into()),
 
                     &Parameter::Var(ref name) => {
                         let val = match *assig {
@@ -719,7 +596,7 @@ impl ParameterSubstitution {
                     Some(ref w) => try!(w.eval(env)).join(),
                 };
 
-                return Err(RuntimeError::EmptyParameter(p.clone(), msg));
+                return Err(ExpansionError::EmptyParameter(p.clone(), msg).into());
             },
 
             Alternative(strict, ref p, ref alt) => {
@@ -803,7 +680,7 @@ impl Arith {
     /// Evaluates an arithmetic expression in the context of an environment.
     /// A mutable reference to the environment is needed since an arithmetic
     /// expression could mutate environment variables.
-    pub fn eval(&self, env: &mut Environment) -> Result<isize> {
+    pub fn eval(&self, env: &mut Environment) -> result::Result<isize, ExpansionError> {
         use syntax::ast::Arith::*;
 
         let get_var = |env: &Environment, var| env.var(var).and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -852,7 +729,7 @@ impl Arith {
                 let right = try!(right.eval(env));
                 if right.is_negative() {
                     env.set_last_status(EXIT_ERROR);
-                    return Err(RuntimeError::NegativeExponent);
+                    return Err(ExpansionError::NegativeExponent);
                 } else {
                     try!(left.eval(env)).pow(right as u32)
                 }
@@ -862,7 +739,7 @@ impl Arith {
                 let right = try!(right.eval(env));
                 if right == 0 {
                     env.set_last_status(EXIT_ERROR);
-                    return Err(RuntimeError::DivideByZero);
+                    return Err(ExpansionError::DivideByZero);
                 } else {
                     try!(left.eval(env)) / right
                 }
@@ -872,7 +749,7 @@ impl Arith {
                 let right = try!(right.eval(env));
                 if right == 0 {
                     env.set_last_status(EXIT_ERROR);
-                    return Err(RuntimeError::DivideByZero);
+                    return Err(ExpansionError::DivideByZero);
                 } else {
                     try!(left.eval(env)) % right
                 }
@@ -1216,7 +1093,7 @@ impl Redirect {
                 Fields::Many(mut v) => if v.len() == 1 {
                     Ok(v.pop().unwrap())
                 } else {
-                    return Err(RuntimeError::RedirectAmbiguous(v))
+                    return Err(RedirectionError::Ambiguous(v).into())
                 },
             }
         };
@@ -1236,14 +1113,14 @@ impl Redirect {
                         if (readable && perms.readable()) || (!readable && perms.writable()) {
                             Ok(fdes.clone())
                         } else {
-                            Err(RuntimeError::RedirectBadFdPerms(fd, perms))
+                            Err(RedirectionError::BadFdPerms(fd, perms).into())
                         }
                     },
 
-                    None => Err(RuntimeError::RedirectBadFdSrc(src_fd)),
+                    None => Err(RedirectionError::BadFdSrc(src_fd).into()),
                 },
 
-                Err(_) => Err(RuntimeError::RedirectBadFdSrc(src_fd)),
+                Err(_) => Err(RedirectionError::BadFdSrc(src_fd).into()),
             };
 
             let src_fdes = match src_fdes {
@@ -1261,12 +1138,15 @@ impl Redirect {
         let open_path_with_options = |path, env, fd, options: OpenOptions, permissions|
             -> Result<(Fd, Option<(Rc<FileDesc>, Permissions)>)>
         {
-            let file = try!(options.open(&**try!(eval_path(path, env)))).into();
-            Ok((fd, Some((Rc::new(file), permissions))))
+            let path = try!(eval_path(path, env));
+            match options.open(&**path) {
+                Ok(file) => Ok((fd, Some((Rc::new(file.into()), permissions)))),
+                Err(io) => Err(RuntimeError::Io(io, path).into()),
+            }
         };
 
-        let open_path = |path, env, fd, permissions: Permissions| ->
-            Result<(Fd, Option<(Rc<FileDesc>, Permissions)>)>
+        let open_path = |path, env, fd, permissions: Permissions|
+            -> Result<(Fd, Option<(Rc<FileDesc>, Permissions)>)>
         {
             open_path_with_options(path, env, fd, permissions.into(), permissions)
         };
@@ -1354,13 +1234,14 @@ impl Run for SimpleCommand {
 
         let &(ref cmd, ref args) = self.cmd.as_ref().unwrap();
 
+        // FIXME: look up aliases
         // bash and zsh just grab first field of an expansion
         let cmd_name = try!(cmd.eval(env)).into_iter().next();
         let cmd_name = match cmd_name {
             Some(exe) => exe,
             None => {
                 env.set_last_status(EXIT_CMD_NOT_FOUND);
-                return Err(RuntimeError::CommandNotFound(Rc::new(String::new())));
+                return Err(CommandError::NotFound(Rc::new(String::new())).into());
             },
         };
 
@@ -1377,7 +1258,7 @@ impl Run for SimpleCommand {
                 Some(ret) => return ret,
                 None => {
                     env.set_last_status(EXIT_CMD_NOT_FOUND);
-                    return Err(RuntimeError::CommandNotFound(cmd_name));
+                    return Err(CommandError::NotFound(cmd_name).into());
                 }
             }
         }
@@ -1404,10 +1285,12 @@ impl Run for SimpleCommand {
             }
         }
 
-        let unwrap_fdes = |fdes: Rc<FileDesc>| Rc::try_unwrap(fdes).or_else(|rc| rc.duplicate());
-
         let mut io = try!(open_io(&self.io, env));
         let mut get_redirect = |fd, env: & Environment| -> Result<Stdio> {
+            let unwrap_fdes = |fdes: Rc<FileDesc>| Rc::try_unwrap(fdes)
+                .or_else(|rc| rc.duplicate())
+                .map_err(|io| RuntimeError::Io(io, Rc::new(format!("file descriptor {}", fd))));
+
             let ret = match io.remove(&fd) {
                 // redirect specified
                 Some(Some(fdes)) => try!(unwrap_fdes(fdes)).into(),
@@ -1432,11 +1315,11 @@ impl Run for SimpleCommand {
         match cmd.status() {
             Err(e) => {
                 let (exit, err) = if IoErrorKind::NotFound == e.kind() {
-                    (EXIT_CMD_NOT_FOUND, RuntimeError::CommandNotFound(cmd_name))
+                    (EXIT_CMD_NOT_FOUND, CommandError::NotFound(cmd_name).into())
                 } else if Some(libc::ENOEXEC) == e.raw_os_error() {
-                    (EXIT_CMD_NOT_EXECUTABLE, RuntimeError::CommandNotExecutable(cmd_name))
+                    (EXIT_CMD_NOT_EXECUTABLE, CommandError::NotExecutable(cmd_name).into())
                 } else {
-                    (EXIT_ERROR, e.into())
+                    (EXIT_ERROR, RuntimeError::Io(e, cmd_name.clone()))
                 };
                 env.set_last_status(exit);
                 return Err(err);
@@ -2194,7 +2077,7 @@ mod tests {
             let mut env = Env::new();
             let writer = Rc::new(writer);
             env.set_file_desc(STDERR_FILENO, writer.clone(), Permissions::Write);
-            env.report_error(RuntimeError::DivideByZero);
+            env.report_error(RuntimeError::Expansion(ExpansionError::DivideByZero));
             env.close_file_desc(STDERR_FILENO);
             let mut writer = Rc::try_unwrap(writer).unwrap();
             writer.flush().unwrap();
@@ -2204,7 +2087,7 @@ mod tests {
         let mut msg = String::new();
         reader.read_to_string(&mut msg).unwrap();
         guard.join().unwrap();
-        assert!(msg.contains(&format!("{}", RuntimeError::DivideByZero)));
+        assert!(msg.contains(&format!("{}", RuntimeError::Expansion(ExpansionError::DivideByZero))));
     }
 
     #[test]
@@ -2330,13 +2213,13 @@ mod tests {
 
         assert_eq!(Arith::Pow(lit!(4), lit!(3)).eval(env), Ok(64));
         assert_eq!(Arith::Pow(lit!(4), lit!(0)).eval(env), Ok(1));
-        assert_eq!(Arith::Pow(lit!(4), lit!(-2)).eval(env), Err(RuntimeError::NegativeExponent));
+        assert_eq!(Arith::Pow(lit!(4), lit!(-2)).eval(env), Err(ExpansionError::NegativeExponent));
 
         assert_eq!(Arith::Div(lit!(6), lit!(2)).eval(env), Ok(3));
-        assert_eq!(Arith::Div(lit!(1), lit!(0)).eval(env), Err(RuntimeError::DivideByZero));
+        assert_eq!(Arith::Div(lit!(1), lit!(0)).eval(env), Err(ExpansionError::DivideByZero));
 
         assert_eq!(Arith::Modulo(lit!(6), lit!(5)).eval(env), Ok(1));
-        assert_eq!(Arith::Modulo(lit!(1), lit!(0)).eval(env), Err(RuntimeError::DivideByZero));
+        assert_eq!(Arith::Modulo(lit!(1), lit!(0)).eval(env), Err(ExpansionError::DivideByZero));
 
         assert_eq!(Arith::Mult(lit!(3), lit!(2)).eval(env), Ok(6));
         assert_eq!(Arith::Mult(lit!(1), lit!(0)).eval(env), Ok(0));
