@@ -9,7 +9,7 @@ use super::Fd;
 use syntax::ast::Parameter;
 use runtime::io::Permissions;
 
-/// An error which may arise during variable or parameter expansion.
+/// An error which may arise during parameter expansion.
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub enum ExpansionError {
     /// Attempted to divide by zero in an arithmetic subsitution.
@@ -117,7 +117,7 @@ impl Display for CommandError {
 pub enum RuntimeError {
     /// Any I/O error returned by the OS during execution and the file that caused the error.
     Io(IoError, Rc<String>),
-    /// Any error that occured during an expansion.
+    /// Any error that occured during a parameter expansion.
     Expansion(ExpansionError),
     /// Any error that occured during a redirection.
     Redirection(RedirectionError),
