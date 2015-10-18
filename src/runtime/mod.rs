@@ -139,6 +139,41 @@ impl Fields {
             }).collect::<Vec<&str>>().join(" ")),
         }
     }
+
+    /// Joins any field unconditionally with the first character of `$IFS`.
+    /// If `$IFS` is unset, fields are joined with a space, or concatenated
+    /// if `$IFS` is empty.
+    fn join_with_ifs(self, env: &Environment) -> Rc<String> {
+        match self {
+            Fields::Single(s) => s,
+            Fields::At(v)   |
+            Fields::Star(v) |
+            Fields::Many(v) => {
+                let sep = match env.var("IFS") {
+                    Some(ref s) if s.is_empty() => "",
+                    Some(s) => &s[0..1],
+                    None => " ",
+                };
+
+                let sep_len = sep.len();
+                let alloc_len = v.iter().fold(0, |accum, s| accum + s.len() + sep_len);
+
+                let mut ret = String::with_capacity(alloc_len);
+                let mut iter = v.into_iter();
+
+                if let Some(first) = iter.next() {
+                    ret.push_str(&**first);
+                }
+
+                for s in iter {
+                    ret.push_str(sep);
+                    ret.push_str(&**s);
+                }
+
+                Rc::new(ret)
+            },
+        }
+    }
 }
 
 impl IntoIterator for Fields {
@@ -827,17 +862,8 @@ impl Word {
         match try!(self.eval_with_config(env, true, false)) {
             f@Fields::Single(_) |
             f@Fields::At(_)     |
-            f@Fields::Many(_)   => Ok(f.join()),
-
-            Fields::Star(v) => {
-                let star = v.iter().map(|s| &***s).collect::<Vec<&str>>();
-                let star = match env.var("IFS") {
-                    Some(ref s) if s.is_empty() => star.concat(),
-                    Some(s) => star.join(&s[0..1]),
-                    None => star.join(" "),
-                };
-                Ok(Rc::new(star))
-            },
+            f@Fields::Many(_) => Ok(f.join()),
+            f@Fields::Star(_) => Ok(f.join_with_ifs(env)),
         }
     }
 
@@ -848,65 +874,6 @@ impl Word {
     {
         use syntax::ast::Word::*;
 
-        /// Splits a vector of fields further based on the contents of the `IFS`
-        /// variable (i.e. as long as it is non-empty). Any empty fields, original
-        /// or otherwise created will be discarded.
-        fn split_fields(words: Vec<Rc<String>>, env: &Environment) -> Vec<Rc<String>> {
-            // If IFS is set but null, there is nothing left to split
-            let ifs = env.var("IFS").map_or(IFS_DEFAULT, |s| &s);
-            if ifs.is_empty() {
-                return words;
-            }
-
-            let whitespace: Vec<char> = ifs.chars().filter(|c| c.is_whitespace()).collect();
-
-            let mut fields = Vec::with_capacity(words.len());
-            'word: for word in words {
-                if word.is_empty() {
-                    continue;
-                }
-
-                let mut iter = word.chars().enumerate();
-                loop {
-                    let start;
-                    loop {
-                        match iter.next() {
-                            // We are still skipping leading whitespace, if we hit the
-                            // end of the word there are no fields to create, even empty ones.
-                            None => continue 'word,
-                            Some((idx, c)) => if !whitespace.contains(&c) {
-                                start = idx;
-                                break;
-                            },
-                        }
-                    }
-
-                    let end;
-                    loop {
-                        match iter.next() {
-                            None => {
-                                end = None;
-                                break;
-                            },
-                            Some((idx, c)) => if ifs.contains(c) {
-                                end = Some(idx);
-                                break;
-                            },
-                        }
-                    }
-
-                    let field = match end {
-                        Some(end) => &word[start..end],
-                        None      => &word[start..],
-                    };
-
-                    fields.push(Rc::new(String::from(field)));
-                }
-            }
-
-            fields.shrink_to_fit();
-            fields
-        }
 
         let maybe_split_fields = |fields, env: &mut Environment| {
             if !split_fields_further {
@@ -955,7 +922,7 @@ impl Word {
             Concat(ref v) => {
                 let mut fields: Vec<Rc<String>> = Vec::new();
                 for w in v.iter() {
-                    let mut iter = try!(w.eval_with_config(env, expand_tilde, split_fields_further)).into_iter();
+                    let mut iter = try!(w.eval_with_config(env, false, split_fields_further)).into_iter();
                     match (fields.pop(), iter.next()) {
                        (Some(last), Some(next)) => {
                            let mut new = String::with_capacity(last.len() + next.len());
@@ -1017,24 +984,7 @@ impl Word {
                             }
                         },
 
-                        (Fields::Star(v), _) => {
-                            let star = v.iter().map(|s| &***s).collect::<Vec<&str>>();
-                            let star = match env.var("IFS") {
-                                Some(ref s) if s.is_empty() => star.concat(),
-                                Some(s) => star.join(&s[0..1]),
-                                None => star.join(" "),
-                            };
-                            cur_field.push_str(&star);
-                        },
-
-                        // Having a `Concat` word within a `DoubleQuoted` word isn't particularly
-                        // "well-formed", but we will attempt to gracefully handle the situation.
-                        // We'll leave it up to the caller to ensure well-formedness if they don't
-                        // want inconsistent results
-                        (Fields::Many(v), &Word::Concat(_)) => {
-                            let concat = v.iter().map(|s| &***s).collect::<Vec<&str>>().concat();
-                            cur_field.push_str(&concat);
-                        },
+                        (f@Fields::Star(_), _) => cur_field.push_str(&f.join_with_ifs(env)),
 
                         // Since we should have indicated we do NOT want field splitting,
                         // the following word variants should all yield `Single` fields (or at least
@@ -1049,7 +999,8 @@ impl Word {
                         (Fields::Many(_), &Word::Tilde)           |
                         (Fields::Many(_), &Word::Colon)           |
                         (Fields::Many(_), &Word::Subst(_))        |
-                        (Fields::Many(_), &Word::Param(_))        => unreachable!(),
+                        (Fields::Many(_), &Word::Param(_))        |
+                        (Fields::Many(_), &Word::Concat(_))       => unreachable!(),
                     }
                 }
 
@@ -1078,6 +1029,66 @@ impl Word {
     {
         unimplemented!()
     }
+}
+
+/// Splits a vector of fields further based on the contents of the `IFS`
+/// variable (i.e. as long as it is non-empty). Any empty fields, original
+/// or otherwise created will be discarded.
+fn split_fields(words: Vec<Rc<String>>, env: &Environment) -> Vec<Rc<String>> {
+    // If IFS is set but null, there is nothing left to split
+    let ifs = env.var("IFS").map_or(IFS_DEFAULT, |s| &s);
+    if ifs.is_empty() {
+        return words;
+    }
+
+    let whitespace: Vec<char> = ifs.chars().filter(|c| c.is_whitespace()).collect();
+
+    let mut fields = Vec::with_capacity(words.len());
+    'word: for word in words {
+        if word.is_empty() {
+            continue;
+        }
+
+        let mut iter = word.chars().enumerate();
+        loop {
+            let start;
+            loop {
+                match iter.next() {
+                    // We are still skipping leading whitespace, if we hit the
+                    // end of the word there are no fields to create, even empty ones.
+                    None => continue 'word,
+                    Some((idx, c)) => if !whitespace.contains(&c) {
+                        start = idx;
+                        break;
+                    },
+                }
+            }
+
+            let end;
+            loop {
+                match iter.next() {
+                    None => {
+                        end = None;
+                        break;
+                    },
+                    Some((idx, c)) => if ifs.contains(c) {
+                        end = Some(idx);
+                        break;
+                    },
+                }
+            }
+
+            let field = match end {
+                Some(end) => &word[start..end],
+                None      => &word[start..],
+            };
+
+            fields.push(Rc::new(String::from(field)));
+        }
+    }
+
+    fields.shrink_to_fit();
+    fields
 }
 
 impl Redirect {
@@ -2931,5 +2942,261 @@ mod tests {
             let subst = Alternative(false, Parameter::Star, None);
             assert_eq!(subst.eval(&mut env), Ok(null.clone()));
         }
+    }
+
+    #[test]
+    fn test_eval_word_literal_evals_to_self() {
+        let value = String::from("foobar");
+        let mut env = Env::new();
+        assert_eq!(Word::Literal(value.clone()).eval(&mut env), Ok(Fields::Single(Rc::new(value))));
+    }
+
+    #[test]
+    fn test_eval_word_colon_evals_to_self() {
+        let mut env = Env::new();
+        assert_eq!(Word::Colon.eval(&mut env), Ok(Fields::Single(Rc::new(String::from(":")))));
+    }
+
+    #[test]
+    fn test_eval_word_lone_tilde_expansion() {
+        let home_value = Rc::new(String::from("foobar"));
+        let mut env = Env::new();
+        env.set_var(String::from("HOME"), home_value.clone());
+        assert_eq!(Word::Tilde.eval(&mut env), Ok(Fields::Single(home_value)));
+    }
+
+    #[test]
+    fn test_eval_word_tilde_in_middle_of_word_does_not_expand() {
+        let mut env = Env::new();
+        assert_eq!(Word::Concat(vec!(
+            Word::Literal(String::from("foo")),
+            Word::Literal(String::from("~")),
+            Word::Literal(String::from("bar")),
+        )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("foo~bar")))));
+    }
+
+    #[test]
+    fn test_eval_word_tilde_in_middle_of_word_after_colon_does_not_expand() {
+        let mut env = Env::new();
+        assert_eq!(Word::Concat(vec!(
+            Word::Literal(String::from("foo")),
+            Word::Colon,
+            Word::Literal(String::from("~")),
+            Word::Literal(String::from("bar")),
+        )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("foo:~bar")))));
+    }
+
+    #[test]
+    fn test_eval_word_double_quoted_does_parameter_expansions_as_single_field() {
+        let var = String::from("var");
+        let mut env = Env::new();
+        env.set_var(var.clone(), Rc::new(String::from("hello world")));
+        assert_eq!(Word::DoubleQuoted(vec!(
+            Word::Literal(String::from("foo")),
+            Word::Param(Parameter::Var(var)),
+            Word::Literal(String::from("bar")),
+        )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("foohello worldbar")))));
+    }
+
+
+    #[test]
+    fn test_eval_word_double_quoted_within_double_quoted_same_as_if_inner_was_not_there() {
+        let mut env = Env::new();
+        assert_eq!(Word::DoubleQuoted(vec!(
+            Word::DoubleQuoted(vec!(Word::Literal(String::from("foo")))),
+            Word::Literal(String::from("bar")),
+        )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("foobar")))));
+    }
+
+    #[test]
+    fn test_eval_word_double_quoted_does_not_expand_tilde() {
+        let mut env = Env::new();
+        assert_eq!(Word::DoubleQuoted(vec!(
+            Word::Tilde,
+        )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("~")))));
+    }
+
+    #[test]
+    fn test_eval_word_double_quoted_param_at_expands_when_args_set() {
+        let mut env = Env::with_config(None, Some(vec!(
+            String::from("one"),
+            String::from("two"),
+            String::from("three"),
+        )), None);
+
+        assert_eq!(Word::DoubleQuoted(vec!(
+            Word::Param(Parameter::At),
+        )).eval(&mut env), Ok(Fields::Many(vec!(
+            Rc::new(String::from("one")),
+            Rc::new(String::from("two")),
+            Rc::new(String::from("three")),
+        ))));
+    }
+
+    #[test]
+    fn test_eval_word_double_quoted_param_at_expands_when_args_set_and_concats_with_rest() {
+        let mut env = Env::with_config(None, Some(vec!(
+            String::from("one"),
+            String::from("two"),
+            String::from("three"),
+        )), None);
+
+        assert_eq!(Word::DoubleQuoted(vec!(
+            Word::Literal(String::from("foo")),
+            Word::Param(Parameter::At),
+            Word::Literal(String::from("bar")),
+        )).eval(&mut env), Ok(Fields::Many(vec!(
+            Rc::new(String::from("fooone")),
+            Rc::new(String::from("two")),
+            Rc::new(String::from("threebar")),
+        ))));
+    }
+
+    #[test]
+    fn test_eval_word_double_quoted_param_at_expands_to_nothing_when_args_not_set_and_concats_with_rest() {
+        let mut env = Env::new();
+        assert_eq!(Word::DoubleQuoted(vec!(
+            Word::Literal(String::from("foo")),
+            Word::Param(Parameter::At),
+            Word::Literal(String::from("bar")),
+        )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("foobar")))));
+    }
+
+    #[test]
+    fn test_eval_word_double_quoted_param_star_expands_but_joined_by_ifs() {
+        let mut env = Env::with_config(None, Some(vec!(
+            String::from("one"),
+            String::from("two"),
+            String::from("three"),
+        )), None);
+
+        assert_eq!(Word::DoubleQuoted(vec!(
+            Word::Literal(String::from("foo")),
+            Word::Param(Parameter::Star),
+            Word::Literal(String::from("bar")),
+        )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("fooone two threebar")))));
+
+        env.set_var(String::from("IFS"), Rc::new(String::from("!")));
+        assert_eq!(Word::DoubleQuoted(vec!(
+            Word::Literal(String::from("foo")),
+            Word::Param(Parameter::Star),
+            Word::Literal(String::from("bar")),
+        )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("fooone!two!threebar")))));
+
+        env.set_var(String::from("IFS"), Rc::new(String::new()));
+        assert_eq!(Word::DoubleQuoted(vec!(
+            Word::Literal(String::from("foo")),
+            Word::Param(Parameter::Star),
+            Word::Literal(String::from("bar")),
+        )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("fooonetwothreebar")))));
+    }
+
+    #[test]
+    fn test_eval_word_concat_joins_all_inner_words() {
+        let mut env = Env::new();
+        env.set_var(String::from("var"), Rc::new(String::from("foobar")));
+
+        assert_eq!(Word::Concat(vec!(
+            Word::Literal(String::from("hello")),
+            Word::Param(Parameter::Var(String::from("var"))),
+            Word::Literal(String::from("world")),
+        )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("hellofoobarworld")))));
+    }
+
+    #[test]
+    fn test_eval_word_concat_if_inner_word_expands_to_many_fields_they_are_joined_with_those_before_and_after()
+    {
+        let mut env = Env::new();
+        env.set_var(String::from("var"), Rc::new(String::from("foo bar baz")));
+
+        assert_eq!(Word::Concat(vec!(
+            Word::Literal(String::from("hello")),
+            Word::Param(Parameter::Var(String::from("var"))),
+            Word::Literal(String::from("world")),
+        )).eval(&mut env), Ok(Fields::Many(vec!(
+            Rc::new(String::from("hellofoo")),
+            Rc::new(String::from("bar")),
+            Rc::new(String::from("bazworld")),
+        ))));
+    }
+
+    #[test]
+    fn test_eval_word_concat_should_not_expand_tilde_which_is_not_at_start() {
+        let mut env = Env::new();
+        assert_eq!(Word::Concat(vec!(
+            Word::Literal(String::from("foo")),
+            Word::Tilde,
+            Word::Literal(String::from("bar")),
+        )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("foo~bar")))));
+        assert_eq!(Word::Concat(vec!(
+            Word::Literal(String::from("foo")),
+            Word::Tilde,
+        )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("foo~")))));
+    }
+
+    #[test]
+    fn test_eval_word_concat_param_at_expands_when_args_set() {
+        let mut env = Env::with_config(None, Some(vec!(
+            String::from("one"),
+            String::from("two"),
+            String::from("three"),
+        )), None);
+
+        assert_eq!(Word::Concat(vec!(
+            Word::Param(Parameter::At),
+        )).eval(&mut env), Ok(Fields::Many(vec!(
+            Rc::new(String::from("one")),
+            Rc::new(String::from("two")),
+            Rc::new(String::from("three")),
+        ))));
+    }
+
+    #[test]
+    fn test_eval_word_concat_param_at_expands_when_args_set_and_concats_with_rest() {
+        let mut env = Env::with_config(None, Some(vec!(
+            String::from("one"),
+            String::from("two"),
+            String::from("three"),
+        )), None);
+
+        assert_eq!(Word::Concat(vec!(
+            Word::Literal(String::from("foo")),
+            Word::Param(Parameter::At),
+            Word::Literal(String::from("bar")),
+        )).eval(&mut env), Ok(Fields::Many(vec!(
+            Rc::new(String::from("fooone")),
+            Rc::new(String::from("two")),
+            Rc::new(String::from("threebar")),
+        ))));
+    }
+
+    #[test]
+    fn test_eval_word_concat_param_at_expands_to_nothing_when_args_not_set_and_concats_with_rest() {
+        let mut env = Env::new();
+        assert_eq!(Word::Concat(vec!(
+            Word::Literal(String::from("foo")),
+            Word::Param(Parameter::At),
+            Word::Literal(String::from("bar")),
+        )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("foobar")))));
+    }
+
+    #[test]
+    fn test_eval_word_concat_within_double_quoted_same_as_if_inner_was_not_there() {
+        let mut env = Env::new();
+        assert_eq!(Word::DoubleQuoted(vec!(
+            Word::Concat(vec!(Word::Literal(String::from("foo baz\nqux")))),
+            Word::Literal(String::from("bar")),
+        )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("foo baz\nquxbar")))));
+    }
+
+    #[test]
+    fn test_eval_word_double_quoted_within_concat_within_double_quoted_same_as_if_inner_was_not_there() {
+        let mut env = Env::new();
+        assert_eq!(Word::DoubleQuoted(vec!(
+            Word::DoubleQuoted(vec!(
+                Word::Concat(vec!(Word::DoubleQuoted(vec!(Word::Literal(String::from("foo baz\nqux"))))))
+            )),
+            Word::Literal(String::from("bar")),
+        )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("foo baz\nquxbar")))));
     }
 }
