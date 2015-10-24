@@ -586,6 +586,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 builder::WordKind::Star        |
                 builder::WordKind::Question    |
                 builder::WordKind::Tilde       |
+                builder::WordKind::Colon       |
                 builder::WordKind::SquareOpen  |
                 builder::WordKind::SquareClose => false,
 
@@ -629,6 +630,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 builder::WordKind::Tilde           |
                 builder::WordKind::SquareOpen      |
                 builder::WordKind::SquareClose     |
+                builder::WordKind::Colon           |
                 builder::WordKind::SingleQuoted(_) |
                 builder::WordKind::Escaped(_)      |
                 builder::WordKind::DoubleQuoted(_) |
@@ -1102,7 +1104,6 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 tok@Dash       |
                 tok@Equals     |
                 tok@Plus       |
-                tok@Colon      |
                 tok@At         |
                 tok@Caret      |
                 tok@Slash      |
@@ -1118,6 +1119,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 Tilde       => builder::WordKind::Tilde,
                 SquareOpen  => builder::WordKind::SquareOpen,
                 SquareClose => builder::WordKind::SquareClose,
+                Colon       => builder::WordKind::Colon,
 
                 Backslash => match self.iter.next() {
                     Some(Newline) => break, // escaped newlines become whitespace and a delimiter
@@ -6512,6 +6514,7 @@ pub mod test {
         assert_eq!(Ok(Some(Word::Tilde)),       make_parser("~").word());
         assert_eq!(Ok(Some(Word::SquareOpen)),  make_parser("[").word());
         assert_eq!(Ok(Some(Word::SquareClose)), make_parser("]").word());
+        assert_eq!(Ok(Some(Word::Colon)),       make_parser(":").word());
     }
 
     #[test]

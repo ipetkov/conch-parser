@@ -947,6 +947,8 @@ impl Word {
                 Fields::Single(Rc::new(String::from("~")))
             },
 
+            Colon => Fields::Single(Rc::new(String::from(":"))),
+
             Subst(ref s) => maybe_split_fields(try!(s.eval(env)), env),
             Param(ref p) => maybe_split_fields(p.eval(env).unwrap_or(null_field), env),
 
@@ -1045,6 +1047,7 @@ impl Word {
                         (Fields::Many(_), &Word::SquareOpen)      |
                         (Fields::Many(_), &Word::SquareClose)     |
                         (Fields::Many(_), &Word::Tilde)           |
+                        (Fields::Many(_), &Word::Colon)           |
                         (Fields::Many(_), &Word::Subst(_))        |
                         (Fields::Many(_), &Word::Param(_))        => unreachable!(),
                     }

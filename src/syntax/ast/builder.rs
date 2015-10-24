@@ -82,6 +82,8 @@ pub enum WordKind<C> {
     SquareClose,
     /// Represents `~`, useful for handling tilde expansions.
     Tilde,
+    /// Represents `:`, useful for handling tilde expansions.
+    Colon,
 }
 
 /// Represents redirecting a command's file descriptors.
@@ -651,6 +653,7 @@ impl Builder for DefaultBuilder {
             WordKind::SquareOpen      => Word::SquareOpen,
             WordKind::SquareClose     => Word::SquareClose,
             WordKind::Tilde           => Word::Tilde,
+            WordKind::Colon           => Word::Colon,
 
             WordKind::CommandSubst(c) => Word::Subst(Box::new(ParameterSubstitution::Command(c))),
 
@@ -896,6 +899,7 @@ impl<C> PartialEq<WordKind<C>> for WordKind<C> where C: PartialEq {
             (&SquareOpen,           &SquareOpen)                       => true,
             (&SquareClose,          &SquareClose)                      => true,
             (&Tilde,                &Tilde)                            => true,
+            (&Colon,                &Colon)                            => true,
             _ => false,
         }
     }
@@ -919,6 +923,7 @@ impl<C> Clone for WordKind<C> where C: Clone {
             SquareOpen          => SquareOpen,
             SquareClose         => SquareClose,
             Tilde               => Tilde,
+            Colon               => Colon,
         }
     }
 }

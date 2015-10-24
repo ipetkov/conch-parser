@@ -96,6 +96,8 @@ pub enum Word {
     SquareClose,
     /// Represents `~`, useful for handling tilde expansions.
     Tilde,
+    /// Represents `:`, useful for handling tilde expansions.
+    Colon,
 }
 
 /// Represents redirecting a command's file descriptors.
