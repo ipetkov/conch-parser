@@ -4,7 +4,7 @@ version = "0.0.1"
 authors = ["Ivan Petkov <ivanppetkov@gmail.com>"]
 
 [features]
-runtime = ["glob", "libc"]
+runtime = ["glob", "libc", "winapi", "kernel32-sys"]
 
 [dependencies]
 void = "*"
@@ -13,8 +13,16 @@ void = "*"
 version = "0.2"
 optional = true
 
+[dependencies.kernel32-sys]
+version = "0.2.1"
+optional = true
+
 [dependencies.libc]
-version = "0.1"
+version = "> 0.1.12, < 0.3"
+optional = true
+
+[dependencies.winapi]
+version = "0.2.5"
 optional = true
 
 [dev-dependencies]

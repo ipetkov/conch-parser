@@ -147,15 +147,41 @@ fn cvt_r<T, F>(mut f: F) -> Result<T>
     }
 }
 
+/// Duplicates a file descriptor and sets its CLOEXEC flag.
+unsafe fn dup_fd_cloexec(fd: RawFd) -> Result<RawIo> {
+    let min_fd = libc::STDERR_FILENO + 1;
+    Ok(RawIo::new(try!(cvt_r(|| { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, min_fd) }))))
+}
+
 /// Creates and returns a `(reader, writer)` pipe pair.
+///
+/// The CLOEXEC flag will be set on both file descriptors, however,
+/// setting these flags is nonatomic.
 pub fn pipe() -> Result<(RawIo, RawIo)> {
     // FIXME: these should probably have NONBLOCK and CLOEXEC flags when libc catches up
     use libc::pipe;
     unsafe {
         let mut fds = [0; 2];
         try!(cvt_r(|| { pipe(fds.as_mut_ptr()) }));
-        let reader = RawIo::new(fds[0]);
-        let writer = RawIo::new(fds[1]);
+        let pipe_reader = RawIo::new(fds[0]);
+        let pipe_writer = RawIo::new(fds[1]);
+
+        let reader = try!(dup_fd_cloexec(pipe_reader.inner()));
+        drop(pipe_reader);
+        let writer = try!(dup_fd_cloexec(pipe_writer.inner()));
+        drop(pipe_writer);
+
         Ok((reader, writer))
+    }
+}
+
+/// Duplicates file descriptors for (stdin, stdout, stderr) and returns them in that order.
+pub fn dup_stdio() -> Result<(RawIo, RawIo, RawIo)> {
+    unsafe {
+        Ok((
+            try!(dup_fd_cloexec(libc::STDIN_FILENO)),
+            try!(dup_fd_cloexec(libc::STDOUT_FILENO)),
+            try!(dup_fd_cloexec(libc::STDERR_FILENO))
+        ))
     }
 }

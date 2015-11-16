@@ -1,19 +1,36 @@
 //! Defines interfaces and methods for doing IO operations on Windows HANDLEs.
 
-use libc;
+use kernel32;
+use winapi;
+
+use std::fmt;
 use std::fs::File;
-use std::io::{Error, Read, Result, Write};
+use std::io::{Error, ErrorKind, Read, Result, Write};
 use std::num::Zero;
-use std::os::windows::io::{RawHandle, FromRawHandle, IntoRawHandle};
+use std::ops::{Deref, DerefMut};
+use std::os::raw::c_void as HANDLE;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, RawHandle};
 use std::process::Stdio;
+use std::ptr;
+use std::ptr::Unique as StdUnique;
 use super::FileDesc;
 
-#[link(name = "kernel32")]
-extern {
-    fn CreatePipe(hReadPipe: libc::LPHANDLE,
-                  hWritePipe: libc::LPHANDLE,
-                  lpPipeAttributes: libc::LPSECURITY_ATTRIBUTES,
-                  nSize: libc::DWORD) -> libc::BOOL;
+// A Debug wrapper around `std::ptr::Unique`
+struct Unique<T>(StdUnique<T>);
+
+impl<T> Deref for Unique<T> {
+    type Target = StdUnique<T>;
+    fn deref(&self) -> &Self::Target { &self.0 }
+}
+
+impl<T> DerefMut for Unique<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
+}
+
+impl fmt::Debug for Unique<HANDLE> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        write!(fmt, "{:p}", *self.0)
+    }
 }
 
 /// A wrapper around an owned Windows HANDLE. The wrapper
@@ -22,7 +39,7 @@ extern {
 #[derive(Debug)]
 pub struct RawIo {
     /// The underlying HANDLE.
-    handle: RawHandle,
+    handle: Unique<HANDLE>,
     /// Indicates whether the HANDLE has been extracted and
     /// transferred ownership or whether we should close it.
     must_close: bool,
@@ -30,7 +47,7 @@ pub struct RawIo {
 
 impl Into<Stdio> for RawIo {
     fn into(self) -> Stdio {
-        unsafe { sys_io::FromRawHandle::from_raw_handle(self.into_inner()) }
+        unsafe { FromRawHandle::from_raw_handle(self.into_inner()) }
     }
 }
 
@@ -45,7 +62,7 @@ impl AsRawHandle for FileDesc {
 }
 
 impl IntoRawHandle for FileDesc {
-    fn into_raw_handle(self) -> RawHandle { self.into_inner().into_inner() }
+    fn into_raw_handle(self) -> RawHandle { unsafe { self.into_inner().into_inner() } }
 }
 
 impl From<File> for FileDesc {
@@ -56,9 +73,9 @@ impl From<File> for FileDesc {
 
 impl RawIo {
     /// Takes ownership of and wraps an OS file HANDLE.
-    pub unsafe fn new(handle: sys_io::RawHandle) -> Self {
+    pub unsafe fn new(handle: RawHandle) -> Self {
         RawIo {
-            handle: handle,
+            handle: Unique(StdUnique::new(handle)),
             must_close: true,
         }
     }
@@ -68,24 +85,30 @@ impl RawIo {
         // Make sure our desctructor doesn't actually close
         // the handle we just transfered to the caller.
         self.must_close = false;
-        self.handle
+        **self.handle
     }
 
     /// Returns the underlying HANDLE without transfering ownership.
-    pub fn inner(&self) -> RawFd { self.handle }
+    pub fn inner(&self) -> RawHandle { **self.handle }
 
     /// Duplicates the underlying HANDLE.
     // Adapted from rust: libstd/sys/windows/handle.rs
     pub fn duplicate(&self) -> Result<Self> {
-        let mut ret = 0 as libc::HANDLE;
-        try!(cvt(unsafe {
-            let cur_proc = libc::GetCurrentProcess();
+        unsafe {
+            let mut ret = winapi::INVALID_HANDLE_VALUE;
+            try!(cvt({
+                let cur_proc = kernel32::GetCurrentProcess();
 
-            libc::DuplicateHandle(cur_proc, self.handle, cur_proc, &mut ret,
-                                  0 as libc::DWORD, false as libc::BOOL,
-                                  libc::DUPLICATE_SAME_ACCESS)
-        }));
-        Ok(RawIo(ret))
+                kernel32::DuplicateHandle(cur_proc,
+                                          **self.handle,
+                                          cur_proc,
+                                          &mut ret,
+                                          0 as winapi::DWORD,
+                                          winapi::FALSE,
+                                          winapi::DUPLICATE_SAME_ACCESS)
+            }));
+            Ok(RawIo::new(ret))
+        }
     }
 
     /// Reads from the underlying HANDLE.
@@ -93,9 +116,11 @@ impl RawIo {
     pub fn read_inner(&self, buf: &mut [u8]) -> Result<usize> {
         let mut read = 0;
         let res = cvt(unsafe {
-            libc::ReadFile(self.handle, buf.as_ptr() as libc::LPVOID,
-                           buf.len() as libc::DWORD, &mut read,
-                           ptr::null_mut())
+            kernel32::ReadFile(**self.handle,
+                               buf.as_ptr() as winapi::LPVOID,
+                               buf.len() as winapi::DWORD,
+                               &mut read,
+                               ptr::null_mut())
         });
 
         match res {
@@ -116,9 +141,11 @@ impl RawIo {
     pub fn write_inner(&self, buf: &[u8]) -> Result<usize> {
         let mut amt = 0;
         try!(cvt(unsafe {
-            libc::WriteFile(self.handle, buf.as_ptr() as libc::LPVOID,
-                            buf.len() as libc::DWORD, &mut amt,
-                            ptr::null_mut())
+            kernel32::WriteFile(**self.handle,
+                                buf.as_ptr() as winapi::LPVOID,
+                                buf.len() as winapi::DWORD,
+                                &mut amt,
+                                ptr::null_mut())
         }));
         Ok(amt as usize)
     }
@@ -142,13 +169,13 @@ impl Drop for RawIo {
     // Adapted from rust: src/libstd/sys/windows/handle.rs
     fn drop(&mut self) {
         if self.must_close {
-            unsafe { let _ = libc::CloseHandle(self.handle); }
+            unsafe { let _ = kernel32::CloseHandle(**self.handle); }
         }
     }
 }
 
 // Taken from rust: src/libstd/sys/windows/mod.rs
-fn cvt<I: PartialEq + Zero>(i: I) -> io::Result<I> {
+fn cvt<I: PartialEq + Zero>(i: I) -> Result<I> {
     if i == I::zero() {
         Err(Error::last_os_error())
     } else {
@@ -160,9 +187,39 @@ fn cvt<I: PartialEq + Zero>(i: I) -> io::Result<I> {
 pub fn pipe() -> Result<(RawIo, RawIo)> {
     use std::ptr;
     unsafe {
-        let mut reader = 0;
-        let mut writer = 0;
-        try!(cvt(CreatePipe(&mut reader, &mut writer, ptr::null(), 0)));
+        let mut reader = winapi::INVALID_HANDLE_VALUE;
+        let mut writer = winapi::INVALID_HANDLE_VALUE;
+        try!(cvt(kernel32::CreatePipe(&mut reader as winapi::PHANDLE,
+                                      &mut writer as winapi::PHANDLE,
+                                      ptr::null_mut(),
+                                      0)));
+
         Ok((RawIo::new(reader), RawIo::new(writer)))
     }
+}
+
+/// Duplicates file HANDLES for (stdin, stdout, stderr) and returns them in that order.
+pub fn dup_stdio() -> Result<(RawIo, RawIo, RawIo)> {
+    fn dup_handle(handle: winapi::DWORD) -> Result<RawIo> {
+        unsafe {
+            let current_process = kernel32::GetCurrentProcess();
+            let mut new_handle = winapi::INVALID_HANDLE_VALUE;
+
+            try!(cvt(kernel32::DuplicateHandle(current_process,
+                                               kernel32::GetStdHandle(handle),
+                                               current_process,
+                                               &mut new_handle,
+                                               0 as winapi::DWORD,
+                                               winapi::FALSE,
+                                               winapi::DUPLICATE_SAME_ACCESS)));
+
+            Ok(RawIo::new(new_handle))
+        }
+    }
+
+    Ok((
+        try!(dup_handle(winapi::STD_INPUT_HANDLE)),
+        try!(dup_handle(winapi::STD_OUTPUT_HANDLE)),
+        try!(dup_handle(winapi::STD_ERROR_HANDLE))
+    ))
 }

@@ -7,10 +7,11 @@ use std::borrow::{Borrow, Cow};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::convert::{From, Into};
-use std::default::Default;
 use std::fmt;
 use std::fs::OpenOptions;
+use std::io::Error as IoError;
 use std::io::ErrorKind as IoErrorKind;
+use std::io::Result as IoResult;
 use std::io::Write;
 use std::iter::{IntoIterator, Iterator};
 use std::process::{self, Stdio};
@@ -18,11 +19,8 @@ use std::rc::Rc;
 use std::result;
 use std::vec;
 
-// Apparently importing Redirect before Word causes an ICE, when linking
-// to this crate, so this ordering is *very* crucial...
-// 'assertion failed: bound_list_is_sorted(&bounds.projection_bounds)', ../src/librustc/middle/ty.rs:4028
-use syntax::ast::{Arith, CompoundCommand, SimpleCommand, Parameter, ParameterSubstitution, Word, Redirect};
-use syntax::ast::Command as AstCommand;
+use syntax::ast::{Arith, Command, CompoundCommand, SimpleCommand, Parameter, ParameterSubstitution, Redirect, Word};
+use runtime::io::dup_stdio;
 use runtime::io::{FileDesc, Permissions};
 use void::Void;
 
@@ -40,8 +38,11 @@ const EXIT_SIGNAL_OFFSET: u32 = 128;
 
 const IFS_DEFAULT: &'static str = " \t\n";
 
+/// File descriptor for standard input.
 pub const STDIN_FILENO: Fd = 0;
+/// File descriptor for standard output.
 pub const STDOUT_FILENO: Fd = 1;
+/// File descriptor for standard error.
 pub const STDERR_FILENO: Fd = 2;
 
 /// A macro that accepts a `Result<ExitStatus, RuntimeError>` and attempts
@@ -116,7 +117,7 @@ impl From<process::ExitStatus> for ExitStatus {
         }
 
         #[cfg(windows)]
-        fn get_signal(exit: process::ExitStatus) -> Option<i32> { None }
+        fn get_signal(_exit: process::ExitStatus) -> Option<i32> { None }
 
         match exit.code() {
             Some(code) => ExitStatus::Code(code),
@@ -264,8 +265,8 @@ pub struct Env<'a> {
 impl<'a> Env<'a> {
     /// Creates a new default environment.
     /// See the docs for `Env::with_config` for more information.
-    pub fn new() -> Self {
-        Self::with_config(None, None, None)
+    pub fn new() -> IoResult<Self> {
+        Self::with_config(None, None, None, None)
     }
 
     /// Creates an environment using provided overrides, or data from the
@@ -282,9 +283,10 @@ impl<'a> Env<'a> {
     /// variables) which is not valid Unicode will be ignored.
     pub fn with_config(name: Option<String>,
                        args: Option<Vec<String>>,
-                       env: Option<Vec<(String, String)>>) -> Self
+                       env: Option<Vec<(String, String)>>,
+                       fds: Option<HashMap<Fd, (Rc<FileDesc>, Permissions)>>) -> IoResult<Self>
     {
-        use ::std::env;
+        use std::env;
 
         let name = name.unwrap_or_else(|| env::current_exe().ok().and_then(|path| {
             path.file_name().and_then(|os_str| os_str.to_str().map(|s| s.to_string()))
@@ -297,15 +299,28 @@ impl<'a> Env<'a> {
             |pairs| pairs.into_iter().map(|(k,v)| (k, Some((Rc::new(v), true)))).collect()
         );
 
-        Env {
+        let fds = match fds {
+            Some(fds) => fds.into_iter().map(|(k,v)| (k, Some(v))).collect(),
+            None => {
+                let (stdin, stdout, stderr) = try!(dup_stdio());
+
+                let mut fds = HashMap::with_capacity(3);
+                fds.insert(STDIN_FILENO,  Some((Rc::new(stdin),  Permissions::Read)));
+                fds.insert(STDOUT_FILENO, Some((Rc::new(stdout), Permissions::Write)));
+                fds.insert(STDERR_FILENO, Some((Rc::new(stderr), Permissions::Write)));
+                fds
+            },
+        };
+
+        Ok(Env {
             shell_name: Rc::new(String::from(name)),
             args: args,
             functions: HashMap::new(),
             vars: vars,
-            fds: HashMap::new(),
+            fds: fds,
             last_status: EXIT_SUCCESS,
             parent_env: None,
-        }
+        })
     }
 
     /// Walks `self` and its entire chain of parent environments and evaluates a closure on each.
@@ -328,10 +343,6 @@ impl<'a> Env<'a> {
             }
         }
     }
-}
-
-impl<'a> Default for Env<'a> {
-    fn default() -> Self { Self::new() }
 }
 
 pub trait Environment {
@@ -1384,7 +1395,7 @@ impl Run for SimpleCommand {
                     // If the environment has that fd, use it
                     Some((fdes, _)) => try!(unwrap_fdes(fdes.clone())).into(),
                     // Otherwise just inherit from the current process
-                    None => Stdio::inherit(),
+                    None => Stdio::null(),
                 },
             };
             Ok(ret)
@@ -1395,11 +1406,17 @@ impl Run for SimpleCommand {
         cmd.stdout(try!(get_redirect(STDOUT_FILENO, env)));
         cmd.stderr(try!(get_redirect(STDERR_FILENO, env)));
 
+        #[cfg(unix)]
+        fn is_enoexec(err: &IoError) -> bool { Some(libc::ENOEXEC) == err.raw_os_error() }
+
+        #[cfg(windows)]
+        fn is_enoexec(_err: &IoError) -> bool { false }
+
         match cmd.status() {
             Err(e) => {
                 let (exit, err) = if IoErrorKind::NotFound == e.kind() {
                     (EXIT_CMD_NOT_FOUND, CommandError::NotFound(cmd_name).into())
-                } else if Some(libc::ENOEXEC) == e.raw_os_error() {
+                } else if is_enoexec(&e) {
                     (EXIT_CMD_NOT_EXECUTABLE, CommandError::NotExecutable(cmd_name).into())
                 } else {
                     (EXIT_ERROR, RuntimeError::Io(e, cmd_name.clone()))
@@ -1832,7 +1849,7 @@ mod tests {
     #[test]
     fn test_env_name() {
         let name = "shell";
-        let env = Env::with_config(Some(String::from(name)), None, None);
+        let env = Env::with_config(Some(String::from(name)), None, None, None).unwrap();
         assert_eq!(&**env.name(), name);
         assert_eq!(&**env.arg(0).unwrap(), name);
     }
@@ -1840,7 +1857,7 @@ mod tests {
     #[test]
     fn test_env_name_should_be_same_in_child_environment() {
         let name = "shell";
-        let env = Env::with_config(Some(String::from(name)), None, None);
+        let env = Env::with_config(Some(String::from(name)), None, None, None).unwrap();
         let child = env.sub_env();
         assert_eq!(&**child.name(), name);
         assert_eq!(&**child.arg(0).unwrap(), name);
@@ -1850,7 +1867,7 @@ mod tests {
     fn test_env_set_and_get_var() {
         let name = "var";
         let value = "value";
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(env.var(name), None);
         env.set_var(String::from(name), Rc::new(String::from(value)));
         assert_eq!(&**env.var(name).unwrap(), value);
@@ -1860,7 +1877,7 @@ mod tests {
     fn test_env_set_var_in_parent_visible_in_child() {
         let name = "var";
         let value = "value";
-        let mut parent = Env::new();
+        let mut parent = Env::new().unwrap();
         parent.set_var(String::from(name), Rc::new(String::from(value)));
         assert_eq!(&**parent.sub_env().var(name).unwrap(), value);
     }
@@ -1872,7 +1889,7 @@ mod tests {
         let child_name = "child-var";
         let child_value = "child-value";
 
-        let mut parent = Env::new();
+        let mut parent = Env::new().unwrap();
         parent.set_var(String::from(parent_name), Rc::new(String::from(parent_value)));
 
         {
@@ -1893,7 +1910,7 @@ mod tests {
     #[test]
     fn test_env_set_and_get_last_status() {
         let exit = ExitStatus::Signal(9);
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         env.set_last_status(exit);
         assert_eq!(env.last_status(), exit);
     }
@@ -1901,7 +1918,7 @@ mod tests {
     #[test]
     fn test_env_set_last_status_in_parent_visible_in_child() {
         let exit = ExitStatus::Signal(9);
-        let mut parent = Env::new();
+        let mut parent = Env::new().unwrap();
         parent.set_last_status(exit);
         assert_eq!(parent.sub_env().last_status(), exit);
     }
@@ -1909,7 +1926,7 @@ mod tests {
     #[test]
     fn test_env_set_last_status_in_child_should_not_affect_parent() {
         let parent_exit = ExitStatus::Signal(9);
-        let mut parent = Env::new();
+        let mut parent = Env::new().unwrap();
         parent.set_last_status(parent_exit);
 
         {
@@ -1932,7 +1949,7 @@ mod tests {
         let fn_name = Rc::new(fn_name_owned.clone());
 
         let exit = EXIT_ERROR;
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(env.has_function(&*fn_name), false);
         assert!(env.run_function(fn_name.clone(), vec!()).is_none());
 
@@ -1947,7 +1964,7 @@ mod tests {
         let fn_name = Rc::new(fn_name_owned.clone());
 
         let exit = EXIT_ERROR;
-        let mut parent = Env::new();
+        let mut parent = Env::new().unwrap();
         parent.set_function(fn_name_owned, MockFn::new(move |_| Ok(exit)));
 
         {
@@ -1963,7 +1980,7 @@ mod tests {
         let fn_name = Rc::new(fn_name_owned.clone());
 
         let exit = EXIT_ERROR;
-        let mut parent = Env::new();
+        let mut parent = Env::new().unwrap();
 
         {
             let mut child = parent.sub_env();
@@ -1986,7 +2003,7 @@ mod tests {
             String::from("parent arg3"),
         );
 
-        let mut env = Env::with_config(Some(shell_name_owned), Some(parent_args.clone()), None);
+        let mut env = Env::with_config(Some(shell_name_owned), Some(parent_args.clone()), None, None).unwrap();
 
         let fn_name_owned = String::from("fn name");
         let fn_name = Rc::new(fn_name_owned.clone());
@@ -2039,7 +2056,7 @@ mod tests {
         let fn_name_owned = String::from("fn name");
         let fn_name = Rc::new(fn_name_owned.clone());
 
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         {
             let fn_name = fn_name.clone();
             let num_calls = 3usize;
@@ -2074,7 +2091,7 @@ mod tests {
         let fn_name_owned = String::from("fn name");
         let fn_name = Rc::new(fn_name_owned.clone());
 
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         {
             let fn_name = fn_name.clone();
             let num_calls = 3usize;
@@ -2109,7 +2126,7 @@ mod tests {
 
     #[test]
     fn test_env_inherit_env_vars_if_not_overridden() {
-        let env = Env::new();
+        let env = Env::new().unwrap();
 
         let mut vars: Vec<(String, String)> = ::std::env::vars().collect();
         vars.sort();
@@ -2137,7 +2154,7 @@ mod tests {
         };
 
         let owned_vars = env_vars.iter().map(|&(k, v)| (String::from(k), String::from(v))).collect();
-        let env = Env::with_config(None, None, Some(owned_vars));
+        let env = Env::with_config(None, None, Some(owned_vars), None).unwrap();
         let mut vars = env.env();
         vars.sort();
         assert_eq!(vars, env_vars);
@@ -2153,7 +2170,8 @@ mod tests {
         let perms = Permissions::ReadWrite;
         let file_desc = Rc::new(file_desc());
 
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
+        env.close_file_desc(fd);
         assert!(env.file_desc(fd).is_none());
         env.set_file_desc(fd, file_desc.clone(), perms);
         {
@@ -2171,7 +2189,7 @@ mod tests {
         let perms = Permissions::ReadWrite;
         let file_desc = Rc::new(file_desc());
 
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         env.set_file_desc(fd, file_desc.clone(), perms);
         let child = env.sub_env();
         let (got_file_desc, got_perms) = child.file_desc(fd).unwrap();
@@ -2183,7 +2201,8 @@ mod tests {
     fn test_env_set_file_desc_in_child_should_not_affect_parent() {
         let fd = STDIN_FILENO;
 
-        let parent = Env::new();
+        let mut parent = Env::new().unwrap();
+        parent.close_file_desc(fd);
         assert!(parent.file_desc(fd).is_none());
         {
             let perms = Permissions::ReadWrite;
@@ -2203,7 +2222,7 @@ mod tests {
         let perms = Permissions::ReadWrite;
         let file_desc = Rc::new(file_desc());
 
-        let mut parent = Env::new();
+        let mut parent = Env::new().unwrap();
         parent.set_file_desc(fd, file_desc.clone(), perms);
         {
             let mut child = parent.sub_env();
@@ -2221,7 +2240,7 @@ mod tests {
         let io::Pipe { mut reader, writer } = io::Pipe::new().unwrap();
 
         let guard = thread::spawn(move || {
-            let mut env = Env::new();
+            let mut env = Env::new().unwrap();
             let writer = Rc::new(writer);
             env.set_file_desc(STDERR_FILENO, writer.clone(), Permissions::Write);
             env.report_error(RuntimeError::Expansion(ExpansionError::DivideByZero));
@@ -2253,7 +2272,7 @@ mod tests {
             arg3.clone(),
         );
 
-        let mut env = Env::with_config(None, Some(args.clone()), None);
+        let mut env = Env::with_config(None, Some(args.clone()), None, None).unwrap();
         env.set_var(String::from("var1"), var1.clone());
         env.set_var(String::from("var2"), var2.clone());
         env.set_var(String::from("var3"), var3.clone());
@@ -2292,7 +2311,7 @@ mod tests {
 
     #[test]
     fn test_eval_parameter_with_unset_vars() {
-        let mut env = Env::with_config(None, Some(vec!()), None);
+        let mut env = Env::with_config(None, Some(vec!()), None, None).unwrap();
 
         assert_eq!(Parameter::At.eval(&mut env), Some(Fields::Zero));
         assert_eq!(Parameter::Star.eval(&mut env), Some(Fields::Zero));
@@ -2315,7 +2334,7 @@ mod tests {
             ($lit:expr) => { Box::new(Arith::Literal($lit)) }
         }
 
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         let env = &mut env;
         let var = String::from("var name");
         let var_value = 10;
@@ -2455,7 +2474,7 @@ mod tests {
             String::from("one"),
             String::from("two"),
             String::from("three"),
-        )), None);
+        )), None, None).unwrap();
 
         env.set_var(var.clone(), Rc::new(value.clone()));
 
@@ -2490,7 +2509,7 @@ mod tests {
     fn test_eval_parameter_substitution_arith() {
         use syntax::ast::ParameterSubstitution::Arithmetic;
 
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(Arithmetic(None).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("0")))));
         assert_eq!(Arithmetic(Some(Arith::Literal(5))).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("5")))));
         assert!(Arithmetic(Some(
@@ -2512,7 +2531,7 @@ mod tests {
         let default_value = String::from("some default value");
         let default = Word::Literal(default_value.clone());
 
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         env.set_var(var.clone(),      Rc::new(var_value.clone()));
         env.set_var(var_null.clone(), Rc::new(null.clone()));
 
@@ -2563,7 +2582,7 @@ mod tests {
             );
 
             let args_value = args.iter().cloned().map(Rc::new).collect::<Vec<_>>();
-            let mut env = Env::with_config(None, Some(args), None);
+            let mut env = Env::with_config(None, Some(args), None, None).unwrap();
 
             let subst = Default(true, Parameter::At, Some(default.clone()));
             assert_eq!(subst.eval(&mut env), Ok(Fields::At(args_value.clone())));
@@ -2590,7 +2609,7 @@ mod tests {
                 String::from(""),
                 String::from(""),
                 String::from(""),
-            )), None);
+            )), None, None).unwrap();
 
             let subst = Default(true, Parameter::At, Some(default.clone()));
             assert_eq!(subst.eval(&mut env), Ok(default_value.clone()));
@@ -2613,7 +2632,7 @@ mod tests {
 
         // Args not set
         {
-            let mut env = Env::new();
+            let mut env = Env::new().unwrap();
 
             let subst = Default(true, Parameter::At, Some(default.clone()));
             assert_eq!(subst.eval(&mut env), Ok(default_value.clone()));
@@ -2648,7 +2667,7 @@ mod tests {
         let assig = Word::Literal(assig_value.clone());
         let null = Rc::new(String::new());
 
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         env.set_var(var.clone(), Rc::new(var_value.clone()));
 
         let assig_var_value = Rc::new(assig_value);
@@ -2750,7 +2769,7 @@ mod tests {
         let var_unset = String::from("var_not_set_in_env");
         let err_msg   = String::from("this variable is not set!");
 
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         env.set_var(var.clone(),      Rc::new(var_value.clone()));
         env.set_var(var_null.clone(), Rc::new(null.clone()));
 
@@ -2846,7 +2865,7 @@ mod tests {
             );
 
             let args_value = args.iter().cloned().map(Rc::new).collect::<Vec<_>>();
-            let mut env = Env::with_config(None, Some(args), None);
+            let mut env = Env::with_config(None, Some(args), None, None).unwrap();
 
             let subst = Error(true, Parameter::At, Some(err_msg.clone()));
             assert_eq!(subst.eval(&mut env), Ok(Fields::At(args_value.clone())));
@@ -2873,7 +2892,7 @@ mod tests {
                 String::from(""),
                 String::from(""),
                 String::from(""),
-            )), None);
+            )), None, None).unwrap();
 
             env.set_last_status(EXIT_SUCCESS);
             let subst = Error(true, Parameter::At, Some(err_msg.clone()));
@@ -2914,7 +2933,7 @@ mod tests {
 
         // Args not set
         {
-            let mut env = Env::new();
+            let mut env = Env::new().unwrap();
 
             env.set_last_status(EXIT_SUCCESS);
             let subst = Error(true, Parameter::At, Some(err_msg.clone()));
@@ -2966,7 +2985,7 @@ mod tests {
         let alt_value = String::from("some alternative value");
         let alternative = Word::Literal(alt_value.clone());
 
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         env.set_var(var.clone(),      Rc::new(var_value.clone()));
         env.set_var(var_null.clone(), Rc::new(null.clone()));
 
@@ -3016,7 +3035,7 @@ mod tests {
                 String::from(""),
             );
 
-            let mut env = Env::with_config(None, Some(args), None);
+            let mut env = Env::with_config(None, Some(args), None, None).unwrap();
 
             let subst = Alternative(true, Parameter::At, Some(alternative.clone()));
             assert_eq!(subst.eval(&mut env), Ok(alt_value.clone()));
@@ -3043,7 +3062,7 @@ mod tests {
                 String::from(""),
                 String::from(""),
                 String::from(""),
-            )), None);
+            )), None, None).unwrap();
 
             let subst = Alternative(true, Parameter::At, Some(alternative.clone()));
             assert_eq!(subst.eval(&mut env), Ok(null.clone()));
@@ -3066,7 +3085,7 @@ mod tests {
 
         // Args not set
         {
-            let mut env = Env::new();
+            let mut env = Env::new().unwrap();
 
             let subst = Alternative(true, Parameter::At, Some(alternative.clone()));
             assert_eq!(subst.eval(&mut env), Ok(null.clone()));
@@ -3091,27 +3110,27 @@ mod tests {
     #[test]
     fn test_eval_word_literal_evals_to_self() {
         let value = String::from("foobar");
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(Word::Literal(value.clone()).eval(&mut env), Ok(Fields::Single(Rc::new(value))));
     }
 
     #[test]
     fn test_eval_word_colon_evals_to_self() {
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(Word::Colon.eval(&mut env), Ok(Fields::Single(Rc::new(String::from(":")))));
     }
 
     #[test]
     fn test_eval_word_lone_tilde_expansion() {
         let home_value = Rc::new(String::from("foobar"));
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         env.set_var(String::from("HOME"), home_value.clone());
         assert_eq!(Word::Tilde.eval(&mut env), Ok(Fields::Single(home_value)));
     }
 
     #[test]
     fn test_eval_word_tilde_in_middle_of_word_does_not_expand() {
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(Word::Concat(vec!(
             Word::Literal(String::from("foo")),
             Word::Literal(String::from("~")),
@@ -3121,7 +3140,7 @@ mod tests {
 
     #[test]
     fn test_eval_word_tilde_in_middle_of_word_after_colon_does_not_expand() {
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(Word::Concat(vec!(
             Word::Literal(String::from("foo")),
             Word::Colon,
@@ -3133,7 +3152,7 @@ mod tests {
     #[test]
     fn test_eval_word_double_quoted_does_parameter_expansions_as_single_field() {
         let var = String::from("var");
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         env.set_var(var.clone(), Rc::new(String::from("hello world")));
         assert_eq!(Word::DoubleQuoted(vec!(
             Word::Literal(String::from("foo")),
@@ -3145,7 +3164,7 @@ mod tests {
 
     #[test]
     fn test_eval_word_double_quoted_within_double_quoted_same_as_if_inner_was_not_there() {
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(Word::DoubleQuoted(vec!(
             Word::DoubleQuoted(vec!(Word::Literal(String::from("foo")))),
             Word::Literal(String::from("bar")),
@@ -3154,7 +3173,7 @@ mod tests {
 
     #[test]
     fn test_eval_word_double_quoted_does_not_expand_tilde() {
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(Word::DoubleQuoted(vec!(
             Word::Tilde,
         )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("~")))));
@@ -3162,7 +3181,7 @@ mod tests {
 
     #[test]
     fn test_eval_word_double_quoted_param_at_unset_results_in_no_fields() {
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(Word::DoubleQuoted(vec!(
             Word::Param(Parameter::At),
         )).eval(&mut env), Ok(Fields::Zero))
@@ -3170,7 +3189,7 @@ mod tests {
 
     #[test]
     fn test_eval_word_double_quoted_param_star_unset_results_in_no_fields() {
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(Word::DoubleQuoted(vec!(
             Word::Param(Parameter::Star),
         )).eval(&mut env), Ok(Fields::Zero))
@@ -3182,7 +3201,7 @@ mod tests {
             String::from("one"),
             String::from("two"),
             String::from("three"),
-        )), None);
+        )), None, None).unwrap();
 
         assert_eq!(Word::DoubleQuoted(vec!(
             Word::Param(Parameter::At),
@@ -3199,7 +3218,7 @@ mod tests {
             String::from("one"),
             String::from("two"),
             String::from("three"),
-        )), None);
+        )), None, None).unwrap();
 
         assert_eq!(Word::DoubleQuoted(vec!(
             Word::Literal(String::from("foo")),
@@ -3214,7 +3233,7 @@ mod tests {
 
     #[test]
     fn test_eval_word_double_quoted_param_at_expands_to_nothing_when_args_not_set_and_concats_with_rest() {
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(Word::DoubleQuoted(vec!(
             Word::Literal(String::from("foo")),
             Word::Param(Parameter::At),
@@ -3228,7 +3247,7 @@ mod tests {
             String::from("one"),
             String::from("two"),
             String::from("three"),
-        )), None);
+        )), None, None).unwrap();
 
         assert_eq!(Word::DoubleQuoted(vec!(
             Word::Literal(String::from("foo")),
@@ -3253,7 +3272,7 @@ mod tests {
 
     #[test]
     fn test_eval_word_concat_joins_all_inner_words() {
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         env.set_var(String::from("var"), Rc::new(String::from("foobar")));
 
         assert_eq!(Word::Concat(vec!(
@@ -3266,7 +3285,7 @@ mod tests {
     #[test]
     fn test_eval_word_concat_if_inner_word_expands_to_many_fields_they_are_joined_with_those_before_and_after()
     {
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         env.set_var(String::from("var"), Rc::new(String::from("foo bar baz")));
 
         assert_eq!(Word::Concat(vec!(
@@ -3282,7 +3301,7 @@ mod tests {
 
     #[test]
     fn test_eval_word_concat_should_not_expand_tilde_which_is_not_at_start() {
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(Word::Concat(vec!(
             Word::Literal(String::from("foo")),
             Word::Tilde,
@@ -3300,7 +3319,7 @@ mod tests {
             String::from("one"),
             String::from("two"),
             String::from("three"),
-        )), None);
+        )), None, None).unwrap();
 
         assert_eq!(Word::Concat(vec!(
             Word::Param(Parameter::At),
@@ -3317,7 +3336,7 @@ mod tests {
             String::from("one"),
             String::from("two"),
             String::from("three"),
-        )), None);
+        )), None, None).unwrap();
 
         assert_eq!(Word::Concat(vec!(
             Word::Literal(String::from("foo")),
@@ -3332,7 +3351,7 @@ mod tests {
 
     #[test]
     fn test_eval_word_concat_param_at_expands_to_nothing_when_args_not_set_and_concats_with_rest() {
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(Word::Concat(vec!(
             Word::Literal(String::from("foo")),
             Word::Param(Parameter::At),
@@ -3342,7 +3361,7 @@ mod tests {
 
     #[test]
     fn test_eval_word_concat_within_double_quoted_same_as_if_inner_was_not_there() {
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(Word::DoubleQuoted(vec!(
             Word::Concat(vec!(Word::Literal(String::from("foo baz\nqux")))),
             Word::Literal(String::from("bar")),
@@ -3351,7 +3370,7 @@ mod tests {
 
     #[test]
     fn test_eval_word_double_quoted_within_concat_within_double_quoted_same_as_if_inner_was_not_there() {
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(Word::DoubleQuoted(vec!(
             Word::DoubleQuoted(vec!(
                 Word::Concat(vec!(Word::DoubleQuoted(vec!(Word::Literal(String::from("foo baz\nqux"))))))
@@ -3363,14 +3382,14 @@ mod tests {
     #[test]
     fn test_eval_word_single_quoted_removes_quotes() {
         let value = String::from("hello world");
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(Word::SingleQuoted(value.clone()).eval(&mut env), Ok(Fields::Single(Rc::new(value))));
     }
 
     #[test]
     fn test_eval_word_double_quoted_removes_quotes() {
         let value = String::from("hello world");
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(Word::DoubleQuoted(vec!(
             Word::Literal(value.clone())
         )).eval(&mut env), Ok(Fields::Single(Rc::new(value))));
@@ -3379,27 +3398,27 @@ mod tests {
     #[test]
     fn test_eval_word_escaped_quoted_removes_slash() {
         let value = String::from("&");
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(Word::Escaped(value.clone()).eval(&mut env), Ok(Fields::Single(Rc::new(value))));
     }
 
     #[test]
     fn test_eval_word_single_quoted_should_not_split_fields() {
         let value = String::from("hello world\nfoo\tbar");
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(Word::SingleQuoted(value.clone()).eval(&mut env), Ok(Fields::Single(Rc::new(value))));
     }
 
     #[test]
     fn test_eval_word_single_quoted_should_not_expand_anything() {
         let value = String::from("hello world\nfoo\tbar * baz ~");
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(Word::SingleQuoted(value.clone()).eval(&mut env), Ok(Fields::Single(Rc::new(value))));
     }
 
     #[test]
     fn test_run_command_and() {
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(Command::And(true_cmd(), true_cmd()).run(&mut env), Ok(ExitStatus::Code(0)));
         assert_eq!(Command::And(true_cmd(), exit(5)).run(&mut env), Ok(ExitStatus::Code(5)));
         assert_eq!(Command::And(false_cmd(), exit(5)).run(&mut env), Ok(ExitStatus::Code(1)));
@@ -3407,7 +3426,7 @@ mod tests {
 
     #[test]
     fn test_run_command_and_error_handling() {
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
 
         // CommandError::NotFound
         assert_eq!(Command::And(cmd!("missing"), true_cmd()).run(&mut env), Ok(EXIT_CMD_NOT_FOUND));
@@ -3450,14 +3469,14 @@ mod tests {
 
     #[test]
     fn test_run_command_or() {
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         assert_eq!(Command::Or(true_cmd(), exit(5)).run(&mut env), Ok(ExitStatus::Code(0)));
         assert_eq!(Command::Or(false_cmd(), exit(5)).run(&mut env), Ok(ExitStatus::Code(5)));
     }
 
     #[test]
     fn test_run_command_or_error_handling() {
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
 
         // CommandError::NotFound
         assert_eq!(Command::Or(cmd!("missing"), true_cmd()).run(&mut env), Ok(EXIT_SUCCESS));
@@ -3501,7 +3520,7 @@ mod tests {
     #[test]
     fn test_run_command_function_declaration() {
         let fn_name = "function_name";
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         let func = Command::Function(fn_name.to_string(), Rc::new(*false_cmd()));
         assert_eq!(func.run(&mut env), Ok(EXIT_SUCCESS));
         assert_eq!(cmd!(fn_name).run(&mut env), Ok(ExitStatus::Code(1)));
@@ -3514,7 +3533,7 @@ mod tests {
         let value = "value";
         let double_value = format!("{}{}", value, value);
 
-        let mut env = Env::new();
+        let mut env = Env::new().unwrap();
         let func = Command::Function(fn_name.to_string(), Rc::new(Command::Compound(
             Box::new(CompoundCommand::Brace(vec!(
                 Command::Simple(Box::new(SimpleCommand {

@@ -73,18 +73,18 @@ impl FileDesc {
     #[cfg(unix)]
     /// Takes ownership of and wraps an OS file primitive.
     pub unsafe fn new(fd: ::std::os::unix::io::RawFd) -> Self {
-        FileDesc(UnsafeCell::new(os::RawIo::new(fd)))
+        Self::from_inner(os::RawIo::new(fd))
     }
 
     #[cfg(windows)]
     /// Takes ownership of and wraps an OS file primitive.
     pub unsafe fn new(handle: ::std::os::windows::io::RawHandle) -> Self {
-        FileDesc(UnsafeCell::new(os::RawIo::new(handle)))
+        Self::from_inner(os::RawIo::new(handle))
     }
 
     /// Duplicates the underlying OS file primitive.
     pub fn duplicate(&self) -> Result<Self> {
-        Ok(FileDesc(UnsafeCell::new(try!(self.inner().duplicate()))))
+        Ok(Self::from_inner(try!(self.inner().duplicate())))
     }
 
     /// Allows for performing read operations on the underlying OS file
@@ -109,6 +109,10 @@ impl FileDesc {
 
     fn into_inner(self) -> os::RawIo {
         unsafe { self.0.into_inner() }
+    }
+
+    fn from_inner(inner: os::RawIo) -> Self {
+        FileDesc(UnsafeCell::new(inner))
     }
 }
 
@@ -140,19 +144,35 @@ impl fmt::Debug for FileDesc {
 
 /// A wrapper for a reader and writer OS pipe pair.
 pub struct Pipe {
+    /// The reader end of the pipe. Anything written to the writer end can be read here.
     pub reader: FileDesc,
+    /// The writer end of the pipe. Anything written here can be read from the reader end.
     pub writer: FileDesc,
 }
 
 impl Pipe {
     /// Creates and returns a new pipe pair.
+    #[cfg_attr(unix, doc = "
+    On Unix systems, both file descriptors of the pipe will have
+    their CLOEXEC flags set, however, note that the setting of the flags is nonatomic.")]
     pub fn new() -> Result<Pipe> {
         let (reader, writer) = try!(os::pipe());
         Ok(Pipe {
-            reader: FileDesc(UnsafeCell::new(reader)),
-            writer: FileDesc(UnsafeCell::new(writer)),
+            reader: FileDesc::from_inner(reader),
+            writer: FileDesc::from_inner(writer),
         })
     }
+}
+
+#[doc(hidden)]
+/// Duplicates handles for (stdin, stdout, stderr) and returns them in that order.
+pub fn dup_stdio() -> Result<(FileDesc, FileDesc, FileDesc)> {
+    let (stdin, stdout, stderr) = try!(os::dup_stdio());
+    Ok((
+        FileDesc::from_inner(stdin),
+        FileDesc::from_inner(stdout),
+        FileDesc::from_inner(stderr)
+    ))
 }
 
 #[cfg(test)]
