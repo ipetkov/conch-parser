@@ -3,7 +3,7 @@
 use glob;
 use libc;
 
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::convert::{From, Into};
@@ -13,7 +13,7 @@ use std::fs::OpenOptions;
 use std::io::ErrorKind as IoErrorKind;
 use std::io::Write;
 use std::iter::{IntoIterator, Iterator};
-use std::process::{self, Command, Stdio};
+use std::process::{self, Stdio};
 use std::rc::Rc;
 use std::result;
 use std::vec;
@@ -43,6 +43,37 @@ const IFS_DEFAULT: &'static str = " \t\n";
 pub const STDIN_FILENO: Fd = 0;
 pub const STDOUT_FILENO: Fd = 1;
 pub const STDERR_FILENO: Fd = 2;
+
+/// A macro that accepts a `Result<ExitStatus, RuntimeError>` and attempts
+/// to unwrap it much like `try!`. If the result is a "fatal" error the macro
+/// immediately returns from the enclosing function. Otherwise, the error is
+/// reported via `Environment::report_error`, and the environment's last status
+/// is returned.
+///
+/// A `RuntimeError::Expansion` is considered fatal, since expansion errors should
+/// result in the exit of a non-interactive shell according to the POSIX standard.
+macro_rules! try_and_swallow_non_fatal {
+    ($result:expr, $env:expr) => {{
+        match $result {
+            Ok(exit) => exit,
+            Err(err) => match err {
+                RuntimeError::Expansion(..) => return Err(err),
+
+                RuntimeError::Io(..)            |
+                RuntimeError::Redirection(..)   |
+                RuntimeError::Command(..)       |
+                RuntimeError::Unimplemented(..) => {
+                    // Whoever returned the error should have been responsible
+                    // enough to set the last status as appropriate.
+                    $env.report_error(err);
+                    let exit = $env.last_status();
+                    debug_assert_eq!(exit.success(), false);
+                    exit
+                },
+            },
+        }
+    }}
+}
 
 /// A specialized `Result` type for shell runtime operations.
 pub type Result<T> = result::Result<T, RuntimeError>;
@@ -923,7 +954,6 @@ impl Word {
             }
         };
 
-
         let fields = match *self {
             Literal(ref s)      |
             SingleQuoted(ref s) |
@@ -1315,7 +1345,7 @@ impl Run for SimpleCommand {
             }
         }
 
-        let mut cmd = Command::new(&*cmd_name);
+        let mut cmd = process::Command::new(&*cmd_name);
         for arg in cmd_args {
             cmd.arg(&*arg);
         }
@@ -1387,33 +1417,33 @@ impl Run for SimpleCommand {
     }
 }
 
-impl Run for AstCommand {
+impl Run for Command {
     fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
         let exit = match *self {
-            AstCommand::And(ref first, ref second) => {
-                let exit = try!(first.run(env));
+            Command::And(ref first, ref second) => {
+                let exit = try_and_swallow_non_fatal!(first.run(env), env);
                 if exit.success() { try!(second.run(env)) } else { exit }
             },
 
-            AstCommand::Or(ref first, ref second) => {
-                let exit = try!(first.run(env));
+            Command::Or(ref first, ref second) => {
+                let exit = try_and_swallow_non_fatal!(first.run(env), env);
                 if exit.success() { exit } else { try!(second.run(env)) }
             },
 
-            AstCommand::Pipe(bool, ref cmds) => unimplemented!(),
+            Command::Pipe(bool, ref cmds) => unimplemented!(),
 
-            AstCommand::Job(_) => {
+            Command::Job(_) => {
                 // FIXME: eventual job control would be nice
                 env.set_last_status(EXIT_ERROR);
                 return Err(RuntimeError::Unimplemented("job control is not currently supported"));
             },
 
-            AstCommand::Function(ref name, ref cmd) => {
+            Command::Function(ref name, ref cmd) => {
                 env.set_function(name.clone(), cmd.clone());
                 EXIT_SUCCESS
             },
 
-            AstCommand::Compound(ref cmd, ref redirects) => {
+            Command::Compound(ref cmd, ref redirects) => {
                 // We're in a tricky situation here: any nested commands
                 // and their own nested commands must see the provided
                 // redirects (sort of as if they are in their own sub
@@ -1499,7 +1529,7 @@ impl Run for AstCommand {
                 try!(ret)
             },
 
-            AstCommand::Simple(ref cmd) => try!(cmd.run(env)),
+            Command::Simple(ref cmd) => try!(cmd.run(env)),
         };
 
         env.set_last_status(exit);
@@ -1512,20 +1542,31 @@ impl Run for CompoundCommand {
         use syntax::ast::CompoundCommand::*;
 
         let exit = match *self {
+            // Brace commands are just command groupings no different than as if we had
+            // sequential commands. Thus, any error that results should be passed up
+            // for the caller to decide how to handle.
             Brace(ref cmds) => try!(cmds.run(env)),
 
-            While(ref guard, ref body) => {
-                let mut exit = EXIT_SUCCESS;
-                while try!(guard.run(env)).success() {
-                    exit = try!(body.run(env))
-                }
-                exit
-            },
-
+            While(ref guard, ref body) |
             Until(ref guard, ref body) => {
+                let invert_guard_status = if let Until(..) = *self { true } else { false };
                 let mut exit = EXIT_SUCCESS;
-                while ! try!(guard.run(env)).success() {
-                    exit = try!(body.run(env))
+
+                // Should the loop continue?
+                //
+                //      invert_guard_status (i.e. is `Until` loop)
+                //         +---+---+---+
+                //         | ^ | 0 | 1 |
+                // --------+---+---+---+
+                // exit is | 0 | 0 | 1 |
+                // success +---+---+---+
+                //         | 1 | 1 | 0 |
+                // --------+---+---+---+
+                //
+                // bash and zsh appear to break loops if a "fatal" error occurs,
+                // so we'll emulate the same behavior in case it is expected
+                while try_and_swallow_non_fatal!(guard.run(env), env).success() ^ invert_guard_status {
+                    exit = try_and_swallow_non_fatal!(body.run(env), env);
                 }
                 exit
             },
@@ -1534,11 +1575,13 @@ impl Run for CompoundCommand {
                 // An `If` AST node without any branches (conditional guards)
                 // isn't really a valid instantiation, but we'll just
                 // pretend it was an unsuccessful command (which it sort of is).
-                EXIT_ERROR
+                let exit = EXIT_ERROR;
+                env.set_last_status(exit);
+                exit
             } else {
                 let mut exit = None;
                 for &(ref guard, ref body) in branches.iter() {
-                    if try!(guard.run(env)).success() {
+                    if try_and_swallow_non_fatal!(guard.run(env), env).success() {
                         exit = Some(try!(body.run(env)));
                         break;
                     }
@@ -1552,8 +1595,23 @@ impl Run for CompoundCommand {
                 exit
             },
 
-            Subshell(ref body) => try!(body.run(&mut *env.sub_env())),
+            // Subshells should swallow (but report) errors since they are considered a separate shell.
+            // Thus, errors that occur within here should NOT be propagated upward.
+            Subshell(ref body) => {
+                let env = &mut *env.sub_env();
+                match body.run(env) {
+                    Ok(exit) => exit,
+                    Err(err) => {
+                        env.report_error(err);
+                        let exit = env.last_status();
+                        debug_assert_eq!(exit.success(), false);
+                        exit
+                    },
+                }
+            }
 
+            // bash and zsh appear to break loops if a "fatal" error occurs,
+            // so we'll emulate the same behavior in case it is expected
             For(ref var, ref in_words, ref body) => {
                 let mut exit = EXIT_SUCCESS;
                 let values = match *in_words {
@@ -1569,11 +1627,10 @@ impl Run for CompoundCommand {
 
                 for val in values {
                     env.set_var(var.clone(), val);
-                    exit = try!(body.run(env));
+                    exit = try_and_swallow_non_fatal!(body.run(env), env);
                 }
                 exit
             },
-
 
             Case(ref word, ref arms) => {
                 let match_opts = glob::MatchOptions {
@@ -1602,15 +1659,24 @@ impl Run for CompoundCommand {
     }
 }
 
-impl Run for [AstCommand] {
+impl<T: Borrow<Command>> Run for [T] {
     fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
-        let mut exit = EXIT_SUCCESS;
-        for c in self.iter() {
-            exit = try!(c.run(env))
-        }
-        env.set_last_status(exit);
-        Ok(exit)
+        run(self.iter().map(|c| c.borrow()), env)
     }
+}
+
+/// A function for running any iterator of items from which an `ast::Command`
+/// can be borrowed from. This is useful for lazily streaming commands to run.
+pub fn run<I, Item>(iter: I, env: &mut Environment) -> Result<ExitStatus>
+    where I: Iterator<Item = Item>,
+          Item: Borrow<Command>
+{
+    let mut exit = EXIT_SUCCESS;
+    for c in iter {
+        exit = try_and_swallow_non_fatal!(c.borrow().run(env), env)
+    }
+    env.set_last_status(exit);
+    Ok(exit)
 }
 
 #[cfg(test)]
@@ -1618,14 +1684,15 @@ mod tests {
     use libc;
 
     use std::cell::RefCell;
+    use std::env;
+    use std::fs::OpenOptions;
     use std::io::{Read, Write};
     use std::rc::Rc;
-    use std::fs::OpenOptions;
     use std::thread;
-    use super::{EXIT_ERROR, EXIT_SUCCESS};
+    use super::{EXIT_CMD_NOT_FOUND, EXIT_CMD_NOT_EXECUTABLE, EXIT_ERROR, EXIT_SUCCESS};
     use super::io::{FileDesc, Permissions};
     use super::*;
-    use syntax::ast::{Arith, Parameter, Word};
+    use syntax::ast::{Arith, Command, CompoundCommand, SimpleCommand, Parameter, ParameterSubstitution, Word};
 
     struct MockFn<F: FnMut(&mut Environment) -> Result<ExitStatus>> {
         callback: RefCell<F>,
@@ -1663,6 +1730,31 @@ mod tests {
         let path = if cfg!(windows) { "NUL" } else { "/dev/null" };
         OpenOptions::new().read(true).write(true).open(path).unwrap().into()
     }
+
+    macro_rules! cmd_unboxed {
+        ($cmd:expr)                  => { cmd_unboxed!($cmd,) };
+        ($cmd:expr, $($arg:expr),*,) => { cmd_unboxed!($cmd, $($arg),*) };
+        ($cmd:expr, $($arg:expr),* ) => {
+            Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from($cmd)), vec!($($arg),*))),
+                vars: vec!(),
+                io: vec!(),
+            }))
+        };
+    }
+
+    macro_rules! cmd {
+        ($cmd:expr)                  => { cmd!($cmd,) };
+        ($cmd:expr, $($arg:expr),*,) => { cmd!($cmd, $($arg),*) };
+        ($cmd:expr, $($arg:expr),* ) => { Box::new(cmd_unboxed!($cmd, $($arg),*)) }
+    }
+
+    fn exit(status: u8) -> Box<Command> {
+        cmd!("sh", Word::Literal(String::from("-c")), Word::SingleQuoted(format!("exit {}", status)))
+    }
+
+    fn true_cmd() -> Box<Command> { exit(0) }
+    fn false_cmd() -> Box<Command> { exit(1) }
 
     #[test]
     fn test_fields_is_null_single_empty_string() {
@@ -3303,5 +3395,150 @@ mod tests {
         let value = String::from("hello world\nfoo\tbar * baz ~");
         let mut env = Env::new();
         assert_eq!(Word::SingleQuoted(value.clone()).eval(&mut env), Ok(Fields::Single(Rc::new(value))));
+    }
+
+    #[test]
+    fn test_run_command_and() {
+        let mut env = Env::new();
+        assert_eq!(Command::And(true_cmd(), true_cmd()).run(&mut env), Ok(ExitStatus::Code(0)));
+        assert_eq!(Command::And(true_cmd(), exit(5)).run(&mut env), Ok(ExitStatus::Code(5)));
+        assert_eq!(Command::And(false_cmd(), exit(5)).run(&mut env), Ok(ExitStatus::Code(1)));
+    }
+
+    #[test]
+    fn test_run_command_and_error_handling() {
+        let mut env = Env::new();
+
+        // CommandError::NotFound
+        assert_eq!(Command::And(cmd!("missing"), true_cmd()).run(&mut env), Ok(EXIT_CMD_NOT_FOUND));
+
+        // CommandError::NotExecutable: there isn't a good/consistent test to invoke this error
+
+        // RuntimeError::Io
+        assert_eq!(Command::And(
+                cmd!("cat", Word::Literal(String::from("missing file"))), true_cmd()).run(&mut env),
+                Ok(EXIT_ERROR));
+
+        // RuntimeError::Unimplemented
+        assert_eq!(Command::And(Box::new(Command::Job(cmd!("echo"))), true_cmd()).run(&mut env),
+            Ok(EXIT_ERROR));
+
+        let cmd = cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+            Arith::Div(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(0)))
+        )))));
+        assert_eq!(Command::And(cmd, true_cmd()).run(&mut env),
+            Err(RuntimeError::Expansion(ExpansionError::DivideByZero)));
+
+        let cmd = cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+            Arith::Pow(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(-5)))
+        )))));
+        assert_eq!(Command::And(cmd, true_cmd()).run(&mut env),
+            Err(RuntimeError::Expansion(ExpansionError::NegativeExponent)));
+
+        let cmd = cmd!("echo", Word::Subst(Box::new(
+                    ParameterSubstitution::Assign(true, Parameter::At, Some(Word::Literal(String::from("foo")))))));
+        assert_eq!(Command::And(cmd, true_cmd()).run(&mut env),
+            Err(RuntimeError::Expansion(ExpansionError::BadAssig(Parameter::At))));
+
+        let var = Parameter::Var(String::from("var"));
+        let msg = String::from("empty");
+        let cmd = cmd!("echo", Word::Subst(Box::new(
+                    ParameterSubstitution::Error(true, var.clone(), Some(Word::Literal(msg.clone()))))));
+        assert_eq!(Command::And(cmd, true_cmd()).run(&mut env),
+            Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(var, Rc::new(msg)))));
+    }
+
+    #[test]
+    fn test_run_command_or() {
+        let mut env = Env::new();
+        assert_eq!(Command::Or(true_cmd(), exit(5)).run(&mut env), Ok(ExitStatus::Code(0)));
+        assert_eq!(Command::Or(false_cmd(), exit(5)).run(&mut env), Ok(ExitStatus::Code(5)));
+    }
+
+    #[test]
+    fn test_run_command_or_error_handling() {
+        let mut env = Env::new();
+
+        // CommandError::NotFound
+        assert_eq!(Command::Or(cmd!("missing"), true_cmd()).run(&mut env), Ok(EXIT_SUCCESS));
+
+        // CommandError::NotExecutable: there isn't a good/consistent test to invoke this error
+
+        // RuntimeError::Io
+        assert_eq!(Command::Or(
+                cmd!("cat", Word::Literal(String::from("missing file"))), true_cmd()).run(&mut env),
+                Ok(EXIT_SUCCESS));
+
+        // RuntimeError::Unimplemented
+        assert_eq!(Command::Or(Box::new(Command::Job(cmd!("echo"))), true_cmd()).run(&mut env),
+            Ok(EXIT_SUCCESS));
+
+        let cmd = cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+            Arith::Div(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(0)))
+        )))));
+        assert_eq!(Command::Or(cmd, true_cmd()).run(&mut env),
+            Err(RuntimeError::Expansion(ExpansionError::DivideByZero)));
+
+        let cmd = cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+            Arith::Pow(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(-5)))
+        )))));
+        assert_eq!(Command::Or(cmd, true_cmd()).run(&mut env),
+            Err(RuntimeError::Expansion(ExpansionError::NegativeExponent)));
+
+        let cmd = cmd!("echo", Word::Subst(Box::new(
+                    ParameterSubstitution::Assign(true, Parameter::At, Some(Word::Literal(String::from("foo")))))));
+        assert_eq!(Command::Or(cmd, true_cmd()).run(&mut env),
+            Err(RuntimeError::Expansion(ExpansionError::BadAssig(Parameter::At))));
+
+        let var = Parameter::Var(String::from("var"));
+        let msg = String::from("empty");
+        let cmd = cmd!("echo", Word::Subst(Box::new(
+                    ParameterSubstitution::Error(true, var.clone(), Some(Word::Literal(msg.clone()))))));
+        assert_eq!(Command::Or(cmd, true_cmd()).run(&mut env),
+            Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(var, Rc::new(msg)))));
+    }
+
+    #[test]
+    fn test_run_command_function_declaration() {
+        let fn_name = "function_name";
+        let mut env = Env::new();
+        let func = Command::Function(fn_name.to_string(), Rc::new(*false_cmd()));
+        assert_eq!(func.run(&mut env), Ok(EXIT_SUCCESS));
+        assert_eq!(cmd!(fn_name).run(&mut env), Ok(ExitStatus::Code(1)));
+    }
+
+    #[test]
+    fn test_run_command_function_can_be_recursive() {
+        let fn_name = "function_name";
+        let var = "var";
+        let value = "value";
+        let double_value = format!("{}{}", value, value);
+
+        let mut env = Env::new();
+        let func = Command::Function(fn_name.to_string(), Rc::new(Command::Compound(
+            Box::new(CompoundCommand::Brace(vec!(
+                Command::Simple(Box::new(SimpleCommand {
+                    cmd: None,
+                    vars: vec!((var.to_string(), Some(Word::Concat(vec!(
+                        Word::Literal(value.to_string()),
+                        Word::Param(Parameter::Var(var.to_string())),
+                    ))))),
+                    io: vec!(),
+                })),
+                Command::Compound(Box::new(CompoundCommand::If(vec!(
+                    (vec!(cmd_unboxed!("[",
+                      Word::Param(Parameter::Var(var.to_string())),
+                      Word::Literal(String::from("!=")),
+                      Word::Literal(double_value.clone()),
+                      Word::Literal(String::from("]")),
+                    )), vec!(cmd_unboxed!(fn_name))),
+                ), None)), vec!()),
+            ))),
+            vec!()
+        )));
+
+        assert_eq!(func.run(&mut env), Ok(EXIT_SUCCESS));
+        assert_eq!(cmd!(fn_name).run(&mut env), Ok(EXIT_SUCCESS));
+        assert_eq!(env.var(var), Some(&Rc::new(double_value)));
     }
 }
