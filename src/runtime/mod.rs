@@ -1331,14 +1331,18 @@ impl Run for SimpleCommand {
             cmd_args
         };
 
-        if !cmd_name.contains('/') && env.has_function(&cmd_name) {
-            match env.run_function(cmd_name.clone(), cmd_args) {
-                Some(ret) => return ret,
-                None => {
-                    env.set_last_status(EXIT_CMD_NOT_FOUND);
-                    return Err(CommandError::NotFound(cmd_name).into());
+        // According to POSIX functions preceed the listed utilities, but bash and zsh
+        // treat functions with first priority, so we will follow this precendent.
+        if env.has_function(&cmd_name) {
+            return run_with_local_redirections(env, &self.io, |env| {
+                match env.run_function(cmd_name.clone(), cmd_args, ) {
+                    Some(ret) => ret,
+                    None => {
+                        env.set_last_status(EXIT_CMD_NOT_FOUND);
+                        Err(CommandError::NotFound(cmd_name).into())
+                    },
                 }
-            }
+            });
         }
 
         let mut cmd = process::Command::new(&*cmd_name);
@@ -2104,6 +2108,35 @@ mod tests {
             Rc::new(String::from("second")),
             Rc::new(String::from("third")),
         )).unwrap().unwrap().success());
+    }
+
+    #[test]
+    fn test_env_run_function_redirections_should_work() {
+        let fn_name = String::from("fn name");
+        let tempdir = mktmp!();
+
+        let mut file_path = PathBuf::new();
+        file_path.push(tempdir.path());
+        file_path.push(String::from("out"));
+
+        let mut env = Env::new().unwrap();
+
+        let fn_cmd = Command::Function(fn_name.clone(), Rc::new(
+            *cmd!("echo", Word::Param(Parameter::At))
+        ));
+
+        let cmd = SimpleCommand {
+            cmd: Some((Word::Literal(String::from(fn_name)), vec!(Word::Literal(String::from("foobar"))))),
+            vars: vec!(),
+            io: vec!(Redirect::Write(None, Word::Literal(file_path.display().to_string()))),
+        };
+
+        assert_eq!(fn_cmd.run(&mut env), Ok(EXIT_SUCCESS));
+        assert_eq!(cmd.run(&mut env), Ok(EXIT_SUCCESS));
+
+        let mut read = String::new();
+        Permissions::Read.open(&file_path).unwrap().read_to_string(&mut read).unwrap();
+        assert_eq!(read, "foobar\n");
     }
 
     #[test]
