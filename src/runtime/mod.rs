@@ -4,7 +4,7 @@ use glob;
 use libc;
 
 use std::borrow::{Borrow, Cow};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
 use std::convert::{From, Into};
 use std::fmt;
@@ -277,14 +277,23 @@ impl<'a> Env<'a> {
     ///
     /// Unless otherwise specified, all environment variables of the
     /// current process will be inherited as environment variables
-    /// by any spawned commands.
+    /// by any spawned commands. For exmaple, specifying `Some(vec!())`
+    /// will result in an environment with NO environment variables, while
+    /// specifying `None` will copy the environment variables of the current process.
+    ///
+    /// Unless otherwise specified, the new environment will copy the
+    /// current std{in, out, err} descriptors/handles to be used by this
+    /// environment. Otherwise the provided file descriptors will be used
+    /// as given. For example, specifying `Some(vec!())` will result in an
+    /// environment with NO file descriptors, while specifying `None` will
+    /// copy the std{in, out, err} descriptors/handles of the current process.
     ///
     /// Note: Any data taken from the current process (e.g. environment
     /// variables) which is not valid Unicode will be ignored.
     pub fn with_config(name: Option<String>,
                        args: Option<Vec<String>>,
                        env: Option<Vec<(String, String)>>,
-                       fds: Option<HashMap<Fd, (Rc<FileDesc>, Permissions)>>) -> IoResult<Self>
+                       fds: Option<Vec<(Fd, Rc<FileDesc>, Permissions)>>) -> IoResult<Self>
     {
         use std::env;
 
@@ -300,7 +309,7 @@ impl<'a> Env<'a> {
         );
 
         let fds = match fds {
-            Some(fds) => fds.into_iter().map(|(k,v)| (k, Some(v))).collect(),
+            Some(fds) => fds.into_iter().map(|(fd, fdes, perm)| (fd, Some((fdes, perm)))).collect(),
             None => {
                 let (stdin, stdout, stderr) = try!(dup_stdio());
 
@@ -1284,30 +1293,6 @@ impl<'a, T: Run + ?Sized> Run for &'a T {
 
 impl Run for SimpleCommand {
     fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
-        fn open_io(io: &[Redirect], env: &mut Environment)
-            -> Result<HashMap<Fd, Option<Rc<FileDesc>>>>
-        {
-            // Make sure we don't actually clobber the real environment
-            let mut env = env.sub_env();
-            let env = &mut *env;
-
-            let mut map = HashMap::with_capacity(io.len());
-            for redirect in io.iter() {
-                match try!(redirect.eval(env)) {
-                    (fd, Some((fdes, perms))) => {
-                        env.set_file_desc(fd, fdes.clone(), perms);
-                        map.insert(fd, Some(fdes));
-                    },
-                    (fd, None) => {
-                        env.close_file_desc(fd);
-                        map.insert(fd, None);
-                    },
-                };
-            }
-
-            Ok(map)
-        }
-
         if self.cmd.is_none() {
             for &(ref var, ref val) in self.vars.iter() {
                 if let Some(val) = val.as_ref() {
@@ -1318,7 +1303,7 @@ impl Run for SimpleCommand {
 
             // Make sure we "touch" any local redirections, as this
             // will have side effects (possibly desired by the script).
-            let _ = try!(open_io(&self.io, env));
+            try!(run_with_local_redirections(env, &self.io, |_| Ok(())));
 
             let exit = EXIT_SUCCESS;
             env.set_last_status(exit);
@@ -1379,32 +1364,33 @@ impl Run for SimpleCommand {
             }
         }
 
-        let mut io = try!(open_io(&self.io, env));
-        let mut get_redirect = |fd, env: & Environment| -> Result<Stdio> {
+        let mut get_redirect = |handle: Option<Rc<FileDesc>>, fd_debug| -> Result<Stdio> {
             let unwrap_fdes = |fdes: Rc<FileDesc>| Rc::try_unwrap(fdes)
                 .or_else(|rc| rc.duplicate())
-                .map_err(|io| RuntimeError::Io(io, Rc::new(format!("file descriptor {}", fd))));
+                .map_err(|io| RuntimeError::Io(io, Rc::new(format!("file descriptor {}", fd_debug))));
 
-            let ret = match io.remove(&fd) {
-                // redirect specified
-                Some(Some(fdes)) => try!(unwrap_fdes(fdes)).into(),
-                // fd close specified
-                Some(None) => Stdio::null(),
-                // Nothing specified
-                None => match env.file_desc(fd) {
-                    // If the environment has that fd, use it
-                    Some((fdes, _)) => try!(unwrap_fdes(fdes.clone())).into(),
-                    // Otherwise just inherit from the current process
-                    None => Stdio::null(),
-                },
-            };
-            Ok(ret)
+
+            handle.map_or_else(|| Ok(Stdio::null()),
+                               |fdes| unwrap_fdes(fdes).map(|fdes| fdes.into()))
         };
 
+        // All local redirects here will only be used for spawning this specific command.
+        // By capturing an Rc handle to the descriptors before local redirects are undone
+        // (e.g. dropped from the environment) we can attempt to unwrap the Rc handle
+        // without (needlessly) duplicating the underlying OS file handle.
+        let (cmd_std_in, cmd_std_out, cmd_std_err) = try!(run_with_local_redirections(env,
+                                                                                      &self.io,
+                                                                                      |env| {
+            let extract = |fd: Option<(&Rc<FileDesc>, _)>| fd.map(|(fdes, _)| fdes.clone());
+            Ok((extract(env.file_desc(STDIN_FILENO)),
+                extract(env.file_desc(STDOUT_FILENO)),
+                extract(env.file_desc(STDERR_FILENO))))
+        }));
+
         // FIXME: we should eventually inherit all fds in the environment (at least on UNIX)
-        cmd.stdin(try!(get_redirect(STDIN_FILENO, env)));
-        cmd.stdout(try!(get_redirect(STDOUT_FILENO, env)));
-        cmd.stderr(try!(get_redirect(STDERR_FILENO, env)));
+        cmd.stdin(try!(get_redirect(cmd_std_in,   STDIN_FILENO)));
+        cmd.stdout(try!(get_redirect(cmd_std_out, STDOUT_FILENO)));
+        cmd.stderr(try!(get_redirect(cmd_std_err, STDERR_FILENO)));
 
         #[cfg(unix)]
         fn is_enoexec(err: &IoError) -> bool { Some(libc::ENOEXEC) == err.raw_os_error() }
@@ -1460,91 +1446,8 @@ impl Run for Command {
                 EXIT_SUCCESS
             },
 
-            Command::Compound(ref cmd, ref redirects) => {
-                // We're in a tricky situation here: any nested commands
-                // and their own nested commands must see the provided
-                // redirects (sort of as if they are in their own sub
-                // environment) (unless they override them, that is).
-                //
-                // However, the commands should NOT be in an actual sub
-                // environment (e.g. variables set should be reflected in
-                // the current environment).
-                //
-                // Thus we'll swap the descriptors here temporarily
-                // and hope the environment implementation doesn't mind
-                // our shenanigans before we return them.
-                let num_redirects = redirects.len();
-                // Old fds that will be locally overridden, but must be restored
-                // once the compound command has finished executing.
-                let mut fdes_backup = HashMap::with_capacity(num_redirects);
-                // Newly opened fds only for this compound command. They must all
-                // be removed from the environement when the compound command finishes.
-                let mut fdes_new = Vec::with_capacity(num_redirects);
-
-                let mut io_err = None;
-                for io in redirects {
-                    match io.eval(env) {
-                        // Make sure we cleanup and restore the environment
-                        // before propagating any errors to the caller.
-                        Err(e) => {
-                            io_err = Some(e);
-                            break;
-                        },
-
-                        Ok((fd, fdes_and_perms)) => {
-                            // Backup any descriptor we are about to override so
-                            // that we can restore it before returning.
-                            if let Some((old_fdes, old_perms)) = env.file_desc(fd) {
-                                let old_backup = fdes_backup.insert(fd, (old_fdes.clone(), old_perms));
-                                // Sanity check that we aren't somehow "doubly-backing up" descriptors
-                                // which would be an indication of us doing something wrong...
-                                debug_assert!(old_backup.is_none());
-                            }
-
-                            env.close_file_desc(fd);
-
-                            // We can't insert these directly in the environment rhgt now
-                            // because if the script redirects to the same fd twice, we don't
-                            // want to accidentally backup any fd which wasn't in the env
-                            // before we were called.
-                            //
-                            // Fds to be "closed" for the compound command will simply
-                            // not exist in the environment when the command runs.
-                            match fdes_and_perms {
-                                Some((fdes, perms)) => fdes_new.push((fd, fdes, perms)),
-                                None => {},
-                            }
-                        },
-                    }
-                }
-
-                let ret = if let Some(err) = io_err {
-                    env.set_last_status(EXIT_ERROR);
-                    Err(err)
-                } else {
-                    let local_fds: Vec<Fd> = fdes_new.into_iter().map(|(fd, fdes, perms)| {
-                        env.set_file_desc(fd, fdes, perms);
-                        fd
-                    }).collect();
-
-                    // Again, we can't bail out until we've restored the old env.
-                    let ret = cmd.run(env);
-
-                    // We have to make sure we actually close all newly inserted
-                    // fds before returning, restoring the old ones won't be enough.
-                    for fd in local_fds {
-                        env.close_file_desc(fd);
-                    }
-
-                    ret
-                };
-
-                for (fd, (fdes, perms)) in fdes_backup {
-                    env.set_file_desc(fd, fdes, perms);
-                }
-
-                try!(ret)
-            },
+            Command::Compound(ref cmd, ref redirects) =>
+                try!(run_with_local_redirections(env, redirects, |env| cmd.run(env))),
 
             Command::Simple(ref cmd) => try!(cmd.run(env)),
         };
@@ -1696,20 +1599,99 @@ pub fn run<I, Item>(iter: I, env: &mut Environment) -> Result<ExitStatus>
     Ok(exit)
 }
 
+/// Adds a number of local redirects to the specified environment, runs the provided closure,
+/// then removes the local redirects and restores the previous file descriptors before returning.
+fn run_with_local_redirections<'a, I, F, T>(env: &mut Environment, redirects: I, closure: F)
+    -> Result<T>
+    where I: IntoIterator<Item = &'a Redirect>,
+          F: FnOnce(&mut Environment) -> Result<T>,
+{
+    // We'll swap the descriptors here temporarily
+    // and hope the environment implementation doesn't mind
+    // our shenanigans before we return them.
+    let redirects = redirects.into_iter();
+    let num_redirects = redirects.size_hint().0;
+    // Old fds that will be locally overridden, but must be restored
+    // once the compound command has finished executing.
+    let mut fdes_backup = HashMap::with_capacity(num_redirects);
+    // Locally overriden/newly opened fds only for this compound command. They must all
+    // be removed from the environement when the compound command finishes.
+    let mut overriden_fds = HashSet::with_capacity(num_redirects);
+
+    let mut io_err = None;
+    for io in redirects {
+        match io.eval(env) {
+            // Make sure we cleanup and restore the environment
+            // before propagating any errors to the caller.
+            Err(e) => {
+                io_err = Some(e);
+                break;
+            },
+
+            Ok((fd, fdes_and_perms)) => {
+                // Only backup any descriptor which has NOT already been LOCALLY
+                // overriden, e.g. if `2>err` was already in the environment, but
+                // `2>foo 2>bar` are specified as local overrides, only `2>err`
+                // should be backed up.
+                if !overriden_fds.contains(&fd) {
+                    if let Some((old_fdes, old_perms)) = env.file_desc(fd) {
+                        let old_backup = fdes_backup.insert(fd, (old_fdes.clone(), old_perms));
+                        // Sanity check that we aren't somehow "doubly-backing up" descriptors
+                        // which would be an indication of us doing something wrong...
+                        debug_assert!(old_backup.is_none());
+                    }
+                }
+
+                env.close_file_desc(fd);
+                overriden_fds.insert(fd);
+
+                fdes_and_perms.map(|(fdes, perms)| env.set_file_desc(fd, fdes, perms));
+            },
+        }
+    }
+
+    let ret = match io_err {
+        Some(err) => Err(err),
+        None => closure(env),
+    };
+
+    // We have to make sure we actually close all newly inserted
+    // fds before returning, restoring the old ones won't be enough.
+    for fd in overriden_fds {
+        env.close_file_desc(fd);
+    }
+
+    // Restore any descriptors we override for any reason before the compound command
+    for (fd, (fdes, perms)) in fdes_backup {
+        env.set_file_desc(fd, fdes, perms);
+    }
+
+    ret
+}
+
 #[cfg(test)]
 mod tests {
+    extern crate tempdir;
+
     use libc;
 
+    use self::tempdir::TempDir;
     use std::cell::RefCell;
-    use std::env;
     use std::fs::OpenOptions;
     use std::io::{Read, Write};
+    use std::path::PathBuf;
     use std::rc::Rc;
     use std::thread;
-    use super::{EXIT_CMD_NOT_FOUND, EXIT_CMD_NOT_EXECUTABLE, EXIT_ERROR, EXIT_SUCCESS};
+    use super::{EXIT_CMD_NOT_FOUND, EXIT_ERROR, EXIT_SUCCESS};
     use super::io::{FileDesc, Permissions};
     use super::*;
-    use syntax::ast::{Arith, Command, CompoundCommand, SimpleCommand, Parameter, ParameterSubstitution, Word};
+    use syntax::ast::{Arith, Command, CompoundCommand, SimpleCommand, Parameter, ParameterSubstitution, Redirect, Word};
+
+    macro_rules! mktmp {
+        () => {
+            TempDir::new(concat!("test-", module_path!(), "-", line!(), "-", column!())).unwrap()
+        }
+    }
 
     struct MockFn<F: FnMut(&mut Environment) -> Result<ExitStatus>> {
         callback: RefCell<F>,
@@ -3559,5 +3541,194 @@ mod tests {
         assert_eq!(func.run(&mut env), Ok(EXIT_SUCCESS));
         assert_eq!(cmd!(fn_name).run(&mut env), Ok(EXIT_SUCCESS));
         assert_eq!(env.var(var), Some(&Rc::new(double_value)));
+    }
+
+    #[test]
+    fn test_eval_compound_local_redirections_applied_correctly_with_no_prev_redirections() {
+        // Make sure the environment has NO open file descriptors
+        let mut env = Env::with_config(None, None, None, Some(vec!())).unwrap();
+        let tempdir = mktmp!();
+
+        let mut file_path = PathBuf::new();
+        file_path.push(tempdir.path());
+        file_path.push(String::from("out"));
+
+        let cmd = Command::Compound(
+            Box::new(CompoundCommand::Brace(vec!(
+                Command::Simple(Box::new(SimpleCommand {
+                    cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(String::from("out"))))),
+                    io: vec!(),
+                    vars: vec!(),
+                })),
+                Command::Simple(Box::new(SimpleCommand {
+                    cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(String::from("err"))))),
+                    io: vec!(Redirect::DupWrite(Some(1), Word::Literal(String::from("2")))),
+                    vars: vec!(),
+                })),
+            ))),
+            vec!(
+                Redirect::Write(Some(2), Word::Literal(file_path.display().to_string())),
+                Redirect::DupWrite(Some(1), Word::Literal(String::from("2"))),
+            )
+        );
+
+        assert_eq!(cmd.run(&mut env), Ok(EXIT_SUCCESS));
+        assert!(env.file_desc(1).is_none());
+        assert!(env.file_desc(2).is_none());
+
+        let mut read = String::new();
+        Permissions::Read.open(&file_path).unwrap().read_to_string(&mut read).unwrap();
+        assert_eq!(read, "out\nerr\n");
+    }
+
+    #[test]
+    fn test_eval_compound_local_redirections_applied_correctly_with_prev_redirections() {
+        let tempdir = mktmp!();
+
+        let mut file_path = PathBuf::new();
+        file_path.push(tempdir.path());
+        file_path.push(String::from("out"));
+
+        let mut file_path_out = PathBuf::new();
+        file_path_out.push(tempdir.path());
+        file_path_out.push(String::from("out_prev"));
+
+        let mut file_path_err = PathBuf::new();
+        file_path_err.push(tempdir.path());
+        file_path_err.push(String::from("err_prev"));
+
+        let file_out = Permissions::Write.open(&file_path_out).unwrap();
+        let file_err = Permissions::Write.open(&file_path_err).unwrap();
+
+        let mut env = Env::with_config(None, None, None, Some(vec!(
+            (STDOUT_FILENO, Rc::new(FileDesc::from(file_out)), Permissions::Write),
+            (STDERR_FILENO, Rc::new(FileDesc::from(file_err)), Permissions::Write),
+        ))).unwrap();
+
+        let (cmd_body, cmd_redirects) = (
+            Box::new(CompoundCommand::Brace(vec!(
+                Command::Simple(Box::new(SimpleCommand {
+                    cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(String::from("out"))))),
+                    io: vec!(),
+                    vars: vec!(),
+                })),
+                Command::Simple(Box::new(SimpleCommand {
+                    cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(String::from("err"))))),
+                    io: vec!(Redirect::DupWrite(Some(1), Word::Literal(String::from("2")))),
+                    vars: vec!(),
+                })),
+            ))),
+            vec!(
+                Redirect::Write(Some(2), Word::Literal(file_path.display().to_string())),
+                Redirect::DupWrite(Some(1), Word::Literal(String::from("2"))),
+            )
+        );
+
+        // Check that local override worked
+        assert_eq!(Command::Compound(cmd_body.clone(), cmd_redirects).run(&mut env), Ok(EXIT_SUCCESS));
+        let mut read = String::new();
+        Permissions::Read.open(&file_path).unwrap().read_to_string(&mut read).unwrap();
+        assert_eq!(read, "out\nerr\n");
+
+        // Check that defaults remained the same
+        assert_eq!(Command::Compound(cmd_body, vec!()).run(&mut env), Ok(EXIT_SUCCESS));
+
+        read.clear();
+        Permissions::Read.open(&file_path_out).unwrap().read_to_string(&mut read).unwrap();
+        assert_eq!(read, "out\n");
+
+        read.clear();
+        Permissions::Read.open(&file_path_err).unwrap().read_to_string(&mut read).unwrap();
+        assert_eq!(read, "err\n");
+    }
+
+    #[test]
+    fn test_eval_compound_multiple_local_redirections_last_wins_and_prev_fd_properly_restored() {
+        let tempdir = mktmp!();
+
+        let mut file_path = PathBuf::new();
+        file_path.push(tempdir.path());
+        file_path.push(String::from("out"));
+
+        let mut file_path_empty = PathBuf::new();
+        file_path_empty.push(tempdir.path());
+        file_path_empty.push(String::from("out_empty"));
+
+        let mut file_path_default = PathBuf::new();
+        file_path_default.push(tempdir.path());
+        file_path_default.push(String::from("default"));
+
+        let file_default = Permissions::Write.open(&file_path_default).unwrap();
+
+        let mut env = Env::with_config(None, None, None, Some(vec!(
+            (STDOUT_FILENO, Rc::new(FileDesc::from(file_default)), Permissions::Write),
+        ))).unwrap();
+
+        let cmd = Command::Compound(
+            Box::new(CompoundCommand::Brace(vec!(
+                Command::Simple(Box::new(SimpleCommand {
+                    cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(String::from("out"))))),
+                    io: vec!(),
+                    vars: vec!(),
+                })),
+            ))),
+            vec!(
+                Redirect::Write(Some(1), Word::Literal(file_path_empty.display().to_string())),
+                Redirect::Write(Some(1), Word::Literal(file_path.display().to_string())),
+            )
+        );
+
+        let cmd2 = Command::Simple(Box::new(SimpleCommand {
+            cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(String::from("default"))))),
+            io: vec!(),
+            vars: vec!(),
+        }));
+
+        assert_eq!(cmd.run(&mut env), Ok(EXIT_SUCCESS));
+        assert_eq!(cmd2.run(&mut env), Ok(EXIT_SUCCESS));
+
+        let mut read = String::new();
+        Permissions::Read.open(&file_path).unwrap().read_to_string(&mut read).unwrap();
+        assert_eq!(read, "out\n");
+
+        read.clear();
+        Permissions::Read.open(&file_path_empty).unwrap().read_to_string(&mut read).unwrap();
+        assert_eq!(read, "");
+
+        read.clear();
+        Permissions::Read.open(&file_path_default).unwrap().read_to_string(&mut read).unwrap();
+        assert_eq!(read, "default\n");
+    }
+
+    #[test]
+    fn test_eval_compound_local_redirections_closed_after_command_exits_but_side_effects_remain() {
+        let var = "var";
+        let value = "foobar";
+        let tempdir = mktmp!();
+
+        let mut file_path = PathBuf::new();
+        file_path.push(tempdir.path());
+        file_path.push(String::from("out"));
+
+        let mut env = Env::new().unwrap();
+
+        let cmd = Command::Compound(
+            Box::new(CompoundCommand::Brace(vec!(*true_cmd()))),
+            vec!(
+                Redirect::Write(Some(3), Word::Literal(file_path.display().to_string())),
+                Redirect::Write(Some(4), Word::Literal(file_path.display().to_string())),
+                Redirect::Write(Some(5), Word::Subst(Box::new(ParameterSubstitution::Assign(
+                    true,
+                    Parameter::Var(String::from(var)),
+                    Some(Word::Literal(String::from(value))),
+                )))),
+            )
+        );
+
+        assert_eq!(cmd.run(&mut env), Ok(EXIT_SUCCESS));
+        assert!(env.file_desc(3).is_none());
+        assert!(env.file_desc(4).is_none());
+        assert!(env.file_desc(5).is_none());
+        assert_eq!(**env.var(var).unwrap(), value);
     }
 }
