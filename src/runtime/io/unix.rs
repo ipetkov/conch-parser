@@ -21,6 +21,13 @@ pub struct RawIo {
     must_close: bool,
 }
 
+impl Eq for RawIo {}
+impl PartialEq<RawIo> for RawIo {
+    fn eq(&self, other: &RawIo) -> bool {
+        self.fd == other.fd
+    }
+}
+
 impl Into<Stdio> for RawIo {
     fn into(self) -> Stdio {
         unsafe { FromRawFd::from_raw_fd(self.into_inner()) }

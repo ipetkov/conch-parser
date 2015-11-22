@@ -45,6 +45,13 @@ pub struct RawIo {
     must_close: bool,
 }
 
+impl Eq for RawIo {}
+impl PartialEq<RawIo> for RawIo {
+    fn eq(&self, other: &RawIo) -> bool {
+        self.handle.get() == other.handle.get()
+    }
+}
+
 impl Into<Stdio> for RawIo {
     fn into(self) -> Stdio {
         unsafe { FromRawHandle::from_raw_handle(self.into_inner()) }

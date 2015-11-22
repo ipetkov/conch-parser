@@ -69,6 +69,13 @@ impl fmt::Display for Permissions {
 /// will close it once it goes out of scope.
 pub struct FileDesc(UnsafeCell<os::RawIo>);
 
+impl Eq for FileDesc {}
+impl PartialEq<FileDesc> for FileDesc {
+    fn eq(&self, other: &FileDesc) -> bool {
+        self.inner() == other.inner()
+    }
+}
+
 impl FileDesc {
     #[cfg(unix)]
     /// Takes ownership of and wraps an OS file primitive.

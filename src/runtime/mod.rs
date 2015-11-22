@@ -4,7 +4,7 @@ use glob;
 use libc;
 
 use std::borrow::{Borrow, Cow};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::convert::{From, Into};
 use std::fmt;
@@ -1605,22 +1605,23 @@ pub fn run<I, Item>(iter: I, env: &mut Environment) -> Result<ExitStatus>
 
 /// Adds a number of local redirects to the specified environment, runs the provided closure,
 /// then removes the local redirects and restores the previous file descriptors before returning.
-fn run_with_local_redirections<'a, I, F, T>(env: &mut Environment, redirects: I, closure: F)
+pub fn run_with_local_redirections<'a, I, F, T>(env: &mut Environment, redirects: I, closure: F)
     -> Result<T>
     where I: IntoIterator<Item = &'a Redirect>,
           F: FnOnce(&mut Environment) -> Result<T>,
 {
+    struct RedirectionOverride {
+        /// The local FileDesc that should be temporarily placed in/removed from the environment.
+        override_fdes: Option<Rc<FileDesc>>,
+        /// The previous FileDesc and permissions in the environment, which was overriden.
+        previous_fdes: Option<(Rc<FileDesc>, Permissions)>,
+    }
+
     // We'll swap the descriptors here temporarily
     // and hope the environment implementation doesn't mind
     // our shenanigans before we return them.
     let redirects = redirects.into_iter();
-    let num_redirects = redirects.size_hint().0;
-    // Old fds that will be locally overridden, but must be restored
-    // once the compound command has finished executing.
-    let mut fdes_backup = HashMap::with_capacity(num_redirects);
-    // Locally overriden/newly opened fds only for this compound command. They must all
-    // be removed from the environement when the compound command finishes.
-    let mut overriden_fds = HashSet::with_capacity(num_redirects);
+    let mut overrides: HashMap<Fd, RedirectionOverride> = HashMap::with_capacity(redirects.size_hint().0);
 
     let mut io_err = None;
     for io in redirects {
@@ -1633,22 +1634,23 @@ fn run_with_local_redirections<'a, I, F, T>(env: &mut Environment, redirects: I,
             },
 
             Ok((fd, fdes_and_perms)) => {
+                let new_fdes = fdes_and_perms.as_ref().map(|&(ref fdes, _)| fdes.clone());
+
                 // Only backup any descriptor which has NOT already been LOCALLY
                 // overriden, e.g. if `2>err` was already in the environment, but
                 // `2>foo 2>bar` are specified as local overrides, only `2>err`
                 // should be backed up.
-                if !overriden_fds.contains(&fd) {
-                    if let Some((old_fdes, old_perms)) = env.file_desc(fd) {
-                        let old_backup = fdes_backup.insert(fd, (old_fdes.clone(), old_perms));
-                        // Sanity check that we aren't somehow "doubly-backing up" descriptors
-                        // which would be an indication of us doing something wrong...
-                        debug_assert!(old_backup.is_none());
+                match overrides.entry(fd) {
+                    Entry::Occupied(mut entry) => entry.get_mut().override_fdes = new_fdes,
+                    Entry::Vacant(entry) => {
+                        entry.insert(RedirectionOverride {
+                            override_fdes: new_fdes,
+                            previous_fdes: env.file_desc(fd).map(|(fdes, perms)| (fdes.clone(), perms)),
+                        });
                     }
                 }
 
                 env.close_file_desc(fd);
-                overriden_fds.insert(fd);
-
                 fdes_and_perms.map(|(fdes, perms)| env.set_file_desc(fd, fdes, perms));
             },
         }
@@ -1659,15 +1661,16 @@ fn run_with_local_redirections<'a, I, F, T>(env: &mut Environment, redirects: I,
         None => closure(env),
     };
 
-    // We have to make sure we actually close all newly inserted
-    // fds before returning, restoring the old ones won't be enough.
-    for fd in overriden_fds {
-        env.close_file_desc(fd);
-    }
-
-    // Restore any descriptors we override for any reason before the compound command
-    for (fd, (fdes, perms)) in fdes_backup {
-        env.set_file_desc(fd, fdes, perms);
+    // We must only reset descriptors which we know were locally overridden, because
+    // it is possible that a descriptor was changed via `exec`, which change we need
+    // to keep (e.g. `{ exec 2>new_file; } 2>temp; echo foo 1>&2` should write foo to new_file).
+    for (fd, override_) in overrides {
+        if env.file_desc(fd).map(|(fdes, _)| fdes) == override_.override_fdes.as_ref() {
+            match override_.previous_fdes {
+                Some((fdes, perms)) => env.set_file_desc(fd, fdes, perms),
+                None => env.close_file_desc(fd),
+            }
+        }
     }
 
     ret
@@ -1690,6 +1693,12 @@ mod tests {
     use super::io::{FileDesc, Permissions};
     use super::*;
     use syntax::ast::{Arith, Command, CompoundCommand, SimpleCommand, Parameter, ParameterSubstitution, Redirect, Word};
+
+    #[cfg(unix)]
+    const DEV_NULL: &'static str = "/dev/null";
+
+    #[cfg(windows)]
+    const DEV_NULL: &'static str = "NUL";
 
     macro_rules! mktmp {
         () => {
@@ -1730,8 +1739,7 @@ mod tests {
     }
 
     fn file_desc() -> FileDesc {
-        let path = if cfg!(windows) { "NUL" } else { "/dev/null" };
-        OpenOptions::new().read(true).write(true).open(path).unwrap().into()
+        OpenOptions::new().read(true).write(true).open(DEV_NULL).unwrap().into()
     }
 
     macro_rules! cmd_unboxed {
@@ -2192,7 +2200,7 @@ mod tests {
         {
             let (got_file_desc, got_perms) = env.file_desc(fd).unwrap();
             assert_eq!(got_perms, perms);
-            assert_eq!(&**got_file_desc as *const _, &*file_desc as *const _);
+            assert_eq!(**got_file_desc, *file_desc);
         }
         env.close_file_desc(fd);
         assert!(env.file_desc(fd).is_none());
@@ -2209,7 +2217,7 @@ mod tests {
         let child = env.sub_env();
         let (got_file_desc, got_perms) = child.file_desc(fd).unwrap();
         assert_eq!(got_perms, perms);
-        assert_eq!(&**got_file_desc as *const _, &*file_desc as *const _);
+        assert_eq!(**got_file_desc, *file_desc);
     }
 
     #[test]
@@ -2226,7 +2234,7 @@ mod tests {
             child.set_file_desc(fd, file_desc.clone(), perms);
             let (got_file_desc, got_perms) = child.file_desc(fd).unwrap();
             assert_eq!(got_perms, perms);
-            assert_eq!(&**got_file_desc as *const _, &*file_desc as *const _);
+            assert_eq!(**got_file_desc, *file_desc);
         }
         assert!(parent.file_desc(fd).is_none());
     }
@@ -2247,7 +2255,7 @@ mod tests {
         }
         let (got_file_desc, got_perms) = parent.file_desc(fd).unwrap();
         assert_eq!(got_perms, perms);
-        assert_eq!(&**got_file_desc as *const _, &*file_desc as *const _);
+        assert_eq!(**got_file_desc, *file_desc);
     }
 
     #[test]
@@ -3763,5 +3771,84 @@ mod tests {
         assert!(env.file_desc(4).is_none());
         assert!(env.file_desc(5).is_none());
         assert_eq!(**env.var(var).unwrap(), value);
+    }
+
+    #[test]
+    fn test_eval_compound_local_redirections_not_reset_if_fd_changed_via_exec() {
+        const FD_EXEC_OPEN: Fd = STDOUT_FILENO;
+        const FD_EXEC_CLOSE: Fd = STDERR_FILENO;
+        const FD_EXEC_CHANGE: Fd = 3;
+
+        let fn_name = String::from("foofn");
+        let tempdir = mktmp!();
+
+        let mut file_path_default = PathBuf::new();
+        file_path_default.push(tempdir.path());
+        file_path_default.push(String::from("default"));
+
+        let mut file_exec_open_path = PathBuf::new();
+        file_exec_open_path.push(tempdir.path());
+        file_exec_open_path.push(String::from("exec_open"));
+
+        let mut file_exec_change_path = PathBuf::new();
+        file_exec_change_path.push(tempdir.path());
+        file_exec_change_path.push(String::from("exec_change"));
+
+        let file_default = Permissions::Write.open(&file_path_default).unwrap();
+
+        let mut env = Env::with_config(None, None, None, Some(vec!(
+            (FD_EXEC_CLOSE, Rc::new(FileDesc::from(file_default)), Permissions::Write),
+        ))).unwrap();
+
+        // Mock a function which will change some file descriptors via `exec` utility
+        {
+            let file_exec_open_path = file_exec_open_path.clone();
+            let file_exec_change_path = file_exec_change_path.clone();
+
+            env.set_function(fn_name.clone(), MockFn::new(move |mut env| {
+                let file_exec_open = FileDesc::from(Permissions::Write.open(&file_exec_open_path).unwrap());
+                let file_exec_change = FileDesc::from(Permissions::Write.open(&file_exec_change_path).unwrap());
+
+                env.close_file_desc(FD_EXEC_CLOSE);
+                env.set_file_desc(FD_EXEC_CHANGE, Rc::new(file_exec_change), Permissions::Write);
+                env.set_file_desc(FD_EXEC_OPEN, Rc::new(file_exec_open), Permissions::Write);
+                Ok(EXIT_SUCCESS)
+            }));
+        }
+
+        let cmd = Command::Compound(
+            Box::new(CompoundCommand::Brace(vec!(
+                Command::Simple(Box::new(SimpleCommand {
+                    cmd: Some((Word::Literal(fn_name), vec!())),
+                    io: vec!(),
+                    vars: vec!(),
+                })),
+            ))),
+            vec!(
+                Redirect::Write(Some(FD_EXEC_CLOSE), Word::Literal(String::from(DEV_NULL))),
+                Redirect::Write(Some(FD_EXEC_CHANGE), Word::Literal(String::from(DEV_NULL))),
+                Redirect::DupWrite(Some(FD_EXEC_OPEN), Word::Literal(String::from("-"))),
+            )
+        );
+
+        assert_eq!(cmd.run(&mut env), Ok(EXIT_SUCCESS));
+        assert!(env.file_desc(FD_EXEC_CLOSE).is_none());
+
+        unsafe {
+            env.file_desc(FD_EXEC_OPEN).unwrap().0.unsafe_write().write(stringify!(FD_EXEC_OPEN).as_bytes()).unwrap();
+            env.file_desc(FD_EXEC_CHANGE).unwrap().0.unsafe_write().write(stringify!(FD_EXEC_CHANGE).as_bytes()).unwrap();
+        }
+
+        let mut read = String::new();
+        Permissions::Read.open(&file_exec_open_path).unwrap().read_to_string(&mut read).unwrap();
+        assert_eq!(read, stringify!(FD_EXEC_OPEN));
+
+        read.clear();
+        Permissions::Read.open(&file_exec_change_path).unwrap().read_to_string(&mut read).unwrap();
+        assert_eq!(read, stringify!(FD_EXEC_CHANGE));
+
+        read.clear();
+        Permissions::Read.open(&file_path_default).unwrap().read_to_string(&mut read).unwrap();
+        assert_eq!(read, "");
     }
 }
