@@ -184,6 +184,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::path::PathBuf;
     use std::thread;
+    use std::time::Duration;
     use super::*;
 
     macro_rules! mktmp {
@@ -219,7 +220,7 @@ mod tests {
             let mut file = File::create(&file_path).unwrap();
             file.write_all(msg.as_bytes()).unwrap();
             file.sync_data().unwrap();
-            thread::sleep_ms(100);
+            thread::sleep(Duration::from_millis(100));
         }
 
         {
@@ -245,7 +246,7 @@ mod tests {
             let mut file = Permissions::Write.open(&file_path).unwrap();
             file.write_all(msg.as_bytes()).unwrap();
             file.sync_data().unwrap();
-            thread::sleep_ms(100);
+            thread::sleep(Duration::from_millis(100));
         }
 
         {
@@ -274,7 +275,7 @@ mod tests {
 
         file1.write_all(msg1.as_bytes()).unwrap();
         file1.sync_data().unwrap();
-        thread::sleep_ms(100);
+        thread::sleep(Duration::from_millis(100));
 
         let mut read = String::new();
         file2.read_to_string(&mut read).unwrap();
@@ -282,7 +283,7 @@ mod tests {
 
         file2.write_all(msg2.as_bytes()).unwrap();
         file2.sync_data().unwrap();
-        thread::sleep_ms(100);
+        thread::sleep(Duration::from_millis(100));
 
         let mut read = String::new();
         file1.read_to_string(&mut read).unwrap();
