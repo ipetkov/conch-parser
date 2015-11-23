@@ -1194,9 +1194,13 @@ impl Redirect {
                 Fields::Many(mut v) => if v.len() == 1 {
                     Ok(v.pop().unwrap())
                 } else {
+                    env.set_last_status(EXIT_ERROR);
                     return Err(RedirectionError::Ambiguous(v).into())
                 },
-                Fields::Zero => return Err(RedirectionError::Ambiguous(Vec::new()).into()),
+                Fields::Zero => {
+                    env.set_last_status(EXIT_ERROR);
+                    return Err(RedirectionError::Ambiguous(Vec::new()).into())
+                },
             }
         };
 
@@ -1368,7 +1372,7 @@ impl Run for SimpleCommand {
             }
         }
 
-        let mut get_redirect = |handle: Option<Rc<FileDesc>>, fd_debug| -> Result<Stdio> {
+        let get_redirect = |handle: Option<Rc<FileDesc>>, fd_debug| -> Result<Stdio> {
             let unwrap_fdes = |fdes: Rc<FileDesc>| Rc::try_unwrap(fdes)
                 .or_else(|rc| rc.duplicate())
                 .map_err(|io| RuntimeError::Io(io, Rc::new(format!("file descriptor {}", fd_debug))));
@@ -3456,6 +3460,73 @@ mod tests {
 
         // CommandError::NotExecutable: there isn't a good/consistent test to invoke this error
 
+        // RedirectionError::BadSrcFd - invalid string
+        assert_eq!(Command::And(
+            Box::new(Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Word::Literal(String::from("253invalid")))),
+                vars: vec!(),
+            }))),
+            true_cmd()
+        ).run(&mut env), Ok(EXIT_ERROR));
+
+        // RedirectionError::BadSrcFd - src fd not open
+        assert_eq!(Command::And(
+            Box::new(Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                io: vec!(Redirect::DupRead(None, Word::Literal(String::from("42")))),
+                vars: vec!(),
+            }))),
+            true_cmd()
+        ).run(&mut env), Ok(EXIT_ERROR));
+
+        // RedirectionError::Ambiguous - empty field
+        assert_eq!(Command::And(
+            Box::new(Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Word::Param(Parameter::At))),
+                vars: vec!(),
+            }))),
+            true_cmd(),
+        ).run(&mut env), Ok(EXIT_ERROR));
+
+        // RedirectionError::Ambiguous - multiple fields - many
+        {
+            let mut env = Env::with_config(None, Some(vec!(
+                String::from("foo"),
+                String::from("bar"),
+            )), None, None).unwrap();
+
+            assert_eq!(Command::And(
+                Box::new(Command::Simple(Box::new(SimpleCommand {
+                    cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                    io: vec!(Redirect::DupRead(None, Word::Param(Parameter::At))),
+                    vars: vec!(),
+                }))),
+                true_cmd(),
+            ).run(&mut env), Ok(EXIT_ERROR));
+        }
+
+        // RedirectionError::BadFdPerms - read
+        assert_eq!(Command::And(
+            Box::new(Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Word::Literal(STDIN_FILENO.to_string()))),
+                vars: vec!(),
+            }))),
+            true_cmd()
+        ).run(&mut env), Ok(EXIT_ERROR));
+
+        // RedirectionError::BadFdPerms - write
+        assert_eq!(Command::And(
+            Box::new(Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                io: vec!(Redirect::DupRead(None, Word::Literal(STDOUT_FILENO.to_string()))),
+                vars: vec!(),
+            }))),
+            true_cmd()
+        ).run(&mut env), Ok(EXIT_ERROR));
+
         // RuntimeError::Io
         assert_eq!(Command::And(
                 cmd!("cat", Word::Literal(String::from("missing file"))), true_cmd()).run(&mut env),
@@ -3505,6 +3576,73 @@ mod tests {
         assert_eq!(Command::Or(cmd!("missing"), true_cmd()).run(&mut env), Ok(EXIT_SUCCESS));
 
         // CommandError::NotExecutable: there isn't a good/consistent test to invoke this error
+
+        // RedirectionError::BadSrcFd - invalid string
+        assert_eq!(Command::Or(
+            Box::new(Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Word::Literal(String::from("253invalid")))),
+                vars: vec!(),
+            }))),
+            true_cmd()
+        ).run(&mut env), Ok(EXIT_SUCCESS));
+
+        // RedirectionError::BadSrcFd - src fd not open
+        assert_eq!(Command::Or(
+            Box::new(Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                io: vec!(Redirect::DupRead(None, Word::Literal(String::from("42")))),
+                vars: vec!(),
+            }))),
+            true_cmd()
+        ).run(&mut env), Ok(EXIT_SUCCESS));
+
+        // RedirectionError::Ambiguous - empty field
+        assert_eq!(Command::Or(
+            Box::new(Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Word::Param(Parameter::At))),
+                vars: vec!(),
+            }))),
+            true_cmd(),
+        ).run(&mut env), Ok(EXIT_SUCCESS));
+
+        // RedirectionError::Ambiguous - multiple fields - many
+        {
+            let mut env = Env::with_config(None, Some(vec!(
+                String::from("foo"),
+                String::from("bar"),
+            )), None, None).unwrap();
+
+            assert_eq!(Command::Or(
+                Box::new(Command::Simple(Box::new(SimpleCommand {
+                    cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                    io: vec!(Redirect::DupRead(None, Word::Param(Parameter::At))),
+                    vars: vec!(),
+                }))),
+                true_cmd(),
+            ).run(&mut env), Ok(EXIT_SUCCESS));
+        }
+
+        // RedirectionError::BadFdPerms - read
+        assert_eq!(Command::Or(
+            Box::new(Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Word::Literal(STDIN_FILENO.to_string()))),
+                vars: vec!(),
+            }))),
+            true_cmd()
+        ).run(&mut env), Ok(EXIT_SUCCESS));
+
+        // RedirectionError::BadFdPerms - write
+        assert_eq!(Command::Or(
+            Box::new(Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                io: vec!(Redirect::DupRead(None, Word::Literal(STDOUT_FILENO.to_string()))),
+                vars: vec!(),
+            }))),
+            true_cmd()
+        ).run(&mut env), Ok(EXIT_SUCCESS));
 
         // RuntimeError::Io
         assert_eq!(Command::Or(
@@ -3850,5 +3988,195 @@ mod tests {
         read.clear();
         Permissions::Read.open(&file_path_default).unwrap().read_to_string(&mut read).unwrap();
         assert_eq!(read, "");
+    }
+
+    #[test]
+    fn test_eval_compound_brace() {
+        let tempdir = mktmp!();
+
+        let mut file_path = PathBuf::new();
+        file_path.push(tempdir.path());
+        file_path.push(String::from("out"));
+
+        let file = Permissions::Write.open(&file_path).unwrap();
+
+        let mut env = Env::with_config(None, None, None, Some(vec!(
+            (STDOUT_FILENO, Rc::new(file.into()), Permissions::Write)
+        ))).unwrap();
+
+        let cmd = CompoundCommand::Brace(vec!(
+            Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(String::from("foo"))))),
+                vars: vec!(),
+                io: vec!()
+            })),
+            *false_cmd(),
+            Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(String::from("bar"))))),
+                vars: vec!(),
+                io: vec!()
+            })),
+            *true_cmd(),
+            *exit(42),
+        ));
+
+        assert_eq!(cmd.run(&mut env), Ok(ExitStatus::Code(42)));
+
+        let mut read = String::new();
+        Permissions::Read.open(&file_path).unwrap().read_to_string(&mut read).unwrap();
+        assert_eq!(read, "foo\nbar\n");
+    }
+
+    #[test]
+    fn test_run_command_compound_brace_error_handling() {
+        let fn_name_check_status = "foo_fn";
+        let fn_name_should_not_run = "foo_fn_should_not_run";
+        let last_status = Rc::new(RefCell::new(EXIT_SUCCESS));
+
+        let mut env = Env::new().unwrap();
+        {
+            let last_status = last_status.clone();
+            env.set_function(String::from(fn_name_check_status), MockFn::new(move |env| {
+                *last_status.borrow_mut() = env.last_status();
+                Ok(EXIT_SUCCESS)
+            }));
+        }
+
+        let exit_code = ExitStatus::Code(42);
+        let cmd_exit = *exit(42);
+        let cmd_check_status = *cmd!(fn_name_check_status);
+
+        // CommandError::NotFound
+        assert_eq!(CompoundCommand::Brace(vec!(
+            *cmd!("missing"),
+            cmd_check_status.clone(),
+            cmd_exit.clone(),
+        )).run(&mut env), Ok(exit_code));
+        assert_eq!(*last_status.borrow(), EXIT_CMD_NOT_FOUND);
+
+        // CommandError::NotExecutable: there isn't a good/consistent test to invoke this error
+
+        // RedirectionError::Ambiguous - empty field
+        assert_eq!(CompoundCommand::Brace(vec!(
+            Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Word::Param(Parameter::At))),
+                vars: vec!(),
+            })),
+            cmd_exit.clone(),
+        )).run(&mut env), Ok(exit_code));
+
+        // RedirectionError::Ambiguous - multiple fields - many
+        {
+            let mut env = Env::with_config(None, Some(vec!(
+                String::from("foo"),
+                String::from("bar"),
+            )), None, None).unwrap();
+
+            assert_eq!(CompoundCommand::Brace(vec!(
+                Command::Simple(Box::new(SimpleCommand {
+                    cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                    io: vec!(Redirect::DupRead(None, Word::Param(Parameter::At))),
+                    vars: vec!(),
+                })),
+                cmd_exit.clone(),
+            )).run(&mut env), Ok(exit_code));
+        }
+
+        // RedirectionError::BadSrcFd - invalid string
+        assert_eq!(CompoundCommand::Brace(vec!(
+            Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Word::Literal(String::from("253invalid")))),
+                vars: vec!(),
+            })),
+            cmd_exit.clone(),
+        )).run(&mut env), Ok(exit_code));
+
+        // RedirectionError::BadSrcFd - src fd not open
+        assert_eq!(CompoundCommand::Brace(vec!(
+            Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                io: vec!(Redirect::DupRead(None, Word::Literal(String::from("42")))),
+                vars: vec!(),
+            })),
+            cmd_exit.clone(),
+        )).run(&mut env), Ok(exit_code));
+
+        // RedirectionError::BadFdPerms - read
+        assert_eq!(CompoundCommand::Brace(vec!(
+            Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Word::Literal(STDIN_FILENO.to_string()))),
+                vars: vec!(),
+            })),
+            cmd_exit.clone(),
+        )).run(&mut env), Ok(exit_code));
+
+        // RedirectionError::BadFdPerms - write
+        assert_eq!(CompoundCommand::Brace(vec!(
+            Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                io: vec!(Redirect::DupRead(None, Word::Literal(STDOUT_FILENO.to_string()))),
+                vars: vec!(),
+            })),
+            cmd_exit.clone(),
+        )).run(&mut env), Ok(exit_code));
+
+        // RuntimeError::Io
+        assert_eq!(CompoundCommand::Brace(vec!(
+            *cmd!("cat", Word::Literal(String::from("missing file"))),
+            cmd_check_status.clone(),
+            cmd_exit.clone(),
+        )).run(&mut env), Ok(exit_code));
+        assert_eq!(*last_status.borrow(), EXIT_ERROR);
+
+        // RuntimeError::Unimplemented
+        assert_eq!(CompoundCommand::Brace(vec!(
+            Command::Job(cmd!("echo")),
+            cmd_check_status.clone(),
+            cmd_exit.clone(),
+        )).run(&mut env), Ok(exit_code));
+        assert_eq!(*last_status.borrow(), EXIT_ERROR);
+
+        env.set_function(String::from(fn_name_should_not_run), MockFn::new(|_| {
+            panic!("ran command that should not be run")
+        }));
+
+        let cmd_should_not_run = *cmd!(fn_name_should_not_run);
+
+        assert_eq!(CompoundCommand::Brace(vec!(
+            *cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+                Arith::Div(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(0)))
+            ))))),
+            cmd_should_not_run.clone(),
+        )).run(&mut env), Err(RuntimeError::Expansion(ExpansionError::DivideByZero)));
+
+        assert_eq!(CompoundCommand::Brace(vec!(
+            *cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+                Arith::Pow(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(-5)))
+            ))))),
+            cmd_should_not_run.clone(),
+        )).run(&mut env), Err(RuntimeError::Expansion(ExpansionError::NegativeExponent)));
+
+        assert_eq!(CompoundCommand::Brace(vec!(
+            *cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Assign(
+                true,
+                Parameter::At,
+                Some(Word::Literal(String::from("foo")))
+            )))),
+            cmd_should_not_run.clone(),
+        )).run(&mut env), Err(RuntimeError::Expansion(ExpansionError::BadAssig(Parameter::At))));
+
+        let var = Parameter::Var(String::from("var"));
+        let msg = String::from("empty");
+        assert_eq!(CompoundCommand::Brace(vec!(
+            *cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Error(
+                true,
+                var.clone(),
+                Some(Word::Literal(msg.clone()))
+            )))),
+            cmd_should_not_run.clone(),
+        )).run(&mut env), Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(var, Rc::new(msg)))));
     }
 }
