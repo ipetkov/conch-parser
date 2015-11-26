@@ -3541,17 +3541,20 @@ mod tests {
         )))));
         assert_eq!(Command::And(cmd, true_cmd()).run(&mut env),
             Err(RuntimeError::Expansion(ExpansionError::DivideByZero)));
+        assert_eq!(env.last_status(), EXIT_ERROR);
 
         let cmd = cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
             Arith::Pow(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(-5)))
         )))));
         assert_eq!(Command::And(cmd, true_cmd()).run(&mut env),
             Err(RuntimeError::Expansion(ExpansionError::NegativeExponent)));
+        assert_eq!(env.last_status(), EXIT_ERROR);
 
         let cmd = cmd!("echo", Word::Subst(Box::new(
                     ParameterSubstitution::Assign(true, Parameter::At, Some(Word::Literal(String::from("foo")))))));
         assert_eq!(Command::And(cmd, true_cmd()).run(&mut env),
             Err(RuntimeError::Expansion(ExpansionError::BadAssig(Parameter::At))));
+        assert_eq!(env.last_status(), EXIT_ERROR);
 
         let var = Parameter::Var(String::from("var"));
         let msg = String::from("empty");
@@ -3559,6 +3562,7 @@ mod tests {
                     ParameterSubstitution::Error(true, var.clone(), Some(Word::Literal(msg.clone()))))));
         assert_eq!(Command::And(cmd, true_cmd()).run(&mut env),
             Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(var, Rc::new(msg)))));
+        assert_eq!(env.last_status(), EXIT_ERROR);
     }
 
     #[test]
@@ -3658,17 +3662,20 @@ mod tests {
         )))));
         assert_eq!(Command::Or(cmd, true_cmd()).run(&mut env),
             Err(RuntimeError::Expansion(ExpansionError::DivideByZero)));
+        assert_eq!(env.last_status(), EXIT_ERROR);
 
         let cmd = cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
             Arith::Pow(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(-5)))
         )))));
         assert_eq!(Command::Or(cmd, true_cmd()).run(&mut env),
             Err(RuntimeError::Expansion(ExpansionError::NegativeExponent)));
+        assert_eq!(env.last_status(), EXIT_ERROR);
 
         let cmd = cmd!("echo", Word::Subst(Box::new(
                     ParameterSubstitution::Assign(true, Parameter::At, Some(Word::Literal(String::from("foo")))))));
         assert_eq!(Command::Or(cmd, true_cmd()).run(&mut env),
             Err(RuntimeError::Expansion(ExpansionError::BadAssig(Parameter::At))));
+        assert_eq!(env.last_status(), EXIT_ERROR);
 
         let var = Parameter::Var(String::from("var"));
         let msg = String::from("empty");
@@ -3676,6 +3683,7 @@ mod tests {
                     ParameterSubstitution::Error(true, var.clone(), Some(Word::Literal(msg.clone()))))));
         assert_eq!(Command::Or(cmd, true_cmd()).run(&mut env),
             Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(var, Rc::new(msg)))));
+        assert_eq!(env.last_status(), EXIT_ERROR);
     }
 
     #[test]
@@ -4151,6 +4159,7 @@ mod tests {
             ))))),
             cmd_should_not_run.clone(),
         )).run(&mut env), Err(RuntimeError::Expansion(ExpansionError::DivideByZero)));
+        assert_eq!(env.last_status(), EXIT_ERROR);
 
         assert_eq!(CompoundCommand::Brace(vec!(
             *cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
@@ -4158,6 +4167,7 @@ mod tests {
             ))))),
             cmd_should_not_run.clone(),
         )).run(&mut env), Err(RuntimeError::Expansion(ExpansionError::NegativeExponent)));
+        assert_eq!(env.last_status(), EXIT_ERROR);
 
         assert_eq!(CompoundCommand::Brace(vec!(
             *cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Assign(
@@ -4167,6 +4177,7 @@ mod tests {
             )))),
             cmd_should_not_run.clone(),
         )).run(&mut env), Err(RuntimeError::Expansion(ExpansionError::BadAssig(Parameter::At))));
+        assert_eq!(env.last_status(), EXIT_ERROR);
 
         let var = Parameter::Var(String::from("var"));
         let msg = String::from("empty");
@@ -4178,5 +4189,6 @@ mod tests {
             )))),
             cmd_should_not_run.clone(),
         )).run(&mut env), Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(var, Rc::new(msg)))));
+        assert_eq!(env.last_status(), EXIT_ERROR);
     }
 }
