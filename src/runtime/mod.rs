@@ -4191,4 +4191,275 @@ mod tests {
         )).run(&mut env), Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(var, Rc::new(msg)))));
         assert_eq!(env.last_status(), EXIT_ERROR);
     }
+
+    #[test]
+    fn test_run_command_if() {
+        let fn_name_should_not_run = "foo_fn_should_not_run";
+        let cmd_should_not_run = *cmd!(fn_name_should_not_run);
+        let cmd_exit = *exit(42);
+        const EXIT: ExitStatus = ExitStatus::Code(42);
+
+        let mut env = Env::new().unwrap();
+        env.set_function(String::from(fn_name_should_not_run), MockFn::new(|_| {
+            panic!("ran command that should not be run")
+        }));
+
+        assert_eq!(
+            CompoundCommand::If(
+                vec!(
+                    (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
+                    (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
+                    (vec!(*true_cmd()), vec!(cmd_exit.clone())),
+                    (vec!(cmd_should_not_run.clone()), vec!(cmd_should_not_run.clone())),
+                ),
+                Some(vec!(cmd_should_not_run.clone())),
+            ).run(&mut env),
+            Ok(EXIT)
+        );
+
+        assert_eq!(
+            CompoundCommand::If(
+                vec!(
+                    (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
+                    (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
+                    (vec!(*true_cmd()), vec!(cmd_exit.clone())),
+                    (vec!(cmd_should_not_run.clone()), vec!(cmd_should_not_run.clone())),
+                ),
+                None
+            ).run(&mut env),
+            Ok(EXIT)
+        );
+
+        assert_eq!(
+            CompoundCommand::If(
+                vec!(
+                    (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
+                    (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
+                ),
+                Some(vec!(cmd_exit.clone())),
+            ).run(&mut env),
+            Ok(EXIT)
+        );
+
+        assert_eq!(
+            CompoundCommand::If(
+                vec!(
+                    (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
+                    (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
+                ),
+                None
+            ).run(&mut env),
+            Ok(EXIT_SUCCESS)
+        );
+    }
+
+    #[test]
+    fn test_run_command_if_malformed() {
+        let mut env = Env::new().unwrap();
+        assert_eq!(CompoundCommand::If(vec!(), Some(vec!(*true_cmd()))).run(&mut env), Ok(EXIT_ERROR));
+        assert_eq!(env.last_status.success(), false);
+        assert_eq!(CompoundCommand::If(vec!(), None).run(&mut env), Ok(EXIT_ERROR));
+        assert_eq!(env.last_status.success(), false);
+    }
+
+    #[test]
+    fn test_run_command_if_guard_error_handling() {
+        let fn_name_should_not_run = "foo_fn_should_not_run";
+        let cmd_should_not_run = *cmd!(fn_name_should_not_run);
+        let cmd_exit = *exit(42);
+        const EXIT: ExitStatus = ExitStatus::Code(42);
+
+        let mut env = Env::new().unwrap();
+        env.set_function(String::from(fn_name_should_not_run), MockFn::new(|_| {
+            panic!("ran command that should not be run")
+        }));
+
+        // CommandError::NotFound
+        assert_eq!(
+            CompoundCommand::If(
+                vec!((vec!(*cmd!("missing")), vec!(cmd_should_not_run.clone()))),
+                Some(vec!(cmd_exit.clone())),
+            ).run(&mut env),
+            Ok(EXIT)
+        );
+
+        // CommandError::NotExecutable: there isn't a good/consistent test to invoke this error
+
+        // RedirectionError::BadSrcFd - invalid string
+        assert_eq!(
+            CompoundCommand::If(
+                vec!(
+                    (vec!(Command::Simple(Box::new(SimpleCommand {
+                        cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                        io: vec!(Redirect::DupWrite(None, Word::Literal(String::from("253invalid")))),
+                        vars: vec!(),
+                    }))), vec!(cmd_should_not_run.clone())),
+                ),
+                Some(vec!(cmd_exit.clone())),
+            ).run(&mut env),
+            Ok(EXIT)
+        );
+
+        // RedirectionError::BadSrcFd - src fd not open
+        assert_eq!(
+            CompoundCommand::If(
+                vec!(
+                    (vec!(Command::Simple(Box::new(SimpleCommand {
+                        cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                        io: vec!(Redirect::DupRead(None, Word::Literal(String::from("42")))),
+                        vars: vec!(),
+                    }))), vec!(cmd_should_not_run.clone())),
+                ),
+                Some(vec!(cmd_exit.clone())),
+            ).run(&mut env),
+            Ok(EXIT)
+        );
+
+        // RedirectionError::Ambiguous - empty field
+        assert_eq!(
+            CompoundCommand::If(
+                vec!(
+                    (vec!(Command::Simple(Box::new(SimpleCommand {
+                        cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                        io: vec!(Redirect::DupWrite(None, Word::Param(Parameter::At))),
+                        vars: vec!(),
+                    }))), vec!(cmd_should_not_run.clone())),
+                ),
+                Some(vec!(cmd_exit.clone())),
+            ).run(&mut env),
+            Ok(EXIT)
+        );
+
+        // RedirectionError::Ambiguous - multiple fields - many
+        {
+            let mut env = Env::with_config(None, Some(vec!(
+                String::from("foo"),
+                String::from("bar"),
+            )), None, None).unwrap();
+
+            assert_eq!(
+                CompoundCommand::If(
+                    vec!(
+                        (vec!(Command::Simple(Box::new(SimpleCommand {
+                            cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                            io: vec!(Redirect::DupRead(None, Word::Param(Parameter::At))),
+                            vars: vec!(),
+                        }))), vec!(cmd_should_not_run.clone())),
+                    ),
+                    Some(vec!(cmd_exit.clone())),
+                ).run(&mut env),
+                Ok(EXIT)
+            );
+        }
+
+        // RedirectionError::BadFdPerms - read
+        assert_eq!(
+            CompoundCommand::If(
+                vec!(
+                    (vec!(Command::Simple(Box::new(SimpleCommand {
+                        cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                        io: vec!(Redirect::DupWrite(None, Word::Literal(STDIN_FILENO.to_string()))),
+                        vars: vec!(),
+                    }))), vec!(cmd_should_not_run.clone())),
+                ),
+                Some(vec!(cmd_exit.clone())),
+            ).run(&mut env),
+            Ok(EXIT)
+        );
+
+        // RedirectionError::BadFdPerms - write
+        assert_eq!(
+            CompoundCommand::If(
+                vec!(
+                    (vec!(Command::Simple(Box::new(SimpleCommand {
+                        cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                        io: vec!(Redirect::DupRead(None, Word::Literal(STDOUT_FILENO.to_string()))),
+                        vars: vec!(),
+                    }))), vec!(cmd_should_not_run.clone())),
+                ),
+                Some(vec!(cmd_exit.clone())),
+            ).run(&mut env),
+            Ok(EXIT)
+        );
+
+        // RuntimeError::Io
+        assert_eq!(
+            CompoundCommand::If(vec!(
+                    (
+                        vec!(*cmd!("cat", Word::Literal(String::from("missing file")))),
+                        vec!(cmd_should_not_run.clone()),
+                    )
+                ),
+                Some(vec!(cmd_exit.clone())),
+            ).run(&mut env),
+            Ok(EXIT)
+        );
+
+        // RuntimeError::Unimplemented
+        assert_eq!(
+            CompoundCommand::If(
+                vec!((vec!(Command::Job(cmd!("echo"))), vec!(cmd_should_not_run.clone()))),
+                Some(vec!(cmd_exit.clone())),
+            ).run(&mut env),
+            Ok(EXIT)
+        );
+
+        assert_eq!(
+            CompoundCommand::If(
+                vec!((
+                    vec!(*cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+                        Arith::Div(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(0)))
+                    )))))),
+                    vec!(cmd_should_not_run.clone()))
+                ),
+                Some(vec!(cmd_exit.clone())),
+            ).run(&mut env),
+            Err(RuntimeError::Expansion(ExpansionError::DivideByZero))
+        );
+        assert_eq!(env.last_status(), EXIT_ERROR);
+
+        assert_eq!(
+            CompoundCommand::If(
+                vec!((
+                    vec!(*cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+                        Arith::Pow(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(-5)))
+                    )))))),
+                    vec!(cmd_should_not_run.clone())
+                )),
+                Some(vec!(cmd_exit.clone())),
+            ).run(&mut env),
+            Err(RuntimeError::Expansion(ExpansionError::NegativeExponent))
+        );
+        assert_eq!(env.last_status(), EXIT_ERROR);
+
+        assert_eq!(
+            CompoundCommand::If(
+                vec!((
+                    vec!(*cmd!("echo", Word::Subst(Box::new(
+                        ParameterSubstitution::Assign(true, Parameter::At, Some(Word::Literal(String::from("foo"))))
+                    )))),
+                    vec!(cmd_should_not_run.clone())
+                )),
+                Some(vec!(cmd_exit.clone())),
+            ).run(&mut env),
+            Err(RuntimeError::Expansion(ExpansionError::BadAssig(Parameter::At)))
+        );
+        assert_eq!(env.last_status(), EXIT_ERROR);
+
+        let var = Parameter::Var(String::from("var"));
+        let msg = String::from("empty");
+        assert_eq!(
+            CompoundCommand::If(
+                vec!((
+                    vec!(*cmd!("echo", Word::Subst(Box::new(
+                        ParameterSubstitution::Error(true, var.clone(), Some(Word::Literal(msg.clone())))
+                    )))),
+                    vec!(cmd_should_not_run.clone())
+                )),
+                Some(vec!(cmd_exit.clone())),
+            ).run(&mut env),
+            Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(var, Rc::new(msg))))
+        );
+        assert_eq!(env.last_status(), EXIT_ERROR);
+    }
 }
