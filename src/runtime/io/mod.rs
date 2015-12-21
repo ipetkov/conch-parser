@@ -8,7 +8,7 @@
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::fs;
-use std::io::{Read, Result, Write};
+use std::io::{Read, Result, Seek, SeekFrom, Write};
 use std::path;
 use std::process::Stdio;
 
@@ -146,6 +146,12 @@ impl Write for FileDesc {
 impl fmt::Debug for FileDesc {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "FileDesc({:?})", self.inner())
+    }
+}
+
+impl Seek for FileDesc {
+    fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
+        self.inner_mut().seek(pos)
     }
 }
 
@@ -356,5 +362,39 @@ mod tests {
         unsafe { reader.unsafe_read().read_to_string(&mut read).unwrap(); }
         guard.join().unwrap();
         assert_eq!(msg, read);
+    }
+
+    #[test]
+    fn test_file_desc_seeking() {
+        use std::io::{Seek, SeekFrom};
+
+        let tempdir = mktmp!();
+
+        let mut file_path = PathBuf::new();
+        file_path.push(tempdir.path());
+        file_path.push("out");
+
+        let mut file: FileDesc = File::create(&file_path).unwrap().into();
+
+        file.write_all("foobarbaz".as_bytes()).unwrap();
+        file.flush().unwrap();
+
+        file.seek(SeekFrom::Start(3)).unwrap();
+        file.write_all("???".as_bytes()).unwrap();
+        file.flush().unwrap();
+
+        file.seek(SeekFrom::End(-3)).unwrap();
+        file.write_all("!!!".as_bytes()).unwrap();
+        file.flush().unwrap();
+
+        file.seek(SeekFrom::Current(-9)).unwrap();
+        file.write_all("***".as_bytes()).unwrap();
+        file.flush().unwrap();
+
+        let mut file: FileDesc = File::open(&file_path).unwrap().into();
+        let mut read = String::new();
+        file.read_to_string(&mut read).unwrap();
+
+        assert_eq!(read, "***???!!!");
     }
 }

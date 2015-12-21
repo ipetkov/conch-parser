@@ -5,7 +5,7 @@ use winapi;
 
 use std::fmt;
 use std::fs::File;
-use std::io::{Error, ErrorKind, Read, Result, Write};
+use std::io::{Error, ErrorKind, Read, Result, SeekFrom, Write};
 use std::num::Zero;
 use std::ops::{Deref, DerefMut};
 use std::os::raw::c_void as HANDLE;
@@ -48,7 +48,7 @@ pub struct RawIo {
 impl Eq for RawIo {}
 impl PartialEq<RawIo> for RawIo {
     fn eq(&self, other: &RawIo) -> bool {
-        self.handle.get() == other.handle.get()
+        **(self.handle) == **(other.handle)
     }
 }
 
@@ -155,6 +155,22 @@ impl RawIo {
                                 ptr::null_mut())
         }));
         Ok(amt as usize)
+    }
+
+    /// Seeks the underlying HANDLE.
+    // Taken from rust: libstd/sys/windows/fs.rs
+    pub fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
+        let (whence, pos) = match pos {
+            SeekFrom::Start(n) => (winapi::FILE_BEGIN, n as i64),
+            SeekFrom::End(n) => (winapi::FILE_END, n),
+            SeekFrom::Current(n) => (winapi::FILE_CURRENT, n),
+        };
+        let pos = pos as winapi::LARGE_INTEGER;
+        let mut newpos = 0;
+        try!(cvt(unsafe {
+            kernel32::SetFilePointerEx(self.handle.get_mut(), pos, &mut newpos, whence)
+        }));
+        Ok(newpos as u64)
     }
 }
 

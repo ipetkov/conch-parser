@@ -2,7 +2,7 @@
 
 use libc::{self, c_void, size_t};
 use std::fs::File;
-use std::io::{Error, ErrorKind, Read, Result, Write};
+use std::io::{Error, ErrorKind, Read, Result, SeekFrom, Write};
 use std::num::One;
 use std::ops::Neg;
 use std::os::unix::io::{RawFd, AsRawFd, FromRawFd, IntoRawFd};
@@ -101,6 +101,18 @@ impl RawIo {
                         buf.len() as size_t)
         }));
         Ok(ret as usize)
+    }
+
+    /// Seeks the underlying file descriptor.
+    // Adapted from rust: libstd/sys/unix/fs.rs
+    pub fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
+        let (whence, pos) = match pos {
+            SeekFrom::Start(off) => (libc::SEEK_SET, off as libc::off_t),
+            SeekFrom::End(off) => (libc::SEEK_END, off as libc::off_t),
+            SeekFrom::Current(off) => (libc::SEEK_CUR, off as libc::off_t),
+        };
+        let n = try!(cvt(unsafe { libc::lseek(self.fd, pos, whence) }));
+        Ok(n as u64)
     }
 }
 
