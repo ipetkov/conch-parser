@@ -18,7 +18,7 @@ version = "0.2.1"
 optional = true
 
 [dependencies.libc]
-version = "> 0.1.12, < 0.3"
+version = "0.2"
 optional = true
 
 [dependencies.winapi]

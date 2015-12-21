@@ -114,6 +114,32 @@ impl RawIo {
         let n = try!(cvt(unsafe { libc::lseek(self.fd, pos, whence) }));
         Ok(n as u64)
     }
+
+    /// Sets the CLOEXEC flag on the descriptor to the desired state
+    pub fn set_cloexec(&self, set: bool) -> Result<()> {
+        unsafe {
+            let flags = try!(cvt_r(|| libc::fcntl(self.fd, libc::F_GETFD)));
+            let new_flags = if set {
+                flags | libc::FD_CLOEXEC
+            } else {
+                flags & !libc::FD_CLOEXEC
+            };
+            cvt_r(|| libc::fcntl(self.fd, libc::F_SETFD, new_flags)).map(|_| ())
+        }
+    }
+
+    /// Sets the O_NONBLOCK flag on the descriptor to the desired state
+    pub fn set_nonblock(&self, set: bool) -> Result<()> {
+        unsafe {
+            let flags = try!(cvt_r(|| libc::fcntl(self.fd, libc::F_GETFL)));
+            let new_flags = if set {
+                flags | libc::O_NONBLOCK
+            } else {
+                flags & !libc::O_NONBLOCK
+            };
+            cvt_r(|| libc::fcntl(self.fd, libc::F_SETFL, new_flags)).map(|_| ())
+        }
+    }
 }
 
 impl Read for RawIo {
@@ -177,18 +203,15 @@ unsafe fn dup_fd_cloexec(fd: RawFd) -> Result<RawIo> {
 /// The CLOEXEC flag will be set on both file descriptors, however,
 /// setting these flags is nonatomic.
 pub fn pipe() -> Result<(RawIo, RawIo)> {
-    // FIXME: these should probably have NONBLOCK and CLOEXEC flags when libc catches up
     use libc::pipe;
     unsafe {
         let mut fds = [0; 2];
         try!(cvt_r(|| { pipe(fds.as_mut_ptr()) }));
-        let pipe_reader = RawIo::new(fds[0]);
-        let pipe_writer = RawIo::new(fds[1]);
+        let reader = RawIo::new(fds[0]);
+        let writer = RawIo::new(fds[1]);
 
-        let reader = try!(dup_fd_cloexec(pipe_reader.inner()));
-        drop(pipe_reader);
-        let writer = try!(dup_fd_cloexec(pipe_writer.inner()));
-        drop(pipe_writer);
+        try!(reader.set_cloexec(true));
+        try!(writer.set_cloexec(true));
 
         Ok((reader, writer))
     }
