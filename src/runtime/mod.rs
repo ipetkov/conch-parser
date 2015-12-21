@@ -408,7 +408,7 @@ pub trait Environment {
         // Tl;dr: duplicating the handle won't offer us any extra safety, so we
         // can avoid the overhead.
         self.file_desc(STDERR_FILENO).map(|(fd, _)| unsafe {
-            fd.unsafe_write().write_all(&format!("{}: {}", self.name(), err).into_bytes())
+            fd.unsafe_write().write_all(&format!("{}: {}\n", self.name(), err).into_bytes())
         });
     }
 }
@@ -1745,8 +1745,12 @@ mod tests {
         }
     }
 
-    fn file_desc() -> FileDesc {
+    fn dev_null() -> FileDesc {
         OpenOptions::new().read(true).write(true).open(DEV_NULL).unwrap().into()
+    }
+
+    fn file_desc() -> FileDesc {
+        dev_null()
     }
 
     macro_rules! cmd_unboxed {
@@ -3457,6 +3461,11 @@ mod tests {
     fn test_run_command_and_error_handling() {
         let mut env = Env::new().unwrap();
 
+        // We'll be printing a lot of errors, so we'll suppress actually printing
+        // to avoid polluting the output of the test runner.
+        // NB: consider removing this line when debugging
+        env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
+
         // CommandError::NotFound
         assert_eq!(Command::And(cmd!("missing"), true_cmd()).run(&mut env), Ok(EXIT_CMD_NOT_FOUND));
         assert_eq!(Command::And(cmd!(""), true_cmd()).run(&mut env), Ok(EXIT_CMD_NOT_FOUND));
@@ -3499,6 +3508,11 @@ mod tests {
                 String::from("foo"),
                 String::from("bar"),
             )), None, None).unwrap();
+
+            // We'll be printing a lot of errors, so we'll suppress actually printing
+            // to avoid polluting the output of the test runner.
+            // NB: consider removing this line when debugging
+            env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
 
             assert_eq!(Command::And(
                 Box::new(Command::Simple(Box::new(SimpleCommand {
@@ -3579,6 +3593,11 @@ mod tests {
     fn test_run_command_or_error_handling() {
         let mut env = Env::new().unwrap();
 
+        // We'll be printing a lot of errors, so we'll suppress actually printing
+        // to avoid polluting the output of the test runner.
+        // NB: consider removing this line when debugging
+        env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
+
         // CommandError::NotFound
         assert_eq!(Command::Or(cmd!("missing"), true_cmd()).run(&mut env), Ok(EXIT_SUCCESS));
         assert_eq!(Command::Or(cmd!(""), true_cmd()).run(&mut env), Ok(EXIT_SUCCESS));
@@ -3621,6 +3640,11 @@ mod tests {
                 String::from("foo"),
                 String::from("bar"),
             )), None, None).unwrap();
+
+            // We'll be printing a lot of errors, so we'll suppress actually printing
+            // to avoid polluting the output of the test runner.
+            // NB: consider removing this line when debugging
+            env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
 
             assert_eq!(Command::Or(
                 Box::new(Command::Simple(Box::new(SimpleCommand {
@@ -4046,6 +4070,11 @@ mod tests {
         let last_status = Rc::new(RefCell::new(EXIT_SUCCESS));
 
         let mut env = Env::new().unwrap();
+
+        // We'll be printing a lot of errors, so we'll suppress actually printing
+        // to avoid polluting the output of the test runner.
+        // NB: consider removing this line when debugging
+        env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
         {
             let last_status = last_status.clone();
             env.set_function(String::from(fn_name_check_status), MockFn::new(move |env| {
@@ -4092,6 +4121,11 @@ mod tests {
                 String::from("foo"),
                 String::from("bar"),
             )), None, None).unwrap();
+
+            // We'll be printing a lot of errors, so we'll suppress actually printing
+            // to avoid polluting the output of the test runner.
+            // NB: consider removing this line when debugging
+            env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
 
             assert_eq!(CompoundCommand::Brace(vec!(
                 Command::Simple(Box::new(SimpleCommand {
@@ -4282,6 +4316,12 @@ mod tests {
         const EXIT: ExitStatus = ExitStatus::Code(42);
 
         let mut env = Env::new().unwrap();
+
+        // We'll be printing a lot of errors, so we'll suppress actually printing
+        // to avoid polluting the output of the test runner.
+        // NB: consider removing this line when debugging
+        env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
+
         env.set_function(String::from(fn_name_should_not_run), MockFn::new(|_| {
             panic!("ran command that should not be run")
         }));
@@ -4356,6 +4396,11 @@ mod tests {
                 String::from("foo"),
                 String::from("bar"),
             )), None, None).unwrap();
+
+            // We'll be printing a lot of errors, so we'll suppress actually printing
+            // to avoid polluting the output of the test runner.
+            // NB: consider removing this line when debugging
+            env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
 
             assert_eq!(
                 CompoundCommand::If(
@@ -4715,6 +4760,10 @@ mod tests {
         let last_status = Rc::new(RefCell::new(EXIT_SUCCESS));
 
         let mut env = Env::new().unwrap();
+        // We'll be printing a lot of errors, so we'll suppress actually printing
+        // to avoid polluting the output of the test runner.
+        // NB: consider removing this line when debugging
+        env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
         {
             let last_status = last_status.clone();
             env.set_function(String::from(fn_name_check_status), MockFn::new(move |env| {
@@ -4760,6 +4809,11 @@ mod tests {
                 String::from("foo"),
                 String::from("bar"),
             )), None, None).unwrap();
+
+            // We'll be printing a lot of errors, so we'll suppress actually printing
+            // to avoid polluting the output of the test runner.
+            // NB: consider removing this line when debugging
+            env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
 
             assert_eq!(CompoundCommand::Subshell(vec!(
                 Command::Simple(Box::new(SimpleCommand {
