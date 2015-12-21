@@ -29,10 +29,14 @@ mod errors;
 pub mod io;
 pub use self::errors::*;
 
-const EXIT_SUCCESS:            ExitStatus = ExitStatus::Code(0);
-const EXIT_ERROR:              ExitStatus = ExitStatus::Code(1);
-const EXIT_CMD_NOT_EXECUTABLE: ExitStatus = ExitStatus::Code(126);
-const EXIT_CMD_NOT_FOUND:      ExitStatus = ExitStatus::Code(127);
+/// Exit code for commands that exited successfully.
+pub const EXIT_SUCCESS:            ExitStatus = ExitStatus::Code(0);
+/// Exit code for commands that did not exit successfully.
+pub const EXIT_ERROR:              ExitStatus = ExitStatus::Code(1);
+/// Exit code for commands which are not executable.
+pub const EXIT_CMD_NOT_EXECUTABLE: ExitStatus = ExitStatus::Code(126);
+/// Exit code for missing commands.
+pub const EXIT_CMD_NOT_FOUND:      ExitStatus = ExitStatus::Code(127);
 
 const EXIT_SIGNAL_OFFSET: u32 = 128;
 
@@ -1693,7 +1697,6 @@ mod tests {
     use std::path::PathBuf;
     use std::rc::Rc;
     use std::thread;
-    use super::{EXIT_CMD_NOT_FOUND, EXIT_ERROR, EXIT_SUCCESS};
     use super::io::{FileDesc, Permissions};
     use super::*;
     use syntax::ast::{Arith, Command, CompoundCommand, SimpleCommand, Parameter, ParameterSubstitution, Redirect, Word};
