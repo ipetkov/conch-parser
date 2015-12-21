@@ -1764,7 +1764,7 @@ mod tests {
         ($cmd:expr, $($arg:expr),* ) => { Box::new(cmd_unboxed!($cmd, $($arg),*)) }
     }
 
-    fn exit(status: u8) -> Box<Command> {
+    fn exit(status: i32) -> Box<Command> {
         cmd!("sh", Word::Literal(String::from("-c")), Word::SingleQuoted(format!("exit {}", status)))
     }
 
@@ -3188,7 +3188,6 @@ mod tests {
         )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("foohello worldbar")))));
     }
 
-
     #[test]
     fn test_eval_word_double_quoted_within_double_quoted_same_as_if_inner_was_not_there() {
         let mut env = Env::new().unwrap();
@@ -3457,6 +3456,7 @@ mod tests {
 
         // CommandError::NotFound
         assert_eq!(Command::And(cmd!("missing"), true_cmd()).run(&mut env), Ok(EXIT_CMD_NOT_FOUND));
+        assert_eq!(Command::And(cmd!(""), true_cmd()).run(&mut env), Ok(EXIT_CMD_NOT_FOUND));
 
         // CommandError::NotExecutable: there isn't a good/consistent test to invoke this error
 
@@ -3578,6 +3578,7 @@ mod tests {
 
         // CommandError::NotFound
         assert_eq!(Command::Or(cmd!("missing"), true_cmd()).run(&mut env), Ok(EXIT_SUCCESS));
+        assert_eq!(Command::Or(cmd!(""), true_cmd()).run(&mut env), Ok(EXIT_SUCCESS));
 
         // CommandError::NotExecutable: there isn't a good/consistent test to invoke this error
 
@@ -4062,6 +4063,14 @@ mod tests {
         )).run(&mut env), Ok(exit_code));
         assert_eq!(*last_status.borrow(), EXIT_CMD_NOT_FOUND);
 
+        // CommandError::NotFound
+        assert_eq!(CompoundCommand::Brace(vec!(
+            *cmd!(""),
+            cmd_check_status.clone(),
+            cmd_exit.clone(),
+        )).run(&mut env), Ok(exit_code));
+        assert_eq!(*last_status.borrow(), EXIT_CMD_NOT_FOUND);
+
         // CommandError::NotExecutable: there isn't a good/consistent test to invoke this error
 
         // RedirectionError::Ambiguous - empty field
@@ -4282,6 +4291,14 @@ mod tests {
             ).run(&mut env),
             Ok(EXIT)
         );
+        // CommandError::NotFound
+        assert_eq!(
+            CompoundCommand::If(
+                vec!((vec!(*cmd!("")), vec!(cmd_should_not_run.clone()))),
+                Some(vec!(cmd_exit.clone())),
+            ).run(&mut env),
+            Ok(EXIT)
+        );
 
         // CommandError::NotExecutable: there isn't a good/consistent test to invoke this error
 
@@ -4460,6 +4477,395 @@ mod tests {
             ).run(&mut env),
             Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(var, Rc::new(msg))))
         );
+        assert_eq!(env.last_status(), EXIT_ERROR);
+    }
+
+    #[test]
+    fn test_run_command_subshell() {
+        let mut env = Env::new().unwrap();
+        assert_eq!(
+            CompoundCommand::Subshell(vec!(*exit(5), *exit(42))).run(&mut env),
+            Ok(ExitStatus::Code(42))
+        );
+    }
+
+    #[test]
+    fn test_run_command_subshell_child_inherits_var_definitions() {
+        let var_name = "var";
+        let var_value = "value";
+        let fn_check_vars = "fn_check_vars";
+
+        let mut env = Env::new().unwrap();
+        env.set_var(String::from(var_name), Rc::new(String::from(var_value)));
+
+        {
+            let var_name = String::from(var_name);
+            let var_value = String::from(var_value);
+
+            env.set_function(String::from(fn_check_vars), MockFn::new(move |env| {
+                assert_eq!(&**env.var(&var_name).unwrap(), &var_value);
+                Ok(EXIT_SUCCESS)
+            }));
+        }
+        assert_eq!(cmd!(fn_check_vars).run(&mut env), Ok(EXIT_SUCCESS));
+    }
+
+    #[test]
+    fn test_run_command_subshell_parent_isolated_from_var_changes() {
+        let parent_name = "parent-var";
+        let parent_value = "parent-value";
+        let child_name = "child-var";
+        let child_value = "child-value";
+        let fn_check_vars = "fn_check_vars";
+
+        let mut env = Env::new().unwrap();
+        env.set_var(String::from(parent_name), Rc::new(String::from(parent_value)));
+
+        {
+            let parent_name = String::from(parent_name);
+            let child_name = String::from(child_name);
+            let child_value = String::from(child_value);
+
+            env.set_function(String::from(fn_check_vars), MockFn::new(move |env| {
+                assert_eq!(&**env.var(&parent_name).unwrap(), &child_value);
+                assert_eq!(&**env.var(&child_name).unwrap(), &child_value);
+                Ok(EXIT_SUCCESS)
+            }));
+        }
+
+        let cmd = CompoundCommand::Subshell(vec!(
+            Command::Simple(Box::new(SimpleCommand {
+                cmd: None,
+                io: vec!(),
+                vars: vec!((String::from(parent_name), Some(Word::Literal(String::from(child_value))))),
+            })),
+            Command::Simple(Box::new(SimpleCommand {
+                cmd: None,
+                io: vec!(),
+                vars: vec!((String::from(child_name), Some(Word::Literal(String::from(child_value))))),
+            })),
+            *cmd!(fn_check_vars)
+        ));
+        assert_eq!(cmd.run(&mut env), Ok(EXIT_SUCCESS));
+
+        assert_eq!(&**env.var(parent_name).unwrap(), parent_value);
+        assert_eq!(env.var(child_name), None);
+    }
+
+    #[test]
+    fn test_run_command_subshell_child_inherits_function_definitions() {
+        let fn_name_default = "fn_name_default";
+        let default_exit_code = 10;
+
+        let mut env = Env::new().unwrap();
+
+        // Subshells should inherit function definitions
+        {
+            let default_exit_code = default_exit_code.clone();
+            env.set_function(String::from(fn_name_default), MockFn::new(move |_| {
+                Ok(ExitStatus::Code(default_exit_code))
+            }));
+        }
+        assert_eq!(CompoundCommand::Subshell(vec!(
+            *cmd!(fn_name_default)
+        )).run(&mut env), Ok(ExitStatus::Code(default_exit_code)));
+    }
+
+    #[test]
+    fn test_run_command_subshell_parent_isolated_from_function_changes() {
+        let fn_name = "fn_name";
+        let fn_name_parent = "fn_name_parent";
+
+        let parent_exit_code = 5;
+        let override_exit_code = 42;
+
+        let mut env = Env::new().unwrap();
+
+        // Defining a new function within subshell should disappear
+        let cmd = CompoundCommand::Subshell(vec!(
+            Command::Function(String::from(fn_name), Rc::new(*exit(override_exit_code))),
+            *cmd!(fn_name),
+        ));
+        assert_eq!(cmd.run(&mut env), Ok(ExitStatus::Code(override_exit_code)));
+        assert_eq!(env.run_function(Rc::new(String::from(fn_name)), vec!()), None);
+
+        // Redefining function within subshell should revert to original
+        {
+            let parent_exit_code = parent_exit_code.clone();
+            env.set_function(String::from(fn_name_parent), MockFn::new(move |_| {
+                Ok(ExitStatus::Code(parent_exit_code))
+            }));
+        }
+        let cmd = CompoundCommand::Subshell(vec!(
+            Command::Function(String::from(fn_name_parent), Rc::new(*exit(override_exit_code))),
+            *cmd!(fn_name_parent),
+        ));
+        assert_eq!(cmd.run(&mut env), Ok(ExitStatus::Code(override_exit_code)));
+        assert_eq!(cmd!(fn_name_parent).run(&mut env), Ok(ExitStatus::Code(parent_exit_code)));
+    }
+
+    #[test]
+    fn test_run_command_subshell_child_inherits_file_descriptors() {
+        let msg = "some secret message";
+        let io::Pipe { mut reader, writer } = io::Pipe::new().unwrap();
+
+        let guard = thread::spawn(move || {
+            let target_fd = 5;
+            let mut env = Env::new().unwrap();
+            let writer = Rc::new(writer);
+            env.set_file_desc(target_fd, writer.clone(), Permissions::Write);
+
+            assert_eq!(CompoundCommand::Subshell(vec!(
+                Command::Simple(Box::new(SimpleCommand {
+                    cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(String::from(msg))))),
+                    vars: vec!(),
+                    io: vec!(Redirect::DupWrite(Some(STDOUT_FILENO), Word::Literal(target_fd.to_string()))),
+                }))
+            )).run(&mut env), Ok(EXIT_SUCCESS));
+
+            env.close_file_desc(target_fd);
+            let mut writer = Rc::try_unwrap(writer).unwrap();
+            writer.flush().unwrap();
+            drop(writer);
+        });
+
+        let mut read = String::new();
+        reader.read_to_string(&mut read).unwrap();
+        guard.join().unwrap();
+        assert_eq!(read, format!("{}\n", msg));
+    }
+
+    #[test]
+    fn test_run_command_subshell_parent_isolated_from_file_descritor_changes() {
+        let target_fd = 5;
+        let new_fd = 6;
+        let new_msg = "some new secret message";
+        let change_msg = "some change secret message";
+        let parent_msg = "parent post msg";
+        let io::Pipe { reader: mut new_reader,    writer: new_writer    } = io::Pipe::new().unwrap();
+        let io::Pipe { reader: mut change_reader, writer: change_writer } = io::Pipe::new().unwrap();
+        let io::Pipe { reader: mut parent_reader, writer: parent_writer } = io::Pipe::new().unwrap();
+
+        let guard = thread::spawn(move || {
+            let exec = "exec_fn";
+            let new_writer    = Rc::new(new_writer);
+            let change_writer = Rc::new(change_writer);
+            let parent_writer = Rc::new(parent_writer);
+
+            let mut env = Env::new().unwrap();
+            env.set_file_desc(target_fd, parent_writer.clone(), Permissions::Write);
+
+            {
+                let new_writer = new_writer;
+                let change_writer = change_writer;
+                env.set_function(exec.to_string(), MockFn::new(move |mut env| {
+                    env.set_file_desc(new_fd, new_writer.clone(), Permissions::Write);
+                    env.set_file_desc(target_fd, change_writer.clone(), Permissions::Write);
+                    Ok(EXIT_SUCCESS)
+                }));
+            }
+
+            assert_eq!(CompoundCommand::Subshell(vec!(
+                *cmd!(exec),
+                Command::Simple(Box::new(SimpleCommand {
+                    cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(new_msg.to_string())))),
+                    vars: vec!(),
+                    io: vec!(Redirect::DupWrite(Some(STDOUT_FILENO), Word::Literal(new_fd.to_string()))),
+                })),
+                Command::Simple(Box::new(SimpleCommand {
+                    cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(change_msg.to_string())))),
+                    vars: vec!(),
+                    io: vec!(Redirect::DupWrite(Some(STDOUT_FILENO), Word::Literal(target_fd.to_string()))),
+                })),
+            )).run(&mut env), Ok(EXIT_SUCCESS));
+
+            env.close_file_desc(target_fd);
+            assert!(env.file_desc(new_fd).is_none());
+
+            let mut parent_writer = Rc::try_unwrap(parent_writer).unwrap();
+            parent_writer.write_all(parent_msg.as_bytes()).unwrap();
+            parent_writer.flush().unwrap();
+
+            drop(parent_writer);
+        });
+
+        let mut new_read = String::new();
+        new_reader.read_to_string(&mut new_read).unwrap();
+
+        let mut change_read = String::new();
+        change_reader.read_to_string(&mut change_read).unwrap();
+
+        let mut parent_read = String::new();
+        parent_reader.read_to_string(&mut parent_read).unwrap();
+
+        guard.join().unwrap();
+
+        assert_eq!(new_read, format!("{}\n", new_msg));
+        assert_eq!(change_read, format!("{}\n", change_msg));
+        assert_eq!(parent_read, parent_msg);
+    }
+
+    #[test]
+    fn test_run_command_subshell_error_handling() {
+        let fn_name_check_status = "foo_fn";
+            let fn_name_should_not_run = "foo_fn_should_not_run";
+        let last_status = Rc::new(RefCell::new(EXIT_SUCCESS));
+
+        let mut env = Env::new().unwrap();
+        {
+            let last_status = last_status.clone();
+            env.set_function(String::from(fn_name_check_status), MockFn::new(move |env| {
+                *last_status.borrow_mut() = env.last_status();
+                Ok(EXIT_SUCCESS)
+            }));
+        }
+
+        let exit_code = ExitStatus::Code(42);
+        let cmd_exit = *exit(42);
+        let cmd_check_status = *cmd!(fn_name_check_status);
+
+        // CommandError::NotFound
+        assert_eq!(CompoundCommand::Subshell(vec!(
+            *cmd!("missing"),
+            cmd_check_status.clone(),
+            cmd_exit.clone(),
+        )).run(&mut env), Ok(exit_code));
+        assert_eq!(*last_status.borrow(), EXIT_CMD_NOT_FOUND);
+        // CommandError::NotFound
+        assert_eq!(CompoundCommand::Subshell(vec!(
+            *cmd!(""),
+            cmd_check_status.clone(),
+            cmd_exit.clone(),
+        )).run(&mut env), Ok(exit_code));
+        assert_eq!(*last_status.borrow(), EXIT_CMD_NOT_FOUND);
+
+        // CommandError::NotExecutable: there isn't a good/consistent test to invoke this error
+
+        // RedirectionError::Ambiguous - empty field
+        assert_eq!(CompoundCommand::Subshell(vec!(
+            Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Word::Param(Parameter::At))),
+                vars: vec!(),
+            })),
+            cmd_exit.clone(),
+        )).run(&mut env), Ok(exit_code));
+
+        // RedirectionError::Ambiguous - multiple fields - many
+        {
+            let mut env = Env::with_config(None, Some(vec!(
+                String::from("foo"),
+                String::from("bar"),
+            )), None, None).unwrap();
+
+            assert_eq!(CompoundCommand::Subshell(vec!(
+                Command::Simple(Box::new(SimpleCommand {
+                    cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                    io: vec!(Redirect::DupRead(None, Word::Param(Parameter::At))),
+                    vars: vec!(),
+                })),
+                cmd_exit.clone(),
+            )).run(&mut env), Ok(exit_code));
+        }
+
+        // RedirectionError::BadSrcFd - invalid string
+        assert_eq!(CompoundCommand::Subshell(vec!(
+            Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Word::Literal(String::from("253invalid")))),
+                vars: vec!(),
+            })),
+            cmd_exit.clone(),
+        )).run(&mut env), Ok(exit_code));
+
+        // RedirectionError::BadSrcFd - src fd not open
+        assert_eq!(CompoundCommand::Subshell(vec!(
+            Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                io: vec!(Redirect::DupRead(None, Word::Literal(String::from("42")))),
+                vars: vec!(),
+            })),
+            cmd_exit.clone(),
+        )).run(&mut env), Ok(exit_code));
+
+        // RedirectionError::BadFdPerms - read
+        assert_eq!(CompoundCommand::Subshell(vec!(
+            Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Word::Literal(STDIN_FILENO.to_string()))),
+                vars: vec!(),
+            })),
+            cmd_exit.clone(),
+        )).run(&mut env), Ok(exit_code));
+
+        // RedirectionError::BadFdPerms - write
+        assert_eq!(CompoundCommand::Subshell(vec!(
+            Command::Simple(Box::new(SimpleCommand {
+                cmd: Some((Word::Literal(String::from("echo")), vec!())),
+                io: vec!(Redirect::DupRead(None, Word::Literal(STDOUT_FILENO.to_string()))),
+                vars: vec!(),
+            })),
+            cmd_exit.clone(),
+        )).run(&mut env), Ok(exit_code));
+
+        // RuntimeError::Io
+        assert_eq!(CompoundCommand::Subshell(vec!(
+            *cmd!("cat", Word::Literal(String::from("missing file"))),
+            cmd_check_status.clone(),
+            cmd_exit.clone(),
+        )).run(&mut env), Ok(exit_code));
+        assert_eq!(*last_status.borrow(), EXIT_ERROR);
+
+        // RuntimeError::Unimplemented
+        assert_eq!(CompoundCommand::Subshell(vec!(
+            Command::Job(cmd!("echo")),
+            cmd_check_status.clone(),
+            cmd_exit.clone(),
+        )).run(&mut env), Ok(exit_code));
+        assert_eq!(*last_status.borrow(), EXIT_ERROR);
+
+        env.set_function(String::from(fn_name_should_not_run), MockFn::new(|_| {
+            panic!("ran command that should not be run")
+        }));
+
+        let cmd_should_not_run = *cmd!(fn_name_should_not_run);
+
+        assert_eq!(CompoundCommand::Subshell(vec!(
+            *cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+                Arith::Div(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(0)))
+            ))))),
+            cmd_should_not_run.clone(),
+        )).run(&mut env), Ok(EXIT_ERROR));
+        assert_eq!(env.last_status(), EXIT_ERROR);
+
+        assert_eq!(CompoundCommand::Subshell(vec!(
+            *cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+                Arith::Pow(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(-5)))
+            ))))),
+            cmd_should_not_run.clone(),
+        )).run(&mut env), Ok(EXIT_ERROR));
+        assert_eq!(env.last_status(), EXIT_ERROR);
+
+        assert_eq!(CompoundCommand::Subshell(vec!(
+            *cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Assign(
+                true,
+                Parameter::At,
+                Some(Word::Literal(String::from("foo")))
+            )))),
+            cmd_should_not_run.clone(),
+        )).run(&mut env), Ok(EXIT_ERROR));
+        assert_eq!(env.last_status(), EXIT_ERROR);
+
+        let var = Parameter::Var(String::from("var"));
+        let msg = String::from("empty");
+        assert_eq!(CompoundCommand::Subshell(vec!(
+            *cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Error(
+                true,
+                var.clone(),
+                Some(Word::Literal(msg.clone()))
+            )))),
+            cmd_should_not_run.clone(),
+        )).run(&mut env), Ok(EXIT_ERROR));
         assert_eq!(env.last_status(), EXIT_ERROR);
     }
 }
