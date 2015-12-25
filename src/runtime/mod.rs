@@ -371,7 +371,7 @@ pub trait Environment {
     fn var(&self, name: &str) -> Option<&Rc<String>>;
     /// Set the value of some variable (including environment variables).
     fn set_var(&mut self, name: String, val: Rc<String>);
-    /// Indicates if a funciton is currently defined with a given name.
+    /// Indicates if a function is currently defined with a given name.
     fn has_function(&mut self, fn_name: &str) -> bool;
     /// Attempt to execute a function with a set of arguments if it has been defined.
     fn run_function(&mut self, fn_name: Rc<String>, args: Vec<Rc<String>>) -> Option<Result<ExitStatus>>;
