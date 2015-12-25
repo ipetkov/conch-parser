@@ -3210,6 +3210,16 @@ mod tests {
         assert_eq!(Word::DoubleQuoted(vec!(
             Word::Tilde,
         )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("~")))));
+
+        assert_eq!(Word::DoubleQuoted(vec!(
+            Word::Tilde,
+            Word::Literal(String::from("root"))
+        )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("~root")))));
+
+        assert_eq!(Word::DoubleQuoted(vec!(
+            Word::Tilde,
+            Word::Literal(String::from("/root"))
+        )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("~/root")))));
     }
 
     #[test]
