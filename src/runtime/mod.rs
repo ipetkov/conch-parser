@@ -389,7 +389,7 @@ pub trait Environment {
     /// Get all current arguments as a vector.
     fn args(&self) -> Cow<[Rc<String>]>;
     /// Get all current pairs of environment variables and their values.
-    fn env(&self) -> Vec<(&str, &str)>;
+    fn env(&self) -> Cow<[(&str, &str)]>;
     /// Get the permissions and OS handle associated with an opened file descriptor.
     fn file_desc(&self, fd: Fd) -> Option<(&Rc<FileDesc>, Permissions)>;
     /// Associate a file descriptor with a given OS handle and permissions.
@@ -511,7 +511,7 @@ impl<'a> Environment for Env<'a> {
         Cow::Borrowed(&self.args)
     }
 
-    fn env(&self) -> Vec<(&str, &str)> {
+    fn env(&self) -> Cow<[(&str, &str)]> {
         let mut env = HashMap::new();
         self.walk_parent_chain(|cur| -> result::Result<Option<Void>, ()> {
             for (k,v) in cur.vars.iter().map(|(k,v)| (&**k, v)) {
@@ -523,11 +523,12 @@ impl<'a> Environment for Env<'a> {
             Ok(None) // Force the traversal to walk the entire chain
         });
 
-        env.into_iter().filter_map(|(k, v)| match v {
+        let ret: Vec<_> = env.into_iter().filter_map(|(k, v)| match v {
             &Some((ref v, true)) => Some((k, &***v)),
             &Some((_, false)) => None,
             &None => None,
-        }).collect()
+        }).collect();
+        Cow::Owned(ret)
     }
 
     fn file_desc(&self, fd: Fd) -> Option<(&Rc<FileDesc>, Permissions)> {
@@ -1359,7 +1360,7 @@ impl Run for SimpleCommand {
         }
 
         // First inherit all default ENV variables
-        for (var, val) in env.env() {
+        for &(var, val) in &*env.env() {
             cmd.env(var, val);
         }
 
@@ -2165,7 +2166,7 @@ mod tests {
         let mut vars: Vec<(String, String)> = ::std::env::vars().collect();
         vars.sort();
         let vars: Vec<(&str, &str)> = vars.iter().map(|&(ref k, ref v)| (&**k, &**v)).collect();
-        let mut env_vars = env.env();
+        let mut env_vars: Vec<_> = (&*env.env()).into();
         env_vars.sort();
         assert_eq!(vars, env_vars);
     }
@@ -2189,11 +2190,11 @@ mod tests {
 
         let owned_vars = env_vars.iter().map(|&(k, v)| (String::from(k), String::from(v))).collect();
         let env = Env::with_config(None, None, Some(owned_vars), None).unwrap();
-        let mut vars = env.env();
+        let mut vars: Vec<_> = (&*env.env()).into();
         vars.sort();
         assert_eq!(vars, env_vars);
         let child = env.sub_env();
-        let mut vars = child.env();
+        let mut vars: Vec<_> = (&*child.env()).into();
         vars.sort();
         assert_eq!(vars, env_vars);
     }
