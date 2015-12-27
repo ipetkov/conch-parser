@@ -80,7 +80,7 @@ pub enum ComplexWord {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Word {
     /// A regular word.
-    Simple(SimpleWord),
+    Simple(Box<SimpleWord>),
     /// List of words concatenated within double quotes.
     DoubleQuoted(Vec<SimpleWord>),
     /// List of words concatenated within single quotes. Virtually
@@ -331,7 +331,7 @@ mod tests {
 
         for p in params {
             let src = p.to_string();
-            let correct = ComplexWord::Single(Word::Simple(SimpleWord::Param(p)));
+            let correct = ComplexWord::Single(Word::Simple(Box::new(SimpleWord::Param(p))));
 
             let parsed = match make_parser(&src).word() {
                 Ok(Some(w)) => w,

@@ -2586,15 +2586,15 @@ pub mod test {
     use syntax::token::Token;
 
     fn lit(s: &str) -> Word {
-        Word::Simple(Literal(String::from(s)))
+        Word::Simple(Box::new(Literal(String::from(s))))
     }
 
     fn escaped(s: &str) -> Word {
-        Word::Simple(Escaped(String::from(s)))
+        Word::Simple(Box::new(Escaped(String::from(s))))
     }
 
     fn subst(s: ParameterSubstitution) -> Word {
-        Word::Simple(SimpleWord::Subst(Box::new(s)))
+        Word::Simple(Box::new(SimpleWord::Subst(Box::new(s))))
     }
 
     fn single_quoted(s: &str) -> ComplexWord {
@@ -2868,7 +2868,7 @@ pub mod test {
 
         let mut p = make_parser("$@$*$#$?$-$$$!$3$");
         for param in words {
-            assert_eq!(p.parameter().unwrap(), Single(Word::Simple(Param(param))));
+            assert_eq!(p.parameter().unwrap(), Single(Word::Simple(Box::new(Param(param)))));
         }
 
         assert_eq!(Single(lit("$")), p.parameter().unwrap());
@@ -2892,7 +2892,7 @@ pub mod test {
 
         let mut p = make_parser("${@}${*}${#}${?}${-}${$}${!}${foo}${3}${1000}");
         for param in words {
-            assert_eq!(p.parameter().unwrap(), Single(Word::Simple(Param(param))));
+            assert_eq!(p.parameter().unwrap(), Single(Word::Simple(Box::new(Param(param)))));
         }
 
         assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
@@ -2941,7 +2941,7 @@ pub mod test {
 
         let mut p = make_parser("${#@}${#*}${##}${#?}${#-}${#$}${#!}${#foo}${#3}${#1000}$(echo foo)");
         for param in words {
-            let correct = Single(Word::Simple(Subst(Box::new(param))));
+            let correct = Single(Word::Simple(Box::new(Subst(Box::new(param)))));
             assert_eq!(correct, p.parameter().unwrap());
         }
 
@@ -3511,7 +3511,7 @@ pub mod test {
 
         let var = Var(String::from("foo_bar123"));
         let word = Concat(vec!(
-            Word::Simple(Param(At)),
+            Word::Simple(Box::new(Param(At))),
             subst(RemoveLargestPrefix(
                 Var(String::from("foo")),
                 Some(Single(lit("bar")))
@@ -3649,7 +3649,7 @@ pub mod test {
         let mut p = make_parser("123$$'foo'>out");
         let correct = Concat(vec!(
             lit("123"),
-            Word::Simple(Param(Parameter::Dollar)),
+            Word::Simple(Box::new(Param(Parameter::Dollar))),
             Word::SingleQuoted(String::from("foo")),
         ));
         assert_eq!(Some(Err(correct)), p.redirect().unwrap());
@@ -3681,7 +3681,7 @@ pub mod test {
             None,
             Concat(vec!(
                 lit("123"),
-                Word::Simple(Param(Parameter::Dollar)),
+                Word::Simple(Box::new(Param(Parameter::Dollar))),
                 subst(ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["2"])))),
                 subst(ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["bar"])))),
             )),
@@ -3938,7 +3938,7 @@ pub mod test {
         let expanded = Some(Simple(Box::new(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(
                 Redirect::Heredoc(None, Concat(vec!(
-                    Word::Simple(Param(Parameter::Dollar)),
+                    Word::Simple(Box::new(Param(Parameter::Dollar))),
                     lit(" "),
                     subst(ParameterSubstitution::Len(Parameter::Bang)),
                     lit(" "),
@@ -4847,7 +4847,7 @@ pub mod test {
         let correct_body = vec!(Simple(Box::new(SimpleCommand {
             vars: vec!(), io: vec!(),
             cmd: Some((Single(lit("echo")), vec!(Single(
-                Word::Simple(Param(Parameter::Var(String::from("var"))))
+                Word::Simple(Box::new(Param(Parameter::Var(String::from("var")))))
             ))))
         })));
 
@@ -4866,7 +4866,7 @@ pub mod test {
         let correct_body = vec!(Simple(Box::new(SimpleCommand {
             vars: vec!(), io: vec!(),
             cmd: Some((Single(lit("echo")), vec!(Single(
-                Word::Simple(Param(Parameter::Var(String::from("var"))))
+                Word::Simple(Box::new(Param(Parameter::Var(String::from("var")))))
             ))))
         })));
 
@@ -6382,7 +6382,9 @@ pub mod test {
 
         for p in params.into_iter() {
             match make_parser(p).word() {
-                Ok(Some(Single(Word::Simple(Param(_))))) => {}
+                Ok(Some(Single(Word::Simple(w)))) => if let Param(_) = *w {} else {
+                    panic!("Unexpectedly parsed \"{}\" as a non-parameter word:\n{:#?}", p, w);
+                },
                 Ok(Some(w)) => panic!("Unexpectedly parsed \"{}\" as a non-parameter word:\n{:#?}", p, w),
                 Ok(None) => panic!("Did not parse \"{}\" as a parameter", p),
                 Err(e) => panic!("Did not parse \"{}\" as a parameter: {}", p, e),
@@ -6448,12 +6450,12 @@ pub mod test {
 
     #[test]
     fn test_word_special_words_recognized_as_such() {
-        assert_eq!(Ok(Some(Single(Word::Simple(Star)))),        make_parser("*").word());
-        assert_eq!(Ok(Some(Single(Word::Simple(Question)))),    make_parser("?").word());
-        assert_eq!(Ok(Some(Single(Word::Simple(Tilde)))),       make_parser("~").word());
-        assert_eq!(Ok(Some(Single(Word::Simple(SquareOpen)))),  make_parser("[").word());
-        assert_eq!(Ok(Some(Single(Word::Simple(SquareClose)))), make_parser("]").word());
-        assert_eq!(Ok(Some(Single(Word::Simple(Colon)))),       make_parser(":").word());
+        assert_eq!(Ok(Some(Single(Word::Simple(Box::new(Star))))),        make_parser("*").word());
+        assert_eq!(Ok(Some(Single(Word::Simple(Box::new(Question))))),    make_parser("?").word());
+        assert_eq!(Ok(Some(Single(Word::Simple(Box::new(Tilde))))),       make_parser("~").word());
+        assert_eq!(Ok(Some(Single(Word::Simple(Box::new(SquareOpen))))),  make_parser("[").word());
+        assert_eq!(Ok(Some(Single(Word::Simple(Box::new(SquareClose))))), make_parser("]").word());
+        assert_eq!(Ok(Some(Single(Word::Simple(Box::new(Colon))))),       make_parser(":").word());
     }
 
     #[test]
@@ -6502,7 +6504,7 @@ pub mod test {
             vars: vec!(), io: vec!(),
             cmd: Some((Single(lit("foo")), vec!(
                 Concat(vec!(
-                    Word::Simple(Param(Parameter::Dollar)),
+                    Word::Simple(Box::new(Param(Parameter::Dollar))),
                     escaped("`"),
                     escaped("o"),
                 ))

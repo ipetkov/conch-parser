@@ -618,7 +618,7 @@ impl Builder for DefaultBuilder {
 
         let mut map_word = |kind| {
             let word = match kind {
-                WordKind::Simple(s)       => Word::Simple(try!(map_simple(s))),
+                WordKind::Simple(s)       => Word::Simple(Box::new(try!(map_simple(s)))),
                 WordKind::SingleQuoted(s) => Word::SingleQuoted(s),
                 WordKind::DoubleQuoted(v) => Word::DoubleQuoted(try!(
                     v.into_iter()
