@@ -41,44 +41,58 @@ pub enum ParameterSubstitution {
     /// `${param:-[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Default(bool, Parameter, Option<Word>),
+    Default(bool, Parameter, Option<ComplexWord>),
     /// Assign a provided value to the parameter if it is null or unset,
     /// e.g. `${param:=[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Assign(bool, Parameter, Option<Word>),
+    Assign(bool, Parameter, Option<ComplexWord>),
     /// If the parameter is null or unset, an error should result with the provided
     /// message, e.g. `${param:?[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Error(bool, Parameter, Option<Word>),
+    Error(bool, Parameter, Option<ComplexWord>),
     /// If the parameter is NOT null or unset, a provided word will be used,
     /// e.g. `${param:+[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Alternative(bool, Parameter, Option<Word>),
+    Alternative(bool, Parameter, Option<ComplexWord>),
     /// Remove smallest suffix pattern from a parameter's value, e.g. `${param%pattern}`
-    RemoveSmallestSuffix(Parameter, Option<Word>),
+    RemoveSmallestSuffix(Parameter, Option<ComplexWord>),
     /// Remove largest suffix pattern from a parameter's value, e.g. `${param%%pattern}`
-    RemoveLargestSuffix(Parameter, Option<Word>),
+    RemoveLargestSuffix(Parameter, Option<ComplexWord>),
     /// Remove smallest prefix pattern from a parameter's value, e.g. `${param#pattern}`
-    RemoveSmallestPrefix(Parameter, Option<Word>),
+    RemoveSmallestPrefix(Parameter, Option<ComplexWord>),
     /// Remove largest prefix pattern from a parameter's value, e.g. `${param##pattern}`
-    RemoveLargestPrefix(Parameter, Option<Word>),
+    RemoveLargestPrefix(Parameter, Option<ComplexWord>),
+}
+
+/// Represents whitespace delimited text.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum ComplexWord {
+    /// Several distinct words concatenated together.
+    Concat(Vec<Word>),
+    /// A regular word.
+    Single(Word),
 }
 
 /// Represents whitespace delimited text.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Word {
+    /// A regular word.
+    Simple(SimpleWord),
+    /// List of words concatenated within double quotes.
+    DoubleQuoted(Vec<SimpleWord>),
+    /// List of words concatenated within single quotes. Virtually
+    /// identical as a literal, but makes a distinction between the two.
+    SingleQuoted(String),
+}
+
+/// Represents whitespace delimited text.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum SimpleWord {
     /// A non-special literal word.
     Literal(String),
-    /// Several distinct words concatenated together.
-    Concat(Vec<Word>),
-    /// List of words concatenated within single quotes. Virtually
-    /// identical to `Literal`, but makes the distinction if needed.
-    SingleQuoted(String),
-    /// List of words concatenated within double quotes.
-    DoubleQuoted(Vec<Word>),
     /// Access of a value inside a parameter, e.g. `$foo` or `$$`.
     Param(Parameter),
     /// A parameter substitution, e.g. `${param-word}`.
@@ -104,21 +118,21 @@ pub enum Word {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Redirect {
     /// Open a file for reading, e.g. `[n]< file`.
-    Read(Option<u16>, Word),
+    Read(Option<u16>, ComplexWord),
     /// Open a file for writing after truncating, e.g. `[n]> file`.
-    Write(Option<u16>, Word),
+    Write(Option<u16>, ComplexWord),
     /// Open a file for reading and writing, e.g. `[n]<> file`.
-    ReadWrite(Option<u16>, Word),
+    ReadWrite(Option<u16>, ComplexWord),
     /// Open a file for writing, appending to the end, e.g. `[n]>> file`.
-    Append(Option<u16>, Word),
+    Append(Option<u16>, ComplexWord),
     /// Open a file for writing, failing if the `noclobber` shell option is set, e.g. `[n]>| file`.
-    Clobber(Option<u16>, Word),
+    Clobber(Option<u16>, ComplexWord),
     /// Lines contained in the source that should be provided by as input to a file descriptor.
-    Heredoc(Option<u16>, Word),
+    Heredoc(Option<u16>, ComplexWord),
     /// Duplicate a file descriptor for reading, e.g. `[n]<& [n|-]`.
-    DupRead(Option<u16>, Word),
+    DupRead(Option<u16>, ComplexWord),
     /// Duplicate a file descriptor for writing, e.g. `[n]>& [n|-]`.
-    DupWrite(Option<u16>, Word),
+    DupWrite(Option<u16>, ComplexWord),
 }
 
 /// Represents any valid shell command.
@@ -174,13 +188,13 @@ pub enum CompoundCommand {
     /// its body once for each binding.
     ///
     /// Variant structure: `For(var_name, words, body)`.
-    For(String, Option<Vec<Word>>, Vec<Command>),
+    For(String, Option<Vec<ComplexWord>>, Vec<Command>),
     /// A command that behaves much like a `match` statment in Rust, running
     /// a branch of commands if a specified word matches another literal or
     /// glob pattern.
     ///
     /// Variant structure: `Case( to_match, (pattern_alternative+, commands*)* )`
-    Case(Word, Vec<(Vec<Word>, Vec<Command>)>),
+    Case(ComplexWord, Vec<(Vec<ComplexWord>, Vec<Command>)>),
 }
 
 /// The simplest possible command: an executable with arguments,
@@ -190,10 +204,10 @@ pub struct SimpleCommand {
     /// Name or path of the executable along with any arguments. It's possible to
     /// have to have a command that is only an assigment which would set a value
     /// in the global environment, making the executable optional.
-    pub cmd: Option<(Word, Vec<Word>)>,
+    pub cmd: Option<(ComplexWord, Vec<ComplexWord>)>,
     /// Environment variable assignments for this command, bound as
     /// tuples of (var name, value).
-    pub vars: Vec<(String, Option<Word>)>,
+    pub vars: Vec<(String, Option<ComplexWord>)>,
     /// All redirections that should be applied before running the command.
     pub io: Vec<Redirect>,
 }
@@ -298,7 +312,7 @@ mod tests {
     #[test]
     fn test_display_parameter() {
         use super::Parameter::*;
-        use super::Word;
+        use super::{ComplexWord, SimpleWord, Word};
         use syntax::parse::test::make_parser;
 
         let params = vec!(
@@ -317,7 +331,7 @@ mod tests {
 
         for p in params {
             let src = p.to_string();
-            let correct = Word::Param(p);
+            let correct = ComplexWord::Single(Word::Simple(SimpleWord::Param(p)));
 
             let parsed = match make_parser(&src).word() {
                 Ok(Some(w)) => w,

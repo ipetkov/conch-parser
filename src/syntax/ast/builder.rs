@@ -12,8 +12,8 @@
 use std::cmp::{PartialEq, Eq};
 use std::error::Error;
 use std::rc::Rc;
-use syntax::ast::{self, Arith, Command, CompoundCommand, Parameter};
-use syntax::ast::{ParameterSubstitution, SimpleCommand, Redirect, Word};
+use syntax::ast::{Arith, Command, CompoundCommand, ComplexWord, Parameter,
+                  ParameterSubstitution, SimpleCommand, SimpleWord, Redirect, Word};
 
 /// An indicator to the builder of how complete commands are separated.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -51,22 +51,36 @@ pub enum LoopKind {
     Until,
 }
 
+/// An indicator to the builder what kind of complex word was parsed.
+#[derive(Debug)]
+pub enum ComplexWordKind<C> {
+    /// Several distinct words concatenated together.
+    Concat(Vec<WordKind<C>>),
+    /// A regular word.
+    Single(WordKind<C>),
+}
+
 /// An indicator to the builder what kind of word was parsed.
 #[derive(Debug)]
 pub enum WordKind<C> {
+    /// A regular word.
+    Simple(SimpleWordKind<C>),
+    /// List of words concatenated within double quotes.
+    DoubleQuoted(Vec<SimpleWordKind<C>>),
+    /// List of words concatenated within single quotes. Virtually
+    /// identical as a literal, but makes a distinction between the two.
+    SingleQuoted(String),
+}
+
+/// An indicator to the builder what kind of simple word was parsed.
+#[derive(Debug)]
+pub enum SimpleWordKind<C> {
     /// A non-special literal word.
     Literal(String),
-    /// Several distinct words concatenated together.
-    Concat(Vec<WordKind<C>>),
-    /// List of words concatenated within single quotes. Virtually
-    /// identical to `Literal`, but makes the distinction if needed.
-    SingleQuoted(String),
-    /// List of words concatenated within double quotes.
-    DoubleQuoted(Vec<WordKind<C>>),
     /// Access of a value inside a parameter, e.g. `$foo` or `$$`.
     Param(Parameter),
     /// A parameter substitution, e.g. `${param-word}`.
-    Subst(ParameterSubstitutionKind<C, WordKind<C>>),
+    Subst(ParameterSubstitutionKind<C, ComplexWordKind<C>>),
     /// Represents the standard output of some command, e.g. \`echo foo\`.
     CommandSubst(Vec<C>),
     /// A token which normally has a special meaning is treated as a literal
@@ -350,7 +364,7 @@ pub trait Builder {
     /// # Arguments
     /// * kind: the type of word that was parsed
     fn word(&mut self,
-            kind: WordKind<Self::Command>)
+            kind: ComplexWordKind<Self::Command>)
         -> Result<Self::Word, Self::Err>;
 
     /// Invoked when a redirect is parsed.
@@ -364,7 +378,7 @@ pub trait Builder {
 
 impl Builder for DefaultBuilder {
     type Command  = Command;
-    type Word     = Word;
+    type Word     = ComplexWord;
     type Redirect = Redirect;
     type Err      = ::void::Void;
 
@@ -422,8 +436,8 @@ impl Builder for DefaultBuilder {
 
     /// Constructs a `Command::Simple` node with the provided inputs.
     fn simple_command(&mut self,
-                      mut env_vars: Vec<(String, Option<Word>)>,
-                      mut cmd: Option<(Word, Vec<Word>)>,
+                      mut env_vars: Vec<(String, Option<Self::Word>)>,
+                      mut cmd: Option<(Self::Word, Vec<Self::Word>)>,
                       mut redirects: Vec<Redirect>)
         -> Result<Command, Self::Err>
     {
@@ -505,7 +519,7 @@ impl Builder for DefaultBuilder {
     fn for_command(&mut self,
                    var: String,
                    _post_var_comments: Vec<Newline>,
-                   mut in_words: Option<Vec<Word>>,
+                   mut in_words: Option<Vec<Self::Word>>,
                    _post_word_comments: Option<Vec<Newline>>,
                    mut body: Vec<Command>,
                    mut redirects: Vec<Redirect>)
@@ -519,9 +533,9 @@ impl Builder for DefaultBuilder {
 
     /// Constructs a `Command::Compound(Case)` node with the provided inputs.
     fn case_command(&mut self,
-                    word: Word,
+                    word: Self::Word,
                     _post_word_comments: Vec<Newline>,
-                    branches: Vec<( (Vec<Newline>, Vec<Word>, Vec<Newline>), Vec<Command>)>,
+                    branches: Vec<( (Vec<Newline>, Vec<Self::Word>, Vec<Newline>), Vec<Command>)>,
                     _post_branch_comments: Vec<Newline>,
                     mut redirects: Vec<Redirect>)
         -> Result<Command, Self::Err>
@@ -555,8 +569,8 @@ impl Builder for DefaultBuilder {
 
     /// Constructs a `ast::Word` from the provided input.
     fn word(&mut self,
-            kind: WordKind<Command>)
-        -> Result<Word, Self::Err>
+            kind: ComplexWordKind<Command>)
+        -> Result<ComplexWord, Self::Err>
     {
         use self::ParameterSubstitutionKind::*;
 
@@ -569,119 +583,59 @@ impl Builder for DefaultBuilder {
             }
         }
 
-        struct Coalesce<I: Iterator, F> {
-            iter: I,
-            cur: Option<I::Item>,
-            func: F,
-        }
+        let mut map_simple = |kind| {
+            let simple = match kind {
+                SimpleWordKind::Literal(s)      => SimpleWord::Literal(s),
+                SimpleWordKind::Escaped(s)      => SimpleWord::Escaped(s),
+                SimpleWordKind::Param(p)        => SimpleWord::Param(p),
+                SimpleWordKind::Star            => SimpleWord::Star,
+                SimpleWordKind::Question        => SimpleWord::Question,
+                SimpleWordKind::SquareOpen      => SimpleWord::SquareOpen,
+                SimpleWordKind::SquareClose     => SimpleWord::SquareClose,
+                SimpleWordKind::Tilde           => SimpleWord::Tilde,
+                SimpleWordKind::Colon           => SimpleWord::Colon,
 
-        impl<I: Iterator, F> Coalesce<I, F> {
-            fn new(iter: I, func: F) -> Self {
-                Coalesce {
-                    iter: iter,
-                    cur: None,
-                    func: func,
-                }
-            }
-        }
+                SimpleWordKind::CommandSubst(c) => SimpleWord::Subst(
+                    Box::new(ParameterSubstitution::Command(c))
+                ),
 
-        impl<I, F> Iterator for Coalesce<I, F>
-            where I: Iterator,
-                  F: FnMut(I::Item, I::Item) -> Result<I::Item, (I::Item, I::Item)> {
-            type Item = I::Item;
+                SimpleWordKind::Subst(s) => SimpleWord::Subst(Box::new(match s {
+                    Len(p)                     => ParameterSubstitution::Len(p),
+                    Command(c)                 => ParameterSubstitution::Command(c),
+                    Arithmetic(a)              => ParameterSubstitution::Arithmetic(a),
+                    Default(c, p, w)           => ParameterSubstitution::Default(c, p, map!(w)),
+                    Assign(c, p, w)            => ParameterSubstitution::Assign(c, p, map!(w)),
+                    Error(c, p, w)             => ParameterSubstitution::Error(c, p, map!(w)),
+                    Alternative(c, p, w)       => ParameterSubstitution::Alternative(c, p, map!(w)),
+                    RemoveSmallestSuffix(p, w) => ParameterSubstitution::RemoveSmallestSuffix(p, map!(w)),
+                    RemoveLargestSuffix(p, w)  => ParameterSubstitution::RemoveLargestSuffix(p, map!(w)),
+                    RemoveSmallestPrefix(p, w) => ParameterSubstitution::RemoveSmallestPrefix(p, map!(w)),
+                    RemoveLargestPrefix(p, w)  => ParameterSubstitution::RemoveLargestPrefix(p, map!(w)),
+                })),
+            };
+            Ok(simple)
+        };
 
-            fn next(&mut self) -> Option<Self::Item> {
-                let cur = self.cur.take().or_else(|| self.iter.next());
-                let (mut left, mut right) = match (cur, self.iter.next()) {
-                    (Some(l), Some(r)) => (l, r),
-                    (Some(l), None) |
-                    (None, Some(l)) => return Some(l),
-                    (None, None) => return None,
-                };
+        let mut map_word = |kind| {
+            let word = match kind {
+                WordKind::Simple(s)       => Word::Simple(try!(map_simple(s))),
+                WordKind::SingleQuoted(s) => Word::SingleQuoted(s),
+                WordKind::DoubleQuoted(v) => Word::DoubleQuoted(try!(
+                    v.into_iter()
+                     .map(&mut map_simple)
+                     .collect::<Result<Vec<SimpleWord>, Self::Err>>()
+                )),
+            };
+            Ok(word)
+        };
 
-                loop {
-                    match (self.func)(left, right) {
-                        Ok(combined) => match self.iter.next() {
-                            Some(next) => {
-                                left = combined;
-                                right = next;
-                            },
-                            None => return Some(combined),
-                        },
-
-                        Err((left, right)) => {
-                            debug_assert!(self.cur.is_none());
-                            self.cur = Some(right);
-                            return Some(left);
-                        },
-                    }
-                }
-            }
-        }
-
-        macro_rules! compress {
-            ($vec:expr) => {
-                Coalesce::new($vec.into_iter().flat_map(|w| match w {
-                    WordKind::Concat(v) => v.into_iter(),
-                    w => vec!(w).into_iter(),
-                }), coalesce_fn)
-            }
-        }
-
-        fn coalesce_fn(a: WordKind<ast::Command>, b: WordKind<ast::Command>)
-            -> Result<WordKind<ast::Command>, (WordKind<ast::Command>, WordKind<ast::Command>)>
-        {
-            match (a, b) {
-                (WordKind::Literal(mut a), WordKind::Literal(b)) => {
-                    a.push_str(&b);
-                    Ok(WordKind::Literal(a))
-                },
-
-                (WordKind::DoubleQuoted(v), b) =>
-                    Err((WordKind::DoubleQuoted(compress!(v).collect()), b)),
-                (a, b) => Err((a, b)),
-            }
-        }
-
-        let word = match kind {
-            WordKind::Literal(s)      => Word::Literal(s),
-            WordKind::SingleQuoted(s) => Word::SingleQuoted(s),
-            WordKind::Param(p)        => Word::Param(p),
-            WordKind::Escaped(s)      => Word::Escaped(s),
-            WordKind::Star            => Word::Star,
-            WordKind::Question        => Word::Question,
-            WordKind::SquareOpen      => Word::SquareOpen,
-            WordKind::SquareClose     => Word::SquareClose,
-            WordKind::Tilde           => Word::Tilde,
-            WordKind::Colon           => Word::Colon,
-
-            WordKind::CommandSubst(c) => Word::Subst(Box::new(ParameterSubstitution::Command(c))),
-
-            WordKind::Subst(s) => Word::Subst(Box::new(match s {
-                Len(p)                     => ParameterSubstitution::Len(p),
-                Command(c)                 => ParameterSubstitution::Command(c),
-                Arithmetic(a)              => ParameterSubstitution::Arithmetic(a),
-                Default(c, p, w)           => ParameterSubstitution::Default(c, p, map!(w)),
-                Assign(c, p, w)            => ParameterSubstitution::Assign(c, p, map!(w)),
-                Error(c, p, w)             => ParameterSubstitution::Error(c, p, map!(w)),
-                Alternative(c, p, w)       => ParameterSubstitution::Alternative(c, p, map!(w)),
-                RemoveSmallestSuffix(p, w) => ParameterSubstitution::RemoveSmallestSuffix(p, map!(w)),
-                RemoveLargestSuffix(p, w)  => ParameterSubstitution::RemoveLargestSuffix(p, map!(w)),
-                RemoveSmallestPrefix(p, w) => ParameterSubstitution::RemoveSmallestPrefix(p, map!(w)),
-                RemoveLargestPrefix(p, w)  => ParameterSubstitution::RemoveLargestPrefix(p, map!(w)),
-            })),
-
-            WordKind::DoubleQuoted(words) => Word::DoubleQuoted(
-                try!(compress!(words).map(|w| self.word(w)).collect())),
-
-            WordKind::Concat(words) => {
-                let mut v: Vec<Word> = try!(compress!(words).map(|w| self.word(w)).collect());
-                if v.len() == 1 {
-                    v.pop().unwrap()
-                } else {
-                    Word::Concat(v)
-                }
-            },
+        let word = match compress(kind) {
+            ComplexWordKind::Single(s)     => ComplexWord::Single(try!(map_word(s))),
+            ComplexWordKind::Concat(words) => ComplexWord::Concat(try!(
+                    words.into_iter()
+                         .map(map_word)
+                         .collect::<Result<Vec<Word>, Self::Err>>()
+            )),
         };
 
         Ok(word)
@@ -689,7 +643,7 @@ impl Builder for DefaultBuilder {
 
     /// Constructs a `ast::Redirect` from the provided input.
     fn redirect(&mut self,
-                kind: RedirectKind<Word>)
+                kind: RedirectKind<Self::Word>)
         -> Result<Redirect, Self::Err>
     {
         let io = match kind {
@@ -824,7 +778,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
     }
 
     fn word(&mut self,
-            kind: WordKind<Self::Command>)
+            kind: ComplexWordKind<Self::Command>)
         -> Result<Self::Word, Self::Err>
     {
         (**self).word(kind)
@@ -881,25 +835,37 @@ impl<W> Clone for RedirectKind<W> where W: Clone {
     }
 }
 
+impl<C> Eq for ComplexWordKind<C> where C: Eq {}
+impl<C> PartialEq<ComplexWordKind<C>> for ComplexWordKind<C> where C: PartialEq {
+    fn eq(&self, other: &Self) -> bool {
+        use self::ComplexWordKind::*;
+        match (self, other) {
+            (&Concat(ref a), &Concat(ref b)) if a == b => true,
+            (&Single(ref a), &Single(ref b)) if a == b => true,
+            _ => false,
+        }
+    }
+}
+
+impl<C> Clone for ComplexWordKind<C> where C: Clone {
+    fn clone(&self) -> Self {
+        use self::ComplexWordKind::*;
+
+        match *self {
+            Concat(ref v) => Concat(v.clone()),
+            Single(ref s) => Single(s.clone()),
+        }
+    }
+}
+
 impl<C> Eq for WordKind<C> where C: Eq {}
 impl<C> PartialEq<WordKind<C>> for WordKind<C> where C: PartialEq {
     fn eq(&self, other: &Self) -> bool {
         use self::WordKind::*;
         match (self, other) {
-            (&Literal(ref s1),      &Literal(ref s2))      if s1 == s2 => true,
-            (&Concat(ref v1),       &Concat(ref v2))       if v1 == v2 => true,
-            (&SingleQuoted(ref s1), &SingleQuoted(ref s2)) if s1 == s2 => true,
-            (&DoubleQuoted(ref v1), &DoubleQuoted(ref v2)) if v1 == v2 => true,
-            (&Escaped(ref s1),      &Escaped(ref s2))      if s1 == s2 => true,
-            (&Param(ref p1),        &Param(ref p2))        if p1 == p2 => true,
-            (&Subst(ref p1),        &Subst(ref p2))        if p1 == p2 => true,
-            (&CommandSubst(ref c1), &CommandSubst(ref c2)) if c1 == c2 => true,
-            (&Star,                 &Star)                             => true,
-            (&Question,             &Question)                         => true,
-            (&SquareOpen,           &SquareOpen)                       => true,
-            (&SquareClose,          &SquareClose)                      => true,
-            (&Tilde,                &Tilde)                            => true,
-            (&Colon,                &Colon)                            => true,
+            (&Simple(ref a),       &Simple(ref b))       if a == b => true,
+            (&DoubleQuoted(ref a), &DoubleQuoted(ref b)) if a == b => true,
+            (&SingleQuoted(ref a), &SingleQuoted(ref b)) if a == b => true,
             _ => false,
         }
     }
@@ -910,14 +876,44 @@ impl<C> Clone for WordKind<C> where C: Clone {
         use self::WordKind::*;
 
         match *self {
-            Literal(ref s)      => Literal(s.clone()),
-            Concat(ref v)       => Concat(v.clone()),
-            SingleQuoted(ref s) => SingleQuoted(s.clone()),
+            Simple(ref s)       => Simple(s.clone()),
             DoubleQuoted(ref v) => DoubleQuoted(v.clone()),
-            Escaped(ref s)      => Escaped(s.clone()),
+            SingleQuoted(ref s) => SingleQuoted(s.clone()),
+        }
+    }
+}
+
+impl<C> Eq for SimpleWordKind<C> where C: Eq {}
+impl<C> PartialEq<SimpleWordKind<C>> for SimpleWordKind<C> where C: PartialEq {
+    fn eq(&self, other: &Self) -> bool {
+        use self::SimpleWordKind::*;
+        match (self, other) {
+            (&Literal(ref a),      &Literal(ref b))      if a == b => true,
+            (&Param(ref a),        &Param(ref b))        if a == b => true,
+            (&Subst(ref a),        &Subst(ref b))        if a == b => true,
+            (&CommandSubst(ref a), &CommandSubst(ref b)) if a == b => true,
+            (&Escaped(ref a),      &Escaped(ref b))      if a == b => true,
+            (&Star,                &Star)                          => true,
+            (&Question,            &Question)                      => true,
+            (&SquareOpen,          &SquareOpen)                    => true,
+            (&SquareClose,         &SquareClose)                   => true,
+            (&Tilde,               &Tilde)                         => true,
+            (&Colon,               &Colon)                         => true,
+            _ => false,
+        }
+    }
+}
+
+impl<C> Clone for SimpleWordKind<C> where C: Clone {
+    fn clone(&self) -> Self {
+        use self::SimpleWordKind::*;
+
+        match *self {
+            Literal(ref s)      => Literal(s.clone()),
             Param(ref p)        => Param(p.clone()),
             Subst(ref p)        => Subst(p.clone()),
             CommandSubst(ref c) => CommandSubst(c.clone()),
+            Escaped(ref s)      => Escaped(s.clone()),
             Star                => Star,
             Question            => Question,
             SquareOpen          => SquareOpen,
@@ -973,6 +969,108 @@ impl<C, W> Clone for ParameterSubstitutionKind<C, W> where C: Clone, W: Clone {
             RemoveLargestSuffix(ref p, ref w)  => RemoveLargestSuffix(p.clone(), w.clone()),
             RemoveSmallestPrefix(ref p, ref w) => RemoveSmallestPrefix(p.clone(), w.clone()),
             RemoveLargestPrefix(ref p, ref w)  => RemoveLargestPrefix(p.clone(), w.clone()),
+        }
+    }
+}
+
+struct Coalesce<I: Iterator, F> {
+    iter: I,
+    cur: Option<I::Item>,
+    func: F,
+}
+
+impl<I: Iterator, F> Coalesce<I, F> {
+    fn new(iter: I, func: F) -> Self {
+        Coalesce {
+            iter: iter,
+            cur: None,
+            func: func,
+        }
+    }
+}
+
+type CoalesceResult<T> = Result<T, (T, T)>;
+impl<I, F> Iterator for Coalesce<I, F>
+    where I: Iterator,
+          F: FnMut(I::Item, I::Item) -> CoalesceResult<I::Item>
+{
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let cur = self.cur.take().or_else(|| self.iter.next());
+        let (mut left, mut right) = match (cur, self.iter.next()) {
+            (Some(l), Some(r)) => (l, r),
+            (Some(l), None) |
+            (None, Some(l)) => return Some(l),
+            (None, None) => return None,
+        };
+
+        loop {
+            match (self.func)(left, right) {
+                Ok(combined) => match self.iter.next() {
+                    Some(next) => {
+                        left = combined;
+                        right = next;
+                    },
+                    None => return Some(combined),
+                },
+
+                Err((left, right)) => {
+                    debug_assert!(self.cur.is_none());
+                    self.cur = Some(right);
+                    return Some(left);
+                },
+            }
+        }
+    }
+}
+
+fn compress<C>(word: ComplexWordKind<C>) -> ComplexWordKind<C> {
+    use self::ComplexWordKind::*;
+    use self::SimpleWordKind::*;
+    use self::WordKind::*;
+
+    fn coalesce_simple<C>(a: SimpleWordKind<C>, b: SimpleWordKind<C>)
+        -> CoalesceResult<SimpleWordKind<C>>
+    {
+        match (a, b) {
+            (Literal(mut a), Literal(b)) => {
+                a.push_str(&b);
+                Ok(Literal(a))
+            },
+            (a, b) => Err((a, b)),
+        }
+    }
+
+    fn coalesce_word<C>(a: WordKind<C>, b: WordKind<C>) -> CoalesceResult<WordKind<C>> {
+        match (a, b) {
+            (Simple(a), Simple(b)) => coalesce_simple(a, b).map(Simple)
+                                                           .map_err(|(a, b)| (Simple(a), Simple(b))),
+            (SingleQuoted(mut a), SingleQuoted(b)) => {
+                a.push_str(&b);
+                Ok(SingleQuoted(a))
+            },
+            (DoubleQuoted(a), DoubleQuoted(b)) => {
+                let quoted = Coalesce::new(a.into_iter().chain(b), coalesce_simple).collect();
+                Ok(DoubleQuoted(quoted))
+            },
+            (a, b) => Err((a, b)),
+        }
+    }
+
+    match word {
+        Single(s) => Single(match s {
+            s@Simple(_) |
+            s@SingleQuoted(_) => s,
+            DoubleQuoted(v) => DoubleQuoted(Coalesce::new(v.into_iter(), coalesce_simple).collect()),
+        }),
+        Concat(v) => {
+            let mut body: Vec<_> = Coalesce::new(v.into_iter(), coalesce_word).collect();
+            if body.len() == 1 {
+                Single(body.pop().unwrap())
+            } else {
+                Concat(body)
+            }
         }
     }
 }
