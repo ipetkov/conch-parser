@@ -19,7 +19,8 @@ use std::rc::Rc;
 use std::result;
 use std::vec;
 
-use syntax::ast::{Arith, Command, CompoundCommand, SimpleCommand, Parameter, ParameterSubstitution, Redirect, Word};
+use syntax::ast::{Arith, Command, ComplexWord, CompoundCommand, SimpleCommand,
+                  SimpleWord, Parameter, ParameterSubstitution, Redirect, Word};
 use runtime::io::dup_stdio;
 use runtime::io::{FileDesc, Permissions};
 use void::Void;
@@ -130,7 +131,7 @@ impl From<process::ExitStatus> for ExitStatus {
     }
 }
 
-/// Represents the types of fields that may result from evaluating a `Word`.
+/// Represents the types of fields that may result from evaluating a word.
 /// It is important to maintain such distinctions because evaluating parameters
 /// such as `$@` and `$*` have different behaviors in different contexts.
 #[derive(PartialEq, Eq, Clone, Debug)]
@@ -610,11 +611,12 @@ impl ParameterSubstitution {
             require_literal_leading_dot: false,
         };
 
-        fn remove_pattern<F>(param: &Parameter,
-                             pat: &Option<Word>,
+        fn remove_pattern<W, F>(param: &Parameter,
+                             pat: &Option<W>,
                              env: &mut Environment,
                              remove: F) -> Result<Option<Fields>>
-            where F: Fn(Rc<String>, &glob::Pattern) -> Rc<String>
+            where W: WordEval,
+                  F: Fn(Rc<String>, &glob::Pattern) -> Rc<String>
         {
             let map = |v: Vec<Rc<String>>, p| v.into_iter().map(|f| remove(f, &p)).collect();
             let param = param.eval(env);
@@ -622,7 +624,7 @@ impl ParameterSubstitution {
             match *pat {
                 None => Ok(param),
                 Some(ref pat) => {
-                    let pat = try!(pat.as_pattern(env));
+                    let pat = try!(pat.eval_as_pattern(env));
                     Ok(param.map(|p| match p {
                         Fields::Zero      => Fields::Zero,
                         Fields::Single(s) => Fields::Single(remove(s, &pat)),
@@ -921,25 +923,36 @@ impl Arith {
     }
 }
 
-impl Word {
+pub trait WordEval {
     /// Evaluates a word in a given environment and performs all expansions.
     ///
     /// Tilde, parameter, command substitution, and arithmetic expansions are
     /// performed first. All resulting fields are then further split based on
     /// the contents of the `IFS` variable (no splitting is performed if `IFS`
-    /// is set to be the empty or null string). Finally, quotes and escaping
+    /// is set to be the empty or null string). Next, pathname expansion
+    /// is performed on each field which may yield a of file paths if
+    /// the field contains a valid pattern. Finally, quotes and escaping
     /// backslashes are removed from the original word (unless they themselves
     /// have been quoted).
-    pub fn eval(&self, env: &mut Environment) -> Result<Fields> {
-        self.eval_with_config(env, true, true)
-    }
+    fn eval(&self, env: &mut Environment) -> Result<Fields>;
 
     /// Evaluates a word in a given environment without doing field and pathname expansions.
     ///
     /// Tilde, parameter, command substitution, arithmetic expansions, and quote removals
     /// will be performed, however. In addition, if multiple fields arise as a result
     /// of evaluating `$@` or `$*`, the fields will be joined with a single space.
-    pub fn eval_as_assignment(&self, env: &mut Environment) -> Result<Rc<String>> {
+    fn eval_as_assignment(&self, env: &mut Environment) -> Result<Rc<String>>;
+
+    /// Evaluates a word just like `eval`, but converts the result into a `glob::Pattern`.
+    fn eval_as_pattern(&self, env: &mut Environment) -> Result<glob::Pattern>;
+}
+
+impl<T: WordEvalInternal> WordEval for T {
+    fn eval(&self, env: &mut Environment) -> Result<Fields> {
+        self.eval_with_config(env, true, true)
+    }
+
+    fn eval_as_assignment(&self, env: &mut Environment) -> Result<Rc<String>> {
         match try!(self.eval_with_config(env, true, false)) {
             f@Fields::Zero      |
             f@Fields::Single(_) |
@@ -949,58 +962,150 @@ impl Word {
         }
     }
 
+    fn eval_as_pattern(&self, env: &mut Environment) -> Result<glob::Pattern> {
+        Ok(glob::Pattern::new(&glob::Pattern::escape(&try!(self.eval(env)).join())).unwrap())
+    }
+}
+
+trait WordEvalInternal {
+    fn eval_with_config(&self,
+                        env: &mut Environment,
+                        expand_tilde: bool,
+                        split_fields_further: bool) -> Result<Fields>;
+}
+
+impl WordEvalInternal for SimpleWord {
     fn eval_with_config(&self,
                         env: &mut Environment,
                         expand_tilde: bool,
                         split_fields_further: bool) -> Result<Fields>
     {
-        use syntax::ast::Word::*;
-
-
         let maybe_split_fields = |fields, env: &mut Environment| {
-            if !split_fields_further {
-                return fields;
-            }
-
-            match fields {
-                Fields::Zero     => Fields::Zero,
-                Fields::At(fs)   => Fields::At(split_fields(fs, env)),
-                Fields::Star(fs) => Fields::Star(split_fields(fs, env)),
-                Fields::Many(fs) => Fields::Many(split_fields(fs, env)),
-
-                Fields::Single(f) => {
-                    let mut fields = split_fields(vec!(f), env);
-                    if fields.len() == 1 {
-                        Fields::Single(fields.pop().unwrap())
-                    } else {
-                        Fields::Many(fields)
-                    }
-                },
+            if split_fields_further {
+                split_fields(fields, env)
+            } else {
+                fields
             }
         };
 
-        let fields = match *self {
-            Literal(ref s)      |
-            SingleQuoted(ref s) |
-            Escaped(ref s)      => Fields::Single(Rc::new(s.clone())),
+        let ret = match *self {
+            SimpleWord::Literal(ref s) |
+            SimpleWord::Escaped(ref s) => Fields::Single(Rc::new(s.clone())),
 
-            Star        => Fields::Single(Rc::new(String::from("*"))),
-            Question    => Fields::Single(Rc::new(String::from("?"))),
-            SquareOpen  => Fields::Single(Rc::new(String::from("]"))),
-            SquareClose => Fields::Single(Rc::new(String::from("["))),
+            SimpleWord::Star        => Fields::Single(Rc::new(String::from("*"))),
+            SimpleWord::Question    => Fields::Single(Rc::new(String::from("?"))),
+            SimpleWord::SquareOpen  => Fields::Single(Rc::new(String::from("["))),
+            SimpleWord::SquareClose => Fields::Single(Rc::new(String::from("]"))),
+            SimpleWord::Colon       => Fields::Single(Rc::new(String::from(":"))),
 
-            Tilde => if expand_tilde {
+            SimpleWord::Tilde => if expand_tilde {
                 env.var("HOME").map_or(Fields::Zero, |f| Fields::Single(f.clone()))
             } else {
                 Fields::Single(Rc::new(String::from("~")))
             },
 
-            Colon => Fields::Single(Rc::new(String::from(":"))),
+            SimpleWord::Subst(ref s) => maybe_split_fields(try!(s.eval(env)), env),
+            SimpleWord::Param(ref p) => maybe_split_fields(p.eval(env).unwrap_or(Fields::Zero), env),
+        };
 
-            Subst(ref s) => maybe_split_fields(try!(s.eval(env)), env),
-            Param(ref p) => maybe_split_fields(p.eval(env).unwrap_or(Fields::Zero), env),
+        Ok(ret)
+    }
+}
 
-            Concat(ref v) => {
+impl WordEvalInternal for Word {
+    fn eval_with_config(&self,
+                        env: &mut Environment,
+                        expand_tilde: bool,
+                        split_fields_further: bool) -> Result<Fields>
+    {
+        let ret = match *self {
+            Word::Simple(ref s) => try!(s.eval_with_config(env, expand_tilde, split_fields_further)),
+            Word::SingleQuoted(ref s) => Fields::Single(Rc::new(s.clone())),
+            Word::DoubleQuoted(ref v) => {
+                let mut fields = Vec::new();
+                let mut cur_field: Option<String> = None;
+
+                macro_rules! append_to_cur_field {
+                    ($rc:expr) => {
+                        match cur_field {
+                            Some(ref mut cur_field) => cur_field.push_str(&$rc),
+                            None => cur_field = Some(Rc::try_unwrap($rc).unwrap_or_else(|rc| (&*rc).clone())),
+                        }
+                    }
+                };
+
+                for w in v.iter() {
+                    // Make sure we are NOT doing any tilde expanions for further field splitting
+                    match (try!(w.eval_with_config(env, false, false)), w) {
+                        (Fields::Zero, _) => continue,
+                        (Fields::Single(s), _) => append_to_cur_field!(s),
+                        (f@Fields::Star(_), _) => append_to_cur_field!(f.join_with_ifs(env)),
+
+                        // Any fields generated by $@ must be maintained, however, the first and last
+                        // fields of $@ should be concatenated to whatever comes before/after them.
+                        (Fields::At(v), _) => {
+                            // According to the POSIX spec, if $@ is empty it should generate NO fields
+                            // even when within double quotes.
+                            if !v.is_empty() {
+                                let mut iter = v.into_iter();
+                                if let Some(first) = iter.next() {
+                                    append_to_cur_field!(first);
+                                }
+
+                                cur_field.take().map(|s| fields.push(Rc::new(s)));
+
+                                let mut last = None;
+                                for next in iter {
+                                    fields.extend(last.take());
+                                    last = Some(next);
+                                }
+
+                                last.map(|rc| append_to_cur_field!(rc));
+                            }
+                        },
+
+                        // Since we should have indicated we do NOT want field splitting,
+                        // the following word variants should all yield `Single` fields (or at least
+                        // a specific `Star` or `At` field type for parameter{s, substitutions}).
+                        (Fields::Many(_), &SimpleWord::Literal(_))  |
+                        (Fields::Many(_), &SimpleWord::Escaped(_))  |
+                        (Fields::Many(_), &SimpleWord::Star)        |
+                        (Fields::Many(_), &SimpleWord::Question)    |
+                        (Fields::Many(_), &SimpleWord::SquareOpen)  |
+                        (Fields::Many(_), &SimpleWord::SquareClose) |
+                        (Fields::Many(_), &SimpleWord::Tilde)       |
+                        (Fields::Many(_), &SimpleWord::Colon)       |
+                        (Fields::Many(_), &SimpleWord::Subst(_))    |
+                        (Fields::Many(_), &SimpleWord::Param(_))    => unreachable!(),
+                    }
+                }
+
+                cur_field.map(|s| fields.push(Rc::new(s)));
+
+                if fields.is_empty() {
+                    Fields::Zero
+                } else if fields.len() == 1 {
+                    Fields::Single(fields.pop().unwrap())
+                } else {
+                    Fields::Many(fields)
+                }
+            }
+        };
+
+        Ok(ret)
+    }
+}
+
+impl WordEvalInternal for ComplexWord {
+    fn eval_with_config(&self,
+                        env: &mut Environment,
+                        expand_tilde: bool,
+                        split_fields_further: bool) -> Result<Fields>
+    {
+        let ret = match *self {
+            ComplexWord::Single(ref w) => try!(w.eval_with_config(env, expand_tilde, split_fields_further)),
+
+            ComplexWord::Concat(ref v) => {
                 let mut fields: Vec<Rc<String>> = Vec::new();
                 for w in v.iter() {
                     let mut iter = try!(w.eval_with_config(env, false, split_fields_further)).into_iter();
@@ -1027,102 +1132,35 @@ impl Word {
                     Fields::Many(fields)
                 }
             },
-
-            DoubleQuoted(ref v) => {
-                let mut fields = Vec::new();
-                let mut cur_field: Option<String> = None;
-
-                macro_rules! append_to_cur_field {
-                    ($rc:expr) => {
-                        match cur_field {
-                            Some(ref mut cur_field) => cur_field.push_str(&$rc),
-                            None => cur_field = Some(Rc::try_unwrap($rc).unwrap_or_else(|rc| (&*rc).clone())),
-                        }
-                    }
-                };
-
-                for w in v.iter() {
-                    // Make sure we are NOT doing any tilde expanions for further field splitting
-                    match (try!(w.eval_with_config(env, false, false)), w) {
-                        (Fields::Zero, _) => continue,
-
-                        (Fields::Single(s), _) => append_to_cur_field!(s),
-
-                        // Any fields generated by $@ must be maintained, however, the first and last
-                        // fields of $@ should be concatenated to whatever comes before/after them.
-                        //
-                        // Although nested `DoubleQuoted` words aren't quite "well-formed", evaluating
-                        // inner `DoubleQuoted` words should behave similar as if the inner wrapper
-                        // wasn't there. Namely, any fields the inner `DoubleQuoted` generates should
-                        // be preserved, similar to evaluating $@.
-                        (Fields::Many(v), &Word::DoubleQuoted(_)) |
-                        (Fields::At(v), _) => {
-                            // According to the POSIX spec, if $@ is empty it should generate NO fields
-                            // even when within double quotes.
-                            if !v.is_empty() {
-                                let mut iter = v.into_iter();
-                                if let Some(first) = iter.next() {
-                                    append_to_cur_field!(first);
-                                }
-
-                                cur_field.take().map(|s| fields.push(Rc::new(s)));
-
-                                let mut last = None;
-                                for next in iter {
-                                    fields.extend(last.take());
-                                    last = Some(next);
-                                }
-
-                                last.map(|rc| append_to_cur_field!(rc));
-                            }
-                        },
-
-                        (f@Fields::Star(_), _) => append_to_cur_field!(f.join_with_ifs(env)),
-
-                        // Since we should have indicated we do NOT want field splitting,
-                        // the following word variants should all yield `Single` fields (or at least
-                        // a specific `Star` or `At` field type for parameter{s, substitutions}).
-                        (Fields::Many(_), &Word::Literal(_))      |
-                        (Fields::Many(_), &Word::SingleQuoted(_)) |
-                        (Fields::Many(_), &Word::Escaped(_))      |
-                        (Fields::Many(_), &Word::Star)            |
-                        (Fields::Many(_), &Word::Question)        |
-                        (Fields::Many(_), &Word::SquareOpen)      |
-                        (Fields::Many(_), &Word::SquareClose)     |
-                        (Fields::Many(_), &Word::Tilde)           |
-                        (Fields::Many(_), &Word::Colon)           |
-                        (Fields::Many(_), &Word::Subst(_))        |
-                        (Fields::Many(_), &Word::Param(_))        |
-                        (Fields::Many(_), &Word::Concat(_))       => unreachable!(),
-                    }
-                }
-
-                cur_field.map(|s| fields.push(Rc::new(s)));
-
-                // Make sure we return before doing any pathname expansions.
-                return Ok(if fields.is_empty() {
-                    Fields::Zero
-                } else if fields.len() == 1 {
-                    Fields::Single(fields.pop().unwrap())
-                } else {
-                    Fields::Many(fields)
-                });
-            }
         };
 
-        Ok(fields)
+        Ok(ret)
     }
+}
 
-    pub fn as_pattern(&self, env: &mut Environment) -> Result<glob::Pattern>
-    {
-        unimplemented!()
+/// Performs field splitting on existing fields.
+fn split_fields(fields: Fields, env: &Environment) -> Fields {
+    match fields {
+        Fields::Zero     => Fields::Zero,
+        Fields::At(fs)   => Fields::At(split_fields_inner(fs, env)),
+        Fields::Star(fs) => Fields::Star(split_fields_inner(fs, env)),
+        Fields::Many(fs) => Fields::Many(split_fields_inner(fs, env)),
+
+        Fields::Single(f) => {
+            let mut fields = split_fields_inner(vec!(f), env);
+            if fields.len() == 1 {
+                Fields::Single(fields.pop().unwrap())
+            } else {
+                Fields::Many(fields)
+            }
+        },
     }
 }
 
 /// Splits a vector of fields further based on the contents of the `IFS`
 /// variable (i.e. as long as it is non-empty). Any empty fields, original
 /// or otherwise created will be discarded.
-fn split_fields(words: Vec<Rc<String>>, env: &Environment) -> Vec<Rc<String>> {
+fn split_fields_inner(words: Vec<Rc<String>>, env: &Environment) -> Vec<Rc<String>> {
     // If IFS is set but null, there is nothing left to split
     let ifs = env.var("IFS").map_or(IFS_DEFAULT, |s| &s);
     if ifs.is_empty() {
@@ -1191,7 +1229,7 @@ impl Redirect {
     /// permissions. A `Some` value indicates a newly opened or duplicated descriptor
     /// while a `None` indicates that that descriptor should be closed.
     pub fn eval(&self, env: &mut Environment) -> Result<(Fd, Option<(Rc<FileDesc>, Permissions)>)> {
-        fn eval_path(path: &Word, env: &mut Environment) -> Result<Rc<String>> {
+        fn eval_path(path: &WordEvalInternal, env: &mut Environment) -> Result<Rc<String>> {
             match try!(path.eval_with_config(env, true, false)) {
                 Fields::Single(path) => Ok(path),
                 Fields::At(mut v) |
@@ -1209,7 +1247,7 @@ impl Redirect {
             }
         };
 
-        fn dup_fd(dst_fd: Fd, src_fd: &Word, readable: bool, env: &mut Environment)
+        fn dup_fd(dst_fd: Fd, src_fd: &WordEvalInternal, readable: bool, env: &mut Environment)
             -> Result<(Fd, Option<(Rc<FileDesc>, Permissions)>)>
         {
             let src_fd = try!(eval_path(src_fd, env));
@@ -1577,7 +1615,7 @@ impl Run for CompoundCommand {
                 let mut exit = EXIT_SUCCESS;
                 for &(ref pats, ref body) in arms.iter() {
                     for pat in pats {
-                        if try!(pat.as_pattern(env)).matches_with(&word, &match_opts) {
+                        if try!(pat.eval_as_pattern(env)).matches_with(&word, &match_opts) {
                             exit = try!(body.run(env));
                             break;
                         }
@@ -1700,7 +1738,11 @@ mod tests {
     use std::thread;
     use super::io::{FileDesc, Permissions};
     use super::*;
+
     use syntax::ast::{Arith, Command, CompoundCommand, SimpleCommand, Parameter, ParameterSubstitution, Redirect, Word};
+    use syntax::ast::ComplexWord::*;
+    use syntax::ast::SimpleWord::*;
+    use syntax::parse::test::{lit, escaped, single_quoted};
 
     #[cfg(unix)]
     const DEV_NULL: &'static str = "/dev/null";
@@ -1759,7 +1801,7 @@ mod tests {
         ($cmd:expr, $($arg:expr),*,) => { cmd_unboxed!($cmd, $($arg),*) };
         ($cmd:expr, $($arg:expr),* ) => {
             Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from($cmd)), vec!($($arg),*))),
+                cmd: Some((Single(lit($cmd)), vec!($($arg),*))),
                 vars: vec!(),
                 io: vec!(),
             }))
@@ -1773,7 +1815,7 @@ mod tests {
     }
 
     fn exit(status: i32) -> Box<Command> {
-        cmd!("sh", Word::Literal(String::from("-c")), Word::SingleQuoted(format!("exit {}", status)))
+        cmd!("sh", Single(lit("-c")), single_quoted(&format!("exit {}", status)))
     }
 
     fn true_cmd() -> Box<Command> { exit(0) }
@@ -2142,13 +2184,13 @@ mod tests {
         let mut env = Env::new().unwrap();
 
         let fn_cmd = Command::Function(fn_name.clone(), Rc::new(
-            *cmd!("echo", Word::Param(Parameter::At))
+            *cmd!("echo", Single(Word::Simple(Box::new(Param(Parameter::At)))))
         ));
 
         let cmd = SimpleCommand {
-            cmd: Some((Word::Literal(String::from(fn_name)), vec!(Word::Literal(String::from("foobar"))))),
+            cmd: Some((Single(lit(&fn_name)), vec!(Single(lit("foobar"))))),
             vars: vec!(),
-            io: vec!(Redirect::Write(None, Word::Literal(file_path.display().to_string()))),
+            io: vec!(Redirect::Write(None, Single(lit(&file_path.display().to_string())))),
         };
 
         assert_eq!(fn_cmd.run(&mut env), Ok(EXIT_SUCCESS));
@@ -2564,7 +2606,7 @@ mod tests {
         let var_unset = String::from("var_not_set_in_env");
 
         let default_value = String::from("some default value");
-        let default = Word::Literal(default_value.clone());
+        let default = Single(lit(&default_value));
 
         let mut env = Env::new().unwrap();
         env.set_var(var.clone(),      Rc::new(var_value.clone()));
@@ -2699,7 +2741,7 @@ mod tests {
         let var_unset   = String::from("var_not_set_in_env");
         let assig_value = String::from("assigned value");
 
-        let assig = Word::Literal(assig_value.clone());
+        let assig = Single(lit(&assig_value));
         let null = Rc::new(String::new());
 
         let mut env = Env::new().unwrap();
@@ -2820,7 +2862,7 @@ mod tests {
         let err_star  = RuntimeError::Expansion(
             ExpansionError::EmptyParameter(Parameter::Star,                   Rc::new(err_msg.clone())));
 
-        let err_msg = Word::Literal(err_msg);
+        let err_msg = Single(lit(&err_msg));
 
         // Strict with error message
         let subst = Error(true, Parameter::Var(var.clone()), Some(err_msg.clone()));
@@ -3018,7 +3060,7 @@ mod tests {
         let var_unset = String::from("var_not_set_in_env");
 
         let alt_value = String::from("some alternative value");
-        let alternative = Word::Literal(alt_value.clone());
+        let alternative = Single(lit(&alt_value));
 
         let mut env = Env::new().unwrap();
         env.set_var(var.clone(),      Rc::new(var_value.clone()));
@@ -3146,13 +3188,25 @@ mod tests {
     fn test_eval_word_literal_evals_to_self() {
         let value = String::from("foobar");
         let mut env = Env::new().unwrap();
-        assert_eq!(Word::Literal(value.clone()).eval(&mut env), Ok(Fields::Single(Rc::new(value))));
+        assert_eq!(Single(lit(&value)).eval(&mut env), Ok(Fields::Single(Rc::new(value))));
     }
 
     #[test]
-    fn test_eval_word_colon_evals_to_self() {
+    fn test_eval_word_special_literals_eval_to_self() {
+        let cases = vec!(
+            (Star,        "*"),
+            (Question,    "?"),
+            (SquareOpen,  "["),
+            (SquareClose, "]"),
+            (Colon,       ":"),
+        );
+
         let mut env = Env::new().unwrap();
-        assert_eq!(Word::Colon.eval(&mut env), Ok(Fields::Single(Rc::new(String::from(":")))));
+
+        for (word, correct) in cases {
+            let word = Single(Word::Simple(Box::new(word)));
+            assert_eq!(word.eval(&mut env), Ok(Fields::Single(Rc::new(String::from(correct)))));
+        }
     }
 
     #[test]
@@ -3160,27 +3214,28 @@ mod tests {
         let home_value = Rc::new(String::from("foobar"));
         let mut env = Env::new().unwrap();
         env.set_var(String::from("HOME"), home_value.clone());
-        assert_eq!(Word::Tilde.eval(&mut env), Ok(Fields::Single(home_value)));
+        let word = Single(Word::Simple(Box::new(Tilde)));
+        assert_eq!(word.eval(&mut env), Ok(Fields::Single(home_value)));
     }
 
     #[test]
     fn test_eval_word_tilde_in_middle_of_word_does_not_expand() {
         let mut env = Env::new().unwrap();
-        assert_eq!(Word::Concat(vec!(
-            Word::Literal(String::from("foo")),
-            Word::Literal(String::from("~")),
-            Word::Literal(String::from("bar")),
+        assert_eq!(Concat(vec!(
+            lit("foo"),
+            lit("~"),
+            lit("bar"),
         )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("foo~bar")))));
     }
 
     #[test]
     fn test_eval_word_tilde_in_middle_of_word_after_colon_does_not_expand() {
         let mut env = Env::new().unwrap();
-        assert_eq!(Word::Concat(vec!(
-            Word::Literal(String::from("foo")),
-            Word::Colon,
-            Word::Literal(String::from("~")),
-            Word::Literal(String::from("bar")),
+        assert_eq!(Concat(vec!(
+            lit("foo"),
+            Word::Simple(Box::new(Colon)),
+            lit("~"),
+            lit("bar"),
         )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("foo:~bar")))));
     }
 
@@ -3190,36 +3245,27 @@ mod tests {
         let mut env = Env::new().unwrap();
         env.set_var(var.clone(), Rc::new(String::from("hello world")));
         assert_eq!(Word::DoubleQuoted(vec!(
-            Word::Literal(String::from("foo")),
-            Word::Param(Parameter::Var(var)),
-            Word::Literal(String::from("bar")),
+            Literal(String::from("foo")),
+            Param(Parameter::Var(var)),
+            Literal(String::from("bar")),
         )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("foohello worldbar")))));
-    }
-
-    #[test]
-    fn test_eval_word_double_quoted_within_double_quoted_same_as_if_inner_was_not_there() {
-        let mut env = Env::new().unwrap();
-        assert_eq!(Word::DoubleQuoted(vec!(
-            Word::DoubleQuoted(vec!(Word::Literal(String::from("foo")))),
-            Word::Literal(String::from("bar")),
-        )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("foobar")))));
     }
 
     #[test]
     fn test_eval_word_double_quoted_does_not_expand_tilde() {
         let mut env = Env::new().unwrap();
         assert_eq!(Word::DoubleQuoted(vec!(
-            Word::Tilde,
+            Tilde,
         )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("~")))));
 
         assert_eq!(Word::DoubleQuoted(vec!(
-            Word::Tilde,
-            Word::Literal(String::from("root"))
+            Tilde,
+            Literal(String::from("root")),
         )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("~root")))));
 
         assert_eq!(Word::DoubleQuoted(vec!(
-            Word::Tilde,
-            Word::Literal(String::from("/root"))
+            Tilde,
+            Literal(String::from("/root")),
         )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("~/root")))));
     }
 
@@ -3227,7 +3273,7 @@ mod tests {
     fn test_eval_word_double_quoted_param_at_unset_results_in_no_fields() {
         let mut env = Env::new().unwrap();
         assert_eq!(Word::DoubleQuoted(vec!(
-            Word::Param(Parameter::At),
+            Param(Parameter::At),
         )).eval(&mut env), Ok(Fields::Zero))
     }
 
@@ -3235,7 +3281,7 @@ mod tests {
     fn test_eval_word_double_quoted_param_star_unset_results_in_no_fields() {
         let mut env = Env::new().unwrap();
         assert_eq!(Word::DoubleQuoted(vec!(
-            Word::Param(Parameter::Star),
+            Param(Parameter::Star),
         )).eval(&mut env), Ok(Fields::Zero))
     }
 
@@ -3248,7 +3294,7 @@ mod tests {
         )), None, None).unwrap();
 
         assert_eq!(Word::DoubleQuoted(vec!(
-            Word::Param(Parameter::At),
+            Param(Parameter::At),
         )).eval(&mut env), Ok(Fields::Many(vec!(
             Rc::new(String::from("one")),
             Rc::new(String::from("two")),
@@ -3265,9 +3311,9 @@ mod tests {
         )), None, None).unwrap();
 
         assert_eq!(Word::DoubleQuoted(vec!(
-            Word::Literal(String::from("foo")),
-            Word::Param(Parameter::At),
-            Word::Literal(String::from("bar")),
+            Literal(String::from("foo")),
+            Param(Parameter::At),
+            Literal(String::from("bar")),
         )).eval(&mut env), Ok(Fields::Many(vec!(
             Rc::new(String::from("fooone")),
             Rc::new(String::from("two")),
@@ -3279,9 +3325,9 @@ mod tests {
     fn test_eval_word_double_quoted_param_at_expands_to_nothing_when_args_not_set_and_concats_with_rest() {
         let mut env = Env::new().unwrap();
         assert_eq!(Word::DoubleQuoted(vec!(
-            Word::Literal(String::from("foo")),
-            Word::Param(Parameter::At),
-            Word::Literal(String::from("bar")),
+            Literal(String::from("foo")),
+            Param(Parameter::At),
+            Literal(String::from("bar")),
         )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("foobar")))));
     }
 
@@ -3294,23 +3340,23 @@ mod tests {
         )), None, None).unwrap();
 
         assert_eq!(Word::DoubleQuoted(vec!(
-            Word::Literal(String::from("foo")),
-            Word::Param(Parameter::Star),
-            Word::Literal(String::from("bar")),
+            Literal(String::from("foo")),
+            Param(Parameter::Star),
+            Literal(String::from("bar")),
         )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("fooone two threebar")))));
 
         env.set_var(String::from("IFS"), Rc::new(String::from("!")));
         assert_eq!(Word::DoubleQuoted(vec!(
-            Word::Literal(String::from("foo")),
-            Word::Param(Parameter::Star),
-            Word::Literal(String::from("bar")),
+            Literal(String::from("foo")),
+            Param(Parameter::Star),
+            Literal(String::from("bar")),
         )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("fooone!two!threebar")))));
 
         env.set_var(String::from("IFS"), Rc::new(String::new()));
         assert_eq!(Word::DoubleQuoted(vec!(
-            Word::Literal(String::from("foo")),
-            Word::Param(Parameter::Star),
-            Word::Literal(String::from("bar")),
+            Literal(String::from("foo")),
+            Param(Parameter::Star),
+            Literal(String::from("bar")),
         )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("fooonetwothreebar")))));
     }
 
@@ -3319,10 +3365,10 @@ mod tests {
         let mut env = Env::new().unwrap();
         env.set_var(String::from("var"), Rc::new(String::from("foobar")));
 
-        assert_eq!(Word::Concat(vec!(
-            Word::Literal(String::from("hello")),
-            Word::Param(Parameter::Var(String::from("var"))),
-            Word::Literal(String::from("world")),
+        assert_eq!(Concat(vec!(
+            lit("hello"),
+            Word::Simple(Box::new(Param(Parameter::Var(String::from("var"))))),
+            lit("world"),
         )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("hellofoobarworld")))));
     }
 
@@ -3332,10 +3378,10 @@ mod tests {
         let mut env = Env::new().unwrap();
         env.set_var(String::from("var"), Rc::new(String::from("foo bar baz")));
 
-        assert_eq!(Word::Concat(vec!(
-            Word::Literal(String::from("hello")),
-            Word::Param(Parameter::Var(String::from("var"))),
-            Word::Literal(String::from("world")),
+        assert_eq!(Concat(vec!(
+            lit("hello"),
+            Word::Simple(Box::new(Param(Parameter::Var(String::from("var"))))),
+            lit("world"),
         )).eval(&mut env), Ok(Fields::Many(vec!(
             Rc::new(String::from("hellofoo")),
             Rc::new(String::from("bar")),
@@ -3346,14 +3392,14 @@ mod tests {
     #[test]
     fn test_eval_word_concat_should_not_expand_tilde_which_is_not_at_start() {
         let mut env = Env::new().unwrap();
-        assert_eq!(Word::Concat(vec!(
-            Word::Literal(String::from("foo")),
-            Word::Tilde,
-            Word::Literal(String::from("bar")),
+        assert_eq!(Concat(vec!(
+            lit("foo"),
+            Word::Simple(Box::new(Tilde)),
+            lit("bar"),
         )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("foo~bar")))));
-        assert_eq!(Word::Concat(vec!(
-            Word::Literal(String::from("foo")),
-            Word::Tilde,
+        assert_eq!(Concat(vec!(
+            lit("foo"),
+            Word::Simple(Box::new(Tilde)),
         )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("foo~")))));
     }
 
@@ -3365,8 +3411,8 @@ mod tests {
             String::from("three"),
         )), None, None).unwrap();
 
-        assert_eq!(Word::Concat(vec!(
-            Word::Param(Parameter::At),
+        assert_eq!(Concat(vec!(
+            Word::Simple(Box::new(Param(Parameter::At))),
         )).eval(&mut env), Ok(Fields::Many(vec!(
             Rc::new(String::from("one")),
             Rc::new(String::from("two")),
@@ -3382,10 +3428,10 @@ mod tests {
             String::from("three"),
         )), None, None).unwrap();
 
-        assert_eq!(Word::Concat(vec!(
-            Word::Literal(String::from("foo")),
-            Word::Param(Parameter::At),
-            Word::Literal(String::from("bar")),
+        assert_eq!(Concat(vec!(
+            lit("foo"),
+            Word::Simple(Box::new(Param(Parameter::At))),
+            lit("bar"),
         )).eval(&mut env), Ok(Fields::Many(vec!(
             Rc::new(String::from("fooone")),
             Rc::new(String::from("two")),
@@ -3396,38 +3442,18 @@ mod tests {
     #[test]
     fn test_eval_word_concat_param_at_expands_to_nothing_when_args_not_set_and_concats_with_rest() {
         let mut env = Env::new().unwrap();
-        assert_eq!(Word::Concat(vec!(
-            Word::Literal(String::from("foo")),
-            Word::Param(Parameter::At),
-            Word::Literal(String::from("bar")),
+        assert_eq!(Concat(vec!(
+            lit("foo"),
+            Word::Simple(Box::new(Param(Parameter::At))),
+            lit("bar"),
         )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("foobar")))));
-    }
-
-    #[test]
-    fn test_eval_word_concat_within_double_quoted_same_as_if_inner_was_not_there() {
-        let mut env = Env::new().unwrap();
-        assert_eq!(Word::DoubleQuoted(vec!(
-            Word::Concat(vec!(Word::Literal(String::from("foo baz\nqux")))),
-            Word::Literal(String::from("bar")),
-        )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("foo baz\nquxbar")))));
-    }
-
-    #[test]
-    fn test_eval_word_double_quoted_within_concat_within_double_quoted_same_as_if_inner_was_not_there() {
-        let mut env = Env::new().unwrap();
-        assert_eq!(Word::DoubleQuoted(vec!(
-            Word::DoubleQuoted(vec!(
-                Word::Concat(vec!(Word::DoubleQuoted(vec!(Word::Literal(String::from("foo baz\nqux"))))))
-            )),
-            Word::Literal(String::from("bar")),
-        )).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("foo baz\nquxbar")))));
     }
 
     #[test]
     fn test_eval_word_single_quoted_removes_quotes() {
         let value = String::from("hello world");
         let mut env = Env::new().unwrap();
-        assert_eq!(Word::SingleQuoted(value.clone()).eval(&mut env), Ok(Fields::Single(Rc::new(value))));
+        assert_eq!(single_quoted(&value).eval(&mut env), Ok(Fields::Single(Rc::new(value))));
     }
 
     #[test]
@@ -3435,7 +3461,7 @@ mod tests {
         let value = String::from("hello world");
         let mut env = Env::new().unwrap();
         assert_eq!(Word::DoubleQuoted(vec!(
-            Word::Literal(value.clone())
+            Literal(value.clone()),
         )).eval(&mut env), Ok(Fields::Single(Rc::new(value))));
     }
 
@@ -3443,21 +3469,22 @@ mod tests {
     fn test_eval_word_escaped_quoted_removes_slash() {
         let value = String::from("&");
         let mut env = Env::new().unwrap();
-        assert_eq!(Word::Escaped(value.clone()).eval(&mut env), Ok(Fields::Single(Rc::new(value))));
+        let word = Single(escaped(&value));
+        assert_eq!(word.eval(&mut env), Ok(Fields::Single(Rc::new(value))));
     }
 
     #[test]
     fn test_eval_word_single_quoted_should_not_split_fields() {
         let value = String::from("hello world\nfoo\tbar");
         let mut env = Env::new().unwrap();
-        assert_eq!(Word::SingleQuoted(value.clone()).eval(&mut env), Ok(Fields::Single(Rc::new(value))));
+        assert_eq!(single_quoted(&value).eval(&mut env), Ok(Fields::Single(Rc::new(value))));
     }
 
     #[test]
     fn test_eval_word_single_quoted_should_not_expand_anything() {
         let value = String::from("hello world\nfoo\tbar * baz ~");
         let mut env = Env::new().unwrap();
-        assert_eq!(Word::SingleQuoted(value.clone()).eval(&mut env), Ok(Fields::Single(Rc::new(value))));
+        assert_eq!(single_quoted(&value).eval(&mut env), Ok(Fields::Single(Rc::new(value))));
     }
 
     #[test]
@@ -3486,8 +3513,8 @@ mod tests {
         // RedirectionError::BadSrcFd - invalid string
         assert_eq!(Command::And(
             Box::new(Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Word::Literal(String::from("253invalid")))),
+                cmd: Some((Single(lit("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Single(lit("253invalid")))),
                 vars: vec!(),
             }))),
             true_cmd()
@@ -3496,8 +3523,8 @@ mod tests {
         // RedirectionError::BadSrcFd - src fd not open
         assert_eq!(Command::And(
             Box::new(Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                io: vec!(Redirect::DupRead(None, Word::Literal(String::from("42")))),
+                cmd: Some((Single(lit("echo")), vec!())),
+                io: vec!(Redirect::DupRead(None, Single(lit("42")))),
                 vars: vec!(),
             }))),
             true_cmd()
@@ -3506,8 +3533,8 @@ mod tests {
         // RedirectionError::Ambiguous - empty field
         assert_eq!(Command::And(
             Box::new(Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Word::Param(Parameter::At))),
+                cmd: Some((Single(lit("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Single(Word::Simple(Box::new(Param(Parameter::At)))))),
                 vars: vec!(),
             }))),
             true_cmd(),
@@ -3527,8 +3554,8 @@ mod tests {
 
             assert_eq!(Command::And(
                 Box::new(Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                    io: vec!(Redirect::DupRead(None, Word::Param(Parameter::At))),
+                    cmd: Some((Single(lit("echo")), vec!())),
+                    io: vec!(Redirect::DupRead(None, Single(Word::Simple(Box::new(Param(Parameter::At)))))),
                     vars: vec!(),
                 }))),
                 true_cmd(),
@@ -3538,8 +3565,8 @@ mod tests {
         // RedirectionError::BadFdPerms - read
         assert_eq!(Command::And(
             Box::new(Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Word::Literal(STDIN_FILENO.to_string()))),
+                cmd: Some((Single(lit("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Single(lit(&STDIN_FILENO.to_string())))),
                 vars: vec!(),
             }))),
             true_cmd()
@@ -3548,8 +3575,8 @@ mod tests {
         // RedirectionError::BadFdPerms - write
         assert_eq!(Command::And(
             Box::new(Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                io: vec!(Redirect::DupRead(None, Word::Literal(STDOUT_FILENO.to_string()))),
+                cmd: Some((Single(lit("echo")), vec!())),
+                io: vec!(Redirect::DupRead(None, Single(lit(&STDOUT_FILENO.to_string())))),
                 vars: vec!(),
             }))),
             true_cmd()
@@ -3557,37 +3584,40 @@ mod tests {
 
         // RuntimeError::Io
         assert_eq!(Command::And(
-                cmd!("cat", Word::Literal(String::from("missing file"))), true_cmd()).run(&mut env),
+                cmd!("cat", Single(lit("missing file"))), true_cmd()).run(&mut env),
                 Ok(EXIT_ERROR));
 
         // RuntimeError::Unimplemented
         assert_eq!(Command::And(Box::new(Command::Job(cmd!("echo"))), true_cmd()).run(&mut env),
             Ok(EXIT_ERROR));
 
-        let cmd = cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
-            Arith::Div(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(0)))
-        )))));
+        let cmd = cmd!("echo", Single(Word::Simple(Box::new(
+            Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+                Arith::Div(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(0)))
+        ))))))));
         assert_eq!(Command::And(cmd, true_cmd()).run(&mut env),
             Err(RuntimeError::Expansion(ExpansionError::DivideByZero)));
         assert_eq!(env.last_status(), EXIT_ERROR);
 
-        let cmd = cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
-            Arith::Pow(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(-5)))
-        )))));
+        let cmd = cmd!("echo", Single(Word::Simple(Box::new(
+            Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+                Arith::Pow(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(-5)))
+            ))))
+        ))));
         assert_eq!(Command::And(cmd, true_cmd()).run(&mut env),
             Err(RuntimeError::Expansion(ExpansionError::NegativeExponent)));
         assert_eq!(env.last_status(), EXIT_ERROR);
 
-        let cmd = cmd!("echo", Word::Subst(Box::new(
-                    ParameterSubstitution::Assign(true, Parameter::At, Some(Word::Literal(String::from("foo")))))));
+        let cmd = cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(
+                    ParameterSubstitution::Assign(true, Parameter::At, Some(Single(lit("foo"))))))))));
         assert_eq!(Command::And(cmd, true_cmd()).run(&mut env),
             Err(RuntimeError::Expansion(ExpansionError::BadAssig(Parameter::At))));
         assert_eq!(env.last_status(), EXIT_ERROR);
 
         let var = Parameter::Var(String::from("var"));
         let msg = String::from("empty");
-        let cmd = cmd!("echo", Word::Subst(Box::new(
-                    ParameterSubstitution::Error(true, var.clone(), Some(Word::Literal(msg.clone()))))));
+        let cmd = cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(
+                    ParameterSubstitution::Error(true, var.clone(), Some(Single(lit(&msg))))))))));
         assert_eq!(Command::And(cmd, true_cmd()).run(&mut env),
             Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(var, Rc::new(msg)))));
         assert_eq!(env.last_status(), EXIT_ERROR);
@@ -3618,8 +3648,8 @@ mod tests {
         // RedirectionError::BadSrcFd - invalid string
         assert_eq!(Command::Or(
             Box::new(Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Word::Literal(String::from("253invalid")))),
+                cmd: Some((Single(lit("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Single(lit("253invalid")))),
                 vars: vec!(),
             }))),
             true_cmd()
@@ -3628,8 +3658,8 @@ mod tests {
         // RedirectionError::BadSrcFd - src fd not open
         assert_eq!(Command::Or(
             Box::new(Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                io: vec!(Redirect::DupRead(None, Word::Literal(String::from("42")))),
+                cmd: Some((Single(lit("echo")), vec!())),
+                io: vec!(Redirect::DupRead(None, Single(lit("42")))),
                 vars: vec!(),
             }))),
             true_cmd()
@@ -3638,8 +3668,8 @@ mod tests {
         // RedirectionError::Ambiguous - empty field
         assert_eq!(Command::Or(
             Box::new(Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Word::Param(Parameter::At))),
+                cmd: Some((Single(lit("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Single(Word::Simple(Box::new(Param(Parameter::At)))))),
                 vars: vec!(),
             }))),
             true_cmd(),
@@ -3659,8 +3689,8 @@ mod tests {
 
             assert_eq!(Command::Or(
                 Box::new(Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                    io: vec!(Redirect::DupRead(None, Word::Param(Parameter::At))),
+                    cmd: Some((Single(lit("echo")), vec!())),
+                    io: vec!(Redirect::DupRead(None, Single(Word::Simple(Box::new(Param(Parameter::At)))))),
                     vars: vec!(),
                 }))),
                 true_cmd(),
@@ -3670,8 +3700,8 @@ mod tests {
         // RedirectionError::BadFdPerms - read
         assert_eq!(Command::Or(
             Box::new(Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Word::Literal(STDIN_FILENO.to_string()))),
+                cmd: Some((Single(lit("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Single(lit(&STDIN_FILENO.to_string())))),
                 vars: vec!(),
             }))),
             true_cmd()
@@ -3680,8 +3710,8 @@ mod tests {
         // RedirectionError::BadFdPerms - write
         assert_eq!(Command::Or(
             Box::new(Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                io: vec!(Redirect::DupRead(None, Word::Literal(STDOUT_FILENO.to_string()))),
+                cmd: Some((Single(lit("echo")), vec!())),
+                io: vec!(Redirect::DupRead(None, Single(lit(&STDOUT_FILENO.to_string())))),
                 vars: vec!(),
             }))),
             true_cmd()
@@ -3689,37 +3719,41 @@ mod tests {
 
         // RuntimeError::Io
         assert_eq!(Command::Or(
-                cmd!("cat", Word::Literal(String::from("missing file"))), true_cmd()).run(&mut env),
+                cmd!("cat", Single(lit("missing file"))), true_cmd()).run(&mut env),
                 Ok(EXIT_SUCCESS));
 
         // RuntimeError::Unimplemented
         assert_eq!(Command::Or(Box::new(Command::Job(cmd!("echo"))), true_cmd()).run(&mut env),
             Ok(EXIT_SUCCESS));
 
-        let cmd = cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
-            Arith::Div(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(0)))
-        )))));
+        let cmd = cmd!("echo", Single(Word::Simple(Box::new(
+            Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+                Arith::Div(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(0)))
+            ))))
+        ))));
         assert_eq!(Command::Or(cmd, true_cmd()).run(&mut env),
             Err(RuntimeError::Expansion(ExpansionError::DivideByZero)));
         assert_eq!(env.last_status(), EXIT_ERROR);
 
-        let cmd = cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
-            Arith::Pow(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(-5)))
-        )))));
+        let cmd = cmd!("echo", Single(Word::Simple(Box::new(
+            Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+                Arith::Pow(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(-5)))
+            ))))
+        ))));
         assert_eq!(Command::Or(cmd, true_cmd()).run(&mut env),
             Err(RuntimeError::Expansion(ExpansionError::NegativeExponent)));
         assert_eq!(env.last_status(), EXIT_ERROR);
 
-        let cmd = cmd!("echo", Word::Subst(Box::new(
-                    ParameterSubstitution::Assign(true, Parameter::At, Some(Word::Literal(String::from("foo")))))));
+        let cmd = cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(
+                    ParameterSubstitution::Assign(true, Parameter::At, Some(Single(lit("foo"))))))))));
         assert_eq!(Command::Or(cmd, true_cmd()).run(&mut env),
             Err(RuntimeError::Expansion(ExpansionError::BadAssig(Parameter::At))));
         assert_eq!(env.last_status(), EXIT_ERROR);
 
         let var = Parameter::Var(String::from("var"));
         let msg = String::from("empty");
-        let cmd = cmd!("echo", Word::Subst(Box::new(
-                    ParameterSubstitution::Error(true, var.clone(), Some(Word::Literal(msg.clone()))))));
+        let cmd = cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(
+                    ParameterSubstitution::Error(true, var.clone(), Some(Single(lit(&msg))))))))));
         assert_eq!(Command::Or(cmd, true_cmd()).run(&mut env),
             Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(var, Rc::new(msg)))));
         assert_eq!(env.last_status(), EXIT_ERROR);
@@ -3746,18 +3780,18 @@ mod tests {
             Box::new(CompoundCommand::Brace(vec!(
                 Command::Simple(Box::new(SimpleCommand {
                     cmd: None,
-                    vars: vec!((var.to_string(), Some(Word::Concat(vec!(
-                        Word::Literal(value.to_string()),
-                        Word::Param(Parameter::Var(var.to_string())),
+                    vars: vec!((var.to_string(), Some(Concat(vec!(
+                        lit(&value),
+                        Word::Simple(Box::new(Param(Parameter::Var(var.to_string())))),
                     ))))),
                     io: vec!(),
                 })),
                 Command::Compound(Box::new(CompoundCommand::If(vec!(
                     (vec!(cmd_unboxed!("[",
-                      Word::Param(Parameter::Var(var.to_string())),
-                      Word::Literal(String::from("!=")),
-                      Word::Literal(double_value.clone()),
-                      Word::Literal(String::from("]")),
+                      Single(Word::Simple(Box::new(Param(Parameter::Var(var.to_string()))))),
+                      Single(lit("!=")),
+                      Single(lit(&double_value)),
+                      Single(lit("]")),
                     )), vec!(cmd_unboxed!(fn_name))),
                 ), None)), vec!()),
             ))),
@@ -3782,19 +3816,19 @@ mod tests {
         let cmd = Command::Compound(
             Box::new(CompoundCommand::Brace(vec!(
                 Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(String::from("out"))))),
+                    cmd: Some((Single(lit("echo")), vec!(Single(lit("out"))))),
                     io: vec!(),
                     vars: vec!(),
                 })),
                 Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(String::from("err"))))),
-                    io: vec!(Redirect::DupWrite(Some(1), Word::Literal(String::from("2")))),
+                    cmd: Some((Single(lit("echo")), vec!(Single(lit("err"))))),
+                    io: vec!(Redirect::DupWrite(Some(1), Single(lit("2")))),
                     vars: vec!(),
                 })),
             ))),
             vec!(
-                Redirect::Write(Some(2), Word::Literal(file_path.display().to_string())),
-                Redirect::DupWrite(Some(1), Word::Literal(String::from("2"))),
+                Redirect::Write(Some(2), Single(lit(&file_path.display().to_string()))),
+                Redirect::DupWrite(Some(1), Single(lit("2"))),
             )
         );
 
@@ -3834,19 +3868,19 @@ mod tests {
         let (cmd_body, cmd_redirects) = (
             Box::new(CompoundCommand::Brace(vec!(
                 Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(String::from("out"))))),
+                    cmd: Some((Single(lit("echo")), vec!(Single(lit("out"))))),
                     io: vec!(),
                     vars: vec!(),
                 })),
                 Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(String::from("err"))))),
-                    io: vec!(Redirect::DupWrite(Some(1), Word::Literal(String::from("2")))),
+                    cmd: Some((Single(lit("echo")), vec!(Single(lit("err"))))),
+                    io: vec!(Redirect::DupWrite(Some(1), Single(lit("2")))),
                     vars: vec!(),
                 })),
             ))),
             vec!(
-                Redirect::Write(Some(2), Word::Literal(file_path.display().to_string())),
-                Redirect::DupWrite(Some(1), Word::Literal(String::from("2"))),
+                Redirect::Write(Some(2), Single(lit(&file_path.display().to_string()))),
+                Redirect::DupWrite(Some(1), Single(lit("2"))),
             )
         );
 
@@ -3893,19 +3927,19 @@ mod tests {
         let cmd = Command::Compound(
             Box::new(CompoundCommand::Brace(vec!(
                 Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(String::from("out"))))),
+                    cmd: Some((Single(lit("echo")), vec!(Single(lit("out"))))),
                     io: vec!(),
                     vars: vec!(),
                 })),
             ))),
             vec!(
-                Redirect::Write(Some(1), Word::Literal(file_path_empty.display().to_string())),
-                Redirect::Write(Some(1), Word::Literal(file_path.display().to_string())),
+                Redirect::Write(Some(1), Single(lit(&file_path_empty.display().to_string()))),
+                Redirect::Write(Some(1), Single(lit(&file_path.display().to_string()))),
             )
         );
 
         let cmd2 = Command::Simple(Box::new(SimpleCommand {
-            cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(String::from("default"))))),
+            cmd: Some((Single(lit("echo")), vec!(Single(lit("default"))))),
             io: vec!(),
             vars: vec!(),
         }));
@@ -3941,13 +3975,13 @@ mod tests {
         let cmd = Command::Compound(
             Box::new(CompoundCommand::Brace(vec!(*true_cmd()))),
             vec!(
-                Redirect::Write(Some(3), Word::Literal(file_path.display().to_string())),
-                Redirect::Write(Some(4), Word::Literal(file_path.display().to_string())),
-                Redirect::Write(Some(5), Word::Subst(Box::new(ParameterSubstitution::Assign(
+                Redirect::Write(Some(3), Single(lit(&file_path.display().to_string()))),
+                Redirect::Write(Some(4), Single(lit(&file_path.display().to_string()))),
+                Redirect::Write(Some(5), Single(Word::Simple(Box::new(Subst(Box::new(ParameterSubstitution::Assign(
                     true,
                     Parameter::Var(String::from(var)),
-                    Some(Word::Literal(String::from(value))),
-                )))),
+                    Some(Single(lit(value))),
+                ))))))),
             )
         );
 
@@ -4004,15 +4038,15 @@ mod tests {
         let cmd = Command::Compound(
             Box::new(CompoundCommand::Brace(vec!(
                 Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Word::Literal(fn_name), vec!())),
+                    cmd: Some((Single(lit(&fn_name)), vec!())),
                     io: vec!(),
                     vars: vec!(),
                 })),
             ))),
             vec!(
-                Redirect::Write(Some(FD_EXEC_CLOSE), Word::Literal(String::from(DEV_NULL))),
-                Redirect::Write(Some(FD_EXEC_CHANGE), Word::Literal(String::from(DEV_NULL))),
-                Redirect::DupWrite(Some(FD_EXEC_OPEN), Word::Literal(String::from("-"))),
+                Redirect::Write(Some(FD_EXEC_CLOSE), Single(lit(DEV_NULL))),
+                Redirect::Write(Some(FD_EXEC_CHANGE), Single(lit(DEV_NULL))),
+                Redirect::DupWrite(Some(FD_EXEC_OPEN), Single(lit("-"))),
             )
         );
 
@@ -4053,13 +4087,13 @@ mod tests {
 
         let cmd = CompoundCommand::Brace(vec!(
             Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(String::from("foo"))))),
+                cmd: Some((Single(lit("echo")), vec!(Single(lit("foo"))))),
                 vars: vec!(),
                 io: vec!()
             })),
             *false_cmd(),
             Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(String::from("bar"))))),
+                cmd: Some((Single(lit("echo")), vec!(Single(lit("bar"))))),
                 vars: vec!(),
                 io: vec!()
             })),
@@ -4119,8 +4153,8 @@ mod tests {
         // RedirectionError::Ambiguous - empty field
         assert_eq!(CompoundCommand::Brace(vec!(
             Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Word::Param(Parameter::At))),
+                cmd: Some((Single(lit("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Single(Word::Simple(Box::new(Param(Parameter::At)))))),
                 vars: vec!(),
             })),
             cmd_exit.clone(),
@@ -4140,8 +4174,8 @@ mod tests {
 
             assert_eq!(CompoundCommand::Brace(vec!(
                 Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                    io: vec!(Redirect::DupRead(None, Word::Param(Parameter::At))),
+                    cmd: Some((Single(lit("echo")), vec!())),
+                    io: vec!(Redirect::DupRead(None, Single(Word::Simple(Box::new(Param(Parameter::At)))))),
                     vars: vec!(),
                 })),
                 cmd_exit.clone(),
@@ -4151,8 +4185,8 @@ mod tests {
         // RedirectionError::BadSrcFd - invalid string
         assert_eq!(CompoundCommand::Brace(vec!(
             Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Word::Literal(String::from("253invalid")))),
+                cmd: Some((Single(lit("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Single(lit("253invalid")))),
                 vars: vec!(),
             })),
             cmd_exit.clone(),
@@ -4161,8 +4195,8 @@ mod tests {
         // RedirectionError::BadSrcFd - src fd not open
         assert_eq!(CompoundCommand::Brace(vec!(
             Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                io: vec!(Redirect::DupRead(None, Word::Literal(String::from("42")))),
+                cmd: Some((Single(lit("echo")), vec!())),
+                io: vec!(Redirect::DupRead(None, Single(lit("42")))),
                 vars: vec!(),
             })),
             cmd_exit.clone(),
@@ -4171,8 +4205,8 @@ mod tests {
         // RedirectionError::BadFdPerms - read
         assert_eq!(CompoundCommand::Brace(vec!(
             Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Word::Literal(STDIN_FILENO.to_string()))),
+                cmd: Some((Single(lit("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Single(lit(&STDIN_FILENO.to_string())))),
                 vars: vec!(),
             })),
             cmd_exit.clone(),
@@ -4181,8 +4215,8 @@ mod tests {
         // RedirectionError::BadFdPerms - write
         assert_eq!(CompoundCommand::Brace(vec!(
             Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                io: vec!(Redirect::DupRead(None, Word::Literal(STDOUT_FILENO.to_string()))),
+                cmd: Some((Single(lit("echo")), vec!())),
+                io: vec!(Redirect::DupRead(None, Single(lit(&STDOUT_FILENO.to_string())))),
                 vars: vec!(),
             })),
             cmd_exit.clone(),
@@ -4190,7 +4224,7 @@ mod tests {
 
         // RuntimeError::Io
         assert_eq!(CompoundCommand::Brace(vec!(
-            *cmd!("cat", Word::Literal(String::from("missing file"))),
+            *cmd!("cat", Single(lit("missing file"))),
             cmd_check_status.clone(),
             cmd_exit.clone(),
         )).run(&mut env), Ok(exit_code));
@@ -4211,27 +4245,31 @@ mod tests {
         let cmd_should_not_run = *cmd!(fn_name_should_not_run);
 
         assert_eq!(CompoundCommand::Brace(vec!(
-            *cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
-                Arith::Div(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(0)))
-            ))))),
+            *cmd!("echo", Single(Word::Simple(Box::new(
+                Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+                    Arith::Div(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(0)))
+                ))))
+            )))),
             cmd_should_not_run.clone(),
         )).run(&mut env), Err(RuntimeError::Expansion(ExpansionError::DivideByZero)));
         assert_eq!(env.last_status(), EXIT_ERROR);
 
         assert_eq!(CompoundCommand::Brace(vec!(
-            *cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
-                Arith::Pow(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(-5)))
-            ))))),
+            *cmd!("echo", Single(Word::Simple(Box::new(
+                Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+                    Arith::Pow(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(-5)))
+                ))))
+            )))),
             cmd_should_not_run.clone(),
         )).run(&mut env), Err(RuntimeError::Expansion(ExpansionError::NegativeExponent)));
         assert_eq!(env.last_status(), EXIT_ERROR);
 
         assert_eq!(CompoundCommand::Brace(vec!(
-            *cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Assign(
+            *cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(ParameterSubstitution::Assign(
                 true,
                 Parameter::At,
-                Some(Word::Literal(String::from("foo")))
-            )))),
+                Some(Single(lit("foo")))
+            ))))))),
             cmd_should_not_run.clone(),
         )).run(&mut env), Err(RuntimeError::Expansion(ExpansionError::BadAssig(Parameter::At))));
         assert_eq!(env.last_status(), EXIT_ERROR);
@@ -4239,11 +4277,11 @@ mod tests {
         let var = Parameter::Var(String::from("var"));
         let msg = String::from("empty");
         assert_eq!(CompoundCommand::Brace(vec!(
-            *cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Error(
+            *cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(ParameterSubstitution::Error(
                 true,
                 var.clone(),
-                Some(Word::Literal(msg.clone()))
-            )))),
+                Some(Single(lit(&msg)))))
+            ))))),
             cmd_should_not_run.clone(),
         )).run(&mut env), Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(var, Rc::new(msg)))));
         assert_eq!(env.last_status(), EXIT_ERROR);
@@ -4361,8 +4399,8 @@ mod tests {
             CompoundCommand::If(
                 vec!(
                     (vec!(Command::Simple(Box::new(SimpleCommand {
-                        cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                        io: vec!(Redirect::DupWrite(None, Word::Literal(String::from("253invalid")))),
+                        cmd: Some((Single(lit("echo")), vec!())),
+                        io: vec!(Redirect::DupWrite(None, Single(lit("253invalid")))),
                         vars: vec!(),
                     }))), vec!(cmd_should_not_run.clone())),
                 ),
@@ -4376,8 +4414,8 @@ mod tests {
             CompoundCommand::If(
                 vec!(
                     (vec!(Command::Simple(Box::new(SimpleCommand {
-                        cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                        io: vec!(Redirect::DupRead(None, Word::Literal(String::from("42")))),
+                        cmd: Some((Single(lit("echo")), vec!())),
+                        io: vec!(Redirect::DupRead(None, Single(lit("42")))),
                         vars: vec!(),
                     }))), vec!(cmd_should_not_run.clone())),
                 ),
@@ -4391,8 +4429,8 @@ mod tests {
             CompoundCommand::If(
                 vec!(
                     (vec!(Command::Simple(Box::new(SimpleCommand {
-                        cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                        io: vec!(Redirect::DupWrite(None, Word::Param(Parameter::At))),
+                        cmd: Some((Single(lit("echo")), vec!())),
+                        io: vec!(Redirect::DupWrite(None, Single(Word::Simple(Box::new(Param(Parameter::At)))))),
                         vars: vec!(),
                     }))), vec!(cmd_should_not_run.clone())),
                 ),
@@ -4417,8 +4455,8 @@ mod tests {
                 CompoundCommand::If(
                     vec!(
                         (vec!(Command::Simple(Box::new(SimpleCommand {
-                            cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                            io: vec!(Redirect::DupRead(None, Word::Param(Parameter::At))),
+                            cmd: Some((Single(lit("echo")), vec!())),
+                            io: vec!(Redirect::DupRead(None, Single(Word::Simple(Box::new(Param(Parameter::At)))))),
                             vars: vec!(),
                         }))), vec!(cmd_should_not_run.clone())),
                     ),
@@ -4433,8 +4471,8 @@ mod tests {
             CompoundCommand::If(
                 vec!(
                     (vec!(Command::Simple(Box::new(SimpleCommand {
-                        cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                        io: vec!(Redirect::DupWrite(None, Word::Literal(STDIN_FILENO.to_string()))),
+                        cmd: Some((Single(lit("echo")), vec!())),
+                        io: vec!(Redirect::DupWrite(None, Single(lit(&STDIN_FILENO.to_string())))),
                         vars: vec!(),
                     }))), vec!(cmd_should_not_run.clone())),
                 ),
@@ -4448,8 +4486,8 @@ mod tests {
             CompoundCommand::If(
                 vec!(
                     (vec!(Command::Simple(Box::new(SimpleCommand {
-                        cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                        io: vec!(Redirect::DupRead(None, Word::Literal(STDOUT_FILENO.to_string()))),
+                        cmd: Some((Single(lit("echo")), vec!())),
+                        io: vec!(Redirect::DupRead(None, Single(lit(&STDOUT_FILENO.to_string())))),
                         vars: vec!(),
                     }))), vec!(cmd_should_not_run.clone())),
                 ),
@@ -4462,7 +4500,7 @@ mod tests {
         assert_eq!(
             CompoundCommand::If(vec!(
                     (
-                        vec!(*cmd!("cat", Word::Literal(String::from("missing file")))),
+                        vec!(*cmd!("cat", Single(lit("missing file")))),
                         vec!(cmd_should_not_run.clone()),
                     )
                 ),
@@ -4483,9 +4521,9 @@ mod tests {
         assert_eq!(
             CompoundCommand::If(
                 vec!((
-                    vec!(*cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+                    vec!(*cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
                         Arith::Div(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(0)))
-                    )))))),
+                    ))))))))),
                     vec!(cmd_should_not_run.clone()))
                 ),
                 Some(vec!(cmd_exit.clone())),
@@ -4497,9 +4535,9 @@ mod tests {
         assert_eq!(
             CompoundCommand::If(
                 vec!((
-                    vec!(*cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+                    vec!(*cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
                         Arith::Pow(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(-5)))
-                    )))))),
+                    ))))))))),
                     vec!(cmd_should_not_run.clone())
                 )),
                 Some(vec!(cmd_exit.clone())),
@@ -4511,9 +4549,9 @@ mod tests {
         assert_eq!(
             CompoundCommand::If(
                 vec!((
-                    vec!(*cmd!("echo", Word::Subst(Box::new(
-                        ParameterSubstitution::Assign(true, Parameter::At, Some(Word::Literal(String::from("foo"))))
-                    )))),
+                    vec!(*cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(
+                        ParameterSubstitution::Assign(true, Parameter::At, Some(Single(lit("foo"))))
+                    ))))))),
                     vec!(cmd_should_not_run.clone())
                 )),
                 Some(vec!(cmd_exit.clone())),
@@ -4527,9 +4565,9 @@ mod tests {
         assert_eq!(
             CompoundCommand::If(
                 vec!((
-                    vec!(*cmd!("echo", Word::Subst(Box::new(
-                        ParameterSubstitution::Error(true, var.clone(), Some(Word::Literal(msg.clone())))
-                    )))),
+                    vec!(*cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(
+                        ParameterSubstitution::Error(true, var.clone(), Some(Single(lit(&msg)))),
+                    ))))))),
                     vec!(cmd_should_not_run.clone())
                 )),
                 Some(vec!(cmd_exit.clone())),
@@ -4596,12 +4634,12 @@ mod tests {
             Command::Simple(Box::new(SimpleCommand {
                 cmd: None,
                 io: vec!(),
-                vars: vec!((String::from(parent_name), Some(Word::Literal(String::from(child_value))))),
+                vars: vec!((String::from(parent_name), Some(Single(lit(&child_value))))),
             })),
             Command::Simple(Box::new(SimpleCommand {
                 cmd: None,
                 io: vec!(),
-                vars: vec!((String::from(child_name), Some(Word::Literal(String::from(child_value))))),
+                vars: vec!((String::from(child_name), Some(Single(lit(&child_value))))),
             })),
             *cmd!(fn_check_vars)
         ));
@@ -4676,9 +4714,9 @@ mod tests {
 
             assert_eq!(CompoundCommand::Subshell(vec!(
                 Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(String::from(msg))))),
+                    cmd: Some((Single(lit("echo")), vec!(Single(lit(&msg))))),
                     vars: vec!(),
-                    io: vec!(Redirect::DupWrite(Some(STDOUT_FILENO), Word::Literal(target_fd.to_string()))),
+                    io: vec!(Redirect::DupWrite(Some(STDOUT_FILENO), Single(lit(&target_fd.to_string())))),
                 }))
             )).run(&mut env), Ok(EXIT_SUCCESS));
 
@@ -4727,14 +4765,14 @@ mod tests {
             assert_eq!(CompoundCommand::Subshell(vec!(
                 *cmd!(exec),
                 Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(new_msg.to_string())))),
+                    cmd: Some((Single(lit("echo")), vec!(Single(lit(&new_msg.to_string()))))),
                     vars: vec!(),
-                    io: vec!(Redirect::DupWrite(Some(STDOUT_FILENO), Word::Literal(new_fd.to_string()))),
+                    io: vec!(Redirect::DupWrite(Some(STDOUT_FILENO), Single(lit(&new_fd.to_string())))),
                 })),
                 Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Word::Literal(String::from("echo")), vec!(Word::Literal(change_msg.to_string())))),
+                    cmd: Some((Single(lit("echo")), vec!(Single(lit(&change_msg.to_string()))))),
                     vars: vec!(),
-                    io: vec!(Redirect::DupWrite(Some(STDOUT_FILENO), Word::Literal(target_fd.to_string()))),
+                    io: vec!(Redirect::DupWrite(Some(STDOUT_FILENO), Single(lit(&target_fd.to_string())))),
                 })),
             )).run(&mut env), Ok(EXIT_SUCCESS));
 
@@ -4807,8 +4845,8 @@ mod tests {
         // RedirectionError::Ambiguous - empty field
         assert_eq!(CompoundCommand::Subshell(vec!(
             Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Word::Param(Parameter::At))),
+                cmd: Some((Single(lit("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Single(Word::Simple(Box::new(Param(Parameter::At)))))),
                 vars: vec!(),
             })),
             cmd_exit.clone(),
@@ -4828,8 +4866,8 @@ mod tests {
 
             assert_eq!(CompoundCommand::Subshell(vec!(
                 Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                    io: vec!(Redirect::DupRead(None, Word::Param(Parameter::At))),
+                    cmd: Some((Single(lit("echo")), vec!())),
+                    io: vec!(Redirect::DupRead(None, Single(Word::Simple(Box::new(Param(Parameter::At)))))),
                     vars: vec!(),
                 })),
                 cmd_exit.clone(),
@@ -4839,8 +4877,8 @@ mod tests {
         // RedirectionError::BadSrcFd - invalid string
         assert_eq!(CompoundCommand::Subshell(vec!(
             Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Word::Literal(String::from("253invalid")))),
+                cmd: Some((Single(lit("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Single(lit("253invalid")))),
                 vars: vec!(),
             })),
             cmd_exit.clone(),
@@ -4849,8 +4887,8 @@ mod tests {
         // RedirectionError::BadSrcFd - src fd not open
         assert_eq!(CompoundCommand::Subshell(vec!(
             Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                io: vec!(Redirect::DupRead(None, Word::Literal(String::from("42")))),
+                cmd: Some((Single(lit("echo")), vec!())),
+                io: vec!(Redirect::DupRead(None, Single(lit("42")))),
                 vars: vec!(),
             })),
             cmd_exit.clone(),
@@ -4859,8 +4897,8 @@ mod tests {
         // RedirectionError::BadFdPerms - read
         assert_eq!(CompoundCommand::Subshell(vec!(
             Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Word::Literal(STDIN_FILENO.to_string()))),
+                cmd: Some((Single(lit("echo")), vec!())),
+                io: vec!(Redirect::DupWrite(None, Single(lit(&STDIN_FILENO.to_string())))),
                 vars: vec!(),
             })),
             cmd_exit.clone(),
@@ -4869,8 +4907,8 @@ mod tests {
         // RedirectionError::BadFdPerms - write
         assert_eq!(CompoundCommand::Subshell(vec!(
             Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Word::Literal(String::from("echo")), vec!())),
-                io: vec!(Redirect::DupRead(None, Word::Literal(STDOUT_FILENO.to_string()))),
+                cmd: Some((Single(lit("echo")), vec!())),
+                io: vec!(Redirect::DupRead(None, Single(lit(&STDOUT_FILENO.to_string())))),
                 vars: vec!(),
             })),
             cmd_exit.clone(),
@@ -4878,7 +4916,7 @@ mod tests {
 
         // RuntimeError::Io
         assert_eq!(CompoundCommand::Subshell(vec!(
-            *cmd!("cat", Word::Literal(String::from("missing file"))),
+            *cmd!("cat", Single(lit("missing file"))),
             cmd_check_status.clone(),
             cmd_exit.clone(),
         )).run(&mut env), Ok(exit_code));
@@ -4899,27 +4937,27 @@ mod tests {
         let cmd_should_not_run = *cmd!(fn_name_should_not_run);
 
         assert_eq!(CompoundCommand::Subshell(vec!(
-            *cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+            *cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
                 Arith::Div(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(0)))
-            ))))),
+            )))))))),
             cmd_should_not_run.clone(),
         )).run(&mut env), Ok(EXIT_ERROR));
         assert_eq!(env.last_status(), EXIT_ERROR);
 
         assert_eq!(CompoundCommand::Subshell(vec!(
-            *cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
+            *cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
                 Arith::Pow(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(-5)))
-            ))))),
+            )))))))),
             cmd_should_not_run.clone(),
         )).run(&mut env), Ok(EXIT_ERROR));
         assert_eq!(env.last_status(), EXIT_ERROR);
 
         assert_eq!(CompoundCommand::Subshell(vec!(
-            *cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Assign(
+            *cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(ParameterSubstitution::Assign(
                 true,
                 Parameter::At,
-                Some(Word::Literal(String::from("foo")))
-            )))),
+                Some(Single(lit("foo")))
+            ))))))),
             cmd_should_not_run.clone(),
         )).run(&mut env), Ok(EXIT_ERROR));
         assert_eq!(env.last_status(), EXIT_ERROR);
@@ -4927,11 +4965,11 @@ mod tests {
         let var = Parameter::Var(String::from("var"));
         let msg = String::from("empty");
         assert_eq!(CompoundCommand::Subshell(vec!(
-            *cmd!("echo", Word::Subst(Box::new(ParameterSubstitution::Error(
+            *cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(ParameterSubstitution::Error(
                 true,
                 var.clone(),
-                Some(Word::Literal(msg.clone()))
-            )))),
+                Some(Single(lit(&msg)))))
+            ))))),
             cmd_should_not_run.clone(),
         )).run(&mut env), Ok(EXIT_ERROR));
         assert_eq!(env.last_status(), EXIT_ERROR);

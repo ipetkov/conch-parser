@@ -2585,23 +2585,23 @@ pub mod test {
     use syntax::parse::ParseError::*;
     use syntax::token::Token;
 
-    fn lit(s: &str) -> Word {
+    pub fn lit(s: &str) -> Word {
         Word::Simple(Box::new(Literal(String::from(s))))
     }
 
-    fn escaped(s: &str) -> Word {
+    pub fn escaped(s: &str) -> Word {
         Word::Simple(Box::new(Escaped(String::from(s))))
     }
 
-    fn subst(s: ParameterSubstitution) -> Word {
+    pub fn subst(s: ParameterSubstitution) -> Word {
         Word::Simple(Box::new(SimpleWord::Subst(Box::new(s))))
     }
 
-    fn single_quoted(s: &str) -> ComplexWord {
+    pub fn single_quoted(s: &str) -> ComplexWord {
         Single(Word::SingleQuoted(String::from(s)))
     }
 
-    fn double_quoted(s: &str) -> ComplexWord {
+    pub fn double_quoted(s: &str) -> ComplexWord {
         Single(Word::DoubleQuoted(vec!(Literal(String::from(s)))))
     }
 
