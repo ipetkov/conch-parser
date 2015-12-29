@@ -202,23 +202,21 @@ impl Fields {
                     None => " ",
                 };
 
-                let sep_len = sep.len();
-                let alloc_len = v.iter().fold(0, |accum, s| accum + s.len() + sep_len);
-
-                let mut ret = String::with_capacity(alloc_len);
-                let mut iter = v.into_iter();
-
-                if let Some(first) = iter.next() {
-                    ret.push_str(&**first);
-                }
-
-                for s in iter {
-                    ret.push_str(sep);
-                    ret.push_str(&**s);
-                }
-
-                Rc::new(ret)
+                let v: Vec<_> = v.iter().map(|s| &***s).collect();
+                Rc::new(v.join(sep))
             },
+        }
+    }
+}
+
+impl From<Vec<Rc<String>>> for Fields {
+    fn from(mut fields: Vec<Rc<String>>) -> Self {
+        if fields.is_empty() {
+            Fields::Zero
+        } else if fields.len() == 1 {
+            Fields::Single(fields.pop().unwrap())
+        } else {
+            Fields::Many(fields)
         }
     }
 }
@@ -982,7 +980,13 @@ impl WordEvalInternal for SimpleWord {
     {
         let maybe_split_fields = |fields, env: &mut Environment| {
             if split_fields_further {
-                split_fields(fields, env)
+                match fields {
+                    Fields::Zero      => Fields::Zero,
+                    Fields::Single(f) => split_fields(vec!(f), env).into(),
+                    Fields::At(fs)    => Fields::At(split_fields(fs, env)),
+                    Fields::Star(fs)  => Fields::Star(split_fields(fs, env)),
+                    Fields::Many(fs)  => Fields::Many(split_fields(fs, env)),
+                }
             } else {
                 fields
             }
@@ -1081,14 +1085,7 @@ impl WordEvalInternal for Word {
                 }
 
                 cur_field.map(|s| fields.push(Rc::new(s)));
-
-                if fields.is_empty() {
-                    Fields::Zero
-                } else if fields.len() == 1 {
-                    Fields::Single(fields.pop().unwrap())
-                } else {
-                    Fields::Many(fields)
-                }
+                fields.into()
             }
         };
 
@@ -1124,13 +1121,7 @@ impl WordEvalInternal for ComplexWord {
                     fields.extend(iter);
                 }
 
-                if fields.is_empty() {
-                    Fields::Zero
-                } else if fields.len() == 1 {
-                    Fields::Single(fields.pop().unwrap())
-                } else {
-                    Fields::Many(fields)
-                }
+                fields.into()
             },
         };
 
@@ -1138,29 +1129,10 @@ impl WordEvalInternal for ComplexWord {
     }
 }
 
-/// Performs field splitting on existing fields.
-fn split_fields(fields: Fields, env: &Environment) -> Fields {
-    match fields {
-        Fields::Zero     => Fields::Zero,
-        Fields::At(fs)   => Fields::At(split_fields_inner(fs, env)),
-        Fields::Star(fs) => Fields::Star(split_fields_inner(fs, env)),
-        Fields::Many(fs) => Fields::Many(split_fields_inner(fs, env)),
-
-        Fields::Single(f) => {
-            let mut fields = split_fields_inner(vec!(f), env);
-            if fields.len() == 1 {
-                Fields::Single(fields.pop().unwrap())
-            } else {
-                Fields::Many(fields)
-            }
-        },
-    }
-}
-
 /// Splits a vector of fields further based on the contents of the `IFS`
 /// variable (i.e. as long as it is non-empty). Any empty fields, original
 /// or otherwise created will be discarded.
-fn split_fields_inner(words: Vec<Rc<String>>, env: &Environment) -> Vec<Rc<String>> {
+fn split_fields(words: Vec<Rc<String>>, env: &Environment) -> Vec<Rc<String>> {
     // If IFS is set but null, there is nothing left to split
     let ifs = env.var("IFS").map_or(IFS_DEFAULT, |s| &s);
     if ifs.is_empty() {
