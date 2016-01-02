@@ -43,6 +43,8 @@ pub const EXIT_CMD_NOT_FOUND:      ExitStatus = ExitStatus::Code(127);
 
 const EXIT_SIGNAL_OFFSET: u32 = 128;
 
+const IFS_DEFAULT: &'static str = " \t\n";
+
 /// File descriptor for standard input.
 pub const STDIN_FILENO: Fd = 0;
 /// File descriptor for standard output.
@@ -466,13 +468,11 @@ impl<'a> Environment for Env<'a> {
 }
 
 impl Parameter {
-    /// Evaluates a parameter in the context of some environment.
-    ///
-    /// Any fields as a result of evaluating `$@` or `$*` will not be
-    /// split further. This is left for the caller to perform.
+    /// Evaluates a parameter in the context of some environment,
+    /// optionally splitting fields.
     ///
     /// A `None` value indicates that the parameter is unset.
-    pub fn eval(&self, env: &Environment) -> Option<Fields> {
+    pub fn eval(&self, split_fields_further: bool, env: &Environment) -> Option<Fields> {
         let get_args = || {
             let args = env.args();
             if args.is_empty() {
@@ -482,13 +482,13 @@ impl Parameter {
             }
         };
 
-        match *self {
+        let ret = match *self {
             Parameter::At   => Some(get_args().map_or(Fields::Zero, Fields::At)),
             Parameter::Star => Some(get_args().map_or(Fields::Zero, Fields::Star)),
 
             Parameter::Pound  => Some(Fields::Single(Rc::new(env.args_len().to_string()))),
             Parameter::Dollar => Some(Fields::Single(Rc::new(unsafe { libc::getpid() }.to_string()))),
-            Parameter::Dash   => None,
+            Parameter::Dash   => None, // FIXME: implement properly
             Parameter::Bang   => None, // FIXME: eventual job control would be nice
 
             Parameter::Question => Some(Fields::Single(Rc::new(match env.last_status() {
@@ -499,17 +499,45 @@ impl Parameter {
             Parameter::Positional(0) => Some(Fields::Single(env.name().clone())),
             Parameter::Positional(p) => env.arg(p as usize).cloned().map(Fields::Single),
             Parameter::Var(ref var)  => env.var(var).cloned().map(Fields::Single),
-        }
+        };
+
+        ret.map(|f| {
+            if split_fields_further {
+                split_fields(f, env)
+            } else {
+                f
+            }
+        })
     }
 }
 
 impl ParameterSubstitution {
-    /// Evaluates a parameter subsitution in the context of some environment.
+    /// Evaluates a parameter subsitution in the context of some environment,
+    /// optionally splitting fields.
     ///
-    /// No field *splitting* will be performed, and is left for the caller to
-    /// implement. However, multiple fields can occur if `$@` or `$*` is evaluated.
-    pub fn eval(&self, env: &mut Environment) -> Result<Fields> {
+    /// Note: even if the caller specifies no splitting should be done,
+    /// multiple fields can occur if `$@` or `$*` is evaluated.
+    pub fn eval(&self, env: &mut Environment, cfg: WordEvalConfig) -> Result<Fields> {
+        self.eval_inner(env, cfg).map(|f| {
+            if cfg.split_fields_further {
+                split_fields(f, env)
+            } else {
+                f
+            }
+        })
+    }
+
+    /// Evaluates a paarameter substitution without splitting fields further.
+    fn eval_inner(&self, env: &mut Environment, cfg: WordEvalConfig) -> Result<Fields> {
         use syntax::ast::ParameterSubstitution::*;
+
+        // Since we will do field splitting in the outer, public method,
+        // we don't want internal word evaluations to also do field splitting
+        // otherwise we will doubly split and potentially lose some fields.
+        let cfg = WordEvalConfig {
+            tilde_expansion: cfg.tilde_expansion,
+            split_fields_further: false,
+        };
 
         let null_str   = Rc::new(String::new());
         let null_field = Fields::Single(null_str.clone());
@@ -527,7 +555,7 @@ impl ParameterSubstitution {
                   F: Fn(Rc<String>, &glob::Pattern) -> Rc<String>
         {
             let map = |v: Vec<Rc<String>>, p| v.into_iter().map(|f| remove(f, &p)).collect();
-            let param = param.eval(env);
+            let param = param.eval(false, env);
 
             match *pat {
                 None => Ok(param),
@@ -551,7 +579,7 @@ impl ParameterSubstitution {
         // considered NON-strict, an empty vector is returned to the caller.
         macro_rules! check_param_subst {
             ($param:expr, $env:expr, $strict:expr) => {{
-                if let Some(fields) = $param.eval($env) {
+                if let Some(fields) = $param.eval(false, $env) {
                     if !fields.is_null() {
                         return Ok(fields)
                     } else if !$strict {
@@ -564,7 +592,10 @@ impl ParameterSubstitution {
         let ret = match *self {
             Command(_) => unimplemented!(),
 
-            Len(ref p) => Fields::Single(Rc::new(match p.eval(env) {
+            // We won't do field splitting here because any field expansions
+            // should be done on the result we are about to return, and not the
+            // intermediate value.
+            Len(ref p) => Fields::Single(Rc::new(match p.eval(false, env) {
                 None |
                 Some(Fields::Zero) => String::from("0"),
 
@@ -573,8 +604,8 @@ impl ParameterSubstitution {
                 Some(Fields::At(v))   |
                 Some(Fields::Star(v)) => v.len().to_string(),
 
-                // Evaluating a pure parameter should not be performing
-                // field expansions, so this variant should never occur.
+                // Since we should have specified NO field splitting above,
+                // this variant should never occur.
                 Some(Fields::Many(_)) => unreachable!(),
             })),
 
@@ -586,7 +617,7 @@ impl ParameterSubstitution {
             Default(strict, ref p, ref default) => {
                 check_param_subst!(p, env, strict);
                 match *default {
-                    Some(ref w) => try!(w.eval(env)),
+                    Some(ref w) => try!(w.eval_with_config(env, cfg)),
                     None => null_field,
                 }
             },
@@ -608,7 +639,7 @@ impl ParameterSubstitution {
 
                     &Parameter::Var(ref name) => {
                         let val = match *assig {
-                            Some(ref w) => try!(w.eval(env)),
+                            Some(ref w) => try!(w.eval_with_config(env, cfg)),
                             None => null_field,
                         };
 
@@ -622,7 +653,7 @@ impl ParameterSubstitution {
                 check_param_subst!(p, env, strict);
                 let msg = match *msg {
                     None => Rc::new(String::from("parameter null or not set")),
-                    Some(ref w) => try!(w.eval(env)).join(),
+                    Some(ref w) => try!(w.eval_with_config(env, cfg)).join(),
                 };
 
                 env.set_last_status(EXIT_ERROR);
@@ -630,13 +661,13 @@ impl ParameterSubstitution {
             },
 
             Alternative(strict, ref p, ref alt) => {
-                let val = p.eval(env);
+                let val = p.eval(false, env);
                 if val.is_none() || (strict && val.unwrap().is_null()) {
                     return Ok(null_field);
                 }
 
                 match *alt {
-                    Some(ref w) => try!(w.eval(env)),
+                    Some(ref w) => try!(w.eval_with_config(env, cfg)),
                     None => null_field,
                 }
             },
@@ -704,6 +735,100 @@ impl ParameterSubstitution {
 
         Ok(ret)
     }
+}
+
+fn split_fields(fields: Fields, env: &Environment) -> Fields {
+    match fields {
+        Fields::Zero      => Fields::Zero,
+        Fields::Single(f) => split_fields_internal(vec!(f), env).into(),
+        Fields::At(fs)    => Fields::At(split_fields_internal(fs, env)),
+        Fields::Star(fs)  => Fields::Star(split_fields_internal(fs, env)),
+        Fields::Many(fs)  => Fields::Many(split_fields_internal(fs, env)),
+    }
+}
+
+/// Splits a vector of fields further based on the contents of the `IFS`
+/// variable (i.e. as long as it is non-empty). Any empty fields, original
+/// or otherwise created will be discarded.
+fn split_fields_internal(words: Vec<Rc<String>>, env: &Environment) -> Vec<Rc<String>> {
+    // If IFS is set but null, there is nothing left to split
+    let ifs = env.var("IFS").map_or(IFS_DEFAULT, |s| &s);
+    if ifs.is_empty() {
+        return words;
+    }
+
+    let whitespace: Vec<char> = ifs.chars().filter(|c| c.is_whitespace()).collect();
+
+    let mut fields = Vec::with_capacity(words.len());
+    'word: for word in words {
+        if word.is_empty() {
+            continue;
+        }
+
+        let mut iter = word.chars().enumerate().peekable();
+        loop {
+            let start;
+            loop {
+                match iter.next() {
+                    // If we are still skipping leading whitespace, and we hit the
+                    // end of the word there are no fields to create, even empty ones.
+                    None => continue 'word,
+                    Some((idx, c)) => {
+                        if whitespace.contains(&c) {
+                            continue;
+                        } else if ifs.contains(c) {
+                            // If we hit an IFS char here then we have encountered an
+                            // empty field, since the last iteration of this loop either
+                            // had just consumed an IFS char, or its the start of the word.
+                            // In either case the result should be the same.
+                            fields.push(Rc::new(String::new()));
+                        } else {
+                            // Must have found a regular field character
+                            start = idx;
+                            break;
+                        }
+                    },
+                }
+            }
+
+            let end;
+            loop {
+                match iter.next() {
+                    None => {
+                        end = None;
+                        break;
+                    },
+                    Some((idx, c)) => if ifs.contains(c) {
+                        end = Some(idx);
+                        break;
+                    },
+                }
+            }
+
+            let field = match end {
+                Some(end) => &word[start..end],
+                None      => &word[start..],
+            };
+
+            fields.push(Rc::new(String::from(field)));
+
+            // Since now we've hit an IFS character, we need to also skip past
+            // any adjacent IFS whitespace as well. This also conveniently
+            // ignores any trailing IFS whitespace in the input as well.
+            loop {
+                match iter.peek() {
+                    Some(&(_, c)) if whitespace.contains(&c) => {
+                        iter.next();
+                    },
+                    Some(_) |
+                    None => break,
+                }
+            }
+        }
+    }
+
+    fields.shrink_to_fit();
+    fields
 }
 
 impl Arith {
@@ -1977,52 +2102,187 @@ mod tests {
         env.set_var(String::from("var3"), var3.clone());
 
         let args: Vec<Rc<String>> = args.into_iter().map(Rc::new).collect();
-        assert_eq!(Parameter::At.eval(&mut env), Some(Fields::At(args.clone())));
-        assert_eq!(Parameter::Star.eval(&mut env), Some(Fields::Star(args.clone())));
+        assert_eq!(Parameter::At.eval(false, &mut env), Some(Fields::At(args.clone())));
+        assert_eq!(Parameter::Star.eval(false, &mut env), Some(Fields::Star(args.clone())));
 
-        assert_eq!(Parameter::Dollar.eval(&mut env), Some(Fields::Single(Rc::new(unsafe {
+        assert_eq!(Parameter::Dollar.eval(false, &mut env), Some(Fields::Single(Rc::new(unsafe {
             ::libc::getpid().to_string()
         }))));
 
         // FIXME: test these
-        //assert_eq!(Parameter::Dash.eval(&mut env), ...);
-        //assert_eq!(Parameter::Bang.eval(&mut env), ...);
+        //assert_eq!(Parameter::Dash.eval(false, &mut env), ...);
+        //assert_eq!(Parameter::Bang.eval(false, &mut env), ...);
 
         // Before anything is run it should be considered a success
-        assert_eq!(Parameter::Question.eval(&mut env), Some(Fields::Single(Rc::new(String::from("0")))));
+        assert_eq!(Parameter::Question.eval(false, &mut env), Some(Fields::Single(Rc::new(String::from("0")))));
         env.set_last_status(ExitStatus::Code(3));
-        assert_eq!(Parameter::Question.eval(&mut env), Some(Fields::Single(Rc::new(String::from("3")))));
+        assert_eq!(Parameter::Question.eval(false, &mut env), Some(Fields::Single(Rc::new(String::from("3")))));
         // Signals should have 128 added to them
         env.set_last_status(ExitStatus::Signal(5));
-        assert_eq!(Parameter::Question.eval(&mut env), Some(Fields::Single(Rc::new(String::from("133")))));
+        assert_eq!(Parameter::Question.eval(false, &mut env), Some(Fields::Single(Rc::new(String::from("133")))));
 
-        assert_eq!(Parameter::Positional(0).eval(&mut env), Some(Fields::Single(env.name().clone())));
-        assert_eq!(Parameter::Positional(1).eval(&mut env), Some(Fields::Single(Rc::new(arg1))));
-        assert_eq!(Parameter::Positional(2).eval(&mut env), Some(Fields::Single(Rc::new(arg2))));
-        assert_eq!(Parameter::Positional(3).eval(&mut env), Some(Fields::Single(Rc::new(arg3))));
+        assert_eq!(Parameter::Positional(0).eval(false, &mut env), Some(Fields::Single(env.name().clone())));
+        assert_eq!(Parameter::Positional(1).eval(false, &mut env), Some(Fields::Single(Rc::new(arg1))));
+        assert_eq!(Parameter::Positional(2).eval(false, &mut env), Some(Fields::Single(Rc::new(arg2))));
+        assert_eq!(Parameter::Positional(3).eval(false, &mut env), Some(Fields::Single(Rc::new(arg3))));
 
-        assert_eq!(Parameter::Var(String::from("var1")).eval(&mut env), Some(Fields::Single(var1.clone())));
-        assert_eq!(Parameter::Var(String::from("var2")).eval(&mut env), Some(Fields::Single(var2.clone())));
-        assert_eq!(Parameter::Var(String::from("var3")).eval(&mut env), Some(Fields::Single(var3.clone())));
+        assert_eq!(Parameter::Var(String::from("var1")).eval(false, &mut env), Some(Fields::Single(var1.clone())));
+        assert_eq!(Parameter::Var(String::from("var2")).eval(false, &mut env), Some(Fields::Single(var2.clone())));
+        assert_eq!(Parameter::Var(String::from("var3")).eval(false, &mut env), Some(Fields::Single(var3.clone())));
 
-        assert_eq!(Parameter::Pound.eval(&mut env), Some(Fields::Single(Rc::new(String::from("3")))));
+        assert_eq!(Parameter::Pound.eval(false, &mut env), Some(Fields::Single(Rc::new(String::from("3")))));
     }
 
     #[test]
     fn test_eval_parameter_with_unset_vars() {
         let mut env = Env::with_config(None, Some(vec!()), None, None).unwrap();
 
-        assert_eq!(Parameter::At.eval(&mut env), Some(Fields::Zero));
-        assert_eq!(Parameter::Star.eval(&mut env), Some(Fields::Zero));
+        assert_eq!(Parameter::At.eval(false, &mut env), Some(Fields::Zero));
+        assert_eq!(Parameter::Star.eval(false, &mut env), Some(Fields::Zero));
 
-        assert_eq!(Parameter::Positional(0).eval(&mut env), Some(Fields::Single(env.name().clone())));
-        assert_eq!(Parameter::Positional(1).eval(&mut env), None);
-        assert_eq!(Parameter::Positional(2).eval(&mut env), None);
+        // FIXME: test these
+        //assert_eq!(Parameter::Dash.eval(false, &mut env), ...);
+        //assert_eq!(Parameter::Bang.eval(false, &mut env), ...);
 
-        assert_eq!(Parameter::Var(String::from("var1")).eval(&mut env), None);
-        assert_eq!(Parameter::Var(String::from("var2")).eval(&mut env), None);
+        assert_eq!(Parameter::Positional(0).eval(false, &mut env), Some(Fields::Single(env.name().clone())));
+        assert_eq!(Parameter::Positional(1).eval(false, &mut env), None);
+        assert_eq!(Parameter::Positional(2).eval(false, &mut env), None);
 
-        assert_eq!(Parameter::Pound.eval(&mut env), Some(Fields::Single(Rc::new(String::from("0")))));
+        assert_eq!(Parameter::Var(String::from("var1")).eval(false, &mut env), None);
+        assert_eq!(Parameter::Var(String::from("var2")).eval(false, &mut env), None);
+
+        assert_eq!(Parameter::Pound.eval(false, &mut env), Some(Fields::Single(Rc::new(String::from("0")))));
+    }
+
+    #[test]
+    fn test_eval_parameter_splitting_with_default_ifs() {
+        let val1 = Rc::new(String::from(" \t\nfoo\n\n\nbar \t\n"));
+        let val2 = Rc::new(String::from(""));
+
+        let args = vec!(
+            (*val1).clone(),
+            (*val2).clone(),
+        );
+
+        let mut env = Env::with_config(None, Some(args.clone()), None, None).unwrap();
+        env.set_var(String::from("var1"), val1.clone());
+        env.set_var(String::from("var2"), val2.clone());
+
+        // Splitting should NOT keep any IFS whitespace fields
+        let fields_args = vec!(Rc::new(String::from("foo")), Rc::new(String::from("bar")));
+
+        // With splitting
+        assert_eq!(Parameter::At.eval(true, &mut env), Some(Fields::At(fields_args.clone())));
+        assert_eq!(Parameter::Star.eval(true, &mut env), Some(Fields::Star(fields_args.clone())));
+
+        let fields_foo_bar = Fields::Many(fields_args.clone());
+
+        assert_eq!(Parameter::Positional(1).eval(true, &mut env), Some(fields_foo_bar.clone()));
+        assert_eq!(Parameter::Positional(2).eval(true, &mut env), Some(Fields::Zero));
+
+        assert_eq!(Parameter::Var(String::from("var1")).eval(true, &mut env), Some(fields_foo_bar.clone()));
+        assert_eq!(Parameter::Var(String::from("var2")).eval(true, &mut env), Some(Fields::Zero));
+
+        // Without splitting
+        let args: Vec<_> = args.into_iter().map(Rc::new).collect();
+        assert_eq!(Parameter::At.eval(false, &mut env), Some(Fields::At(args.clone())));
+        assert_eq!(Parameter::Star.eval(false, &mut env), Some(Fields::Star(args.clone())));
+
+        assert_eq!(Parameter::Positional(1).eval(false, &mut env), Some(Fields::Single(val1.clone())));
+        assert_eq!(Parameter::Positional(2).eval(false, &mut env), Some(Fields::Single(val2.clone())));
+
+        assert_eq!(Parameter::Var(String::from("var1")).eval(false, &mut env), Some(Fields::Single(val1)));
+        assert_eq!(Parameter::Var(String::from("var2")).eval(false, &mut env), Some(Fields::Single(val2)));
+    }
+
+    #[test]
+    fn test_eval_parameter_splitting_with_custom_ifs() {
+        let val1 = Rc::new(String::from("   foo000bar   "));
+        let val2 = Rc::new(String::from("  00 0 00  0 "));
+        let val3 = Rc::new(String::from(""));
+
+        let args = vec!(
+            (*val1).clone(),
+            (*val2).clone(),
+            (*val3).clone(),
+        );
+
+        let mut env = Env::with_config(None, Some(args.clone()), None, None).unwrap();
+        env.set_var(String::from("IFS"), Rc::new(String::from("0 ")));
+
+        env.set_var(String::from("var1"), val1.clone());
+        env.set_var(String::from("var2"), val2.clone());
+        env.set_var(String::from("var3"), val3.clone());
+
+        // Splitting SHOULD keep empty fields between IFS chars which are NOT whitespace
+        let fields_args = vec!(
+            Rc::new(String::from("foo")),
+            Rc::new(String::from("")),
+            Rc::new(String::from("")),
+            Rc::new(String::from("bar")),
+            Rc::new(String::from("")),
+            Rc::new(String::from("")),
+            Rc::new(String::from("")),
+            Rc::new(String::from("")),
+            Rc::new(String::from("")),
+            Rc::new(String::from("")),
+            // Already empty word should result in Zero fields
+        );
+
+        // With splitting
+        assert_eq!(Parameter::At.eval(true, &mut env), Some(Fields::At(fields_args.clone())));
+        assert_eq!(Parameter::Star.eval(true, &mut env), Some(Fields::Star(fields_args.clone())));
+
+        let fields_foo_bar = Fields::Many(vec!(
+            Rc::new(String::from("foo")),
+            Rc::new(String::from("")),
+            Rc::new(String::from("")),
+            Rc::new(String::from("bar")),
+        ));
+
+        let fields_all_blanks = Fields::Many(vec!(
+            Rc::new(String::from("")),
+            Rc::new(String::from("")),
+            Rc::new(String::from("")),
+            Rc::new(String::from("")),
+            Rc::new(String::from("")),
+            Rc::new(String::from("")),
+        ));
+
+        assert_eq!(Parameter::Positional(1).eval(true, &mut env), Some(fields_foo_bar.clone()));
+        assert_eq!(Parameter::Positional(2).eval(true, &mut env), Some(fields_all_blanks.clone()));
+        assert_eq!(Parameter::Positional(3).eval(true, &mut env), Some(Fields::Zero));
+
+        assert_eq!(Parameter::Var(String::from("var1")).eval(true, &mut env), Some(fields_foo_bar));
+        assert_eq!(Parameter::Var(String::from("var2")).eval(true, &mut env), Some(fields_all_blanks));
+        assert_eq!(Parameter::Var(String::from("var3")).eval(true, &mut env), Some(Fields::Zero));
+
+        // FIXME: test these
+        //assert_eq!(Parameter::Dash.eval(false, &mut env), ...);
+        //assert_eq!(Parameter::Bang.eval(false, &mut env), ...);
+
+        env.set_last_status(EXIT_SUCCESS);
+        assert_eq!(Parameter::Question.eval(true, &mut env), Some(Fields::Single(Rc::new(String::new()))));
+
+        // Without splitting
+        let args: Vec<_> = args.into_iter().map(Rc::new).collect();
+        assert_eq!(Parameter::At.eval(false, &mut env), Some(Fields::At(args.clone())));
+        assert_eq!(Parameter::Star.eval(false, &mut env), Some(Fields::Star(args.clone())));
+
+        assert_eq!(Parameter::Positional(1).eval(false, &mut env), Some(Fields::Single(val1.clone())));
+        assert_eq!(Parameter::Positional(2).eval(false, &mut env), Some(Fields::Single(val2.clone())));
+        assert_eq!(Parameter::Positional(3).eval(false, &mut env), Some(Fields::Single(val3.clone())));
+
+        assert_eq!(Parameter::Var(String::from("var1")).eval(false, &mut env), Some(Fields::Single(val1)));
+        assert_eq!(Parameter::Var(String::from("var2")).eval(false, &mut env), Some(Fields::Single(val2)));
+        assert_eq!(Parameter::Var(String::from("var3")).eval(false, &mut env), Some(Fields::Single(val3)));
+
+        // FIXME: test these
+        //assert_eq!(Parameter::Dash.eval(false, &mut env), ...);
+        //assert_eq!(Parameter::Bang.eval(false, &mut env), ...);
+
+        env.set_last_status(EXIT_SUCCESS);
+        assert_eq!(Parameter::Question.eval(false, &mut env), Some(Fields::Single(Rc::new(String::from("0")))));
     }
 
     #[test]
@@ -2166,6 +2426,11 @@ mod tests {
     fn test_eval_parameter_substitution_len() {
         use syntax::ast::ParameterSubstitution::Len;
 
+        let cfg = WordEvalConfig {
+            tilde_expansion: TildeExpansion::None,
+            split_fields_further: false,
+        };
+
         let name  = String::from("shell name");
         let var   = String::from("var");
         let value = String::from("foo bar");
@@ -2195,31 +2460,41 @@ mod tests {
         );
 
         for (param, result) in cases {
-            assert_eq!(Len(param).eval(&mut env), Ok(Fields::Single(Rc::new(result.to_string()))));
+            assert_eq!(Len(param).eval(&mut env, cfg), Ok(Fields::Single(Rc::new(result.to_string()))));
         }
 
         env.set_last_status(EXIT_SUCCESS);
-        assert_eq!(Len(Parameter::Question).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("1")))));
+        assert_eq!(Len(Parameter::Question).eval(&mut env, cfg), Ok(Fields::Single(Rc::new(String::from("1")))));
         env.set_last_status(ExitStatus::Signal(5));
-        assert_eq!(Len(Parameter::Question).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("3")))));
+        assert_eq!(Len(Parameter::Question).eval(&mut env, cfg), Ok(Fields::Single(Rc::new(String::from("3")))));
     }
 
     #[test]
     fn test_eval_parameter_substitution_arith() {
         use syntax::ast::ParameterSubstitution::Arithmetic;
 
+        let cfg = WordEvalConfig {
+            tilde_expansion: TildeExpansion::None,
+            split_fields_further: false,
+        };
+
         let mut env = Env::new().unwrap();
-        assert_eq!(Arithmetic(None).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("0")))));
-        assert_eq!(Arithmetic(Some(Arith::Literal(5))).eval(&mut env), Ok(Fields::Single(Rc::new(String::from("5")))));
+        assert_eq!(Arithmetic(None).eval(&mut env, cfg), Ok(Fields::Single(Rc::new(String::from("0")))));
+        assert_eq!(Arithmetic(Some(Arith::Literal(5))).eval(&mut env, cfg), Ok(Fields::Single(Rc::new(String::from("5")))));
         assert!(Arithmetic(Some(
             Arith::Div(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(0)))
-        )).eval(&mut env).is_err());
+        )).eval(&mut env, cfg).is_err());
         assert_eq!(env.last_status(), EXIT_ERROR);
     }
 
     #[test]
     fn test_eval_parameter_substitution_default() {
         use syntax::ast::ParameterSubstitution::Default;
+
+        let cfg = WordEvalConfig {
+            tilde_expansion: TildeExpansion::None,
+            split_fields_further: false,
+        };
 
         let var       = String::from("non_empty_var");
         let var_value = String::from("foobar");
@@ -2240,36 +2515,36 @@ mod tests {
 
         // Strict with default
         let subst = Default(true, Parameter::Var(var.clone()), Some(default.clone()));
-        assert_eq!(subst.eval(&mut env), Ok(var_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
         let subst = Default(true, Parameter::Var(var_null.clone()), Some(default.clone()));
-        assert_eq!(subst.eval(&mut env), Ok(default_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(default_value.clone()));
         let subst = Default(true, Parameter::Var(var_unset.clone()), Some(default.clone()));
-        assert_eq!(subst.eval(&mut env), Ok(default_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(default_value.clone()));
 
         // Strict without default
         let subst = Default(true, Parameter::Var(var.clone()), None);
-        assert_eq!(subst.eval(&mut env), Ok(var_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
         let subst = Default(true, Parameter::Var(var_null.clone()), None);
-        assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
         let subst = Default(true, Parameter::Var(var_unset.clone()), None);
-        assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
 
 
         // Non-strict with default
         let subst = Default(false, Parameter::Var(var.clone()), Some(default.clone()));
-        assert_eq!(subst.eval(&mut env), Ok(var_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
         let subst = Default(false, Parameter::Var(var_null.clone()), Some(default.clone()));
-        assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
         let subst = Default(false, Parameter::Var(var_unset.clone()), Some(default.clone()));
-        assert_eq!(subst.eval(&mut env), Ok(default_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(default_value.clone()));
 
         // Non-strict without default
         let subst = Default(false, Parameter::Var(var.clone()), None);
-        assert_eq!(subst.eval(&mut env), Ok(var_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
         let subst = Default(false, Parameter::Var(var_null.clone()), None);
-        assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
         let subst = Default(false, Parameter::Var(var_unset.clone()), None);
-        assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
 
         // Args have one non-null argument
         {
@@ -2284,22 +2559,22 @@ mod tests {
             let mut env = Env::with_config(None, Some(args), None, None).unwrap();
 
             let subst = Default(true, Parameter::At, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(Fields::At(args_value.clone())));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
             let subst = Default(true, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env), Ok(Fields::At(args_value.clone())));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
             let subst = Default(true, Parameter::Star, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(Fields::Star(args_value.clone())));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Star(args_value.clone())));
             let subst = Default(true, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env), Ok(Fields::Star(args_value.clone())));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Star(args_value.clone())));
 
             let subst = Default(false, Parameter::At, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(Fields::At(args_value.clone())));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
             let subst = Default(false, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env), Ok(Fields::At(args_value.clone())));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
             let subst = Default(false, Parameter::Star, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(Fields::Star(args_value.clone())));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Star(args_value.clone())));
             let subst = Default(false, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env), Ok(Fields::Star(args_value.clone())));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Star(args_value.clone())));
         }
 
         // Args all null
@@ -2311,22 +2586,22 @@ mod tests {
             )), None, None).unwrap();
 
             let subst = Default(true, Parameter::At, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(default_value.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(default_value.clone()));
             let subst = Default(true, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Default(true, Parameter::Star, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(default_value.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(default_value.clone()));
             let subst = Default(true, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
 
             let subst = Default(false, Parameter::At, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Default(false, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Default(false, Parameter::Star, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Default(false, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
         }
 
         // Args not set
@@ -2334,28 +2609,33 @@ mod tests {
             let mut env = Env::new().unwrap();
 
             let subst = Default(true, Parameter::At, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(default_value.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(default_value.clone()));
             let subst = Default(true, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Default(true, Parameter::Star, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(default_value.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(default_value.clone()));
             let subst = Default(true, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
 
             let subst = Default(false, Parameter::At, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Default(false, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Default(false, Parameter::Star, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Default(false, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
         }
     }
 
     #[test]
     fn test_eval_parameter_substitution_assign() {
         use syntax::ast::ParameterSubstitution::Assign;
+
+        let cfg = WordEvalConfig {
+            tilde_expansion: TildeExpansion::None,
+            split_fields_further: false,
+        };
 
         let var         = String::from("non_empty_var");
         let var_value   = String::from("foobar");
@@ -2376,34 +2656,34 @@ mod tests {
 
         // Variable set and non-null
         let subst = Assign(true, Parameter::Var(var.clone()), Some(assig.clone()));
-        assert_eq!(subst.eval(&mut env), Ok(var_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
         let subst = Assign(true, Parameter::Var(var.clone()), None);
-        assert_eq!(subst.eval(&mut env), Ok(var_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
         let subst = Assign(false, Parameter::Var(var.clone()), Some(assig.clone()));
-        assert_eq!(subst.eval(&mut env), Ok(var_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
         let subst = Assign(false, Parameter::Var(var.clone()), None);
-        assert_eq!(subst.eval(&mut env), Ok(var_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
 
 
         // Variable set but null
         env.set_var(var_null.clone(), null.clone());
         let subst = Assign(true, Parameter::Var(var_null.clone()), Some(assig.clone()));
-        assert_eq!(subst.eval(&mut env), Ok(assig_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(assig_value.clone()));
         assert_eq!(env.var(&var_null), Some(&assig_var_value));
 
         env.set_var(var_null.clone(), null.clone());
         let subst = Assign(true, Parameter::Var(var_null.clone()), None);
-        assert_eq!(subst.eval(&mut env), Ok(null_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(null_value.clone()));
         assert_eq!(env.var(&var_null), Some(&null));
 
         env.set_var(var_null.clone(), null.clone());
         let subst = Assign(false, Parameter::Var(var_null.clone()), Some(assig.clone()));
-        assert_eq!(subst.eval(&mut env), Ok(null_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(null_value.clone()));
         assert_eq!(env.var(&var_null), Some(&null));
 
         env.set_var(var_null.clone(), null.clone());
         let subst = Assign(false, Parameter::Var(var_null.clone()), None);
-        assert_eq!(subst.eval(&mut env), Ok(null_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(null_value.clone()));
         assert_eq!(env.var(&var_null), Some(&null));
 
 
@@ -2411,28 +2691,28 @@ mod tests {
         {
             let mut env = env.sub_env();
             let subst = Assign(true, Parameter::Var(var_unset.clone()), Some(assig.clone()));
-            assert_eq!(subst.eval(&mut *env), Ok(assig_value.clone()));
+            assert_eq!(subst.eval(&mut *env, cfg), Ok(assig_value.clone()));
             assert_eq!(env.var(&var_unset), Some(&assig_var_value));
         }
 
         {
             let mut env = env.sub_env();
             let subst = Assign(true, Parameter::Var(var_unset.clone()), None);
-            assert_eq!(subst.eval(&mut *env), Ok(null_value.clone()));
+            assert_eq!(subst.eval(&mut *env, cfg), Ok(null_value.clone()));
             assert_eq!(env.var(&var_unset), Some(&null));
         }
 
         {
             let mut env = env.sub_env();
             let subst = Assign(false, Parameter::Var(var_unset.clone()), Some(assig.clone()));
-            assert_eq!(subst.eval(&mut *env), Ok(assig_value.clone()));
+            assert_eq!(subst.eval(&mut *env, cfg), Ok(assig_value.clone()));
             assert_eq!(env.var(&var_unset), Some(&assig_var_value));
         }
 
         {
             let mut env = env.sub_env();
             let subst = Assign(false, Parameter::Var(var_unset.clone()), None);
-            assert_eq!(subst.eval(&mut *env), Ok(null_value.clone()));
+            assert_eq!(subst.eval(&mut *env, cfg), Ok(null_value.clone()));
             assert_eq!(env.var(&var_unset), Some(&null));
         }
 
@@ -2452,7 +2732,7 @@ mod tests {
         for param in unassignable_params {
             let err = ExpansionError::BadAssig(param.clone());
             let subst = Assign(true, param.clone(), Some(assig.clone()));
-            assert_eq!(subst.eval(&mut env), Err(RuntimeError::Expansion(err.clone())));
+            assert_eq!(subst.eval(&mut env, cfg), Err(RuntimeError::Expansion(err.clone())));
             assert_eq!(env.last_status(), EXIT_ERROR);
         }
     }
@@ -2460,6 +2740,11 @@ mod tests {
     #[test]
     fn test_eval_parameter_substitution_error() {
         use syntax::ast::ParameterSubstitution::Error;
+
+        let cfg = WordEvalConfig {
+            tilde_expansion: TildeExpansion::None,
+            split_fields_further: false,
+        };
 
         let var       = String::from("non_empty_var");
         let var_value = String::from("foobar");
@@ -2488,25 +2773,25 @@ mod tests {
 
         // Strict with error message
         let subst = Error(true, Parameter::Var(var.clone()), Some(err_msg.clone()));
-        assert_eq!(subst.eval(&mut env), Ok(var_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
 
         env.set_last_status(EXIT_SUCCESS);
         let subst = Error(true, Parameter::Var(var_null.clone()), Some(err_msg.clone()));
-        assert_eq!(subst.eval(&mut env).as_ref(), Err(&err_null));
+        assert_eq!(subst.eval(&mut env, cfg).as_ref(), Err(&err_null));
         assert_eq!(env.last_status(), EXIT_ERROR);
 
         env.set_last_status(EXIT_SUCCESS);
         let subst = Error(true, Parameter::Var(var_unset.clone()), Some(err_msg.clone()));
-        assert_eq!(subst.eval(&mut env).as_ref(), Err(&err_unset));
+        assert_eq!(subst.eval(&mut env, cfg).as_ref(), Err(&err_unset));
         assert_eq!(env.last_status(), EXIT_ERROR);
 
 
         // Strict without error message
         let subst = Error(true, Parameter::Var(var.clone()), None);
-        assert_eq!(subst.eval(&mut env), Ok(var_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
 
         env.set_last_status(EXIT_SUCCESS);
-        let eval = Error(true, Parameter::Var(var_null.clone()), None).eval(&mut env);
+        let eval = Error(true, Parameter::Var(var_null.clone()), None).eval(&mut env, cfg);
         if let Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(param, _))) = eval {
             assert_eq!(param, Parameter::Var(var_null.clone()));
             assert_eq!(env.last_status(), EXIT_ERROR);
@@ -2515,7 +2800,7 @@ mod tests {
         }
 
         env.set_last_status(EXIT_SUCCESS);
-        let eval = Error(true, Parameter::Var(var_unset.clone()), None).eval(&mut env);
+        let eval = Error(true, Parameter::Var(var_unset.clone()), None).eval(&mut env, cfg);
         if let Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(param, _))) = eval {
             assert_eq!(param, Parameter::Var(var_unset.clone()));
             assert_eq!(env.last_status(), EXIT_ERROR);
@@ -2526,26 +2811,26 @@ mod tests {
 
         // Non-strict with error message
         let subst = Error(false, Parameter::Var(var.clone()), Some(err_msg.clone()));
-        assert_eq!(subst.eval(&mut env), Ok(var_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
 
         let subst = Error(false, Parameter::Var(var_null.clone()), Some(err_msg.clone()));
-        assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
 
         env.set_last_status(EXIT_SUCCESS);
         let subst = Error(false, Parameter::Var(var_unset.clone()), Some(err_msg.clone()));
-        assert_eq!(subst.eval(&mut env).as_ref(), Err(&err_unset));
+        assert_eq!(subst.eval(&mut env, cfg).as_ref(), Err(&err_unset));
         assert_eq!(env.last_status(), EXIT_ERROR);
 
 
         // Non-strict without error message
         let subst = Error(false, Parameter::Var(var.clone()), None);
-        assert_eq!(subst.eval(&mut env), Ok(var_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
 
         let subst = Error(false, Parameter::Var(var_null.clone()), None);
-        assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
 
         env.set_last_status(EXIT_SUCCESS);
-        let eval = Error(false, Parameter::Var(var_unset.clone()), None).eval(&mut env);
+        let eval = Error(false, Parameter::Var(var_unset.clone()), None).eval(&mut env, cfg);
         if let Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(param, _))) = eval {
             assert_eq!(param, Parameter::Var(var_unset.clone()));
             assert_eq!(env.last_status(), EXIT_ERROR);
@@ -2567,22 +2852,22 @@ mod tests {
             let mut env = Env::with_config(None, Some(args), None, None).unwrap();
 
             let subst = Error(true, Parameter::At, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(Fields::At(args_value.clone())));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
             let subst = Error(true, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env), Ok(Fields::At(args_value.clone())));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
             let subst = Error(true, Parameter::Star, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(Fields::Star(args_value.clone())));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Star(args_value.clone())));
             let subst = Error(true, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env), Ok(Fields::Star(args_value.clone())));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Star(args_value.clone())));
 
             let subst = Error(false, Parameter::At, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(Fields::At(args_value.clone())));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
             let subst = Error(false, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env), Ok(Fields::At(args_value.clone())));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
             let subst = Error(false, Parameter::Star, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(Fields::Star(args_value.clone())));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Star(args_value.clone())));
             let subst = Error(false, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env), Ok(Fields::Star(args_value.clone())));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Star(args_value.clone())));
         }
 
         // Args all null
@@ -2595,11 +2880,11 @@ mod tests {
 
             env.set_last_status(EXIT_SUCCESS);
             let subst = Error(true, Parameter::At, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env).as_ref(), Err(&err_at));
+            assert_eq!(subst.eval(&mut env, cfg).as_ref(), Err(&err_at));
             assert_eq!(env.last_status(), EXIT_ERROR);
 
             env.set_last_status(EXIT_SUCCESS);
-            let eval = Error(true, Parameter::At, None).eval(&mut env);
+            let eval = Error(true, Parameter::At, None).eval(&mut env, cfg);
             if let Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(Parameter::At, _))) = eval {
                 assert_eq!(env.last_status(), EXIT_ERROR);
             } else {
@@ -2608,11 +2893,11 @@ mod tests {
 
             env.set_last_status(EXIT_SUCCESS);
             let subst = Error(true, Parameter::Star, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env).as_ref(), Err(&err_star));
+            assert_eq!(subst.eval(&mut env, cfg).as_ref(), Err(&err_star));
             assert_eq!(env.last_status(), EXIT_ERROR);
 
             env.set_last_status(EXIT_SUCCESS);
-            let eval = Error(true, Parameter::Star, None).eval(&mut env);
+            let eval = Error(true, Parameter::Star, None).eval(&mut env, cfg);
             if let Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(Parameter::Star, _))) = eval {
                 assert_eq!(env.last_status(), EXIT_ERROR);
             } else {
@@ -2621,13 +2906,13 @@ mod tests {
 
 
             let subst = Error(false, Parameter::At, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Error(false, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Error(false, Parameter::Star, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Error(false, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
         }
 
         // Args not set
@@ -2636,11 +2921,11 @@ mod tests {
 
             env.set_last_status(EXIT_SUCCESS);
             let subst = Error(true, Parameter::At, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env).as_ref(), Err(&err_at));
+            assert_eq!(subst.eval(&mut env, cfg).as_ref(), Err(&err_at));
             assert_eq!(env.last_status(), EXIT_ERROR);
 
             env.set_last_status(EXIT_SUCCESS);
-            let eval = Error(true, Parameter::At, None).eval(&mut env);
+            let eval = Error(true, Parameter::At, None).eval(&mut env, cfg);
             if let Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(Parameter::At, _))) = eval {
                 assert_eq!(env.last_status(), EXIT_ERROR);
             } else {
@@ -2649,11 +2934,11 @@ mod tests {
 
             env.set_last_status(EXIT_SUCCESS);
             let subst = Error(true, Parameter::Star, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env).as_ref(), Err(&err_star));
+            assert_eq!(subst.eval(&mut env, cfg).as_ref(), Err(&err_star));
             assert_eq!(env.last_status(), EXIT_ERROR);
 
             env.set_last_status(EXIT_SUCCESS);
-            let eval = Error(true, Parameter::Star, None).eval(&mut env);
+            let eval = Error(true, Parameter::Star, None).eval(&mut env, cfg);
             if let Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(Parameter::Star, _))) = eval {
                 assert_eq!(env.last_status(), EXIT_ERROR);
             } else {
@@ -2661,19 +2946,24 @@ mod tests {
             }
 
             let subst = Error(false, Parameter::At, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Error(false, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Error(false, Parameter::Star, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Error(false, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
         }
     }
 
     #[test]
     fn test_eval_parameter_substitution_alternative() {
         use syntax::ast::ParameterSubstitution::Alternative;
+
+        let cfg = WordEvalConfig {
+            tilde_expansion: TildeExpansion::None,
+            split_fields_further: false,
+        };
 
         let var       = String::from("non_empty_var");
         let var_value = String::from("foobar");
@@ -2693,36 +2983,36 @@ mod tests {
 
         // Strict with alternative
         let subst = Alternative(true, Parameter::Var(var.clone()), Some(alternative.clone()));
-        assert_eq!(subst.eval(&mut env), Ok(alt_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
         let subst = Alternative(true, Parameter::Var(var_null.clone()), Some(alternative.clone()));
-        assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
         let subst = Alternative(true, Parameter::Var(var_unset.clone()), Some(alternative.clone()));
-        assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
 
         // Strict without alternative
         let subst = Alternative(true, Parameter::Var(var.clone()), None);
-        assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
         let subst = Alternative(true, Parameter::Var(var_null.clone()), None);
-        assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
         let subst = Alternative(true, Parameter::Var(var_unset.clone()), None);
-        assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
 
 
         // Non-strict with alternative
         let subst = Alternative(false, Parameter::Var(var.clone()), Some(alternative.clone()));
-        assert_eq!(subst.eval(&mut env), Ok(alt_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
         let subst = Alternative(false, Parameter::Var(var_null.clone()), Some(alternative.clone()));
-        assert_eq!(subst.eval(&mut env), Ok(alt_value.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
         let subst = Alternative(false, Parameter::Var(var_unset.clone()), Some(alternative.clone()));
-        assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
 
         // Non-strict without alternative
         let subst = Alternative(false, Parameter::Var(var.clone()), None);
-        assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
         let subst = Alternative(false, Parameter::Var(var_null.clone()), None);
-        assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
         let subst = Alternative(false, Parameter::Var(var_unset.clone()), None);
-        assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
 
 
         // Args have one non-null argument
@@ -2737,22 +3027,22 @@ mod tests {
             let mut env = Env::with_config(None, Some(args), None, None).unwrap();
 
             let subst = Alternative(true, Parameter::At, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(alt_value.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
             let subst = Alternative(true, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Alternative(true, Parameter::Star, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(alt_value.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
             let subst = Alternative(true, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
 
             let subst = Alternative(false, Parameter::At, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(alt_value.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
             let subst = Alternative(false, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Alternative(false, Parameter::Star, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(alt_value.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
             let subst = Alternative(false, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
         }
 
         // Args all null
@@ -2764,22 +3054,22 @@ mod tests {
             )), None, None).unwrap();
 
             let subst = Alternative(true, Parameter::At, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Alternative(true, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Alternative(true, Parameter::Star, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Alternative(true, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
 
             let subst = Alternative(false, Parameter::At, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(alt_value.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
             let subst = Alternative(false, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Alternative(false, Parameter::Star, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(alt_value.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
             let subst = Alternative(false, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
         }
 
         // Args not set
@@ -2787,23 +3077,285 @@ mod tests {
             let mut env = Env::new().unwrap();
 
             let subst = Alternative(true, Parameter::At, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Alternative(true, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Alternative(true, Parameter::Star, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Alternative(true, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
 
             let subst = Alternative(false, Parameter::At, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(alt_value.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
             let subst = Alternative(false, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
             let subst = Alternative(false, Parameter::Star, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env), Ok(alt_value.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
             let subst = Alternative(false, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env), Ok(null.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
         }
+    }
+
+    #[test]
+    fn test_eval_parameter_substitution_splitting_default_ifs() {
+        use syntax::ast::ParameterSubstitution::*;
+
+        let val1 = Rc::new(String::from(" \t\nfoo \t\nbar \t\n"));
+        let val2 = Rc::new(String::from(""));
+
+        let args = vec!(
+            (*val1).clone(),
+            (*val2).clone(),
+        );
+
+        let var1 = Parameter::Var(String::from("var1"));
+        let var2 = Parameter::Var(String::from("var2"));
+
+        let var_null = var2.clone();
+
+        let mut env = Env::with_config(None, Some(args.clone()), None, None).unwrap();
+        env.set_var(String::from("var1"), val1.clone());
+        env.set_var(String::from("var2"), val2.clone());
+
+        // Splitting should NOT keep empty fields between IFS chars which ARE whitespace
+        let fields_foo_bar = Fields::Many(vec!(
+            Rc::new(String::from("foo")),
+            Rc::new(String::from("bar")),
+        ));
+
+        // With splitting
+        let cfg = WordEvalConfig {
+            tilde_expansion: TildeExpansion::None,
+            split_fields_further: true,
+        };
+
+        // FIXME: test Command
+        assert_eq!(Default(false, var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
+        assert_eq!(Default(false, var2.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
+
+        assert_eq!(Assign(false, var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
+        assert_eq!(Assign(false, var2.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
+
+        assert_eq!(Error(false, var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
+        assert_eq!(Error(false, var2.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
+
+        assert_eq!(Alternative(false, var_null.clone(), Some(
+            Single(Word::Simple(Box::new(Param(var1.clone()))))
+        )).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
+        assert_eq!(Alternative(false, var_null.clone(), Some(
+            Single(Word::Simple(Box::new(Param(var2.clone()))))
+        )).eval(&mut env, cfg), Ok(Fields::Zero));
+
+        assert_eq!(RemoveSmallestSuffix(var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
+        assert_eq!(RemoveSmallestSuffix(var2.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
+
+        assert_eq!(RemoveLargestSuffix(var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
+        assert_eq!(RemoveLargestSuffix(var2.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
+
+        assert_eq!(RemoveSmallestPrefix(var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
+        assert_eq!(RemoveSmallestPrefix(var2.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
+
+        assert_eq!(RemoveLargestPrefix(var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
+        assert_eq!(RemoveLargestPrefix(var2.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
+
+        // Without splitting
+
+        let cfg = WordEvalConfig {
+            tilde_expansion: TildeExpansion::None,
+            split_fields_further: false,
+        };
+
+        // FIXME: test Command
+        let val1 = Fields::Single(val1.clone());
+        let val2 = Fields::Single(val2.clone());
+
+        assert_eq!(Default(false, var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
+        assert_eq!(Default(false, var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
+
+        assert_eq!(Assign(false, var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
+        assert_eq!(Assign(false, var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
+
+        assert_eq!(Error(false, var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
+        assert_eq!(Error(false, var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
+
+        assert_eq!(Alternative(false, var_null.clone(), Some(
+            Single(Word::Simple(Box::new(Param(var1.clone()))))
+        )).eval(&mut env, cfg), Ok(val1.clone()));
+        assert_eq!(Alternative(false, var_null.clone(), Some(
+            Single(Word::Simple(Box::new(Param(var2.clone()))))
+        )).eval(&mut env, cfg), Ok(val2.clone()));
+
+        assert_eq!(RemoveSmallestSuffix(var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
+        assert_eq!(RemoveSmallestSuffix(var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
+
+        assert_eq!(RemoveLargestSuffix(var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
+        assert_eq!(RemoveLargestSuffix(var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
+
+        assert_eq!(RemoveSmallestPrefix(var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
+        assert_eq!(RemoveSmallestPrefix(var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
+
+        assert_eq!(RemoveLargestPrefix(var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
+        assert_eq!(RemoveLargestPrefix(var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
+    }
+
+    #[test]
+    fn test_eval_parameter_substitution_splitting_with_custom_ifs() {
+        use syntax::ast::ParameterSubstitution::*;
+
+        let val1 = Rc::new(String::from("   foo000bar   "));
+        let val2 = Rc::new(String::from("  00 0 00  0 "));
+        let val3 = Rc::new(String::from(""));
+
+        let args = vec!(
+            (*val1).clone(),
+            (*val2).clone(),
+            (*val3).clone(),
+        );
+
+        let var1 = Parameter::Var(String::from("var1"));
+        let var2 = Parameter::Var(String::from("var2"));
+        let var3 = Parameter::Var(String::from("var3"));
+
+        let var_null = var3.clone();
+        let var_missing = Parameter::Var(String::from("missing"));
+
+        let mut env = Env::with_config(None, Some(args.clone()), None, None).unwrap();
+        env.set_var(String::from("IFS"), Rc::new(String::from("0 ")));
+
+        env.set_var(String::from("var1"), val1.clone());
+        env.set_var(String::from("var2"), val2.clone());
+        env.set_var(String::from("var3"), val3.clone());
+
+        // Splitting SHOULD keep empty fields between IFS chars which are NOT whitespace
+        let fields_foo_bar = Fields::Many(vec!(
+            Rc::new(String::from("foo")),
+            Rc::new(String::from("")),
+            Rc::new(String::from("")),
+            Rc::new(String::from("bar")),
+        ));
+
+        let fields_all_blanks = Fields::Many(vec!(
+            Rc::new(String::from("")),
+            Rc::new(String::from("")),
+            Rc::new(String::from("")),
+            Rc::new(String::from("")),
+            Rc::new(String::from("")),
+            Rc::new(String::from("")),
+        ));
+
+        // With splitting
+        let cfg = WordEvalConfig {
+            tilde_expansion: TildeExpansion::None,
+            split_fields_further: true,
+        };
+
+        // FIXME: test Command
+        assert_eq!(Len(var_missing.clone()).eval(&mut env, cfg), Ok(Fields::Single(Rc::new(String::from("")))));
+
+        assert_eq!(Arithmetic(Some(Arith::Add(
+            Box::new(Arith::Literal(100)),
+            Box::new(Arith::Literal(5)),
+        ))).eval(&mut env, cfg), Ok(
+            Fields::Many(vec!(
+                Rc::new(String::from("1")),
+                Rc::new(String::from("5")),
+            )))
+        );
+
+        assert_eq!(Default(false, var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
+        assert_eq!(Default(false, var2.clone(), None).eval(&mut env, cfg), Ok(fields_all_blanks.clone()));
+        assert_eq!(Default(false, var3.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
+
+        assert_eq!(Assign(false, var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
+        assert_eq!(Assign(false, var2.clone(), None).eval(&mut env, cfg), Ok(fields_all_blanks.clone()));
+        assert_eq!(Assign(false, var3.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
+
+        assert_eq!(Error(false, var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
+        assert_eq!(Error(false, var2.clone(), None).eval(&mut env, cfg), Ok(fields_all_blanks.clone()));
+        assert_eq!(Error(false, var3.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
+
+        assert_eq!(Alternative(false, var_null.clone(), Some(
+            Single(Word::Simple(Box::new(Param(var1.clone()))))
+        )).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
+        assert_eq!(Alternative(false, var_null.clone(), Some(
+            Single(Word::Simple(Box::new(Param(var2.clone()))))
+        )).eval(&mut env, cfg), Ok(fields_all_blanks.clone()));
+        assert_eq!(Alternative(false, var_null.clone(), Some(
+            Single(Word::Simple(Box::new(Param(var3.clone()))))
+        )).eval(&mut env, cfg), Ok(Fields::Zero));
+
+        assert_eq!(RemoveSmallestSuffix(var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
+        assert_eq!(RemoveSmallestSuffix(var2.clone(), None).eval(&mut env, cfg), Ok(fields_all_blanks.clone()));
+        assert_eq!(RemoveSmallestSuffix(var3.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
+
+        assert_eq!(RemoveLargestSuffix(var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
+        assert_eq!(RemoveLargestSuffix(var2.clone(), None).eval(&mut env, cfg), Ok(fields_all_blanks.clone()));
+        assert_eq!(RemoveLargestSuffix(var3.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
+
+        assert_eq!(RemoveSmallestPrefix(var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
+        assert_eq!(RemoveSmallestPrefix(var2.clone(), None).eval(&mut env, cfg), Ok(fields_all_blanks.clone()));
+        assert_eq!(RemoveSmallestPrefix(var3.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
+
+        assert_eq!(RemoveLargestPrefix(var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
+        assert_eq!(RemoveLargestPrefix(var2.clone(), None).eval(&mut env, cfg), Ok(fields_all_blanks.clone()));
+        assert_eq!(RemoveLargestPrefix(var3.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
+
+        // Without splitting
+
+        let cfg = WordEvalConfig {
+            tilde_expansion: TildeExpansion::None,
+            split_fields_further: false,
+        };
+
+        // FIXME: test Command
+        assert_eq!(Len(var_missing.clone()).eval(&mut env, cfg), Ok(Fields::Single(Rc::new(String::from("0")))));
+
+        assert_eq!(Arithmetic(Some(Arith::Add(
+            Box::new(Arith::Literal(100)),
+            Box::new(Arith::Literal(5)),
+        ))).eval(&mut env, cfg), Ok(Fields::Single(Rc::new(String::from("105")))));
+
+        let val1 = Fields::Single(val1.clone());
+        let val2 = Fields::Single(val2.clone());
+        let val3 = Fields::Single(val3.clone());
+
+        assert_eq!(Default(false, var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
+        assert_eq!(Default(false, var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
+        assert_eq!(Default(false, var3.clone(), None).eval(&mut env, cfg), Ok(val3.clone()));
+
+        assert_eq!(Assign(false, var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
+        assert_eq!(Assign(false, var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
+        assert_eq!(Assign(false, var3.clone(), None).eval(&mut env, cfg), Ok(val3.clone()));
+
+        assert_eq!(Error(false, var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
+        assert_eq!(Error(false, var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
+        assert_eq!(Error(false, var3.clone(), None).eval(&mut env, cfg), Ok(val3.clone()));
+
+        assert_eq!(Alternative(false, var_null.clone(), Some(
+            Single(Word::Simple(Box::new(Param(var1.clone()))))
+        )).eval(&mut env, cfg), Ok(val1.clone()));
+        assert_eq!(Alternative(false, var_null.clone(), Some(
+            Single(Word::Simple(Box::new(Param(var2.clone()))))
+        )).eval(&mut env, cfg), Ok(val2.clone()));
+        assert_eq!(Alternative(false, var_null.clone(), Some(
+            Single(Word::Simple(Box::new(Param(var3.clone()))))
+        )).eval(&mut env, cfg), Ok(val3.clone()));
+
+        assert_eq!(RemoveSmallestSuffix(var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
+        assert_eq!(RemoveSmallestSuffix(var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
+        assert_eq!(RemoveSmallestSuffix(var3.clone(), None).eval(&mut env, cfg), Ok(val3.clone()));
+
+        assert_eq!(RemoveLargestSuffix(var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
+        assert_eq!(RemoveLargestSuffix(var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
+        assert_eq!(RemoveLargestSuffix(var3.clone(), None).eval(&mut env, cfg), Ok(val3.clone()));
+
+        assert_eq!(RemoveSmallestPrefix(var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
+        assert_eq!(RemoveSmallestPrefix(var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
+        assert_eq!(RemoveSmallestPrefix(var3.clone(), None).eval(&mut env, cfg), Ok(val3.clone()));
+
+        assert_eq!(RemoveLargestPrefix(var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
+        assert_eq!(RemoveLargestPrefix(var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
+        assert_eq!(RemoveLargestPrefix(var3.clone(), None).eval(&mut env, cfg), Ok(val3.clone()));
     }
 
     #[test]

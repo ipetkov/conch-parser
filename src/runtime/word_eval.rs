@@ -6,8 +6,6 @@ use std::rc::Rc;
 use super::{Environment, Result};
 use syntax::ast::{ComplexWord, SimpleWord, Word};
 
-const IFS_DEFAULT: &'static str = " \t\n";
-
 /// Represents the types of fields that may result from evaluating a word.
 /// It is important to maintain such distinctions because evaluating parameters
 /// such as `$@` and `$*` have different behaviors in different contexts.
@@ -177,30 +175,11 @@ pub trait WordEval {
     /// If `cfg.split_fields_further` is false then all empty fields will be kept.
     ///
     /// The caller is responsible for doing path expansions.
-    fn eval_with_config(&self,
-                        env: &mut Environment,
-                        cfg: WordEvalConfig) -> Result<Fields>;
+    fn eval_with_config(&self, env: &mut Environment, cfg: WordEvalConfig) -> Result<Fields>;
 }
 
 impl WordEval for SimpleWord {
-    fn eval_with_config(&self,
-                        env: &mut Environment,
-                        cfg: WordEvalConfig) -> Result<Fields>
-    {
-        let maybe_split_fields = |fields, env: &mut Environment| {
-            if cfg.split_fields_further {
-                match fields {
-                    Fields::Zero      => Fields::Zero,
-                    Fields::Single(f) => split_fields(vec!(f), env).into(),
-                    Fields::At(fs)    => Fields::At(split_fields(fs, env)),
-                    Fields::Star(fs)  => Fields::Star(split_fields(fs, env)),
-                    Fields::Many(fs)  => Fields::Many(split_fields(fs, env)),
-                }
-            } else {
-                fields
-            }
-        };
-
+    fn eval_with_config(&self, env: &mut Environment, cfg: WordEvalConfig) -> Result<Fields> {
         let ret = match *self {
             SimpleWord::Literal(ref s) |
             SimpleWord::Escaped(ref s) => Fields::Single(Rc::new(s.clone())),
@@ -222,8 +201,8 @@ impl WordEval for SimpleWord {
                 },
             },
 
-            SimpleWord::Subst(ref s) => maybe_split_fields(try!(s.eval(env)), env),
-            SimpleWord::Param(ref p) => maybe_split_fields(p.eval(env).unwrap_or(Fields::Zero), env),
+            SimpleWord::Subst(ref s) => try!(s.eval(env, cfg)),
+            SimpleWord::Param(ref p) => p.eval(cfg.split_fields_further, env).unwrap_or(Fields::Zero),
         };
 
         Ok(ret)
@@ -231,10 +210,7 @@ impl WordEval for SimpleWord {
 }
 
 impl WordEval for Word {
-    fn eval_with_config(&self,
-                        env: &mut Environment,
-                        cfg: WordEvalConfig) -> Result<Fields>
-    {
+    fn eval_with_config(&self, env: &mut Environment, cfg: WordEvalConfig) -> Result<Fields> {
         let ret = match *self {
             Word::Simple(ref s) => try!(s.eval_with_config(env, cfg)),
             Word::SingleQuoted(ref s) => Fields::Single(Rc::new(s.clone())),
@@ -312,10 +288,7 @@ impl WordEval for Word {
 }
 
 impl WordEval for ComplexWord {
-    fn eval_with_config(&self,
-                        env: &mut Environment,
-                        cfg: WordEvalConfig) -> Result<Fields>
-    {
+    fn eval_with_config(&self, env: &mut Environment, cfg: WordEvalConfig) -> Result<Fields> {
         let ret = match *self {
             ComplexWord::Single(ref w) => try!(w.eval_with_config(env, cfg)),
 
@@ -353,67 +326,6 @@ impl WordEval for ComplexWord {
         Ok(ret)
     }
 }
-
-/// Splits a vector of fields further based on the contents of the `IFS`
-/// variable (i.e. as long as it is non-empty). Any empty fields, original
-/// or otherwise created will be discarded.
-fn split_fields(words: Vec<Rc<String>>, env: &Environment) -> Vec<Rc<String>> {
-    // If IFS is set but null, there is nothing left to split
-    let ifs = env.var("IFS").map_or(IFS_DEFAULT, |s| &s);
-    if ifs.is_empty() {
-        return words;
-    }
-
-    let whitespace: Vec<char> = ifs.chars().filter(|c| c.is_whitespace()).collect();
-
-    let mut fields = Vec::with_capacity(words.len());
-    'word: for word in words {
-        if word.is_empty() {
-            continue;
-        }
-
-        let mut iter = word.chars().enumerate();
-        loop {
-            let start;
-            loop {
-                match iter.next() {
-                    // We are still skipping leading whitespace, if we hit the
-                    // end of the word there are no fields to create, even empty ones.
-                    None => continue 'word,
-                    Some((idx, c)) => if !whitespace.contains(&c) {
-                        start = idx;
-                        break;
-                    },
-                }
-            }
-
-            let end;
-            loop {
-                match iter.next() {
-                    None => {
-                        end = None;
-                        break;
-                    },
-                    Some((idx, c)) => if ifs.contains(c) {
-                        end = Some(idx);
-                        break;
-                    },
-                }
-            }
-
-            let field = match end {
-                Some(end) => &word[start..end],
-                None      => &word[start..],
-            };
-
-            fields.push(Rc::new(String::from(field)));
-        }
-    }
-
-    fields.shrink_to_fit();
-    fields
-}
-
 
 #[cfg(test)]
 mod tests {
