@@ -619,6 +619,39 @@ mod tests {
     }
 
     #[test]
+    fn test_eval_word_double_quoted_param_at_zero_fields_if_no_args() {
+        let mut env = Env::new().unwrap();
+        assert_eq!(Word::DoubleQuoted(vec!(
+            Param(Parameter::At)
+        )).eval(&mut env), Ok(Fields::Zero));
+    }
+
+    #[test]
+    fn test_eval_word_double_quoted_no_field_splitting() {
+        let mut env = Env::new().unwrap();
+        env.set_var(String::from("var"), Rc::new(String::from("foo bar")));
+
+        let var = Parameter::Var(String::from("var"));
+
+        let cfg = WordEvalConfig {
+            tilde_expansion: TildeExpansion::None,
+            split_fields_further: true, // "Incorrectly" specify word splitting
+        };
+
+        assert_eq!(
+            Word::DoubleQuoted(vec!(Param(var.clone()))).eval_with_config(&mut env, cfg, &mut None),
+            Ok(Fields::Single(Rc::new(String::from("foo bar"))))
+        );
+
+        assert_eq!(
+            Word::DoubleQuoted(vec!(
+                Subst(Box::new(ParameterSubstitution::Default(false, var, None)))
+            )).eval_with_config(&mut env, cfg, &mut None),
+            Ok(Fields::Single(Rc::new(String::from("foo bar"))))
+        );
+    }
+
+    #[test]
     fn test_eval_word_escaped_quoted_removes_slash() {
         let value = String::from("&");
         let mut env = Env::new().unwrap();
