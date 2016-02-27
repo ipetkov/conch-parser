@@ -3,6 +3,7 @@
 
 #![deny(missing_copy_implementations)]
 #![deny(missing_debug_implementations)]
+#![deny(trivial_casts)]
 #![deny(unused_import_braces)]
 #![deny(unused_qualifications)]
 

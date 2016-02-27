@@ -974,8 +974,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             // create a ones whose type will be Parser<_, &mut &mut B>, ad infinitum, causing rustc
             // to overflow its stack. By erasing the builder's type the sub-parser's type is always
             // fixed and rustc will remain happy :)
-            let b = &mut self.builder
-                as &mut Builder<Command=B::Command, Word=B::Word, Redirect=B::Redirect, Err=B::Err>;
+            let b: &mut Builder<Command=B::Command, Word=B::Word, Redirect=B::Redirect, Err=B::Err>
+                = &mut self.builder;
             let mut parser = Parser::with_token_iter_and_builder(tok_iter, b);
             let mut body = try!(parser.word_interpolated_raw(None, heredoc_start_pos));
 
@@ -1295,8 +1295,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         // create a ones whose type will be Parser<_, &mut &mut B>, ad infinitum, causing rustc
         // to overflow its stack. By erasing the builder's type the sub-parser's type is always
         // fixed and rustc will remain happy :)
-        let b = &mut self.builder
-            as &mut Builder<Command=B::Command, Word=B::Word, Redirect=B::Redirect, Err=B::Err>;
+        let b: &mut Builder<Command=B::Command, Word=B::Word, Redirect=B::Redirect, Err=B::Err>
+            = &mut self.builder;
         let mut parser = Parser::with_token_iter_and_builder(tok_iter, b);
 
         let mut cmds = Vec::new();
