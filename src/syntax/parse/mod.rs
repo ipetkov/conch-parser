@@ -2597,7 +2597,7 @@ pub mod test {
     }
 
     pub fn subst<W, C>(s: ParameterSubstitution<W, C>) -> Word<W, C> {
-        Word::Simple(Box::new(SimpleWord::Subst(Box::new(s))))
+        Word::Simple(Box::new(Subst(Box::new(s))))
     }
 
     pub fn single_quoted(s: &str) -> TopLevelWord {
@@ -2792,7 +2792,7 @@ pub mod test {
         let mut p = make_parser("foo || bar\n\n&& baz");
         p.and_or().unwrap();     // Successful parse Or(foo, bar)
         // Fail to parse "&& baz" which is an error
-        assert_eq!(Err(ParseError::Unexpected(Token::AndIf, src(12, 3, 1))), p.complete_command());
+        assert_eq!(Err(Unexpected(Token::AndIf, src(12, 3, 1))), p.complete_command());
     }
 
     #[test]
@@ -2896,7 +2896,7 @@ pub mod test {
         }
 
         assert_eq!(word("$"), p.parameter().unwrap());
-        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
+        assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -2919,7 +2919,7 @@ pub mod test {
             assert_eq!(p.parameter().unwrap(), word_param(param));
         }
 
-        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
+        assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -2969,7 +2969,7 @@ pub mod test {
             assert_eq!(correct, p.parameter().unwrap());
         }
 
-        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
+        assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -3012,7 +3012,7 @@ pub mod test {
             assert_eq!(word_subst(s), p.parameter().unwrap());
         }
 
-        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
+        assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -3055,7 +3055,7 @@ pub mod test {
             assert_eq!(word_subst(s), p.parameter().unwrap());
         }
 
-        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
+        assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -3098,7 +3098,7 @@ pub mod test {
             assert_eq!(word_subst(s), p.parameter().unwrap());
         }
 
-        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
+        assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -3141,7 +3141,7 @@ pub mod test {
             assert_eq!(word_subst(s), p.parameter().unwrap());
         }
 
-        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
+        assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -3180,7 +3180,7 @@ pub mod test {
         let src = "${@:-foo}${*:-foo}${#:-foo}${?:-foo}${-:-foo}${$:-foo}${!:-foo}${0:-foo}${10:-foo}${100:-foo}${foo_bar123:-foo}${@:-}${*:-}${#:-}${?:-}${-:-}${$:-}${!:-}${0:-}${10:-}${100:-}${foo_bar123:-}";
         let mut p = make_parser(src);
         for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
-        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
+        assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
 
         let substs = vec!(
             Default(false, At, Some(word.clone())),
@@ -3211,7 +3211,7 @@ pub mod test {
         let src = "${@-foo}${*-foo}${#-foo}${?-foo}${--foo}${$-foo}${!-foo}${0-foo}${10-foo}${100-foo}${foo_bar123-foo}${@-}${*-}${?-}${--}${$-}${!-}${0-}${10-}${100-}${foo_bar123-}";
         let mut p = make_parser(src);
         for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
-        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
+        assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -3250,7 +3250,7 @@ pub mod test {
         let src = "${@:?foo}${*:?foo}${#:?foo}${?:?foo}${-:?foo}${$:?foo}${!:?foo}${0:?foo}${10:?foo}${100:?foo}${foo_bar123:?foo}${@:?}${*:?}${#:?}${?:?}${-:?}${$:?}${!:?}${0:?}${10:?}${100:?}${foo_bar123:?}";
         let mut p = make_parser(src);
         for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
-        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
+        assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
 
         let substs = vec!(
             Error(false, At, Some(word.clone())),
@@ -3281,7 +3281,7 @@ pub mod test {
         let src = "${@?foo}${*?foo}${#?foo}${??foo}${-?foo}${$?foo}${!?foo}${0?foo}${10?foo}${100?foo}${foo_bar123?foo}${@?}${*?}${??}${-?}${$?}${!?}${0?}${10?}${100?}${foo_bar123?}";
         let mut p = make_parser(src);
         for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
-        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
+        assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -3320,7 +3320,7 @@ pub mod test {
         let src = "${@:=foo}${*:=foo}${#:=foo}${?:=foo}${-:=foo}${$:=foo}${!:=foo}${0:=foo}${10:=foo}${100:=foo}${foo_bar123:=foo}${@:=}${*:=}${#:=}${?:=}${-:=}${$:=}${!:=}${0:=}${10:=}${100:=}${foo_bar123:=}";
         let mut p = make_parser(src);
         for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
-        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
+        assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
 
         let substs = vec!(
             Assign(false, At, Some(word.clone())),
@@ -3351,7 +3351,7 @@ pub mod test {
         let src = "${@=foo}${*=foo}${#=foo}${?=foo}${-=foo}${$=foo}${!=foo}${0=foo}${10=foo}${100=foo}${foo_bar123=foo}${@=}${*=}${#=}${?=}${-=}${$=}${!=}${0=}${10=}${100=}${foo_bar123=}";
         let mut p = make_parser(src);
         for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
-        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
+        assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -3390,7 +3390,7 @@ pub mod test {
         let src = "${@:+foo}${*:+foo}${#:+foo}${?:+foo}${-:+foo}${$:+foo}${!:+foo}${0:+foo}${10:+foo}${100:+foo}${foo_bar123:+foo}${@:+}${*:+}${#:+}${?:+}${-:+}${$:+}${!:+}${0:+}${10:+}${100:+}${foo_bar123:+}";
         let mut p = make_parser(src);
         for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
-        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
+        assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
 
         let substs = vec!(
             Alternative(false, At, Some(word.clone())),
@@ -3421,7 +3421,7 @@ pub mod test {
         let src = "${@+foo}${*+foo}${#+foo}${?+foo}${-+foo}${$+foo}${!+foo}${0+foo}${10+foo}${100+foo}${foo_bar123+foo}${@+}${*+}${#+}${?+}${-+}${$+}${!+}${0+}${10+}${100+}${foo_bar123+}";
         let mut p = make_parser(src);
         for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
-        assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
+        assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
     #[test]
@@ -3472,7 +3472,7 @@ pub mod test {
             let src = format!("${{foo_bar123{}foo{{\\}} \t\r \\\nbar \t\r }}", src[i]);
             let mut p = make_parser(&src);
             assert_eq!(word_subst(s), p.parameter().unwrap());
-            assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
+            assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
         }
     }
 
@@ -3524,7 +3524,7 @@ pub mod test {
             let src = format!("${{foo_bar123{}#foo{{\\}} \t\r \\\nbar \t\r }}", src[i]);
             let mut p = make_parser(&src);
             assert_eq!(word_subst(s), p.parameter().unwrap());
-            assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
+            assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
         }
     }
 
@@ -3576,7 +3576,7 @@ pub mod test {
             let src = format!("${{foo_bar123{}$@${{foo##bar}}}}", src[i]);
             let mut p = make_parser(&src);
             assert_eq!(word_subst(s), p.parameter().unwrap());
-            assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
+            assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
         }
     }
 
@@ -5058,10 +5058,10 @@ pub mod test {
 
     #[test]
     fn test_function_declaration_valid() {
-        let correct = Command::Function(
+        let correct = Function(
             String::from("foo"),
             Rc::new(Compound(
-                Box::new(CompoundCommand::Brace(vec!(Simple(Box::new(SimpleCommand {
+                Box::new(Brace(vec!(Simple(Box::new(SimpleCommand {
                     cmd: Some((word("echo"), vec!(word("body")))),
                     vars: vec!(),
                     io: vec!(),
@@ -5093,7 +5093,7 @@ pub mod test {
 
     #[test]
     fn test_function_declaration_valid_body_need_not_be_a_compound_command() {
-        let correct = Command::Function(
+        let correct = Function(
             String::from("foo"),
             Rc::new(Simple(Box::new(SimpleCommand {
                 cmd: Some((word("echo"), vec!(word("body")))),
@@ -5125,10 +5125,10 @@ pub mod test {
 
     #[test]
     fn test_function_declaration_parens_can_be_subshell_if_function_keyword_present() {
-        let correct = Command::Function(
+        let correct = Function(
             String::from("foo"),
             Rc::new(Compound(
-                Box::new(CompoundCommand::Subshell(vec!(Simple(Box::new(SimpleCommand {
+                Box::new(Subshell(vec!(Simple(Box::new(SimpleCommand {
                     cmd: Some((word("echo"), vec!(word("subshell")))),
                     vars: vec!(),
                     io: vec!(),

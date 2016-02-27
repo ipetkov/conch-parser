@@ -2,6 +2,7 @@
 //! written in the shell programming language.
 
 #![deny(unused_import_braces)]
+#![deny(unused_qualifications)]
 
 #![cfg_attr(feature = "runtime", feature(zero_one))]
 #![cfg_attr(all(windows, feature = "runtime"), feature(unique))]
