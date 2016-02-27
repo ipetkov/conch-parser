@@ -30,7 +30,7 @@ pub enum SeparatorKind {
 }
 
 /// An indicator to the builder whether an `AND` or `OR` command was parsed.
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum AndOrKind {
     /// An `AND` command was parsed, normally indicating the second should run if the first succeeds.
     /// Corresponds to the `&&` command separator.
@@ -41,7 +41,7 @@ pub enum AndOrKind {
 }
 
 /// An indicator to the builder whether a `while` or `until` command was parsed.
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum LoopKind {
     /// A `while` command was parsed, normally indicating the loop's body should be run
     /// while the guard's exit status is successful.
@@ -793,6 +793,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
 }
 
 /// A `Builder` implementation which builds shell commands using the AST definitions in the `ast` module.
+#[derive(Debug, Copy, Clone)]
 pub struct DefaultBuilder;
 
 impl ::std::default::Default for DefaultBuilder {

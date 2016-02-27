@@ -12,6 +12,7 @@ enum TokenOrLiteral {
 }
 
 /// Converts raw characters into shell tokens.
+#[allow(missing_debug_implementations)]
 pub struct Lexer<I: Iterator<Item = char>> {
     inner: ::std::iter::Peekable<I>,
     peeked: Option<TokenOrLiteral>,

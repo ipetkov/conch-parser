@@ -1,6 +1,8 @@
 //! A library for parsing, executing, and analyzing programs
 //! written in the shell programming language.
 
+#![deny(missing_copy_implementations)]
+#![deny(missing_debug_implementations)]
 #![deny(unused_import_braces)]
 #![deny(unused_qualifications)]
 

@@ -234,6 +234,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Iterator for Parser<I, B> {
 /// yields the tokens `[Backslash, DLess]`, the parser will treat the source as if
 /// it were `[Literal(<<)]`. The lexer's behavior need not be consistent between different
 /// multi-char tokens, as long as it is aware of the implications.
+#[derive(Debug)]
 pub struct Parser<I: Iterator<Item = Token>, B: Builder> {
     iter: iter::TokenIter<I>,
     builder: B,

@@ -124,6 +124,7 @@ impl From<process::ExitStatus> for ExitStatus {
 }
 
 /// A shell environment containing any relevant variable, file descriptor, and other information.
+#[allow(missing_debug_implementations)]
 pub struct Env<'a> {
     /// The current name of the shell/script/function executing.
     shell_name: Rc<String>,

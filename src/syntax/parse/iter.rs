@@ -9,10 +9,12 @@ use syntax::token::Token::*;
 /// Indicates an error such that EOF was encountered while some unmatched
 /// tokens were still pending. The error stores the unmatched token
 /// and the position where it appears in the source.
+#[derive(Debug)]
 pub struct UnmatchedError(pub Token, pub SourcePos);
 
 /// An internal variant that indicates if a token should be yielded
 /// or the current position updated to some value.
+#[derive(Debug)]
 enum TokenOrPos {
     /// A consumed token which should be yielded.
     Tok(Token),
@@ -32,6 +34,7 @@ impl TokenOrPos {
 }
 
 /// A Token iterator that keeps track of how many lines have been read.
+#[derive(Debug)]
 pub struct TokenIter<I: Iterator<Item = Token>> {
     /// The underlying token iterator being wrapped.
     iter: I,

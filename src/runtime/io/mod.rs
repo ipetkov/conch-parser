@@ -156,6 +156,7 @@ impl Seek for FileDesc {
 }
 
 /// A wrapper for a reader and writer OS pipe pair.
+#[derive(Debug)]
 pub struct Pipe {
     /// The reader end of the pipe. Anything written to the writer end can be read here.
     pub reader: FileDesc,
