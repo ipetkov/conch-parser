@@ -3,34 +3,28 @@
 use glob;
 use libc;
 
-use std::borrow::{Borrow, Cow};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::convert::{From, Into};
 use std::fmt;
-use std::fs::OpenOptions;
-use std::io::Error as IoError;
-use std::io::ErrorKind as IoErrorKind;
-use std::io::Result as IoResult;
-use std::io::Write;
+use std::io::{Error as IoError, ErrorKind as IoErrorKind, Result as IoResult, Write};
 use std::iter::{IntoIterator, Iterator};
 use std::process::{self, Stdio};
 use std::rc::Rc;
 use std::result;
-use std::vec;
 
-use syntax::ast::{Arith, Command, CompoundCommand, SimpleCommand, Parameter,
-                  ParameterSubstitution, Redirect};
+use syntax::ast::{Command, CompoundCommand, SimpleCommand, Redirect};
+use runtime::eval::{Fields, TildeExpansion, WordEval, WordEvalConfig};
 use runtime::io::dup_stdio;
 use runtime::io::{FileDesc, Permissions};
 use void::Void;
 
 mod errors;
-mod word_eval;
 
+pub mod eval;
 pub mod io;
 pub use self::errors::*;
-pub use self::word_eval::*;
 
 /// Exit code for commands that exited successfully.
 pub const EXIT_SUCCESS:            ExitStatus = ExitStatus::Code(0);
@@ -40,10 +34,6 @@ pub const EXIT_ERROR:              ExitStatus = ExitStatus::Code(1);
 pub const EXIT_CMD_NOT_EXECUTABLE: ExitStatus = ExitStatus::Code(126);
 /// Exit code for missing commands.
 pub const EXIT_CMD_NOT_FOUND:      ExitStatus = ExitStatus::Code(127);
-
-const EXIT_SIGNAL_OFFSET: u32 = 128;
-
-const IFS_DEFAULT: &'static str = " \t\n";
 
 /// File descriptor for standard input.
 pub const STDIN_FILENO: Fd = 0;
@@ -129,21 +119,6 @@ impl From<process::ExitStatus> for ExitStatus {
         match exit.code() {
             Some(code) => ExitStatus::Code(code),
             None => get_signal(exit).map_or(EXIT_ERROR, |s| ExitStatus::Signal(s)),
-        }
-    }
-}
-
-impl IntoIterator for Fields {
-    type Item = Rc<String>;
-    type IntoIter = vec::IntoIter<Self::Item>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        match self {
-            Fields::Zero => vec!().into_iter(),
-            Fields::Single(s) => vec!(s).into_iter(),
-            Fields::At(v)   |
-            Fields::Star(v) |
-            Fields::Many(v) => v.into_iter(),
         }
     }
 }
@@ -275,13 +250,15 @@ pub trait Environment {
     /// Any changes which mutate the sub environment will only be reflected there,
     /// but any information not present in the sub-env will be looked up in the parent.
     fn sub_env<'a>(&'a self) -> Box<Environment + 'a>;
-    /// Get the shell's current name.
+    /// Get the name of the shell or the current function that is executing.
     fn name(&self) -> &Rc<String>;
     /// Get the value of some variable. The values of both shell-only
-    /// variables will be looked up and returned.
+    /// and environment variables will be looked up and returned.
     fn var(&self, name: &str) -> Option<&Rc<String>>;
     /// Set the value of some variable (including environment variables).
     fn set_var(&mut self, name: String, val: Rc<String>);
+    /// Unset the value of some variable (including environment variables).
+    fn unset_var(&mut self, name: String);
     /// Indicates if a function is currently defined with a given name.
     fn has_function(&mut self, fn_name: &str) -> bool;
     /// Attempt to execute a function with a set of arguments if it has been defined.
@@ -293,7 +270,7 @@ pub trait Environment {
     /// Set the exit status of the previously run command.
     fn set_last_status(&mut self, status: ExitStatus);
     /// Get an argument at any index. Arguments are 1-indexed since the shell variable `$0`
-    /// to the shell's name. Thus the first real argument starts at index 1.
+    /// refers to the shell's name. Thus the first real argument starts at index 1.
     fn arg(&self, idx: usize) -> Option<&Rc<String>>;
     /// Get the number of current arguments, NOT including the shell name.
     fn args_len(&self) -> usize;
@@ -307,6 +284,8 @@ pub trait Environment {
     fn set_file_desc(&mut self, fd: Fd, fdes: Rc<FileDesc>, perms: Permissions);
     /// Treat the specified file descriptor as closed for the current environment.
     fn close_file_desc(&mut self, fd: Fd);
+    /// Indicates if running in interactive mode.
+    fn is_interactive(&self) -> bool;
     /// Consumes `RuntimeError`s and reports them as appropriate, e.g. print to stderr.
     fn report_error(&mut self, err: RuntimeError) {
         // We *could* duplicate the handle here and ensure that we are the only
@@ -360,6 +339,10 @@ impl<'a> Environment for Env<'a> {
                 entry.insert(Some((val, exported)));
             },
         }
+    }
+
+    fn unset_var(&mut self, name: String) {
+        self.vars.insert(name, None);
     }
 
     fn has_function(&mut self, fn_name: &str) -> bool {
@@ -465,610 +448,9 @@ impl<'a> Environment for Env<'a> {
             None => self.fds.remove(&fd),
         };
     }
-}
 
-impl Parameter {
-    /// Evaluates a parameter in the context of some environment,
-    /// optionally splitting fields.
-    ///
-    /// A `None` value indicates that the parameter is unset.
-    pub fn eval(&self, split_fields_further: bool, env: &Environment) -> Option<Fields> {
-        let get_args = || {
-            let args = env.args();
-            if args.is_empty() {
-                None
-            } else {
-                Some(args.iter().cloned().collect())
-            }
-        };
-
-        let ret = match *self {
-            Parameter::At   => Some(get_args().map_or(Fields::Zero, Fields::At)),
-            Parameter::Star => Some(get_args().map_or(Fields::Zero, Fields::Star)),
-
-            Parameter::Pound  => Some(Fields::Single(Rc::new(env.args_len().to_string()))),
-            Parameter::Dollar => Some(Fields::Single(Rc::new(unsafe { libc::getpid() }.to_string()))),
-            Parameter::Dash   => None, // FIXME: implement properly
-            Parameter::Bang   => None, // FIXME: eventual job control would be nice
-
-            Parameter::Question => Some(Fields::Single(Rc::new(match env.last_status() {
-                ExitStatus::Code(c)   => c as u32,
-                ExitStatus::Signal(c) => c as u32 + EXIT_SIGNAL_OFFSET,
-            }.to_string()))),
-
-            Parameter::Positional(0) => Some(Fields::Single(env.name().clone())),
-            Parameter::Positional(p) => env.arg(p as usize).cloned().map(Fields::Single),
-            Parameter::Var(ref var)  => env.var(var).cloned().map(Fields::Single),
-        };
-
-        ret.map(|f| {
-            if split_fields_further {
-                split_fields(f, env)
-            } else {
-                f
-            }
-        })
-    }
-}
-
-impl ParameterSubstitution {
-    /// Evaluates a parameter subsitution in the context of some environment,
-    /// optionally splitting fields.
-    ///
-    /// Note: even if the caller specifies no splitting should be done,
-    /// multiple fields can occur if `$@` or `$*` is evaluated.
-    pub fn eval(&self, env: &mut Environment, cfg: WordEvalConfig) -> Result<Fields> {
-        self.eval_inner(env, cfg).map(|f| {
-            if cfg.split_fields_further {
-                split_fields(f, env)
-            } else {
-                f
-            }
-        })
-    }
-
-    /// Evaluates a paarameter substitution without splitting fields further.
-    fn eval_inner(&self, env: &mut Environment, cfg: WordEvalConfig) -> Result<Fields> {
-        use syntax::ast::ParameterSubstitution::*;
-
-        // Since we will do field splitting in the outer, public method,
-        // we don't want internal word evaluations to also do field splitting
-        // otherwise we will doubly split and potentially lose some fields.
-        let cfg = WordEvalConfig {
-            tilde_expansion: cfg.tilde_expansion,
-            split_fields_further: false,
-        };
-
-        let null_str   = Rc::new(String::new());
-        let null_field = Fields::Single(null_str.clone());
-        let match_opts = glob::MatchOptions {
-            case_sensitive: true,
-            require_literal_separator: false,
-            require_literal_leading_dot: false,
-        };
-
-        fn remove_pattern<W, F>(param: &Parameter,
-                             pat: &Option<W>,
-                             env: &mut Environment,
-                             remove: F) -> Result<Option<Fields>>
-            where W: WordEval,
-                  F: Fn(Rc<String>, &glob::Pattern) -> Rc<String>
-        {
-            let map = |v: Vec<Rc<String>>, p| v.into_iter().map(|f| remove(f, &p)).collect();
-            let param = param.eval(false, env);
-
-            match *pat {
-                None => Ok(param),
-                Some(ref pat) => {
-                    let pat = try!(pat.eval_as_pattern(env));
-                    Ok(param.map(|p| match p {
-                        Fields::Zero      => Fields::Zero,
-                        Fields::Single(s) => Fields::Single(remove(s, &pat)),
-
-                        Fields::At(v)   => Fields::At(  map(v, pat)),
-                        Fields::Star(v) => Fields::Star(map(v, pat)),
-                        Fields::Many(v) => Fields::Many(map(v, pat)),
-                    }))
-                },
-            }
-        }
-
-        // A macro that evaluates a parameter in some environment and immediately
-        // returns the result as long as there is at least one non-empty field inside.
-        // If all fields from the evaluated result are empty and the evaluation is
-        // considered NON-strict, an empty vector is returned to the caller.
-        macro_rules! check_param_subst {
-            ($param:expr, $env:expr, $strict:expr) => {{
-                if let Some(fields) = $param.eval(false, $env) {
-                    if !fields.is_null() {
-                        return Ok(fields)
-                    } else if !$strict {
-                        return Ok(null_field)
-                    }
-                }
-            }}
-        }
-
-        let ret = match *self {
-            Command(_) => unimplemented!(),
-
-            // We won't do field splitting here because any field expansions
-            // should be done on the result we are about to return, and not the
-            // intermediate value.
-            Len(ref p) => Fields::Single(Rc::new(match p.eval(false, env) {
-                None |
-                Some(Fields::Zero) => String::from("0"),
-
-                Some(Fields::Single(s)) => s.len().to_string(),
-
-                Some(Fields::At(v))   |
-                Some(Fields::Star(v)) => v.len().to_string(),
-
-                // Since we should have specified NO field splitting above,
-                // this variant should never occur.
-                Some(Fields::Many(_)) => unreachable!(),
-            })),
-
-            Arithmetic(ref a) => Fields::Single(Rc::new(match a {
-                &Some(ref a) => try!(a.eval(env)).to_string(),
-                &None => String::from("0"),
-            })),
-
-            Default(strict, ref p, ref default) => {
-                check_param_subst!(p, env, strict);
-                match *default {
-                    Some(ref w) => try!(w.eval_with_config(env, cfg)),
-                    None => null_field,
-                }
-            },
-
-            Assign(strict, ref p, ref assig) => {
-                check_param_subst!(p, env, strict);
-                match p {
-                    p@&Parameter::At       |
-                    p@&Parameter::Star     |
-                    p@&Parameter::Pound    |
-                    p@&Parameter::Question |
-                    p@&Parameter::Dash     |
-                    p@&Parameter::Dollar   |
-                    p@&Parameter::Bang     |
-                    p@&Parameter::Positional(_) => {
-                        env.set_last_status(EXIT_ERROR);
-                        return Err(ExpansionError::BadAssig(p.clone()).into());
-                    },
-
-                    &Parameter::Var(ref name) => {
-                        let val = match *assig {
-                            Some(ref w) => try!(w.eval_with_config(env, cfg)),
-                            None => null_field,
-                        };
-
-                        env.set_var(name.clone(), val.clone().join());
-                        val
-                    },
-                }
-            },
-
-            Error(strict, ref p, ref msg) => {
-                check_param_subst!(p, env, strict);
-                let msg = match *msg {
-                    None => Rc::new(String::from("parameter null or not set")),
-                    Some(ref w) => try!(w.eval_with_config(env, cfg)).join(),
-                };
-
-                env.set_last_status(EXIT_ERROR);
-                return Err(ExpansionError::EmptyParameter(p.clone(), msg).into());
-            },
-
-            Alternative(strict, ref p, ref alt) => {
-                let val = p.eval(false, env);
-                if val.is_none() || (strict && val.unwrap().is_null()) {
-                    return Ok(null_field);
-                }
-
-                match *alt {
-                    Some(ref w) => try!(w.eval_with_config(env, cfg)),
-                    None => null_field,
-                }
-            },
-
-            RemoveSmallestSuffix(ref p, ref pat) => try!(remove_pattern(p, pat, env, |s, pat| {
-                let len = s.len();
-                for idx in 0..len {
-                    let idx = len - idx - 1;
-                    if pat.matches_with(&s[idx..], &match_opts) {
-                        return Rc::new(String::from(&s[0..idx]));
-                    }
-                }
-                s
-            })).unwrap_or_else(|| null_field.clone()),
-
-            RemoveLargestSuffix(ref p, ref pat) => try!(remove_pattern(p, pat, env, |s, pat| {
-                let mut longest_start = None;
-                let len = s.len();
-                for idx in 0..len {
-                    let idx = len - idx - 1;
-                    if pat.matches_with(&s[idx..], &match_opts) {
-                        longest_start = Some(idx);
-                    }
-                }
-
-                match longest_start {
-                    None => s,
-                    Some(idx) => Rc::new(String::from(&s[0..idx])),
-                }
-            })).unwrap_or_else(|| null_field.clone()),
-
-            RemoveSmallestPrefix(ref p, ref pat) => try!(remove_pattern(p, pat, env, |s, pat| {
-                for idx in 0..s.len() {
-                    if pat.matches_with(&s[0..idx], &match_opts) {
-                        return Rc::new(String::from(&s[idx..]));
-                    }
-                }
-
-                // Don't forget to check the entire string for a match
-                if pat.matches_with(&s, &match_opts) {
-                    null_str.clone()
-                } else {
-                    s
-                }
-            })).unwrap_or_else(|| null_field.clone()),
-
-            RemoveLargestPrefix(ref p, ref pat) => try!(remove_pattern(p, pat, env, |s, pat| {
-                if pat.matches_with(&s, &match_opts) {
-                    return null_str.clone();
-                }
-
-                let mut longest_end = None;
-                for idx in 0..s.len() {
-                    if pat.matches_with(&s[0..idx], &match_opts) {
-                        longest_end = Some(idx);
-                    }
-                }
-
-                match longest_end {
-                    None => s,
-                    Some(idx) => Rc::new(String::from(&s[idx..])),
-                }
-            })).unwrap_or_else(|| null_field.clone()),
-        };
-
-        Ok(ret)
-    }
-}
-
-fn split_fields(fields: Fields, env: &Environment) -> Fields {
-    match fields {
-        Fields::Zero      => Fields::Zero,
-        Fields::Single(f) => split_fields_internal(vec!(f), env).into(),
-        Fields::At(fs)    => Fields::At(split_fields_internal(fs, env)),
-        Fields::Star(fs)  => Fields::Star(split_fields_internal(fs, env)),
-        Fields::Many(fs)  => Fields::Many(split_fields_internal(fs, env)),
-    }
-}
-
-/// Splits a vector of fields further based on the contents of the `IFS`
-/// variable (i.e. as long as it is non-empty). Any empty fields, original
-/// or otherwise created will be discarded.
-fn split_fields_internal(words: Vec<Rc<String>>, env: &Environment) -> Vec<Rc<String>> {
-    // If IFS is set but null, there is nothing left to split
-    let ifs = env.var("IFS").map_or(IFS_DEFAULT, |s| &s);
-    if ifs.is_empty() {
-        return words;
-    }
-
-    let whitespace: Vec<char> = ifs.chars().filter(|c| c.is_whitespace()).collect();
-
-    let mut fields = Vec::with_capacity(words.len());
-    'word: for word in words {
-        if word.is_empty() {
-            continue;
-        }
-
-        let mut iter = word.chars().enumerate().peekable();
-        loop {
-            let start;
-            loop {
-                match iter.next() {
-                    // If we are still skipping leading whitespace, and we hit the
-                    // end of the word there are no fields to create, even empty ones.
-                    None => continue 'word,
-                    Some((idx, c)) => {
-                        if whitespace.contains(&c) {
-                            continue;
-                        } else if ifs.contains(c) {
-                            // If we hit an IFS char here then we have encountered an
-                            // empty field, since the last iteration of this loop either
-                            // had just consumed an IFS char, or its the start of the word.
-                            // In either case the result should be the same.
-                            fields.push(Rc::new(String::new()));
-                        } else {
-                            // Must have found a regular field character
-                            start = idx;
-                            break;
-                        }
-                    },
-                }
-            }
-
-            let end;
-            loop {
-                match iter.next() {
-                    None => {
-                        end = None;
-                        break;
-                    },
-                    Some((idx, c)) => if ifs.contains(c) {
-                        end = Some(idx);
-                        break;
-                    },
-                }
-            }
-
-            let field = match end {
-                Some(end) => &word[start..end],
-                None      => &word[start..],
-            };
-
-            fields.push(Rc::new(String::from(field)));
-
-            // Since now we've hit an IFS character, we need to also skip past
-            // any adjacent IFS whitespace as well. This also conveniently
-            // ignores any trailing IFS whitespace in the input as well.
-            loop {
-                match iter.peek() {
-                    Some(&(_, c)) if whitespace.contains(&c) => {
-                        iter.next();
-                    },
-                    Some(_) |
-                    None => break,
-                }
-            }
-        }
-    }
-
-    fields.shrink_to_fit();
-    fields
-}
-
-impl Arith {
-    /// Evaluates an arithmetic expression in the context of an environment.
-    /// A mutable reference to the environment is needed since an arithmetic
-    /// expression could mutate environment variables.
-    pub fn eval(&self, env: &mut Environment) -> result::Result<isize, ExpansionError> {
-        use syntax::ast::Arith::*;
-
-        let get_var = |env: &Environment, var| env.var(var).and_then(|s| s.parse().ok()).unwrap_or(0);
-
-        let ret = match *self {
-            Literal(lit) => lit,
-            Var(ref var) => get_var(env, var),
-
-            PostIncr(ref var) => {
-                let val = get_var(env, var);
-                env.set_var(var.clone(), Rc::new((val + 1).to_string()));
-                val
-            },
-
-            PostDecr(ref var) => {
-                let val = get_var(env, var);
-                env.set_var(var.clone(), Rc::new((val - 1).to_string()));
-                val
-            },
-
-            PreIncr(ref var) => {
-                let val = get_var(env, var) + 1;
-                env.set_var(var.clone(), Rc::new(val.to_string()));
-                val
-            },
-
-            PreDecr(ref var) => {
-                let val = get_var(env, var) - 1;
-                env.set_var(var.clone(), Rc::new(val.to_string()));
-                val
-            },
-
-            UnaryPlus(ref expr)  => try!(expr.eval(env)).abs(),
-            UnaryMinus(ref expr) => -try!(expr.eval(env)),
-            BitwiseNot(ref expr) => try!(expr.eval(env)) ^ !0,
-            LogicalNot(ref expr) => if try!(expr.eval(env)) == 0 { 1 } else { 0 },
-
-            Less(ref left, ref right)    => if try!(left.eval(env)) <  try!(right.eval(env)) { 1 } else { 0 },
-            LessEq(ref left, ref right)  => if try!(left.eval(env)) <= try!(right.eval(env)) { 1 } else { 0 },
-            Great(ref left, ref right)   => if try!(left.eval(env)) >  try!(right.eval(env)) { 1 } else { 0 },
-            GreatEq(ref left, ref right) => if try!(left.eval(env)) >= try!(right.eval(env)) { 1 } else { 0 },
-            Eq(ref left, ref right)      => if try!(left.eval(env)) == try!(right.eval(env)) { 1 } else { 0 },
-            NotEq(ref left, ref right)   => if try!(left.eval(env)) != try!(right.eval(env)) { 1 } else { 0 },
-
-            Pow(ref left, ref right) => {
-                let right = try!(right.eval(env));
-                if right.is_negative() {
-                    env.set_last_status(EXIT_ERROR);
-                    return Err(ExpansionError::NegativeExponent);
-                } else {
-                    try!(left.eval(env)).pow(right as u32)
-                }
-            },
-
-            Div(ref left, ref right) => {
-                let right = try!(right.eval(env));
-                if right == 0 {
-                    env.set_last_status(EXIT_ERROR);
-                    return Err(ExpansionError::DivideByZero);
-                } else {
-                    try!(left.eval(env)) / right
-                }
-            },
-
-            Modulo(ref left, ref right) => {
-                let right = try!(right.eval(env));
-                if right == 0 {
-                    env.set_last_status(EXIT_ERROR);
-                    return Err(ExpansionError::DivideByZero);
-                } else {
-                    try!(left.eval(env)) % right
-                }
-            },
-
-            Mult(ref left, ref right)       => try!(left.eval(env)) *  try!(right.eval(env)),
-            Add(ref left, ref right)        => try!(left.eval(env)) +  try!(right.eval(env)),
-            Sub(ref left, ref right)        => try!(left.eval(env)) -  try!(right.eval(env)),
-            ShiftLeft(ref left, ref right)  => try!(left.eval(env)) << try!(right.eval(env)),
-            ShiftRight(ref left, ref right) => try!(left.eval(env)) >> try!(right.eval(env)),
-            BitwiseAnd(ref left, ref right) => try!(left.eval(env)) &  try!(right.eval(env)),
-            BitwiseXor(ref left, ref right) => try!(left.eval(env)) ^  try!(right.eval(env)),
-            BitwiseOr(ref left, ref right)  => try!(left.eval(env)) |  try!(right.eval(env)),
-
-            LogicalAnd(ref left, ref right) => if try!(left.eval(env)) != 0 {
-                if try!(right.eval(env)) != 0 { 1 } else { 0 }
-            } else {
-                0
-            },
-
-            LogicalOr(ref left, ref right) => if try!(left.eval(env)) == 0 {
-                if try!(right.eval(env)) != 0 { 1 } else { 0 }
-            } else {
-                1
-            },
-
-            Ternary(ref guard, ref thn, ref els) => if try!(guard.eval(env)) != 0 {
-                try!(thn.eval(env))
-            } else {
-                try!(els.eval(env))
-            },
-
-            Assign(ref var, ref val) => {
-                let val = try!(val.eval(env));
-                env.set_var(var.clone(), Rc::new(val.to_string()));
-                val
-            },
-
-            Sequence(ref exprs) => {
-                let mut last = 0;
-                for e in exprs.iter() {
-                    last = try!(e.eval(env));
-                }
-                last
-            },
-        };
-
-        Ok(ret)
-    }
-}
-
-impl Redirect {
-    /// Evaluates a redirection path and opens the appropriate redirect.
-    ///
-    /// Newly opened/closed/duplicated file descriptors are NOT updated
-    /// in the environment, and thus it is up to the caller to update the
-    /// environment as appropriate.
-    ///
-    /// On success the affected file descriptor (from the script's perspective)
-    /// is returned, along with an Optional file handle and the respective
-    /// permissions. A `Some` value indicates a newly opened or duplicated descriptor
-    /// while a `None` indicates that that descriptor should be closed.
-    pub fn eval(&self, env: &mut Environment) -> Result<(Fd, Option<(Rc<FileDesc>, Permissions)>)> {
-        fn eval_path(path: &WordEval, env: &mut Environment) -> Result<Rc<String>> {
-            let cfg = WordEvalConfig {
-                tilde_expansion: TildeExpansion::First,
-                split_fields_further: false, // FIXME: this should be true if interactive mode
-            };
-
-            match try!(path.eval_with_config(env, cfg)) {
-                Fields::Single(path) => Ok(path),
-                Fields::At(mut v) |
-                Fields::Star(mut v) |
-                Fields::Many(mut v) => if v.len() == 1 {
-                    Ok(v.pop().unwrap())
-                } else {
-                    env.set_last_status(EXIT_ERROR);
-                    return Err(RedirectionError::Ambiguous(v).into())
-                },
-                Fields::Zero => {
-                    env.set_last_status(EXIT_ERROR);
-                    return Err(RedirectionError::Ambiguous(Vec::new()).into())
-                },
-            }
-        };
-
-        fn dup_fd(dst_fd: Fd, src_fd: &WordEval, readable: bool, env: &mut Environment)
-            -> Result<(Fd, Option<(Rc<FileDesc>, Permissions)>)>
-        {
-            let src_fd = try!(eval_path(src_fd, env));
-
-            if *src_fd == "-" {
-                return Ok((dst_fd, None));
-            }
-
-            let src_fdes = match Fd::from_str_radix(&src_fd, 10) {
-                Ok(fd) => match env.file_desc(fd) {
-                    Some((fdes, perms)) => {
-                        if (readable && perms.readable()) || (!readable && perms.writable()) {
-                            Ok(fdes.clone())
-                        } else {
-                            Err(RedirectionError::BadFdPerms(fd, perms).into())
-                        }
-                    },
-
-                    None => Err(RedirectionError::BadFdSrc(src_fd).into()),
-                },
-
-                Err(_) => Err(RedirectionError::BadFdSrc(src_fd).into()),
-            };
-
-            let src_fdes = match src_fdes {
-                Ok(fd) => fd,
-                Err(e) => {
-                    env.set_last_status(EXIT_ERROR);
-                    return Err(e);
-                },
-            };
-
-            let perms = if readable { Permissions::Read } else { Permissions::Write };
-            Ok((dst_fd, Some((src_fdes, perms))))
-        };
-
-        let open_path_with_options = |path, env, fd, options: OpenOptions, permissions|
-            -> Result<(Fd, Option<(Rc<FileDesc>, Permissions)>)>
-        {
-            let path = try!(eval_path(path, env));
-            match options.open(&**path) {
-                Ok(file) => Ok((fd, Some((Rc::new(file.into()), permissions)))),
-                Err(io) => Err(RuntimeError::Io(io, path).into()),
-            }
-        };
-
-        let open_path = |path, env, fd, permissions: Permissions|
-            -> Result<(Fd, Option<(Rc<FileDesc>, Permissions)>)>
-        {
-            open_path_with_options(path, env, fd, permissions.into(), permissions)
-        };
-
-        let ret = match *self {
-            Redirect::Read(fd, ref path) =>
-                try!(open_path(path, env, fd.unwrap_or(STDIN_FILENO), Permissions::Read)),
-
-            Redirect::ReadWrite(fd, ref path) =>
-                try!(open_path(path, env, fd.unwrap_or(STDIN_FILENO), Permissions::ReadWrite)),
-
-            Redirect::Write(fd, ref path) |
-            Redirect::Clobber(fd, ref path) =>
-                try!(open_path(path, env, fd.unwrap_or(STDOUT_FILENO), Permissions::Write)),
-
-            Redirect::Append(fd, ref path) => {
-                let perms = Permissions::Write;
-                let mut options: OpenOptions = perms.into();
-                options.append(true);
-                try!(open_path_with_options(path, env, fd.unwrap_or(STDOUT_FILENO), options, perms))
-            },
-
-            Redirect::DupRead(fd, ref src)  => try!(dup_fd(fd.unwrap_or(STDIN_FILENO), src, true, env)),
-            Redirect::DupWrite(fd, ref src) => try!(dup_fd(fd.unwrap_or(STDOUT_FILENO), src, false, env)),
-
-            Redirect::Heredoc(fd, ref body) => unimplemented!(),
-        };
-
-        Ok(ret)
+    fn is_interactive(&self) -> bool {
+        false
     }
 }
 
@@ -1082,7 +464,7 @@ impl<'a, T: Run + ?Sized> Run for &'a T {
     fn run(&self, env: &mut Environment) -> Result<ExitStatus> { (**self).run(env) }
 }
 
-impl Run for SimpleCommand {
+impl<W: WordEval> Run for SimpleCommand<W> {
     fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
         if self.cmd.is_none() {
             for &(ref var, ref val) in self.vars.iter() {
@@ -1154,7 +536,7 @@ impl Run for SimpleCommand {
                     Fields::Single(s) => cmd.env(var, &*s),
                     f@Fields::At(_)   |
                     f@Fields::Star(_) |
-                    f@Fields::Many(_) => cmd.env(var, &*f.join()),
+                    f@Fields::Split(_) => cmd.env(var, &*f.join()),
                 };
             }
         }
@@ -1215,7 +597,7 @@ impl Run for SimpleCommand {
     }
 }
 
-impl Run for Command {
+impl<W: WordEval + 'static> Run for Command<W> {
     fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
         let exit = match *self {
             Command::And(ref first, ref second) => {
@@ -1228,7 +610,7 @@ impl Run for Command {
                 if exit.success() { exit } else { try!(second.run(env)) }
             },
 
-            Command::Pipe(bool, ref cmds) => unimplemented!(),
+            Command::Pipe(bool, ref cmds) => unimplemented!(), // FIXME
 
             Command::Job(_) => {
                 // FIXME: eventual job control would be nice
@@ -1252,7 +634,7 @@ impl Run for Command {
     }
 }
 
-impl Run for CompoundCommand {
+impl<W: WordEval, C: Run> Run for CompoundCommand<W, C> {
     fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
         use syntax::ast::CompoundCommand::*;
 
@@ -1260,7 +642,7 @@ impl Run for CompoundCommand {
             // Brace commands are just command groupings no different than as if we had
             // sequential commands. Thus, any error that results should be passed up
             // for the caller to decide how to handle.
-            Brace(ref cmds) => try!(cmds.run(env)),
+            Brace(ref cmds) => try!(run(cmds, env)),
 
             While(ref guard, ref body) |
             Until(ref guard, ref body) => {
@@ -1280,8 +662,8 @@ impl Run for CompoundCommand {
                 //
                 // bash and zsh appear to break loops if a "fatal" error occurs,
                 // so we'll emulate the same behavior in case it is expected
-                while try_and_swallow_non_fatal!(guard.run(env), env).success() ^ invert_guard_status {
-                    exit = try_and_swallow_non_fatal!(body.run(env), env);
+                while try_and_swallow_non_fatal!(run(guard, env), env).success() ^ invert_guard_status {
+                    exit = try_and_swallow_non_fatal!(run(body, env), env);
                 }
                 exit
             },
@@ -1296,15 +678,15 @@ impl Run for CompoundCommand {
             } else {
                 let mut exit = None;
                 for &(ref guard, ref body) in branches.iter() {
-                    if try_and_swallow_non_fatal!(guard.run(env), env).success() {
-                        exit = Some(try!(body.run(env)));
+                    if try_and_swallow_non_fatal!(run(guard, env), env).success() {
+                        exit = Some(try!(run(body, env)));
                         break;
                     }
                 }
 
                 let exit = match exit {
                     Some(e) => e,
-                    None => try!(els.as_ref().map_or(Ok(EXIT_SUCCESS), |els| els.run(env))),
+                    None => try!(els.as_ref().map_or(Ok(EXIT_SUCCESS), |els| run(els, env))),
                 };
                 env.set_last_status(exit);
                 exit
@@ -1314,7 +696,7 @@ impl Run for CompoundCommand {
             // Thus, errors that occur within here should NOT be propagated upward.
             Subshell(ref body) => {
                 let env = &mut *env.sub_env();
-                match body.run(env) {
+                match run(body, env) {
                     Ok(exit) => exit,
                     Err(err) => {
                         env.report_error(err);
@@ -1342,7 +724,7 @@ impl Run for CompoundCommand {
 
                 for val in values {
                     env.set_var(var.clone(), val);
-                    exit = try_and_swallow_non_fatal!(body.run(env), env);
+                    exit = try_and_swallow_non_fatal!(run(body, env), env);
                 }
                 exit
             },
@@ -1359,15 +741,17 @@ impl Run for CompoundCommand {
                     split_fields_further: false,
                 })).join();
 
+                // If no arm was taken we still consider the command a success
                 let mut exit = EXIT_SUCCESS;
-                for &(ref pats, ref body) in arms.iter() {
+                'case: for &(ref pats, ref body) in arms.iter() {
                     for pat in pats {
                         if try!(pat.eval_as_pattern(env)).matches_with(&word, &match_opts) {
-                            exit = try!(body.run(env));
-                            break;
+                            exit = try!(run(body, env));
+                            break 'case;
                         }
                     }
                 }
+
                 exit
             },
         };
@@ -1377,21 +761,14 @@ impl Run for CompoundCommand {
     }
 }
 
-impl<T: Borrow<Command>> Run for [T] {
-    fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
-        run(self.iter().map(|c| c.borrow()), env)
-    }
-}
-
-/// A function for running any iterator of items from which an `ast::Command`
-/// can be borrowed from. This is useful for lazily streaming commands to run.
-pub fn run<I, Item>(iter: I, env: &mut Environment) -> Result<ExitStatus>
-    where I: Iterator<Item = Item>,
-          Item: Borrow<Command>
+/// A function for running any iterable collection of items which implement `Run`.
+/// This is useful for lazily streaming commands to run.
+pub fn run<I>(iter: I, env: &mut Environment) -> Result<ExitStatus>
+    where I: IntoIterator, I::Item: Run
 {
     let mut exit = EXIT_SUCCESS;
     for c in iter {
-        exit = try_and_swallow_non_fatal!(c.borrow().run(env), env)
+        exit = try_and_swallow_non_fatal!(c.run(env), env)
     }
     env.set_last_status(exit);
     Ok(exit)
@@ -1399,10 +776,11 @@ pub fn run<I, Item>(iter: I, env: &mut Environment) -> Result<ExitStatus>
 
 /// Adds a number of local redirects to the specified environment, runs the provided closure,
 /// then removes the local redirects and restores the previous file descriptors before returning.
-pub fn run_with_local_redirections<'a, I, F, T>(env: &mut Environment, redirects: I, closure: F)
+pub fn run_with_local_redirections<'a, I, F, W, T>(env: &mut Environment, redirects: I, closure: F)
     -> Result<T>
-    where I: IntoIterator<Item = &'a Redirect>,
+    where I: IntoIterator<Item = &'a Redirect<W>>,
           F: FnOnce(&mut Environment) -> Result<T>,
+          W: 'a + WordEval,
 {
     struct RedirectionOverride {
         /// The local FileDesc that should be temporarily placed in/removed from the environment.
@@ -1474,22 +852,27 @@ pub fn run_with_local_redirections<'a, I, F, T>(env: &mut Environment, redirects
 mod tests {
     extern crate tempdir;
 
-    use libc;
+    use glob;
 
     use self::tempdir::TempDir;
     use std::cell::RefCell;
     use std::fs::OpenOptions;
-    use std::io::{Read, Write};
+    use std::io::{Read, Write, Error as IoError};
     use std::path::PathBuf;
     use std::rc::Rc;
     use std::thread;
+    use super::eval::{Fields, WordEval, WordEvalConfig};
     use super::io::{FileDesc, Permissions};
     use super::*;
 
-    use syntax::ast::{Arith, Command, CompoundCommand, SimpleCommand, Parameter, ParameterSubstitution, Redirect, Word};
-    use syntax::ast::ComplexWord::*;
-    use syntax::ast::SimpleWord::*;
-    use syntax::parse::test::{lit, single_quoted};
+    use syntax::ast::Command::*;
+    use syntax::ast::CompoundCommand::*;
+    use syntax::ast::{Redirect, SimpleCommand, Parameter};
+
+    type Command<'a>         = ::syntax::ast::Command<MockWord<'a>>;
+    type CompoundCommand<'a> = ::syntax::ast::CompoundCommand<MockWord<'a>, Command<'a>>;
+
+    const EXIT_ERROR_MOCK: ExitStatus = ExitStatus::Code(::std::i32::MAX);
 
     #[cfg(unix)]
     const DEV_NULL: &'static str = "/dev/null";
@@ -1535,6 +918,56 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    enum MockWord<'a> {
+        Regular(Rc<String>),
+        Error(Rc<Fn() -> RuntimeError + 'a>),
+    }
+
+    impl<'a> WordEval for MockWord<'a> {
+        fn eval_with_config(&self, env: &mut Environment, _: WordEvalConfig) -> Result<Fields> {
+            match *self {
+                MockWord::Regular(ref rc) => Ok(rc.clone().into()),
+                MockWord::Error(ref e) => {
+                    env.set_last_status(EXIT_ERROR_MOCK);
+                    Err(e())
+                },
+            }
+        }
+
+        fn eval_as_pattern(&self, env: &mut Environment) -> Result<glob::Pattern> {
+            match *self {
+                MockWord::Regular(ref rc) => Ok(glob::Pattern::new(rc).unwrap()),
+                MockWord::Error(ref e) => {
+                    env.set_last_status(EXIT_ERROR_MOCK);
+                    Err(e())
+                },
+            }
+        }
+    }
+
+    impl<'a, 'b> From<&'b str> for MockWord<'a> {
+        fn from(s: &'b str) -> Self {
+            MockWord::Regular(Rc::new(s.into()))
+        }
+    }
+
+    impl<'a> From<String> for MockWord<'a> {
+        fn from(s: String) -> Self {
+            MockWord::Regular(Rc::new(s))
+        }
+    }
+
+    impl<'a, F: Fn() -> RuntimeError + 'a> From<F> for MockWord<'a> {
+        fn from(f: F) -> Self {
+            MockWord::Error(Rc::new(f))
+        }
+    }
+
+    fn word<'a, T: ToString>(s: T) -> MockWord<'a> {
+        MockWord::Regular(Rc::new(s.to_string()))
+    }
+
     fn dev_null() -> FileDesc {
         OpenOptions::new().read(true).write(true).open(DEV_NULL).unwrap().into()
     }
@@ -1543,102 +976,87 @@ mod tests {
         dev_null()
     }
 
-    macro_rules! cmd_unboxed {
-        ($cmd:expr)                  => { cmd_unboxed!($cmd,) };
-        ($cmd:expr, $($arg:expr),*,) => { cmd_unboxed!($cmd, $($arg),*) };
-        ($cmd:expr, $($arg:expr),* ) => {
-            Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit($cmd)), vec!($($arg),*))),
-                vars: vec!(),
-                io: vec!(),
-            }))
-        };
-    }
-
     macro_rules! cmd {
         ($cmd:expr)                  => { cmd!($cmd,) };
         ($cmd:expr, $($arg:expr),*,) => { cmd!($cmd, $($arg),*) };
-        ($cmd:expr, $($arg:expr),* ) => { Box::new(cmd_unboxed!($cmd, $($arg),*)) }
+        ($cmd:expr, $($arg:expr),* ) => {
+            Box::new(Simple(Box::new(SimpleCommand {
+                cmd: Some((MockWord::from($cmd), vec!($(MockWord::from($arg)),*))),
+                vars: vec!(),
+                io: vec!(),
+            })))
+        };
     }
 
-    fn exit(status: i32) -> Box<Command> {
-        cmd!("sh", Single(lit("-c")), single_quoted(&format!("exit {}", status)))
+    fn exit<'a>(status: i32) -> Box<Command<'a>> {
+        cmd!("sh", "-c", format!("exit {}", status))
     }
 
-    fn true_cmd() -> Box<Command> { exit(0) }
-    fn false_cmd() -> Box<Command> { exit(1) }
+    fn true_cmd<'a>() -> Box<Command<'a>> { exit(0) }
+    fn false_cmd<'a>() -> Box<Command<'a>> { exit(1) }
 
-    #[test]
-    fn test_fields_is_null_single_empty_string() {
-        assert_eq!(Fields::Single(Rc::new(String::from(""))).is_null(), true);
+    macro_rules! run_test {
+        ($swallow_errors:expr, $test:expr, $env:expr, $ok_status:expr, $($case:expr),+,) => {
+            $({
+                // Use a sub-env for each test case to offer a "clean slate"
+                let result = $test(cmd!(move || $case), &mut *$env.sub_env());
+                if $swallow_errors {
+                    assert_eq!(result, Ok($ok_status.clone().unwrap_or(EXIT_ERROR_MOCK)));
+                } else {
+                    assert_eq!(result, Err($case));
+                }
+            })+
+        };
     }
 
-    #[test]
-    fn test_fields_is_null_single_non_empty_string() {
-        assert_eq!(Fields::Single(Rc::new(String::from("foo"))).is_null(), false);
-    }
+    fn test_error_handling_non_fatals<'a, F>(swallow_errors: bool,
+                                             test: F,
+                                             ok_status: Option<ExitStatus>)
+        where F: Fn(Box<Command<'a>>, &mut Environment) -> Result<ExitStatus>
+    {
+        // We'll be printing a lot of errors, so we'll suppress actually printing
+        // to avoid polluting the output of the test runner.
+        // NB: consider removing this line when debugging
+        let mut env = Env::new().unwrap();
+        env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
 
-    #[test]
-    fn test_fields_is_null_many_one_empty_string() {
-        let strs = vec!(
-            Rc::new(String::from("foo")),
-            Rc::new(String::from("")),
-            Rc::new(String::from("bar")),
+        run_test!(swallow_errors, test, env, ok_status,
+            RuntimeError::Command(CommandError::NotFound(Rc::new("".to_string()))),
+            RuntimeError::Command(CommandError::NotExecutable(Rc::new("".to_string()))),
+            RuntimeError::Redirection(RedirectionError::Ambiguous(vec!())),
+            RuntimeError::Redirection(RedirectionError::BadFdSrc(Rc::new("".to_string()))),
+            RuntimeError::Redirection(RedirectionError::BadFdPerms(0, Permissions::Read)),
+            RuntimeError::Unimplemented("unimplemented"),
+            RuntimeError::Io(IoError::last_os_error(), Rc::new("".to_string())),
         );
-        let fields = vec!(
-            Fields::At(strs.clone()),
-            Fields::Star(strs.clone()),
-            Fields::Many(strs.clone()),
-        );
-
-        for f in fields {
-            assert_eq!(f.is_null(), false);
-        }
     }
 
-    #[test]
-    fn test_fields_is_null_many_empty_string() {
-        let empty = Rc::new(String::from(""));
-        let strs = vec!(
-            empty.clone(),
-            empty.clone(),
-            empty.clone(),
-        );
+    fn test_error_handling_fatals<'a, F>(swallow_fatals: bool,
+                                         test: F,
+                                         ok_status: Option<ExitStatus>)
+        where F: Fn(Box<Command<'a>>, &mut Environment) -> Result<ExitStatus>
+    {
+        // We'll be printing a lot of errors, so we'll suppress actually printing
+        // to avoid polluting the output of the test runner.
+        // NB: consider removing this line when debugging
+        let mut env = Env::new().unwrap();
+        env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
 
-        let fields = vec!(
-            Fields::At(strs.clone()),
-            Fields::Star(strs.clone()),
-            Fields::Many(strs.clone()),
+        // Fatal errors should not be swallowed
+        run_test!(swallow_fatals, test, env, ok_status,
+            RuntimeError::Expansion(ExpansionError::DivideByZero),
+            RuntimeError::Expansion(ExpansionError::NegativeExponent),
+            RuntimeError::Expansion(ExpansionError::BadAssig(Parameter::At)),
+            RuntimeError::Expansion(ExpansionError::EmptyParameter(Parameter::At, Rc::new("".to_string()))),
         );
-
-        for f in fields {
-            assert_eq!(f.is_null(), true);
-        }
     }
 
-    #[test]
-    fn test_fields_join_single() {
-        let s = Rc::new(String::from("foo"));
-        assert_eq!(Fields::Single(s.clone()).join(), s);
-    }
-
-    #[test]
-    fn test_fields_join_multiple_only_keeps_non_empty_strings_before_joining_with_space() {
-        let strs = vec!(
-            Rc::new(String::from("foo")),
-            Rc::new(String::from("")),
-            Rc::new(String::from("bar")),
-        );
-
-        let fields = vec!(
-            Fields::At(strs.clone()),
-            Fields::Star(strs.clone()),
-            Fields::Many(strs.clone()),
-        );
-
-        for f in fields {
-            assert_eq!(&*f.join(), "foo bar");
-        }
+    /// For exhaustively testing against handling of different error types
+    fn test_error_handling<'a, F>(swallow_errors: bool, test: F, ok_status: Option<ExitStatus>)
+        where F: Fn(Box<Command<'a>>, &mut Environment) -> Result<ExitStatus>
+    {
+        test_error_handling_non_fatals(swallow_errors, &test, ok_status);
+        test_error_handling_fatals(false, test, ok_status);
     }
 
     #[test]
@@ -1659,13 +1077,15 @@ mod tests {
     }
 
     #[test]
-    fn test_env_set_and_get_var() {
-        let name = "var";
+    fn test_env_set_get_unset_var() {
+        let name = "var".to_string();
         let value = "value";
         let mut env = Env::new().unwrap();
-        assert_eq!(env.var(name), None);
-        env.set_var(String::from(name), Rc::new(String::from(value)));
-        assert_eq!(&**env.var(name).unwrap(), value);
+        assert_eq!(env.var(&name), None);
+        env.set_var(name.clone(), Rc::new(value.to_string()));
+        assert_eq!(&**env.var(&name).unwrap(), value);
+        env.unset_var(name.clone());
+        assert_eq!(env.var(&name), None);
     }
 
     #[test]
@@ -1848,7 +1268,7 @@ mod tests {
 
     #[test]
     fn test_env_run_function_can_be_recursive() {
-        let fn_name_owned = String::from("fn name");
+        let fn_name_owned = "fn name".to_string();
         let fn_name = Rc::new(fn_name_owned.clone());
 
         let mut env = Env::new().unwrap();
@@ -1921,31 +1341,33 @@ mod tests {
 
     #[test]
     fn test_env_run_function_redirections_should_work() {
-        let fn_name = String::from("fn name");
+        let fn_name = "fn name";
         let tempdir = mktmp!();
 
         let mut file_path = PathBuf::new();
         file_path.push(tempdir.path());
-        file_path.push(String::from("out"));
+        file_path.push("out");
 
         let mut env = Env::new().unwrap();
-
-        let fn_cmd = Command::Function(fn_name.clone(), Rc::new(
-            *cmd!("echo", Single(Word::Simple(Box::new(Param(Parameter::At)))))
-        ));
+        env.set_function(fn_name.to_string(), MockFn::new(|env| {
+            let args = env.args().iter().map(|rc| rc.to_string()).collect::<Vec<_>>();
+            let msg = args.join(" ");
+            let fd = env.file_desc(STDOUT_FILENO).unwrap().0;
+            unsafe { fd.unsafe_write().write_all(msg.as_bytes()).unwrap(); }
+            Ok(EXIT_SUCCESS)
+        }));
 
         let cmd = SimpleCommand {
-            cmd: Some((Single(lit(&fn_name)), vec!(Single(lit("foobar"))))),
+            cmd: Some((word(fn_name), vec!(word("foo"), word("bar")))),
             vars: vec!(),
-            io: vec!(Redirect::Write(None, Single(lit(&file_path.display().to_string())))),
+            io: vec!(Redirect::Write(None, word(file_path.display()))),
         };
 
-        assert_eq!(fn_cmd.run(&mut env), Ok(EXIT_SUCCESS));
         assert_eq!(cmd.run(&mut env), Ok(EXIT_SUCCESS));
 
         let mut read = String::new();
         Permissions::Read.open(&file_path).unwrap().read_to_string(&mut read).unwrap();
-        assert_eq!(read, "foobar\n");
+        assert_eq!(read, "foo bar");
     }
 
     #[test]
@@ -2081,1601 +1503,55 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_parameter_with_set_vars() {
-        let var1 = Rc::new(String::from("var1_value"));
-        let var2 = Rc::new(String::from("var2_value"));
-        let var3 = Rc::new(String::from("")); // var3 is set to the empty string
-
-        let arg1 = String::from("arg1_value");
-        let arg2 = String::from("arg2_value");
-        let arg3 = String::from("arg3_value");
-
-        let args = vec!(
-            arg1.clone(),
-            arg2.clone(),
-            arg3.clone(),
-        );
-
-        let mut env = Env::with_config(None, Some(args.clone()), None, None).unwrap();
-        env.set_var(String::from("var1"), var1.clone());
-        env.set_var(String::from("var2"), var2.clone());
-        env.set_var(String::from("var3"), var3.clone());
-
-        let args: Vec<Rc<String>> = args.into_iter().map(Rc::new).collect();
-        assert_eq!(Parameter::At.eval(false, &mut env), Some(Fields::At(args.clone())));
-        assert_eq!(Parameter::Star.eval(false, &mut env), Some(Fields::Star(args.clone())));
-
-        assert_eq!(Parameter::Dollar.eval(false, &mut env), Some(Fields::Single(Rc::new(unsafe {
-            ::libc::getpid().to_string()
-        }))));
-
-        // FIXME: test these
-        //assert_eq!(Parameter::Dash.eval(false, &mut env), ...);
-        //assert_eq!(Parameter::Bang.eval(false, &mut env), ...);
-
-        // Before anything is run it should be considered a success
-        assert_eq!(Parameter::Question.eval(false, &mut env), Some(Fields::Single(Rc::new(String::from("0")))));
-        env.set_last_status(ExitStatus::Code(3));
-        assert_eq!(Parameter::Question.eval(false, &mut env), Some(Fields::Single(Rc::new(String::from("3")))));
-        // Signals should have 128 added to them
-        env.set_last_status(ExitStatus::Signal(5));
-        assert_eq!(Parameter::Question.eval(false, &mut env), Some(Fields::Single(Rc::new(String::from("133")))));
-
-        assert_eq!(Parameter::Positional(0).eval(false, &mut env), Some(Fields::Single(env.name().clone())));
-        assert_eq!(Parameter::Positional(1).eval(false, &mut env), Some(Fields::Single(Rc::new(arg1))));
-        assert_eq!(Parameter::Positional(2).eval(false, &mut env), Some(Fields::Single(Rc::new(arg2))));
-        assert_eq!(Parameter::Positional(3).eval(false, &mut env), Some(Fields::Single(Rc::new(arg3))));
-
-        assert_eq!(Parameter::Var(String::from("var1")).eval(false, &mut env), Some(Fields::Single(var1.clone())));
-        assert_eq!(Parameter::Var(String::from("var2")).eval(false, &mut env), Some(Fields::Single(var2.clone())));
-        assert_eq!(Parameter::Var(String::from("var3")).eval(false, &mut env), Some(Fields::Single(var3.clone())));
-
-        assert_eq!(Parameter::Pound.eval(false, &mut env), Some(Fields::Single(Rc::new(String::from("3")))));
-    }
-
-    #[test]
-    fn test_eval_parameter_with_unset_vars() {
-        let mut env = Env::with_config(None, Some(vec!()), None, None).unwrap();
-
-        assert_eq!(Parameter::At.eval(false, &mut env), Some(Fields::Zero));
-        assert_eq!(Parameter::Star.eval(false, &mut env), Some(Fields::Zero));
-
-        // FIXME: test these
-        //assert_eq!(Parameter::Dash.eval(false, &mut env), ...);
-        //assert_eq!(Parameter::Bang.eval(false, &mut env), ...);
-
-        assert_eq!(Parameter::Positional(0).eval(false, &mut env), Some(Fields::Single(env.name().clone())));
-        assert_eq!(Parameter::Positional(1).eval(false, &mut env), None);
-        assert_eq!(Parameter::Positional(2).eval(false, &mut env), None);
-
-        assert_eq!(Parameter::Var(String::from("var1")).eval(false, &mut env), None);
-        assert_eq!(Parameter::Var(String::from("var2")).eval(false, &mut env), None);
-
-        assert_eq!(Parameter::Pound.eval(false, &mut env), Some(Fields::Single(Rc::new(String::from("0")))));
-    }
-
-    #[test]
-    fn test_eval_parameter_splitting_with_default_ifs() {
-        let val1 = Rc::new(String::from(" \t\nfoo\n\n\nbar \t\n"));
-        let val2 = Rc::new(String::from(""));
-
-        let args = vec!(
-            (*val1).clone(),
-            (*val2).clone(),
-        );
-
-        let mut env = Env::with_config(None, Some(args.clone()), None, None).unwrap();
-        env.set_var(String::from("var1"), val1.clone());
-        env.set_var(String::from("var2"), val2.clone());
-
-        // Splitting should NOT keep any IFS whitespace fields
-        let fields_args = vec!(Rc::new(String::from("foo")), Rc::new(String::from("bar")));
-
-        // With splitting
-        assert_eq!(Parameter::At.eval(true, &mut env), Some(Fields::At(fields_args.clone())));
-        assert_eq!(Parameter::Star.eval(true, &mut env), Some(Fields::Star(fields_args.clone())));
-
-        let fields_foo_bar = Fields::Many(fields_args.clone());
-
-        assert_eq!(Parameter::Positional(1).eval(true, &mut env), Some(fields_foo_bar.clone()));
-        assert_eq!(Parameter::Positional(2).eval(true, &mut env), Some(Fields::Zero));
-
-        assert_eq!(Parameter::Var(String::from("var1")).eval(true, &mut env), Some(fields_foo_bar.clone()));
-        assert_eq!(Parameter::Var(String::from("var2")).eval(true, &mut env), Some(Fields::Zero));
-
-        // Without splitting
-        let args: Vec<_> = args.into_iter().map(Rc::new).collect();
-        assert_eq!(Parameter::At.eval(false, &mut env), Some(Fields::At(args.clone())));
-        assert_eq!(Parameter::Star.eval(false, &mut env), Some(Fields::Star(args.clone())));
-
-        assert_eq!(Parameter::Positional(1).eval(false, &mut env), Some(Fields::Single(val1.clone())));
-        assert_eq!(Parameter::Positional(2).eval(false, &mut env), Some(Fields::Single(val2.clone())));
-
-        assert_eq!(Parameter::Var(String::from("var1")).eval(false, &mut env), Some(Fields::Single(val1)));
-        assert_eq!(Parameter::Var(String::from("var2")).eval(false, &mut env), Some(Fields::Single(val2)));
-    }
-
-    #[test]
-    fn test_eval_parameter_splitting_with_custom_ifs() {
-        let val1 = Rc::new(String::from("   foo000bar   "));
-        let val2 = Rc::new(String::from("  00 0 00  0 "));
-        let val3 = Rc::new(String::from(""));
-
-        let args = vec!(
-            (*val1).clone(),
-            (*val2).clone(),
-            (*val3).clone(),
-        );
-
-        let mut env = Env::with_config(None, Some(args.clone()), None, None).unwrap();
-        env.set_var(String::from("IFS"), Rc::new(String::from("0 ")));
-
-        env.set_var(String::from("var1"), val1.clone());
-        env.set_var(String::from("var2"), val2.clone());
-        env.set_var(String::from("var3"), val3.clone());
-
-        // Splitting SHOULD keep empty fields between IFS chars which are NOT whitespace
-        let fields_args = vec!(
-            Rc::new(String::from("foo")),
-            Rc::new(String::from("")),
-            Rc::new(String::from("")),
-            Rc::new(String::from("bar")),
-            Rc::new(String::from("")),
-            Rc::new(String::from("")),
-            Rc::new(String::from("")),
-            Rc::new(String::from("")),
-            Rc::new(String::from("")),
-            Rc::new(String::from("")),
-            // Already empty word should result in Zero fields
-        );
-
-        // With splitting
-        assert_eq!(Parameter::At.eval(true, &mut env), Some(Fields::At(fields_args.clone())));
-        assert_eq!(Parameter::Star.eval(true, &mut env), Some(Fields::Star(fields_args.clone())));
-
-        let fields_foo_bar = Fields::Many(vec!(
-            Rc::new(String::from("foo")),
-            Rc::new(String::from("")),
-            Rc::new(String::from("")),
-            Rc::new(String::from("bar")),
-        ));
-
-        let fields_all_blanks = Fields::Many(vec!(
-            Rc::new(String::from("")),
-            Rc::new(String::from("")),
-            Rc::new(String::from("")),
-            Rc::new(String::from("")),
-            Rc::new(String::from("")),
-            Rc::new(String::from("")),
-        ));
-
-        assert_eq!(Parameter::Positional(1).eval(true, &mut env), Some(fields_foo_bar.clone()));
-        assert_eq!(Parameter::Positional(2).eval(true, &mut env), Some(fields_all_blanks.clone()));
-        assert_eq!(Parameter::Positional(3).eval(true, &mut env), Some(Fields::Zero));
-
-        assert_eq!(Parameter::Var(String::from("var1")).eval(true, &mut env), Some(fields_foo_bar));
-        assert_eq!(Parameter::Var(String::from("var2")).eval(true, &mut env), Some(fields_all_blanks));
-        assert_eq!(Parameter::Var(String::from("var3")).eval(true, &mut env), Some(Fields::Zero));
-
-        // FIXME: test these
-        //assert_eq!(Parameter::Dash.eval(false, &mut env), ...);
-        //assert_eq!(Parameter::Bang.eval(false, &mut env), ...);
-
-        env.set_last_status(EXIT_SUCCESS);
-        assert_eq!(Parameter::Question.eval(true, &mut env), Some(Fields::Single(Rc::new(String::new()))));
-
-        // Without splitting
-        let args: Vec<_> = args.into_iter().map(Rc::new).collect();
-        assert_eq!(Parameter::At.eval(false, &mut env), Some(Fields::At(args.clone())));
-        assert_eq!(Parameter::Star.eval(false, &mut env), Some(Fields::Star(args.clone())));
-
-        assert_eq!(Parameter::Positional(1).eval(false, &mut env), Some(Fields::Single(val1.clone())));
-        assert_eq!(Parameter::Positional(2).eval(false, &mut env), Some(Fields::Single(val2.clone())));
-        assert_eq!(Parameter::Positional(3).eval(false, &mut env), Some(Fields::Single(val3.clone())));
-
-        assert_eq!(Parameter::Var(String::from("var1")).eval(false, &mut env), Some(Fields::Single(val1)));
-        assert_eq!(Parameter::Var(String::from("var2")).eval(false, &mut env), Some(Fields::Single(val2)));
-        assert_eq!(Parameter::Var(String::from("var3")).eval(false, &mut env), Some(Fields::Single(val3)));
-
-        // FIXME: test these
-        //assert_eq!(Parameter::Dash.eval(false, &mut env), ...);
-        //assert_eq!(Parameter::Bang.eval(false, &mut env), ...);
-
-        env.set_last_status(EXIT_SUCCESS);
-        assert_eq!(Parameter::Question.eval(false, &mut env), Some(Fields::Single(Rc::new(String::from("0")))));
-    }
-
-    #[test]
-    fn test_eval_arith() {
-        use ::std::isize::MAX;
-
-        macro_rules! lit {
-            ($lit:expr) => { Box::new(Arith::Literal($lit)) }
-        }
-
-        let mut env = Env::new().unwrap();
-        let env = &mut env;
-        let var = String::from("var name");
-        let var_value = 10;
-        let var_string = String::from("var string");
-        let var_string_value = "asdf";
-
-        env.set_var(var.clone(),        Rc::new(String::from(var_value.to_string())));
-        env.set_var(var_string.clone(), Rc::new(String::from(var_string_value.to_string())));
-
-        assert_eq!(Arith::Literal(5).eval(env), Ok(5));
-
-        assert_eq!(Arith::Var(var.clone()).eval(env), Ok(var_value));
-        assert_eq!(Arith::Var(var_string.clone()).eval(env), Ok(0));
-        assert_eq!(Arith::Var(String::from("missing var")).eval(env), Ok(0));
-
-        assert_eq!(Arith::PostIncr(var.clone()).eval(env), Ok(var_value));
-        assert_eq!(&**env.var(&var).unwrap(), &*(var_value + 1).to_string());
-        assert_eq!(Arith::PostDecr(var.clone()).eval(env), Ok(var_value + 1));
-        assert_eq!(&**env.var(&var).unwrap(), &*var_value.to_string());
-
-        assert_eq!(Arith::PreIncr(var.clone()).eval(env), Ok(var_value + 1));
-        assert_eq!(&**env.var(&var).unwrap(), &*(var_value + 1).to_string());
-        assert_eq!(Arith::PreDecr(var.clone()).eval(env), Ok(var_value));
-        assert_eq!(&**env.var(&var).unwrap(), &*var_value.to_string());
-
-        assert_eq!(Arith::UnaryPlus(lit!(5)).eval(env), Ok(5));
-        assert_eq!(Arith::UnaryPlus(lit!(-5)).eval(env), Ok(5));
-
-        assert_eq!(Arith::UnaryMinus(lit!(5)).eval(env), Ok(-5));
-        assert_eq!(Arith::UnaryMinus(lit!(-5)).eval(env), Ok(5));
-
-        assert_eq!(Arith::BitwiseNot(lit!(5)).eval(env), Ok(!5));
-        assert_eq!(Arith::BitwiseNot(lit!(0)).eval(env), Ok(!0));
-
-        assert_eq!(Arith::LogicalNot(lit!(5)).eval(env), Ok(0));
-        assert_eq!(Arith::LogicalNot(lit!(0)).eval(env), Ok(1));
-
-        assert_eq!(Arith::Less(lit!(1), lit!(1)).eval(env), Ok(0));
-        assert_eq!(Arith::Less(lit!(1), lit!(0)).eval(env), Ok(0));
-        assert_eq!(Arith::Less(lit!(0), lit!(1)).eval(env), Ok(1));
-
-        assert_eq!(Arith::LessEq(lit!(1), lit!(1)).eval(env), Ok(1));
-        assert_eq!(Arith::LessEq(lit!(1), lit!(0)).eval(env), Ok(0));
-        assert_eq!(Arith::LessEq(lit!(0), lit!(1)).eval(env), Ok(1));
-
-        assert_eq!(Arith::Great(lit!(1), lit!(1)).eval(env), Ok(0));
-        assert_eq!(Arith::Great(lit!(1), lit!(0)).eval(env), Ok(1));
-        assert_eq!(Arith::Great(lit!(0), lit!(1)).eval(env), Ok(0));
-
-        assert_eq!(Arith::GreatEq(lit!(1), lit!(1)).eval(env), Ok(1));
-        assert_eq!(Arith::GreatEq(lit!(1), lit!(0)).eval(env), Ok(1));
-        assert_eq!(Arith::GreatEq(lit!(0), lit!(1)).eval(env), Ok(0));
-
-        assert_eq!(Arith::Eq(lit!(0), lit!(1)).eval(env), Ok(0));
-        assert_eq!(Arith::Eq(lit!(1), lit!(1)).eval(env), Ok(1));
-
-        assert_eq!(Arith::NotEq(lit!(0), lit!(1)).eval(env), Ok(1));
-        assert_eq!(Arith::NotEq(lit!(1), lit!(1)).eval(env), Ok(0));
-
-        assert_eq!(Arith::Pow(lit!(4), lit!(3)).eval(env), Ok(64));
-        assert_eq!(Arith::Pow(lit!(4), lit!(0)).eval(env), Ok(1));
-        assert_eq!(Arith::Pow(lit!(4), lit!(-2)).eval(env), Err(ExpansionError::NegativeExponent));
-        assert_eq!(env.last_status(), EXIT_ERROR);
-        env.set_last_status(EXIT_SUCCESS);
-
-        assert_eq!(Arith::Div(lit!(6), lit!(2)).eval(env), Ok(3));
-        assert_eq!(Arith::Div(lit!(1), lit!(0)).eval(env), Err(ExpansionError::DivideByZero));
-        assert_eq!(env.last_status(), EXIT_ERROR);
-        env.set_last_status(EXIT_SUCCESS);
-
-        assert_eq!(Arith::Modulo(lit!(6), lit!(5)).eval(env), Ok(1));
-        assert_eq!(Arith::Modulo(lit!(1), lit!(0)).eval(env), Err(ExpansionError::DivideByZero));
-        assert_eq!(env.last_status(), EXIT_ERROR);
-        env.set_last_status(EXIT_SUCCESS);
-
-        assert_eq!(Arith::Mult(lit!(3), lit!(2)).eval(env), Ok(6));
-        assert_eq!(Arith::Mult(lit!(1), lit!(0)).eval(env), Ok(0));
-
-        assert_eq!(Arith::Add(lit!(3), lit!(2)).eval(env), Ok(5));
-        assert_eq!(Arith::Add(lit!(1), lit!(0)).eval(env), Ok(1));
-
-        assert_eq!(Arith::Sub(lit!(3), lit!(2)).eval(env), Ok(1));
-        assert_eq!(Arith::Sub(lit!(0), lit!(1)).eval(env), Ok(-1));
-
-        assert_eq!(Arith::ShiftLeft(lit!(4), lit!(3)).eval(env), Ok(32));
-
-        assert_eq!(Arith::ShiftRight(lit!(32), lit!(2)).eval(env), Ok(8));
-
-        assert_eq!(Arith::BitwiseAnd(lit!(135), lit!(97)).eval(env), Ok(1));
-        assert_eq!(Arith::BitwiseAnd(lit!(135), lit!(0)).eval(env), Ok(0));
-        assert_eq!(Arith::BitwiseAnd(lit!(135), lit!(MAX)).eval(env), Ok(135));
-
-        assert_eq!(Arith::BitwiseXor(lit!(135), lit!(150)).eval(env), Ok(17));
-        assert_eq!(Arith::BitwiseXor(lit!(135), lit!(0)).eval(env), Ok(135));
-        assert_eq!(Arith::BitwiseXor(lit!(135), lit!(MAX)).eval(env), Ok(135 ^ MAX));
-
-        assert_eq!(Arith::BitwiseOr(lit!(135), lit!(97)).eval(env), Ok(231));
-        assert_eq!(Arith::BitwiseOr(lit!(135), lit!(0)).eval(env), Ok(135));
-        assert_eq!(Arith::BitwiseOr(lit!(135), lit!(MAX)).eval(env), Ok(MAX));
-
-        assert_eq!(Arith::LogicalAnd(lit!(135), lit!(97)).eval(env), Ok(1));
-        assert_eq!(Arith::LogicalAnd(lit!(135), lit!(0)).eval(env), Ok(0));
-        assert_eq!(Arith::LogicalAnd(lit!(0), lit!(0)).eval(env), Ok(0));
-
-        assert_eq!(Arith::LogicalOr(lit!(135), lit!(97)).eval(env), Ok(1));
-        assert_eq!(Arith::LogicalOr(lit!(135), lit!(0)).eval(env), Ok(1));
-        assert_eq!(Arith::LogicalOr(lit!(0), lit!(0)).eval(env), Ok(0));
-
-        assert_eq!(Arith::Ternary(lit!(2), lit!(4), lit!(5)).eval(env), Ok(4));
-        assert_eq!(Arith::Ternary(lit!(0), lit!(4), lit!(5)).eval(env), Ok(5));
-
-        assert_eq!(&**env.var(&var).unwrap(), &*(var_value).to_string());
-        assert_eq!(Arith::Assign(var.clone(), lit!(42)).eval(env), Ok(42));
-        assert_eq!(&**env.var(&var).unwrap(), "42");
-
-        assert_eq!(Arith::Sequence(vec!(
-            Arith::Assign(String::from("x"), lit!(5)),
-            Arith::Assign(String::from("y"), lit!(10)),
-            Arith::Add(
-                Box::new(Arith::PreIncr(String::from("x"))),
-                Box::new(Arith::PostDecr(String::from("y")))
-            ),
-        )).eval(env), Ok(16));
-
-        assert_eq!(&**env.var("x").unwrap(), "6");
-        assert_eq!(&**env.var("y").unwrap(), "9");
-    }
-
-    #[test]
-    fn test_eval_parameter_substitution_len() {
-        use syntax::ast::ParameterSubstitution::Len;
-
-        let cfg = WordEvalConfig {
-            tilde_expansion: TildeExpansion::None,
-            split_fields_further: false,
-        };
-
-        let name  = String::from("shell name");
-        let var   = String::from("var");
-        let value = String::from("foo bar");
-        let mut env = Env::with_config(Some(name.clone()), Some(vec!(
-            String::from("one"),
-            String::from("two"),
-            String::from("three"),
-        )), None, None).unwrap();
-
-        env.set_var(var.clone(), Rc::new(value.clone()));
-
-        let cases = vec!(
-            (Parameter::At,     3),
-            (Parameter::Star,   3),
-            (Parameter::Pound,  1),
-            (Parameter::Dollar, unsafe { libc::getpid().to_string().len() }),
-
-            // FIXME: test these as well
-            //Parameter::Dash,
-            //Parameter::Bang,
-
-            (Parameter::Positional(0),                name.len()),
-            (Parameter::Positional(3),                5),
-            (Parameter::Positional(5),                0),
-            (Parameter::Var(var),                     value.len()),
-            (Parameter::Var(String::from("missing")), 0),
-        );
-
-        for (param, result) in cases {
-            assert_eq!(Len(param).eval(&mut env, cfg), Ok(Fields::Single(Rc::new(result.to_string()))));
-        }
-
-        env.set_last_status(EXIT_SUCCESS);
-        assert_eq!(Len(Parameter::Question).eval(&mut env, cfg), Ok(Fields::Single(Rc::new(String::from("1")))));
-        env.set_last_status(ExitStatus::Signal(5));
-        assert_eq!(Len(Parameter::Question).eval(&mut env, cfg), Ok(Fields::Single(Rc::new(String::from("3")))));
-    }
-
-    #[test]
-    fn test_eval_parameter_substitution_arith() {
-        use syntax::ast::ParameterSubstitution::Arithmetic;
-
-        let cfg = WordEvalConfig {
-            tilde_expansion: TildeExpansion::None,
-            split_fields_further: false,
-        };
-
-        let mut env = Env::new().unwrap();
-        assert_eq!(Arithmetic(None).eval(&mut env, cfg), Ok(Fields::Single(Rc::new(String::from("0")))));
-        assert_eq!(Arithmetic(Some(Arith::Literal(5))).eval(&mut env, cfg), Ok(Fields::Single(Rc::new(String::from("5")))));
-        assert!(Arithmetic(Some(
-            Arith::Div(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(0)))
-        )).eval(&mut env, cfg).is_err());
-        assert_eq!(env.last_status(), EXIT_ERROR);
-    }
-
-    #[test]
-    fn test_eval_parameter_substitution_default() {
-        use syntax::ast::ParameterSubstitution::Default;
-
-        let cfg = WordEvalConfig {
-            tilde_expansion: TildeExpansion::None,
-            split_fields_further: false,
-        };
-
-        let var       = String::from("non_empty_var");
-        let var_value = String::from("foobar");
-        let var_null  = String::from("var with empty value");
-        let null      = String::new();
-        let var_unset = String::from("var_not_set_in_env");
-
-        let default_value = String::from("some default value");
-        let default = Single(lit(&default_value));
-
-        let mut env = Env::new().unwrap();
-        env.set_var(var.clone(),      Rc::new(var_value.clone()));
-        env.set_var(var_null.clone(), Rc::new(null.clone()));
-
-        let default_value = Fields::Single(Rc::new(default_value));
-        let var_value     = Fields::Single(Rc::new(var_value));
-        let null          = Fields::Single(Rc::new(null));
-
-        // Strict with default
-        let subst = Default(true, Parameter::Var(var.clone()), Some(default.clone()));
-        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
-        let subst = Default(true, Parameter::Var(var_null.clone()), Some(default.clone()));
-        assert_eq!(subst.eval(&mut env, cfg), Ok(default_value.clone()));
-        let subst = Default(true, Parameter::Var(var_unset.clone()), Some(default.clone()));
-        assert_eq!(subst.eval(&mut env, cfg), Ok(default_value.clone()));
-
-        // Strict without default
-        let subst = Default(true, Parameter::Var(var.clone()), None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
-        let subst = Default(true, Parameter::Var(var_null.clone()), None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-        let subst = Default(true, Parameter::Var(var_unset.clone()), None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-
-
-        // Non-strict with default
-        let subst = Default(false, Parameter::Var(var.clone()), Some(default.clone()));
-        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
-        let subst = Default(false, Parameter::Var(var_null.clone()), Some(default.clone()));
-        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-        let subst = Default(false, Parameter::Var(var_unset.clone()), Some(default.clone()));
-        assert_eq!(subst.eval(&mut env, cfg), Ok(default_value.clone()));
-
-        // Non-strict without default
-        let subst = Default(false, Parameter::Var(var.clone()), None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
-        let subst = Default(false, Parameter::Var(var_null.clone()), None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-        let subst = Default(false, Parameter::Var(var_unset.clone()), None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-
-        // Args have one non-null argument
-        {
-            let args = vec!(
-                String::from(""),
-                String::from("foo"),
-                String::from(""),
-                String::from(""),
-            );
-
-            let args_value = args.iter().cloned().map(Rc::new).collect::<Vec<_>>();
-            let mut env = Env::with_config(None, Some(args), None, None).unwrap();
-
-            let subst = Default(true, Parameter::At, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
-            let subst = Default(true, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
-            let subst = Default(true, Parameter::Star, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Star(args_value.clone())));
-            let subst = Default(true, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Star(args_value.clone())));
-
-            let subst = Default(false, Parameter::At, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
-            let subst = Default(false, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
-            let subst = Default(false, Parameter::Star, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Star(args_value.clone())));
-            let subst = Default(false, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Star(args_value.clone())));
-        }
-
-        // Args all null
-        {
-            let mut env = Env::with_config(None, Some(vec!(
-                String::from(""),
-                String::from(""),
-                String::from(""),
-            )), None, None).unwrap();
-
-            let subst = Default(true, Parameter::At, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(default_value.clone()));
-            let subst = Default(true, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Default(true, Parameter::Star, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(default_value.clone()));
-            let subst = Default(true, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-
-            let subst = Default(false, Parameter::At, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Default(false, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Default(false, Parameter::Star, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Default(false, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-        }
-
-        // Args not set
-        {
-            let mut env = Env::new().unwrap();
-
-            let subst = Default(true, Parameter::At, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(default_value.clone()));
-            let subst = Default(true, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Default(true, Parameter::Star, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(default_value.clone()));
-            let subst = Default(true, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-
-            let subst = Default(false, Parameter::At, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Default(false, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Default(false, Parameter::Star, Some(default.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Default(false, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-        }
-    }
-
-    #[test]
-    fn test_eval_parameter_substitution_assign() {
-        use syntax::ast::ParameterSubstitution::Assign;
-
-        let cfg = WordEvalConfig {
-            tilde_expansion: TildeExpansion::None,
-            split_fields_further: false,
-        };
-
-        let var         = String::from("non_empty_var");
-        let var_value   = String::from("foobar");
-        let var_null    = String::from("var with empty value");
-        let var_unset   = String::from("var_not_set_in_env");
-        let assig_value = String::from("assigned value");
-
-        let assig = Single(lit(&assig_value));
-        let null = Rc::new(String::new());
-
-        let mut env = Env::new().unwrap();
-        env.set_var(var.clone(), Rc::new(var_value.clone()));
-
-        let assig_var_value = Rc::new(assig_value);
-        let var_value       = Fields::Single(Rc::new(var_value));
-        let assig_value     = Fields::Single(assig_var_value.clone());
-        let null_value      = Fields::Single(null.clone());
-
-        // Variable set and non-null
-        let subst = Assign(true, Parameter::Var(var.clone()), Some(assig.clone()));
-        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
-        let subst = Assign(true, Parameter::Var(var.clone()), None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
-        let subst = Assign(false, Parameter::Var(var.clone()), Some(assig.clone()));
-        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
-        let subst = Assign(false, Parameter::Var(var.clone()), None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
-
-
-        // Variable set but null
-        env.set_var(var_null.clone(), null.clone());
-        let subst = Assign(true, Parameter::Var(var_null.clone()), Some(assig.clone()));
-        assert_eq!(subst.eval(&mut env, cfg), Ok(assig_value.clone()));
-        assert_eq!(env.var(&var_null), Some(&assig_var_value));
-
-        env.set_var(var_null.clone(), null.clone());
-        let subst = Assign(true, Parameter::Var(var_null.clone()), None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok(null_value.clone()));
-        assert_eq!(env.var(&var_null), Some(&null));
-
-        env.set_var(var_null.clone(), null.clone());
-        let subst = Assign(false, Parameter::Var(var_null.clone()), Some(assig.clone()));
-        assert_eq!(subst.eval(&mut env, cfg), Ok(null_value.clone()));
-        assert_eq!(env.var(&var_null), Some(&null));
-
-        env.set_var(var_null.clone(), null.clone());
-        let subst = Assign(false, Parameter::Var(var_null.clone()), None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok(null_value.clone()));
-        assert_eq!(env.var(&var_null), Some(&null));
-
-
-        // Variable unset
-        {
-            let mut env = env.sub_env();
-            let subst = Assign(true, Parameter::Var(var_unset.clone()), Some(assig.clone()));
-            assert_eq!(subst.eval(&mut *env, cfg), Ok(assig_value.clone()));
-            assert_eq!(env.var(&var_unset), Some(&assig_var_value));
-        }
-
-        {
-            let mut env = env.sub_env();
-            let subst = Assign(true, Parameter::Var(var_unset.clone()), None);
-            assert_eq!(subst.eval(&mut *env, cfg), Ok(null_value.clone()));
-            assert_eq!(env.var(&var_unset), Some(&null));
-        }
-
-        {
-            let mut env = env.sub_env();
-            let subst = Assign(false, Parameter::Var(var_unset.clone()), Some(assig.clone()));
-            assert_eq!(subst.eval(&mut *env, cfg), Ok(assig_value.clone()));
-            assert_eq!(env.var(&var_unset), Some(&assig_var_value));
-        }
-
-        {
-            let mut env = env.sub_env();
-            let subst = Assign(false, Parameter::Var(var_unset.clone()), None);
-            assert_eq!(subst.eval(&mut *env, cfg), Ok(null_value.clone()));
-            assert_eq!(env.var(&var_unset), Some(&null));
-        }
-
-        let unassignable_params = vec!(
-            Parameter::At,
-            Parameter::Star,
-            Parameter::Dash,
-            Parameter::Bang,
-
-            // These parameters can't ever really be null or undefined,
-            // so we won't test for them.
-            //Parameter::Pound,
-            //Parameter::Question,
-            //Parameter::Dollar,
-        );
-
-        for param in unassignable_params {
-            let err = ExpansionError::BadAssig(param.clone());
-            let subst = Assign(true, param.clone(), Some(assig.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Err(RuntimeError::Expansion(err.clone())));
-            assert_eq!(env.last_status(), EXIT_ERROR);
-        }
-    }
-
-    #[test]
-    fn test_eval_parameter_substitution_error() {
-        use syntax::ast::ParameterSubstitution::Error;
-
-        let cfg = WordEvalConfig {
-            tilde_expansion: TildeExpansion::None,
-            split_fields_further: false,
-        };
-
-        let var       = String::from("non_empty_var");
-        let var_value = String::from("foobar");
-        let var_null  = String::from("var with empty value");
-        let null      = String::new();
-        let var_unset = String::from("var_not_set_in_env");
-        let err_msg   = String::from("this variable is not set!");
-
-        let mut env = Env::new().unwrap();
-        env.set_var(var.clone(),      Rc::new(var_value.clone()));
-        env.set_var(var_null.clone(), Rc::new(null.clone()));
-
-        let var_value = Fields::Single(Rc::new(var_value));
-        let null      = Fields::Single(Rc::new(null));
-
-        let err_null  = RuntimeError::Expansion(
-            ExpansionError::EmptyParameter(Parameter::Var(var_null.clone()),  Rc::new(err_msg.clone())));
-        let err_unset = RuntimeError::Expansion(
-            ExpansionError::EmptyParameter(Parameter::Var(var_unset.clone()), Rc::new(err_msg.clone())));
-        let err_at    = RuntimeError::Expansion(
-            ExpansionError::EmptyParameter(Parameter::At,                     Rc::new(err_msg.clone())));
-        let err_star  = RuntimeError::Expansion(
-            ExpansionError::EmptyParameter(Parameter::Star,                   Rc::new(err_msg.clone())));
-
-        let err_msg = Single(lit(&err_msg));
-
-        // Strict with error message
-        let subst = Error(true, Parameter::Var(var.clone()), Some(err_msg.clone()));
-        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
-
-        env.set_last_status(EXIT_SUCCESS);
-        let subst = Error(true, Parameter::Var(var_null.clone()), Some(err_msg.clone()));
-        assert_eq!(subst.eval(&mut env, cfg).as_ref(), Err(&err_null));
-        assert_eq!(env.last_status(), EXIT_ERROR);
-
-        env.set_last_status(EXIT_SUCCESS);
-        let subst = Error(true, Parameter::Var(var_unset.clone()), Some(err_msg.clone()));
-        assert_eq!(subst.eval(&mut env, cfg).as_ref(), Err(&err_unset));
-        assert_eq!(env.last_status(), EXIT_ERROR);
-
-
-        // Strict without error message
-        let subst = Error(true, Parameter::Var(var.clone()), None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
-
-        env.set_last_status(EXIT_SUCCESS);
-        let eval = Error(true, Parameter::Var(var_null.clone()), None).eval(&mut env, cfg);
-        if let Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(param, _))) = eval {
-            assert_eq!(param, Parameter::Var(var_null.clone()));
-            assert_eq!(env.last_status(), EXIT_ERROR);
-        } else {
-            panic!("Unexpected evaluation: {:?}", eval);
-        }
-
-        env.set_last_status(EXIT_SUCCESS);
-        let eval = Error(true, Parameter::Var(var_unset.clone()), None).eval(&mut env, cfg);
-        if let Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(param, _))) = eval {
-            assert_eq!(param, Parameter::Var(var_unset.clone()));
-            assert_eq!(env.last_status(), EXIT_ERROR);
-        } else {
-            panic!("Unexpected evaluation: {:?}", eval);
-        }
-
-
-        // Non-strict with error message
-        let subst = Error(false, Parameter::Var(var.clone()), Some(err_msg.clone()));
-        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
-
-        let subst = Error(false, Parameter::Var(var_null.clone()), Some(err_msg.clone()));
-        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-
-        env.set_last_status(EXIT_SUCCESS);
-        let subst = Error(false, Parameter::Var(var_unset.clone()), Some(err_msg.clone()));
-        assert_eq!(subst.eval(&mut env, cfg).as_ref(), Err(&err_unset));
-        assert_eq!(env.last_status(), EXIT_ERROR);
-
-
-        // Non-strict without error message
-        let subst = Error(false, Parameter::Var(var.clone()), None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
-
-        let subst = Error(false, Parameter::Var(var_null.clone()), None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-
-        env.set_last_status(EXIT_SUCCESS);
-        let eval = Error(false, Parameter::Var(var_unset.clone()), None).eval(&mut env, cfg);
-        if let Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(param, _))) = eval {
-            assert_eq!(param, Parameter::Var(var_unset.clone()));
-            assert_eq!(env.last_status(), EXIT_ERROR);
-        } else {
-            panic!("Unexpected evaluation: {:?}", eval);
-        }
-
-
-        // Args have one non-null argument
-        {
-            let args = vec!(
-                String::from(""),
-                String::from("foo"),
-                String::from(""),
-                String::from(""),
-            );
-
-            let args_value = args.iter().cloned().map(Rc::new).collect::<Vec<_>>();
-            let mut env = Env::with_config(None, Some(args), None, None).unwrap();
-
-            let subst = Error(true, Parameter::At, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
-            let subst = Error(true, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
-            let subst = Error(true, Parameter::Star, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Star(args_value.clone())));
-            let subst = Error(true, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Star(args_value.clone())));
-
-            let subst = Error(false, Parameter::At, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
-            let subst = Error(false, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
-            let subst = Error(false, Parameter::Star, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Star(args_value.clone())));
-            let subst = Error(false, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Star(args_value.clone())));
-        }
-
-        // Args all null
-        {
-            let mut env = Env::with_config(None, Some(vec!(
-                String::from(""),
-                String::from(""),
-                String::from(""),
-            )), None, None).unwrap();
-
-            env.set_last_status(EXIT_SUCCESS);
-            let subst = Error(true, Parameter::At, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env, cfg).as_ref(), Err(&err_at));
-            assert_eq!(env.last_status(), EXIT_ERROR);
-
-            env.set_last_status(EXIT_SUCCESS);
-            let eval = Error(true, Parameter::At, None).eval(&mut env, cfg);
-            if let Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(Parameter::At, _))) = eval {
-                assert_eq!(env.last_status(), EXIT_ERROR);
-            } else {
-                panic!("Unexpected evaluation: {:?}", eval);
-            }
-
-            env.set_last_status(EXIT_SUCCESS);
-            let subst = Error(true, Parameter::Star, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env, cfg).as_ref(), Err(&err_star));
-            assert_eq!(env.last_status(), EXIT_ERROR);
-
-            env.set_last_status(EXIT_SUCCESS);
-            let eval = Error(true, Parameter::Star, None).eval(&mut env, cfg);
-            if let Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(Parameter::Star, _))) = eval {
-                assert_eq!(env.last_status(), EXIT_ERROR);
-            } else {
-                panic!("Unexpected evaluation: {:?}", eval);
-            }
-
-
-            let subst = Error(false, Parameter::At, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Error(false, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Error(false, Parameter::Star, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Error(false, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-        }
-
-        // Args not set
-        {
-            let mut env = Env::new().unwrap();
-
-            env.set_last_status(EXIT_SUCCESS);
-            let subst = Error(true, Parameter::At, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env, cfg).as_ref(), Err(&err_at));
-            assert_eq!(env.last_status(), EXIT_ERROR);
-
-            env.set_last_status(EXIT_SUCCESS);
-            let eval = Error(true, Parameter::At, None).eval(&mut env, cfg);
-            if let Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(Parameter::At, _))) = eval {
-                assert_eq!(env.last_status(), EXIT_ERROR);
-            } else {
-                panic!("Unexpected evaluation: {:?}", eval);
-            }
-
-            env.set_last_status(EXIT_SUCCESS);
-            let subst = Error(true, Parameter::Star, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env, cfg).as_ref(), Err(&err_star));
-            assert_eq!(env.last_status(), EXIT_ERROR);
-
-            env.set_last_status(EXIT_SUCCESS);
-            let eval = Error(true, Parameter::Star, None).eval(&mut env, cfg);
-            if let Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(Parameter::Star, _))) = eval {
-                assert_eq!(env.last_status(), EXIT_ERROR);
-            } else {
-                panic!("Unexpected evaluation: {:?}", eval);
-            }
-
-            let subst = Error(false, Parameter::At, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Error(false, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Error(false, Parameter::Star, Some(err_msg.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Error(false, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-        }
-    }
-
-    #[test]
-    fn test_eval_parameter_substitution_alternative() {
-        use syntax::ast::ParameterSubstitution::Alternative;
-
-        let cfg = WordEvalConfig {
-            tilde_expansion: TildeExpansion::None,
-            split_fields_further: false,
-        };
-
-        let var       = String::from("non_empty_var");
-        let var_value = String::from("foobar");
-        let var_null  = String::from("var with empty value");
-        let null      = String::new();
-        let var_unset = String::from("var_not_set_in_env");
-
-        let alt_value = String::from("some alternative value");
-        let alternative = Single(lit(&alt_value));
-
-        let mut env = Env::new().unwrap();
-        env.set_var(var.clone(),      Rc::new(var_value.clone()));
-        env.set_var(var_null.clone(), Rc::new(null.clone()));
-
-        let alt_value = Fields::Single(Rc::new(alt_value));
-        let null      = Fields::Single(Rc::new(null));
-
-        // Strict with alternative
-        let subst = Alternative(true, Parameter::Var(var.clone()), Some(alternative.clone()));
-        assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
-        let subst = Alternative(true, Parameter::Var(var_null.clone()), Some(alternative.clone()));
-        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-        let subst = Alternative(true, Parameter::Var(var_unset.clone()), Some(alternative.clone()));
-        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-
-        // Strict without alternative
-        let subst = Alternative(true, Parameter::Var(var.clone()), None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-        let subst = Alternative(true, Parameter::Var(var_null.clone()), None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-        let subst = Alternative(true, Parameter::Var(var_unset.clone()), None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-
-
-        // Non-strict with alternative
-        let subst = Alternative(false, Parameter::Var(var.clone()), Some(alternative.clone()));
-        assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
-        let subst = Alternative(false, Parameter::Var(var_null.clone()), Some(alternative.clone()));
-        assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
-        let subst = Alternative(false, Parameter::Var(var_unset.clone()), Some(alternative.clone()));
-        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-
-        // Non-strict without alternative
-        let subst = Alternative(false, Parameter::Var(var.clone()), None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-        let subst = Alternative(false, Parameter::Var(var_null.clone()), None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-        let subst = Alternative(false, Parameter::Var(var_unset.clone()), None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-
-
-        // Args have one non-null argument
-        {
-            let args = vec!(
-                String::from(""),
-                String::from("foo"),
-                String::from(""),
-                String::from(""),
-            );
-
-            let mut env = Env::with_config(None, Some(args), None, None).unwrap();
-
-            let subst = Alternative(true, Parameter::At, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
-            let subst = Alternative(true, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Alternative(true, Parameter::Star, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
-            let subst = Alternative(true, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-
-            let subst = Alternative(false, Parameter::At, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
-            let subst = Alternative(false, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Alternative(false, Parameter::Star, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
-            let subst = Alternative(false, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-        }
-
-        // Args all null
-        {
-            let mut env = Env::with_config(None, Some(vec!(
-                String::from(""),
-                String::from(""),
-                String::from(""),
-            )), None, None).unwrap();
-
-            let subst = Alternative(true, Parameter::At, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Alternative(true, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Alternative(true, Parameter::Star, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Alternative(true, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-
-            let subst = Alternative(false, Parameter::At, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
-            let subst = Alternative(false, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Alternative(false, Parameter::Star, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
-            let subst = Alternative(false, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-        }
-
-        // Args not set
-        {
-            let mut env = Env::new().unwrap();
-
-            let subst = Alternative(true, Parameter::At, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Alternative(true, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Alternative(true, Parameter::Star, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Alternative(true, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-
-            let subst = Alternative(false, Parameter::At, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
-            let subst = Alternative(false, Parameter::At, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-            let subst = Alternative(false, Parameter::Star, Some(alternative.clone()));
-            assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
-            let subst = Alternative(false, Parameter::Star, None);
-            assert_eq!(subst.eval(&mut env, cfg), Ok(null.clone()));
-        }
-    }
-
-    #[test]
-    fn test_eval_parameter_substitution_splitting_default_ifs() {
-        use syntax::ast::ParameterSubstitution::*;
-
-        let val1 = Rc::new(String::from(" \t\nfoo \t\nbar \t\n"));
-        let val2 = Rc::new(String::from(""));
-
-        let args = vec!(
-            (*val1).clone(),
-            (*val2).clone(),
-        );
-
-        let var1 = Parameter::Var(String::from("var1"));
-        let var2 = Parameter::Var(String::from("var2"));
-
-        let var_null = var2.clone();
-
-        let mut env = Env::with_config(None, Some(args.clone()), None, None).unwrap();
-        env.set_var(String::from("var1"), val1.clone());
-        env.set_var(String::from("var2"), val2.clone());
-
-        // Splitting should NOT keep empty fields between IFS chars which ARE whitespace
-        let fields_foo_bar = Fields::Many(vec!(
-            Rc::new(String::from("foo")),
-            Rc::new(String::from("bar")),
-        ));
-
-        // With splitting
-        let cfg = WordEvalConfig {
-            tilde_expansion: TildeExpansion::None,
-            split_fields_further: true,
-        };
-
-        // FIXME: test Command
-        assert_eq!(Default(false, var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
-        assert_eq!(Default(false, var2.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
-
-        assert_eq!(Assign(false, var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
-        assert_eq!(Assign(false, var2.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
-
-        assert_eq!(Error(false, var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
-        assert_eq!(Error(false, var2.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
-
-        assert_eq!(Alternative(false, var_null.clone(), Some(
-            Single(Word::Simple(Box::new(Param(var1.clone()))))
-        )).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
-        assert_eq!(Alternative(false, var_null.clone(), Some(
-            Single(Word::Simple(Box::new(Param(var2.clone()))))
-        )).eval(&mut env, cfg), Ok(Fields::Zero));
-
-        assert_eq!(RemoveSmallestSuffix(var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
-        assert_eq!(RemoveSmallestSuffix(var2.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
-
-        assert_eq!(RemoveLargestSuffix(var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
-        assert_eq!(RemoveLargestSuffix(var2.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
-
-        assert_eq!(RemoveSmallestPrefix(var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
-        assert_eq!(RemoveSmallestPrefix(var2.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
-
-        assert_eq!(RemoveLargestPrefix(var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
-        assert_eq!(RemoveLargestPrefix(var2.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
-
-        // Without splitting
-
-        let cfg = WordEvalConfig {
-            tilde_expansion: TildeExpansion::None,
-            split_fields_further: false,
-        };
-
-        // FIXME: test Command
-        let val1 = Fields::Single(val1.clone());
-        let val2 = Fields::Single(val2.clone());
-
-        assert_eq!(Default(false, var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
-        assert_eq!(Default(false, var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
-
-        assert_eq!(Assign(false, var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
-        assert_eq!(Assign(false, var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
-
-        assert_eq!(Error(false, var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
-        assert_eq!(Error(false, var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
-
-        assert_eq!(Alternative(false, var_null.clone(), Some(
-            Single(Word::Simple(Box::new(Param(var1.clone()))))
-        )).eval(&mut env, cfg), Ok(val1.clone()));
-        assert_eq!(Alternative(false, var_null.clone(), Some(
-            Single(Word::Simple(Box::new(Param(var2.clone()))))
-        )).eval(&mut env, cfg), Ok(val2.clone()));
-
-        assert_eq!(RemoveSmallestSuffix(var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
-        assert_eq!(RemoveSmallestSuffix(var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
-
-        assert_eq!(RemoveLargestSuffix(var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
-        assert_eq!(RemoveLargestSuffix(var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
-
-        assert_eq!(RemoveSmallestPrefix(var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
-        assert_eq!(RemoveSmallestPrefix(var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
-
-        assert_eq!(RemoveLargestPrefix(var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
-        assert_eq!(RemoveLargestPrefix(var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
-    }
-
-    #[test]
-    fn test_eval_parameter_substitution_splitting_with_custom_ifs() {
-        use syntax::ast::ParameterSubstitution::*;
-
-        let val1 = Rc::new(String::from("   foo000bar   "));
-        let val2 = Rc::new(String::from("  00 0 00  0 "));
-        let val3 = Rc::new(String::from(""));
-
-        let args = vec!(
-            (*val1).clone(),
-            (*val2).clone(),
-            (*val3).clone(),
-        );
-
-        let var1 = Parameter::Var(String::from("var1"));
-        let var2 = Parameter::Var(String::from("var2"));
-        let var3 = Parameter::Var(String::from("var3"));
-
-        let var_null = var3.clone();
-        let var_missing = Parameter::Var(String::from("missing"));
-
-        let mut env = Env::with_config(None, Some(args.clone()), None, None).unwrap();
-        env.set_var(String::from("IFS"), Rc::new(String::from("0 ")));
-
-        env.set_var(String::from("var1"), val1.clone());
-        env.set_var(String::from("var2"), val2.clone());
-        env.set_var(String::from("var3"), val3.clone());
-
-        // Splitting SHOULD keep empty fields between IFS chars which are NOT whitespace
-        let fields_foo_bar = Fields::Many(vec!(
-            Rc::new(String::from("foo")),
-            Rc::new(String::from("")),
-            Rc::new(String::from("")),
-            Rc::new(String::from("bar")),
-        ));
-
-        let fields_all_blanks = Fields::Many(vec!(
-            Rc::new(String::from("")),
-            Rc::new(String::from("")),
-            Rc::new(String::from("")),
-            Rc::new(String::from("")),
-            Rc::new(String::from("")),
-            Rc::new(String::from("")),
-        ));
-
-        // With splitting
-        let cfg = WordEvalConfig {
-            tilde_expansion: TildeExpansion::None,
-            split_fields_further: true,
-        };
-
-        // FIXME: test Command
-        assert_eq!(Len(var_missing.clone()).eval(&mut env, cfg), Ok(Fields::Single(Rc::new(String::from("")))));
-
-        assert_eq!(Arithmetic(Some(Arith::Add(
-            Box::new(Arith::Literal(100)),
-            Box::new(Arith::Literal(5)),
-        ))).eval(&mut env, cfg), Ok(
-            Fields::Many(vec!(
-                Rc::new(String::from("1")),
-                Rc::new(String::from("5")),
-            )))
-        );
-
-        assert_eq!(Default(false, var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
-        assert_eq!(Default(false, var2.clone(), None).eval(&mut env, cfg), Ok(fields_all_blanks.clone()));
-        assert_eq!(Default(false, var3.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
-
-        assert_eq!(Assign(false, var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
-        assert_eq!(Assign(false, var2.clone(), None).eval(&mut env, cfg), Ok(fields_all_blanks.clone()));
-        assert_eq!(Assign(false, var3.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
-
-        assert_eq!(Error(false, var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
-        assert_eq!(Error(false, var2.clone(), None).eval(&mut env, cfg), Ok(fields_all_blanks.clone()));
-        assert_eq!(Error(false, var3.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
-
-        assert_eq!(Alternative(false, var_null.clone(), Some(
-            Single(Word::Simple(Box::new(Param(var1.clone()))))
-        )).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
-        assert_eq!(Alternative(false, var_null.clone(), Some(
-            Single(Word::Simple(Box::new(Param(var2.clone()))))
-        )).eval(&mut env, cfg), Ok(fields_all_blanks.clone()));
-        assert_eq!(Alternative(false, var_null.clone(), Some(
-            Single(Word::Simple(Box::new(Param(var3.clone()))))
-        )).eval(&mut env, cfg), Ok(Fields::Zero));
-
-        assert_eq!(RemoveSmallestSuffix(var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
-        assert_eq!(RemoveSmallestSuffix(var2.clone(), None).eval(&mut env, cfg), Ok(fields_all_blanks.clone()));
-        assert_eq!(RemoveSmallestSuffix(var3.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
-
-        assert_eq!(RemoveLargestSuffix(var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
-        assert_eq!(RemoveLargestSuffix(var2.clone(), None).eval(&mut env, cfg), Ok(fields_all_blanks.clone()));
-        assert_eq!(RemoveLargestSuffix(var3.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
-
-        assert_eq!(RemoveSmallestPrefix(var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
-        assert_eq!(RemoveSmallestPrefix(var2.clone(), None).eval(&mut env, cfg), Ok(fields_all_blanks.clone()));
-        assert_eq!(RemoveSmallestPrefix(var3.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
-
-        assert_eq!(RemoveLargestPrefix(var1.clone(), None).eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
-        assert_eq!(RemoveLargestPrefix(var2.clone(), None).eval(&mut env, cfg), Ok(fields_all_blanks.clone()));
-        assert_eq!(RemoveLargestPrefix(var3.clone(), None).eval(&mut env, cfg), Ok(Fields::Zero));
-
-        // Without splitting
-
-        let cfg = WordEvalConfig {
-            tilde_expansion: TildeExpansion::None,
-            split_fields_further: false,
-        };
-
-        // FIXME: test Command
-        assert_eq!(Len(var_missing.clone()).eval(&mut env, cfg), Ok(Fields::Single(Rc::new(String::from("0")))));
-
-        assert_eq!(Arithmetic(Some(Arith::Add(
-            Box::new(Arith::Literal(100)),
-            Box::new(Arith::Literal(5)),
-        ))).eval(&mut env, cfg), Ok(Fields::Single(Rc::new(String::from("105")))));
-
-        let val1 = Fields::Single(val1.clone());
-        let val2 = Fields::Single(val2.clone());
-        let val3 = Fields::Single(val3.clone());
-
-        assert_eq!(Default(false, var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
-        assert_eq!(Default(false, var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
-        assert_eq!(Default(false, var3.clone(), None).eval(&mut env, cfg), Ok(val3.clone()));
-
-        assert_eq!(Assign(false, var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
-        assert_eq!(Assign(false, var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
-        assert_eq!(Assign(false, var3.clone(), None).eval(&mut env, cfg), Ok(val3.clone()));
-
-        assert_eq!(Error(false, var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
-        assert_eq!(Error(false, var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
-        assert_eq!(Error(false, var3.clone(), None).eval(&mut env, cfg), Ok(val3.clone()));
-
-        assert_eq!(Alternative(false, var_null.clone(), Some(
-            Single(Word::Simple(Box::new(Param(var1.clone()))))
-        )).eval(&mut env, cfg), Ok(val1.clone()));
-        assert_eq!(Alternative(false, var_null.clone(), Some(
-            Single(Word::Simple(Box::new(Param(var2.clone()))))
-        )).eval(&mut env, cfg), Ok(val2.clone()));
-        assert_eq!(Alternative(false, var_null.clone(), Some(
-            Single(Word::Simple(Box::new(Param(var3.clone()))))
-        )).eval(&mut env, cfg), Ok(val3.clone()));
-
-        assert_eq!(RemoveSmallestSuffix(var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
-        assert_eq!(RemoveSmallestSuffix(var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
-        assert_eq!(RemoveSmallestSuffix(var3.clone(), None).eval(&mut env, cfg), Ok(val3.clone()));
-
-        assert_eq!(RemoveLargestSuffix(var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
-        assert_eq!(RemoveLargestSuffix(var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
-        assert_eq!(RemoveLargestSuffix(var3.clone(), None).eval(&mut env, cfg), Ok(val3.clone()));
-
-        assert_eq!(RemoveSmallestPrefix(var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
-        assert_eq!(RemoveSmallestPrefix(var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
-        assert_eq!(RemoveSmallestPrefix(var3.clone(), None).eval(&mut env, cfg), Ok(val3.clone()));
-
-        assert_eq!(RemoveLargestPrefix(var1.clone(), None).eval(&mut env, cfg), Ok(val1.clone()));
-        assert_eq!(RemoveLargestPrefix(var2.clone(), None).eval(&mut env, cfg), Ok(val2.clone()));
-        assert_eq!(RemoveLargestPrefix(var3.clone(), None).eval(&mut env, cfg), Ok(val3.clone()));
-    }
-
-    #[test]
     fn test_run_command_and() {
         let mut env = Env::new().unwrap();
-        assert_eq!(Command::And(true_cmd(), true_cmd()).run(&mut env), Ok(ExitStatus::Code(0)));
-        assert_eq!(Command::And(true_cmd(), exit(5)).run(&mut env), Ok(ExitStatus::Code(5)));
-        assert_eq!(Command::And(false_cmd(), exit(5)).run(&mut env), Ok(ExitStatus::Code(1)));
+        assert_eq!(And(true_cmd(), true_cmd()).run(&mut env), Ok(ExitStatus::Code(0)));
+        assert_eq!(And(true_cmd(), exit(5)).run(&mut env), Ok(ExitStatus::Code(5)));
+        assert_eq!(And(false_cmd(), exit(5)).run(&mut env), Ok(ExitStatus::Code(1)));
     }
 
     #[test]
     fn test_run_command_and_error_handling() {
-        let mut env = Env::new().unwrap();
+        test_error_handling(true,  |cmd, env| {
+            let should_not_run = "should not run";
+            env.set_function(should_not_run.to_string(), MockFn::new(|_| {
+                panic!("ran command that should not be run")
+            }));
 
-        // We'll be printing a lot of errors, so we'll suppress actually printing
-        // to avoid polluting the output of the test runner.
-        // NB: consider removing this line when debugging
-        env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
-
-        // CommandError::NotFound
-        assert_eq!(Command::And(cmd!("missing"), true_cmd()).run(&mut env), Ok(EXIT_CMD_NOT_FOUND));
-        assert_eq!(Command::And(cmd!(""), true_cmd()).run(&mut env), Ok(EXIT_CMD_NOT_FOUND));
-
-        // CommandError::NotExecutable: there isn't a good/consistent test to invoke this error
-
-        // RedirectionError::BadSrcFd - invalid string
-        assert_eq!(Command::And(
-            Box::new(Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Single(lit("253invalid")))),
-                vars: vec!(),
-            }))),
-            true_cmd()
-        ).run(&mut env), Ok(EXIT_ERROR));
-
-        // RedirectionError::BadSrcFd - src fd not open
-        assert_eq!(Command::And(
-            Box::new(Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!())),
-                io: vec!(Redirect::DupRead(None, Single(lit("42")))),
-                vars: vec!(),
-            }))),
-            true_cmd()
-        ).run(&mut env), Ok(EXIT_ERROR));
-
-        // RedirectionError::Ambiguous - empty field
-        assert_eq!(Command::And(
-            Box::new(Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Single(Word::Simple(Box::new(Param(Parameter::At)))))),
-                vars: vec!(),
-            }))),
-            true_cmd(),
-        ).run(&mut env), Ok(EXIT_ERROR));
-
-        // RedirectionError::Ambiguous - multiple fields - many
-        {
-            let mut env = Env::with_config(None, Some(vec!(
-                String::from("foo"),
-                String::from("bar"),
-            )), None, None).unwrap();
-
-            // We'll be printing a lot of errors, so we'll suppress actually printing
-            // to avoid polluting the output of the test runner.
-            // NB: consider removing this line when debugging
-            env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
-
-            assert_eq!(Command::And(
-                Box::new(Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Single(lit("echo")), vec!())),
-                    io: vec!(Redirect::DupRead(None, Single(Word::Simple(Box::new(Param(Parameter::At)))))),
-                    vars: vec!(),
-                }))),
-                true_cmd(),
-            ).run(&mut env), Ok(EXIT_ERROR));
-        }
-
-        // RedirectionError::BadFdPerms - read
-        assert_eq!(Command::And(
-            Box::new(Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Single(lit(&STDIN_FILENO.to_string())))),
-                vars: vec!(),
-            }))),
-            true_cmd()
-        ).run(&mut env), Ok(EXIT_ERROR));
-
-        // RedirectionError::BadFdPerms - write
-        assert_eq!(Command::And(
-            Box::new(Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!())),
-                io: vec!(Redirect::DupRead(None, Single(lit(&STDOUT_FILENO.to_string())))),
-                vars: vec!(),
-            }))),
-            true_cmd()
-        ).run(&mut env), Ok(EXIT_ERROR));
-
-        // RuntimeError::Io
-        assert_eq!(Command::And(
-                cmd!("cat", Single(lit("missing file"))), true_cmd()).run(&mut env),
-                Ok(EXIT_ERROR));
-
-        // RuntimeError::Unimplemented
-        assert_eq!(Command::And(Box::new(Command::Job(cmd!("echo"))), true_cmd()).run(&mut env),
-            Ok(EXIT_ERROR));
-
-        let cmd = cmd!("echo", Single(Word::Simple(Box::new(
-            Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
-                Arith::Div(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(0)))
-        ))))))));
-        assert_eq!(Command::And(cmd, true_cmd()).run(&mut env),
-            Err(RuntimeError::Expansion(ExpansionError::DivideByZero)));
-        assert_eq!(env.last_status(), EXIT_ERROR);
-
-        let cmd = cmd!("echo", Single(Word::Simple(Box::new(
-            Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
-                Arith::Pow(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(-5)))
-            ))))
-        ))));
-        assert_eq!(Command::And(cmd, true_cmd()).run(&mut env),
-            Err(RuntimeError::Expansion(ExpansionError::NegativeExponent)));
-        assert_eq!(env.last_status(), EXIT_ERROR);
-
-        let cmd = cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(
-                    ParameterSubstitution::Assign(true, Parameter::At, Some(Single(lit("foo"))))))))));
-        assert_eq!(Command::And(cmd, true_cmd()).run(&mut env),
-            Err(RuntimeError::Expansion(ExpansionError::BadAssig(Parameter::At))));
-        assert_eq!(env.last_status(), EXIT_ERROR);
-
-        let var = Parameter::Var(String::from("var"));
-        let msg = String::from("empty");
-        let cmd = cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(
-                    ParameterSubstitution::Error(true, var.clone(), Some(Single(lit(&msg))))))))));
-        assert_eq!(Command::And(cmd, true_cmd()).run(&mut env),
-            Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(var, Rc::new(msg)))));
-        assert_eq!(env.last_status(), EXIT_ERROR);
+            And(cmd, cmd!(should_not_run)).run(env)
+        }, None);
+        test_error_handling(false, |cmd, env| And(true_cmd(), cmd).run(env), None);
     }
 
     #[test]
     fn test_run_command_or() {
         let mut env = Env::new().unwrap();
-        assert_eq!(Command::Or(true_cmd(), exit(5)).run(&mut env), Ok(ExitStatus::Code(0)));
-        assert_eq!(Command::Or(false_cmd(), exit(5)).run(&mut env), Ok(ExitStatus::Code(5)));
+        let should_not_run = "should not run";
+        env.set_function(should_not_run.to_string(), MockFn::new(|_| {
+            panic!("ran command that should not be run")
+        }));
+
+        assert_eq!(Or(true_cmd(), cmd!(should_not_run)).run(&mut env), Ok(ExitStatus::Code(0)));
+        assert_eq!(Or(false_cmd(), exit(5)).run(&mut env), Ok(ExitStatus::Code(5)));
     }
 
     #[test]
     fn test_run_command_or_error_handling() {
-        let mut env = Env::new().unwrap();
-
-        // We'll be printing a lot of errors, so we'll suppress actually printing
-        // to avoid polluting the output of the test runner.
-        // NB: consider removing this line when debugging
-        env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
-
-        // CommandError::NotFound
-        assert_eq!(Command::Or(cmd!("missing"), true_cmd()).run(&mut env), Ok(EXIT_SUCCESS));
-        assert_eq!(Command::Or(cmd!(""), true_cmd()).run(&mut env), Ok(EXIT_SUCCESS));
-
-        // CommandError::NotExecutable: there isn't a good/consistent test to invoke this error
-
-        // RedirectionError::BadSrcFd - invalid string
-        assert_eq!(Command::Or(
-            Box::new(Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Single(lit("253invalid")))),
-                vars: vec!(),
-            }))),
-            true_cmd()
-        ).run(&mut env), Ok(EXIT_SUCCESS));
-
-        // RedirectionError::BadSrcFd - src fd not open
-        assert_eq!(Command::Or(
-            Box::new(Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!())),
-                io: vec!(Redirect::DupRead(None, Single(lit("42")))),
-                vars: vec!(),
-            }))),
-            true_cmd()
-        ).run(&mut env), Ok(EXIT_SUCCESS));
-
-        // RedirectionError::Ambiguous - empty field
-        assert_eq!(Command::Or(
-            Box::new(Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Single(Word::Simple(Box::new(Param(Parameter::At)))))),
-                vars: vec!(),
-            }))),
-            true_cmd(),
-        ).run(&mut env), Ok(EXIT_SUCCESS));
-
-        // RedirectionError::Ambiguous - multiple fields - many
-        {
-            let mut env = Env::with_config(None, Some(vec!(
-                String::from("foo"),
-                String::from("bar"),
-            )), None, None).unwrap();
-
-            // We'll be printing a lot of errors, so we'll suppress actually printing
-            // to avoid polluting the output of the test runner.
-            // NB: consider removing this line when debugging
-            env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
-
-            assert_eq!(Command::Or(
-                Box::new(Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Single(lit("echo")), vec!())),
-                    io: vec!(Redirect::DupRead(None, Single(Word::Simple(Box::new(Param(Parameter::At)))))),
-                    vars: vec!(),
-                }))),
-                true_cmd(),
-            ).run(&mut env), Ok(EXIT_SUCCESS));
-        }
-
-        // RedirectionError::BadFdPerms - read
-        assert_eq!(Command::Or(
-            Box::new(Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Single(lit(&STDIN_FILENO.to_string())))),
-                vars: vec!(),
-            }))),
-            true_cmd()
-        ).run(&mut env), Ok(EXIT_SUCCESS));
-
-        // RedirectionError::BadFdPerms - write
-        assert_eq!(Command::Or(
-            Box::new(Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!())),
-                io: vec!(Redirect::DupRead(None, Single(lit(&STDOUT_FILENO.to_string())))),
-                vars: vec!(),
-            }))),
-            true_cmd()
-        ).run(&mut env), Ok(EXIT_SUCCESS));
-
-        // RuntimeError::Io
-        assert_eq!(Command::Or(
-                cmd!("cat", Single(lit("missing file"))), true_cmd()).run(&mut env),
-                Ok(EXIT_SUCCESS));
-
-        // RuntimeError::Unimplemented
-        assert_eq!(Command::Or(Box::new(Command::Job(cmd!("echo"))), true_cmd()).run(&mut env),
-            Ok(EXIT_SUCCESS));
-
-        let cmd = cmd!("echo", Single(Word::Simple(Box::new(
-            Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
-                Arith::Div(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(0)))
-            ))))
-        ))));
-        assert_eq!(Command::Or(cmd, true_cmd()).run(&mut env),
-            Err(RuntimeError::Expansion(ExpansionError::DivideByZero)));
-        assert_eq!(env.last_status(), EXIT_ERROR);
-
-        let cmd = cmd!("echo", Single(Word::Simple(Box::new(
-            Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
-                Arith::Pow(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(-5)))
-            ))))
-        ))));
-        assert_eq!(Command::Or(cmd, true_cmd()).run(&mut env),
-            Err(RuntimeError::Expansion(ExpansionError::NegativeExponent)));
-        assert_eq!(env.last_status(), EXIT_ERROR);
-
-        let cmd = cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(
-                    ParameterSubstitution::Assign(true, Parameter::At, Some(Single(lit("foo"))))))))));
-        assert_eq!(Command::Or(cmd, true_cmd()).run(&mut env),
-            Err(RuntimeError::Expansion(ExpansionError::BadAssig(Parameter::At))));
-        assert_eq!(env.last_status(), EXIT_ERROR);
-
-        let var = Parameter::Var(String::from("var"));
-        let msg = String::from("empty");
-        let cmd = cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(
-                    ParameterSubstitution::Error(true, var.clone(), Some(Single(lit(&msg))))))))));
-        assert_eq!(Command::Or(cmd, true_cmd()).run(&mut env),
-            Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(var, Rc::new(msg)))));
-        assert_eq!(env.last_status(), EXIT_ERROR);
+        test_error_handling(true,  |cmd, env| Or(cmd, true_cmd()).run(env), Some(EXIT_SUCCESS));
+        test_error_handling(false, |cmd, env| Or(false_cmd(), cmd).run(env), Some(EXIT_SUCCESS));
     }
 
     #[test]
     fn test_run_command_function_declaration() {
         let fn_name = "function_name";
         let mut env = Env::new().unwrap();
-        let func = Command::Function(fn_name.to_string(), Rc::new(*false_cmd()));
+        let func = Function(fn_name.to_string(), Rc::new(*false_cmd()));
         assert_eq!(func.run(&mut env), Ok(EXIT_SUCCESS));
         assert_eq!(cmd!(fn_name).run(&mut env), Ok(ExitStatus::Code(1)));
     }
 
     #[test]
-    fn test_run_command_function_can_be_recursive() {
-        let fn_name = "function_name";
-        let var = "var";
-        let value = "value";
-        let double_value = format!("{}{}", value, value);
-
-        let mut env = Env::new().unwrap();
-        let func = Command::Function(fn_name.to_string(), Rc::new(Command::Compound(
-            Box::new(CompoundCommand::Brace(vec!(
-                Command::Simple(Box::new(SimpleCommand {
-                    cmd: None,
-                    vars: vec!((var.to_string(), Some(Concat(vec!(
-                        lit(&value),
-                        Word::Simple(Box::new(Param(Parameter::Var(var.to_string())))),
-                    ))))),
-                    io: vec!(),
-                })),
-                Command::Compound(Box::new(CompoundCommand::If(vec!(
-                    (vec!(cmd_unboxed!("[",
-                      Single(Word::Simple(Box::new(Param(Parameter::Var(var.to_string()))))),
-                      Single(lit("!=")),
-                      Single(lit(&double_value)),
-                      Single(lit("]")),
-                    )), vec!(cmd_unboxed!(fn_name))),
-                ), None)), vec!()),
-            ))),
-            vec!()
-        )));
-
-        assert_eq!(func.run(&mut env), Ok(EXIT_SUCCESS));
-        assert_eq!(cmd!(fn_name).run(&mut env), Ok(EXIT_SUCCESS));
-        assert_eq!(env.var(var), Some(&Rc::new(double_value)));
-    }
-
-    #[test]
-    fn test_eval_compound_local_redirections_applied_correctly_with_no_prev_redirections() {
+    fn test_run_compound_local_redirections_applied_correctly_with_no_prev_redirections() {
         // Make sure the environment has NO open file descriptors
         let mut env = Env::with_config(None, None, None, Some(vec!())).unwrap();
         let tempdir = mktmp!();
@@ -3684,22 +1560,22 @@ mod tests {
         file_path.push(tempdir.path());
         file_path.push(String::from("out"));
 
-        let cmd = Command::Compound(
-            Box::new(CompoundCommand::Brace(vec!(
-                Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Single(lit("echo")), vec!(Single(lit("out"))))),
+        let cmd = Compound(
+            Box::new(Brace(vec!(
+                Simple(Box::new(SimpleCommand {
+                    cmd: Some((word("echo"), vec!(word("out")))),
                     io: vec!(),
                     vars: vec!(),
                 })),
-                Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Single(lit("echo")), vec!(Single(lit("err"))))),
-                    io: vec!(Redirect::DupWrite(Some(1), Single(lit("2")))),
+                Simple(Box::new(SimpleCommand {
+                    cmd: Some((word("echo"), vec!(word("err")))),
+                    io: vec!(Redirect::DupWrite(Some(1), word("2"))),
                     vars: vec!(),
                 })),
             ))),
             vec!(
-                Redirect::Write(Some(2), Single(lit(&file_path.display().to_string()))),
-                Redirect::DupWrite(Some(1), Single(lit("2"))),
+                Redirect::Write(Some(2), word(file_path.display())),
+                Redirect::DupWrite(Some(1), word("2")),
             )
         );
 
@@ -3713,7 +1589,7 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_compound_local_redirections_applied_correctly_with_prev_redirections() {
+    fn test_run_compound_local_redirections_applied_correctly_with_prev_redirections() {
         let tempdir = mktmp!();
 
         let mut file_path = PathBuf::new();
@@ -3737,32 +1613,32 @@ mod tests {
         ))).unwrap();
 
         let (cmd_body, cmd_redirects) = (
-            Box::new(CompoundCommand::Brace(vec!(
-                Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Single(lit("echo")), vec!(Single(lit("out"))))),
+            Box::new(Brace(vec!(
+                Simple(Box::new(SimpleCommand {
+                    cmd: Some((word("echo"), vec!(word("out")))),
                     io: vec!(),
                     vars: vec!(),
                 })),
-                Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Single(lit("echo")), vec!(Single(lit("err"))))),
-                    io: vec!(Redirect::DupWrite(Some(1), Single(lit("2")))),
+                Simple(Box::new(SimpleCommand {
+                    cmd: Some((word("echo"), vec!(word("err")))),
+                    io: vec!(Redirect::DupWrite(Some(1), word("2"))),
                     vars: vec!(),
                 })),
             ))),
             vec!(
-                Redirect::Write(Some(2), Single(lit(&file_path.display().to_string()))),
-                Redirect::DupWrite(Some(1), Single(lit("2"))),
+                Redirect::Write(Some(2), word(file_path.display())),
+                Redirect::DupWrite(Some(1), word("2")),
             )
         );
 
         // Check that local override worked
-        assert_eq!(Command::Compound(cmd_body.clone(), cmd_redirects).run(&mut env), Ok(EXIT_SUCCESS));
+        assert_eq!(Compound(cmd_body.clone(), cmd_redirects).run(&mut env), Ok(EXIT_SUCCESS));
         let mut read = String::new();
         Permissions::Read.open(&file_path).unwrap().read_to_string(&mut read).unwrap();
         assert_eq!(read, "out\nerr\n");
 
         // Check that defaults remained the same
-        assert_eq!(Command::Compound(cmd_body, vec!()).run(&mut env), Ok(EXIT_SUCCESS));
+        assert_eq!(Compound(cmd_body, vec!()).run(&mut env), Ok(EXIT_SUCCESS));
 
         read.clear();
         Permissions::Read.open(&file_path_out).unwrap().read_to_string(&mut read).unwrap();
@@ -3774,7 +1650,7 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_compound_multiple_local_redirections_last_wins_and_prev_fd_properly_restored() {
+    fn test_run_compound_multiple_local_redirections_last_wins_and_prev_fd_properly_restored() {
         let tempdir = mktmp!();
 
         let mut file_path = PathBuf::new();
@@ -3795,28 +1671,16 @@ mod tests {
             (STDOUT_FILENO, Rc::new(FileDesc::from(file_default)), Permissions::Write),
         ))).unwrap();
 
-        let cmd = Command::Compound(
-            Box::new(CompoundCommand::Brace(vec!(
-                Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Single(lit("echo")), vec!(Single(lit("out"))))),
-                    io: vec!(),
-                    vars: vec!(),
-                })),
-            ))),
+        let cmd = Compound(
+            Box::new(Brace(vec!(*cmd!("echo", "out")))),
             vec!(
-                Redirect::Write(Some(1), Single(lit(&file_path_empty.display().to_string()))),
-                Redirect::Write(Some(1), Single(lit(&file_path.display().to_string()))),
+                Redirect::Write(Some(1), word(&file_path_empty.display())),
+                Redirect::Write(Some(1), word(&file_path.display())),
             )
         );
 
-        let cmd2 = Command::Simple(Box::new(SimpleCommand {
-            cmd: Some((Single(lit("echo")), vec!(Single(lit("default"))))),
-            io: vec!(),
-            vars: vec!(),
-        }));
-
         assert_eq!(cmd.run(&mut env), Ok(EXIT_SUCCESS));
-        assert_eq!(cmd2.run(&mut env), Ok(EXIT_SUCCESS));
+        assert_eq!(cmd!("echo", "default").run(&mut env), Ok(EXIT_SUCCESS));
 
         let mut read = String::new();
         Permissions::Read.open(&file_path).unwrap().read_to_string(&mut read).unwrap();
@@ -3832,7 +1696,13 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_compound_local_redirections_closed_after_command_exits_but_side_effects_remain() {
+    fn test_run_compound_local_redirections_closed_after_command_exits_but_side_effects_remain() {
+        use syntax::ast::ParameterSubstitution::Assign;
+        use syntax::ast::ComplexWord::Single;
+        use syntax::ast::SimpleWord::{Literal, Subst};
+        use syntax::ast::TopLevelWord;
+        use syntax::ast::Word::Simple;
+
         let var = "var";
         let value = "foobar";
         let tempdir = mktmp!();
@@ -3841,18 +1711,22 @@ mod tests {
         file_path.push(tempdir.path());
         file_path.push(String::from("out"));
 
+        let file = file_path.display().to_string();
+        let file = TopLevelWord(Single(Simple(Box::new(Literal(file)))));
+        let var_value = TopLevelWord(Single(Simple(Box::new(Literal(value.to_string())))));
+
         let mut env = Env::new().unwrap();
 
-        let cmd = Command::Compound(
-            Box::new(CompoundCommand::Brace(vec!(*true_cmd()))),
+        let cmd = Compound(
+            Box::new(Brace(vec!())),
             vec!(
-                Redirect::Write(Some(3), Single(lit(&file_path.display().to_string()))),
-                Redirect::Write(Some(4), Single(lit(&file_path.display().to_string()))),
-                Redirect::Write(Some(5), Single(Word::Simple(Box::new(Subst(Box::new(ParameterSubstitution::Assign(
+                Redirect::Write(Some(3), file.clone()),
+                Redirect::Write(Some(4), file.clone()),
+                Redirect::Write(Some(5), TopLevelWord(Single(Simple(Box::new(Subst(Box::new(Assign(
                     true,
-                    Parameter::Var(String::from(var)),
-                    Some(Single(lit(value))),
-                ))))))),
+                    Parameter::Var(var.to_string()),
+                    Some(var_value),
+                )))))))),
             )
         );
 
@@ -3864,7 +1738,7 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_compound_local_redirections_not_reset_if_fd_changed_via_exec() {
+    fn test_run_compound_local_redirections_not_reset_if_fd_changed_via_exec() {
         const FD_EXEC_OPEN: Fd = STDOUT_FILENO;
         const FD_EXEC_CLOSE: Fd = STDERR_FILENO;
         const FD_EXEC_CHANGE: Fd = 3;
@@ -3906,18 +1780,12 @@ mod tests {
             }));
         }
 
-        let cmd = Command::Compound(
-            Box::new(CompoundCommand::Brace(vec!(
-                Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Single(lit(&fn_name)), vec!())),
-                    io: vec!(),
-                    vars: vec!(),
-                })),
-            ))),
+        let cmd = Compound(
+            Box::new(Brace(vec!(*cmd!(fn_name)))),
             vec!(
-                Redirect::Write(Some(FD_EXEC_CLOSE), Single(lit(DEV_NULL))),
-                Redirect::Write(Some(FD_EXEC_CHANGE), Single(lit(DEV_NULL))),
-                Redirect::DupWrite(Some(FD_EXEC_OPEN), Single(lit("-"))),
+                Redirect::Write(Some(FD_EXEC_CLOSE), word(DEV_NULL)),
+                Redirect::Write(Some(FD_EXEC_CHANGE), word(DEV_NULL)),
+                Redirect::DupWrite(Some(FD_EXEC_OPEN), word("-")),
             )
         );
 
@@ -3943,7 +1811,7 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_compound_brace() {
+    fn test_run_compound_brace() {
         let tempdir = mktmp!();
 
         let mut file_path = PathBuf::new();
@@ -3956,18 +1824,10 @@ mod tests {
             (STDOUT_FILENO, Rc::new(file.into()), Permissions::Write)
         ))).unwrap();
 
-        let cmd = CompoundCommand::Brace(vec!(
-            Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!(Single(lit("foo"))))),
-                vars: vec!(),
-                io: vec!()
-            })),
+        let cmd: CompoundCommand = Brace(vec!(
+            *cmd!("echo", "foo"),
             *false_cmd(),
-            Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!(Single(lit("bar"))))),
-                vars: vec!(),
-                io: vec!()
-            })),
+            *cmd!("echo", "bar"),
             *true_cmd(),
             *exit(42),
         ));
@@ -3981,181 +1841,25 @@ mod tests {
 
     #[test]
     fn test_run_command_compound_brace_error_handling() {
-        let fn_name_check_status = "foo_fn";
-        let fn_name_should_not_run = "foo_fn_should_not_run";
-        let last_status = Rc::new(RefCell::new(EXIT_SUCCESS));
+        test_error_handling(true, |cmd, env| {
+            let compound: CompoundCommand = Brace(vec!(*cmd, *exit(42)));
+            compound.run(env)
+        }, Some(ExitStatus::Code(42)));
 
-        let mut env = Env::new().unwrap();
+        test_error_handling(true, |cmd, env| {
+            let compound: CompoundCommand = Brace(vec!(*true_cmd(), *cmd));
+            compound.run(env)
+        }, None);
 
-        // We'll be printing a lot of errors, so we'll suppress actually printing
-        // to avoid polluting the output of the test runner.
-        // NB: consider removing this line when debugging
-        env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
-        {
-            let last_status = last_status.clone();
-            env.set_function(String::from(fn_name_check_status), MockFn::new(move |env| {
-                *last_status.borrow_mut() = env.last_status();
-                Ok(EXIT_SUCCESS)
+        test_error_handling_fatals(false, |cmd, env| {
+            let should_not_run = "should not run";
+            env.set_function(should_not_run.to_string(), MockFn::new(|_| {
+                panic!("ran command that should not be run")
             }));
-        }
 
-        let exit_code = ExitStatus::Code(42);
-        let cmd_exit = *exit(42);
-        let cmd_check_status = *cmd!(fn_name_check_status);
-
-        // CommandError::NotFound
-        assert_eq!(CompoundCommand::Brace(vec!(
-            *cmd!("missing"),
-            cmd_check_status.clone(),
-            cmd_exit.clone(),
-        )).run(&mut env), Ok(exit_code));
-        assert_eq!(*last_status.borrow(), EXIT_CMD_NOT_FOUND);
-
-        // CommandError::NotFound
-        assert_eq!(CompoundCommand::Brace(vec!(
-            *cmd!(""),
-            cmd_check_status.clone(),
-            cmd_exit.clone(),
-        )).run(&mut env), Ok(exit_code));
-        assert_eq!(*last_status.borrow(), EXIT_CMD_NOT_FOUND);
-
-        // CommandError::NotExecutable: there isn't a good/consistent test to invoke this error
-
-        // RedirectionError::Ambiguous - empty field
-        assert_eq!(CompoundCommand::Brace(vec!(
-            Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Single(Word::Simple(Box::new(Param(Parameter::At)))))),
-                vars: vec!(),
-            })),
-            cmd_exit.clone(),
-        )).run(&mut env), Ok(exit_code));
-
-        // RedirectionError::Ambiguous - multiple fields - many
-        {
-            let mut env = Env::with_config(None, Some(vec!(
-                String::from("foo"),
-                String::from("bar"),
-            )), None, None).unwrap();
-
-            // We'll be printing a lot of errors, so we'll suppress actually printing
-            // to avoid polluting the output of the test runner.
-            // NB: consider removing this line when debugging
-            env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
-
-            assert_eq!(CompoundCommand::Brace(vec!(
-                Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Single(lit("echo")), vec!())),
-                    io: vec!(Redirect::DupRead(None, Single(Word::Simple(Box::new(Param(Parameter::At)))))),
-                    vars: vec!(),
-                })),
-                cmd_exit.clone(),
-            )).run(&mut env), Ok(exit_code));
-        }
-
-        // RedirectionError::BadSrcFd - invalid string
-        assert_eq!(CompoundCommand::Brace(vec!(
-            Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Single(lit("253invalid")))),
-                vars: vec!(),
-            })),
-            cmd_exit.clone(),
-        )).run(&mut env), Ok(exit_code));
-
-        // RedirectionError::BadSrcFd - src fd not open
-        assert_eq!(CompoundCommand::Brace(vec!(
-            Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!())),
-                io: vec!(Redirect::DupRead(None, Single(lit("42")))),
-                vars: vec!(),
-            })),
-            cmd_exit.clone(),
-        )).run(&mut env), Ok(exit_code));
-
-        // RedirectionError::BadFdPerms - read
-        assert_eq!(CompoundCommand::Brace(vec!(
-            Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Single(lit(&STDIN_FILENO.to_string())))),
-                vars: vec!(),
-            })),
-            cmd_exit.clone(),
-        )).run(&mut env), Ok(exit_code));
-
-        // RedirectionError::BadFdPerms - write
-        assert_eq!(CompoundCommand::Brace(vec!(
-            Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!())),
-                io: vec!(Redirect::DupRead(None, Single(lit(&STDOUT_FILENO.to_string())))),
-                vars: vec!(),
-            })),
-            cmd_exit.clone(),
-        )).run(&mut env), Ok(exit_code));
-
-        // RuntimeError::Io
-        assert_eq!(CompoundCommand::Brace(vec!(
-            *cmd!("cat", Single(lit("missing file"))),
-            cmd_check_status.clone(),
-            cmd_exit.clone(),
-        )).run(&mut env), Ok(exit_code));
-        assert_eq!(*last_status.borrow(), EXIT_ERROR);
-
-        // RuntimeError::Unimplemented
-        assert_eq!(CompoundCommand::Brace(vec!(
-            Command::Job(cmd!("echo")),
-            cmd_check_status.clone(),
-            cmd_exit.clone(),
-        )).run(&mut env), Ok(exit_code));
-        assert_eq!(*last_status.borrow(), EXIT_ERROR);
-
-        env.set_function(String::from(fn_name_should_not_run), MockFn::new(|_| {
-            panic!("ran command that should not be run")
-        }));
-
-        let cmd_should_not_run = *cmd!(fn_name_should_not_run);
-
-        assert_eq!(CompoundCommand::Brace(vec!(
-            *cmd!("echo", Single(Word::Simple(Box::new(
-                Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
-                    Arith::Div(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(0)))
-                ))))
-            )))),
-            cmd_should_not_run.clone(),
-        )).run(&mut env), Err(RuntimeError::Expansion(ExpansionError::DivideByZero)));
-        assert_eq!(env.last_status(), EXIT_ERROR);
-
-        assert_eq!(CompoundCommand::Brace(vec!(
-            *cmd!("echo", Single(Word::Simple(Box::new(
-                Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
-                    Arith::Pow(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(-5)))
-                ))))
-            )))),
-            cmd_should_not_run.clone(),
-        )).run(&mut env), Err(RuntimeError::Expansion(ExpansionError::NegativeExponent)));
-        assert_eq!(env.last_status(), EXIT_ERROR);
-
-        assert_eq!(CompoundCommand::Brace(vec!(
-            *cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(ParameterSubstitution::Assign(
-                true,
-                Parameter::At,
-                Some(Single(lit("foo")))
-            ))))))),
-            cmd_should_not_run.clone(),
-        )).run(&mut env), Err(RuntimeError::Expansion(ExpansionError::BadAssig(Parameter::At))));
-        assert_eq!(env.last_status(), EXIT_ERROR);
-
-        let var = Parameter::Var(String::from("var"));
-        let msg = String::from("empty");
-        assert_eq!(CompoundCommand::Brace(vec!(
-            *cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(ParameterSubstitution::Error(
-                true,
-                var.clone(),
-                Some(Single(lit(&msg)))))
-            ))))),
-            cmd_should_not_run.clone(),
-        )).run(&mut env), Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(var, Rc::new(msg)))));
-        assert_eq!(env.last_status(), EXIT_ERROR);
+            let compound: CompoundCommand = Brace(vec!(*cmd, *cmd!(should_not_run)));
+            compound.run(env)
+        }, None);
     }
 
     #[test]
@@ -4170,307 +1874,100 @@ mod tests {
             panic!("ran command that should not be run")
         }));
 
-        assert_eq!(
-            CompoundCommand::If(
-                vec!(
-                    (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
-                    (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
-                    (vec!(*true_cmd()), vec!(cmd_exit.clone())),
-                    (vec!(cmd_should_not_run.clone()), vec!(cmd_should_not_run.clone())),
-                ),
-                Some(vec!(cmd_should_not_run.clone())),
-            ).run(&mut env),
-            Ok(EXIT)
+        let body_with_true_guard = vec!(
+            (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
+            (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
+            (vec!(*true_cmd()), vec!(cmd_exit.clone())),
+            (vec!(cmd_should_not_run.clone()), vec!(cmd_should_not_run.clone())),
         );
 
-        assert_eq!(
-            CompoundCommand::If(
-                vec!(
-                    (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
-                    (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
-                    (vec!(*true_cmd()), vec!(cmd_exit.clone())),
-                    (vec!(cmd_should_not_run.clone()), vec!(cmd_should_not_run.clone())),
-                ),
-                None
-            ).run(&mut env),
-            Ok(EXIT)
+        let body_without_true_guard = vec!(
+            (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
+            (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
         );
 
-        assert_eq!(
-            CompoundCommand::If(
-                vec!(
-                    (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
-                    (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
-                ),
-                Some(vec!(cmd_exit.clone())),
-            ).run(&mut env),
-            Ok(EXIT)
-        );
+        let compound: CompoundCommand =
+            If(body_with_true_guard.clone(), Some(vec!(cmd_should_not_run.clone())));
+        assert_eq!(compound.run(&mut env), Ok(EXIT));
+        let compound: CompoundCommand =
+            If(body_without_true_guard.clone(), Some(vec!(cmd_exit.clone())));
+        assert_eq!(compound.run(&mut env), Ok(EXIT));
 
-        assert_eq!(
-            CompoundCommand::If(
-                vec!(
-                    (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
-                    (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
-                ),
-                None
-            ).run(&mut env),
-            Ok(EXIT_SUCCESS)
-        );
+        let compound: CompoundCommand = If(body_with_true_guard.clone(), None);
+        assert_eq!(compound.run(&mut env), Ok(EXIT));
+        let compound: CompoundCommand = If(body_without_true_guard.clone(), None);
+        assert_eq!(compound.run(&mut env), Ok(EXIT_SUCCESS));
     }
 
     #[test]
     fn test_run_command_if_malformed() {
         let mut env = Env::new().unwrap();
-        assert_eq!(CompoundCommand::If(vec!(), Some(vec!(*true_cmd()))).run(&mut env), Ok(EXIT_ERROR));
+
+        let compound: CompoundCommand = If(vec!(), Some(vec!(*true_cmd())));
+        assert_eq!(compound.run(&mut env), Ok(EXIT_ERROR));
         assert_eq!(env.last_status.success(), false);
-        assert_eq!(CompoundCommand::If(vec!(), None).run(&mut env), Ok(EXIT_ERROR));
+
+        let compound: CompoundCommand = If(vec!(), None);
+        assert_eq!(compound.run(&mut env), Ok(EXIT_ERROR));
         assert_eq!(env.last_status.success(), false);
     }
 
     #[test]
-    fn test_run_command_if_guard_error_handling() {
-        let fn_name_should_not_run = "foo_fn_should_not_run";
-        let cmd_should_not_run = *cmd!(fn_name_should_not_run);
-        let cmd_exit = *exit(42);
-        const EXIT: ExitStatus = ExitStatus::Code(42);
-
-        let mut env = Env::new().unwrap();
-
-        // We'll be printing a lot of errors, so we'll suppress actually printing
-        // to avoid polluting the output of the test runner.
-        // NB: consider removing this line when debugging
-        env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
-
-        env.set_function(String::from(fn_name_should_not_run), MockFn::new(|_| {
+    fn test_run_command_if_error_handling() {
+        let should_not_run = "foo_fn_should_not_run";
+        let fn_should_not_run = MockFn::new(|_| {
             panic!("ran command that should not be run")
-        }));
+        });
 
-        // CommandError::NotFound
-        assert_eq!(
-            CompoundCommand::If(
-                vec!((vec!(*cmd!("missing")), vec!(cmd_should_not_run.clone()))),
-                Some(vec!(cmd_exit.clone())),
-            ).run(&mut env),
-            Ok(EXIT)
-        );
-        // CommandError::NotFound
-        assert_eq!(
-            CompoundCommand::If(
-                vec!((vec!(*cmd!("")), vec!(cmd_should_not_run.clone()))),
-                Some(vec!(cmd_exit.clone())),
-            ).run(&mut env),
-            Ok(EXIT)
-        );
-
-        // CommandError::NotExecutable: there isn't a good/consistent test to invoke this error
-
-        // RedirectionError::BadSrcFd - invalid string
-        assert_eq!(
-            CompoundCommand::If(
-                vec!(
-                    (vec!(Command::Simple(Box::new(SimpleCommand {
-                        cmd: Some((Single(lit("echo")), vec!())),
-                        io: vec!(Redirect::DupWrite(None, Single(lit("253invalid")))),
-                        vars: vec!(),
-                    }))), vec!(cmd_should_not_run.clone())),
-                ),
-                Some(vec!(cmd_exit.clone())),
-            ).run(&mut env),
-            Ok(EXIT)
-        );
-
-        // RedirectionError::BadSrcFd - src fd not open
-        assert_eq!(
-            CompoundCommand::If(
-                vec!(
-                    (vec!(Command::Simple(Box::new(SimpleCommand {
-                        cmd: Some((Single(lit("echo")), vec!())),
-                        io: vec!(Redirect::DupRead(None, Single(lit("42")))),
-                        vars: vec!(),
-                    }))), vec!(cmd_should_not_run.clone())),
-                ),
-                Some(vec!(cmd_exit.clone())),
-            ).run(&mut env),
-            Ok(EXIT)
-        );
-
-        // RedirectionError::Ambiguous - empty field
-        assert_eq!(
-            CompoundCommand::If(
-                vec!(
-                    (vec!(Command::Simple(Box::new(SimpleCommand {
-                        cmd: Some((Single(lit("echo")), vec!())),
-                        io: vec!(Redirect::DupWrite(None, Single(Word::Simple(Box::new(Param(Parameter::At)))))),
-                        vars: vec!(),
-                    }))), vec!(cmd_should_not_run.clone())),
-                ),
-                Some(vec!(cmd_exit.clone())),
-            ).run(&mut env),
-            Ok(EXIT)
-        );
-
-        // RedirectionError::Ambiguous - multiple fields - many
-        {
-            let mut env = Env::with_config(None, Some(vec!(
-                String::from("foo"),
-                String::from("bar"),
-            )), None, None).unwrap();
-
-            // We'll be printing a lot of errors, so we'll suppress actually printing
-            // to avoid polluting the output of the test runner.
-            // NB: consider removing this line when debugging
-            env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
-
-            assert_eq!(
-                CompoundCommand::If(
-                    vec!(
-                        (vec!(Command::Simple(Box::new(SimpleCommand {
-                            cmd: Some((Single(lit("echo")), vec!())),
-                            io: vec!(Redirect::DupRead(None, Single(Word::Simple(Box::new(Param(Parameter::At)))))),
-                            vars: vec!(),
-                        }))), vec!(cmd_should_not_run.clone())),
-                    ),
-                    Some(vec!(cmd_exit.clone())),
-                ).run(&mut env),
-                Ok(EXIT)
+        // Error in guard
+        test_error_handling(true, |cmd, env| {
+            env.set_function(should_not_run.to_string(), fn_should_not_run.clone());
+            let compound: CompoundCommand = If(
+                vec!((vec!(*cmd), vec!(*cmd!(should_not_run)))),
+                Some(vec!(*exit(42)))
             );
-        }
+            compound.run(env)
+        }, Some(ExitStatus::Code(42)));
 
-        // RedirectionError::BadFdPerms - read
-        assert_eq!(
-            CompoundCommand::If(
-                vec!(
-                    (vec!(Command::Simple(Box::new(SimpleCommand {
-                        cmd: Some((Single(lit("echo")), vec!())),
-                        io: vec!(Redirect::DupWrite(None, Single(lit(&STDIN_FILENO.to_string())))),
-                        vars: vec!(),
-                    }))), vec!(cmd_should_not_run.clone())),
-                ),
-                Some(vec!(cmd_exit.clone())),
-            ).run(&mut env),
-            Ok(EXIT)
-        );
+        // Error in body of successful guard
+        test_error_handling(true, |cmd, env| {
+            env.set_function(should_not_run.to_string(), fn_should_not_run.clone());
+            let compound: CompoundCommand = If(
+                vec!((vec!(*true_cmd()), vec!(*cmd))),
+                Some(vec!(*cmd!(should_not_run)))
+            );
+            compound.run(env)
+        }, None);
 
-        // RedirectionError::BadFdPerms - write
-        assert_eq!(
-            CompoundCommand::If(
-                vec!(
-                    (vec!(Command::Simple(Box::new(SimpleCommand {
-                        cmd: Some((Single(lit("echo")), vec!())),
-                        io: vec!(Redirect::DupRead(None, Single(lit(&STDOUT_FILENO.to_string())))),
-                        vars: vec!(),
-                    }))), vec!(cmd_should_not_run.clone())),
-                ),
-                Some(vec!(cmd_exit.clone())),
-            ).run(&mut env),
-            Ok(EXIT)
-        );
-
-        // RuntimeError::Io
-        assert_eq!(
-            CompoundCommand::If(vec!(
-                    (
-                        vec!(*cmd!("cat", Single(lit("missing file")))),
-                        vec!(cmd_should_not_run.clone()),
-                    )
-                ),
-                Some(vec!(cmd_exit.clone())),
-            ).run(&mut env),
-            Ok(EXIT)
-        );
-
-        // RuntimeError::Unimplemented
-        assert_eq!(
-            CompoundCommand::If(
-                vec!((vec!(Command::Job(cmd!("echo"))), vec!(cmd_should_not_run.clone()))),
-                Some(vec!(cmd_exit.clone())),
-            ).run(&mut env),
-            Ok(EXIT)
-        );
-
-        assert_eq!(
-            CompoundCommand::If(
-                vec!((
-                    vec!(*cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
-                        Arith::Div(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(0)))
-                    ))))))))),
-                    vec!(cmd_should_not_run.clone()))
-                ),
-                Some(vec!(cmd_exit.clone())),
-            ).run(&mut env),
-            Err(RuntimeError::Expansion(ExpansionError::DivideByZero))
-        );
-        assert_eq!(env.last_status(), EXIT_ERROR);
-
-        assert_eq!(
-            CompoundCommand::If(
-                vec!((
-                    vec!(*cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
-                        Arith::Pow(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(-5)))
-                    ))))))))),
-                    vec!(cmd_should_not_run.clone())
-                )),
-                Some(vec!(cmd_exit.clone())),
-            ).run(&mut env),
-            Err(RuntimeError::Expansion(ExpansionError::NegativeExponent))
-        );
-        assert_eq!(env.last_status(), EXIT_ERROR);
-
-        assert_eq!(
-            CompoundCommand::If(
-                vec!((
-                    vec!(*cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(
-                        ParameterSubstitution::Assign(true, Parameter::At, Some(Single(lit("foo"))))
-                    ))))))),
-                    vec!(cmd_should_not_run.clone())
-                )),
-                Some(vec!(cmd_exit.clone())),
-            ).run(&mut env),
-            Err(RuntimeError::Expansion(ExpansionError::BadAssig(Parameter::At)))
-        );
-        assert_eq!(env.last_status(), EXIT_ERROR);
-
-        let var = Parameter::Var(String::from("var"));
-        let msg = String::from("empty");
-        assert_eq!(
-            CompoundCommand::If(
-                vec!((
-                    vec!(*cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(
-                        ParameterSubstitution::Error(true, var.clone(), Some(Single(lit(&msg)))),
-                    ))))))),
-                    vec!(cmd_should_not_run.clone())
-                )),
-                Some(vec!(cmd_exit.clone())),
-            ).run(&mut env),
-            Err(RuntimeError::Expansion(ExpansionError::EmptyParameter(var, Rc::new(msg))))
-        );
-        assert_eq!(env.last_status(), EXIT_ERROR);
+        // Error in body of else part
+        test_error_handling(true, |cmd, env| {
+            env.set_function(should_not_run.to_string(), fn_should_not_run.clone());
+            let compound: CompoundCommand = If(
+                vec!((vec!(*false_cmd()), vec!(*cmd!(should_not_run)))),
+                Some(vec!(*cmd))
+            );
+            compound.run(env)
+        }, None);
     }
 
     #[test]
     fn test_run_command_subshell() {
         let mut env = Env::new().unwrap();
-        assert_eq!(
-            CompoundCommand::Subshell(vec!(*exit(5), *exit(42))).run(&mut env),
-            Ok(ExitStatus::Code(42))
-        );
+        let compound: CompoundCommand = Subshell(vec!(*exit(5), *exit(42)));
+        assert_eq!(compound.run(&mut env), Ok(ExitStatus::Code(42)));
     }
 
     #[test]
     fn test_run_command_subshell_child_inherits_var_definitions() {
-        let var_name = "var";
-        let var_value = "value";
+        let var_name = "var".to_string();
+        let var_value = "value".to_string();
         let fn_check_vars = "fn_check_vars";
 
         let mut env = Env::new().unwrap();
-        env.set_var(String::from(var_name), Rc::new(String::from(var_value)));
+        env.set_var(var_name.clone(), Rc::new(var_value.clone()));
 
         {
-            let var_name = String::from(var_name);
-            let var_value = String::from(var_value);
-
-            env.set_function(String::from(fn_check_vars), MockFn::new(move |env| {
+            env.set_function(fn_check_vars.to_string(), MockFn::new(move |env| {
                 assert_eq!(&**env.var(&var_name).unwrap(), &var_value);
                 Ok(EXIT_SUCCESS)
             }));
@@ -4480,44 +1977,43 @@ mod tests {
 
     #[test]
     fn test_run_command_subshell_parent_isolated_from_var_changes() {
-        let parent_name = "parent-var";
-        let parent_value = "parent-value";
-        let child_name = "child-var";
+        let parent_name = "parent-var".to_string();
+        let parent_value = "parent-value".to_string();
+        let child_name = "child-var".to_string();
         let child_value = "child-value";
         let fn_check_vars = "fn_check_vars";
 
         let mut env = Env::new().unwrap();
-        env.set_var(String::from(parent_name), Rc::new(String::from(parent_value)));
+        env.set_var(parent_name.clone(), Rc::new(parent_value.clone()));
 
         {
-            let parent_name = String::from(parent_name);
-            let child_name = String::from(child_name);
-            let child_value = String::from(child_value);
+            let parent_name = parent_name.clone();
+            let child_name = child_name.clone();
 
-            env.set_function(String::from(fn_check_vars), MockFn::new(move |env| {
-                assert_eq!(&**env.var(&parent_name).unwrap(), &child_value);
-                assert_eq!(&**env.var(&child_name).unwrap(), &child_value);
+            env.set_function(fn_check_vars.to_string(), MockFn::new(move |env| {
+                assert_eq!(&**env.var(&parent_name).unwrap(), child_value);
+                assert_eq!(&**env.var(&child_name).unwrap(), child_value);
                 Ok(EXIT_SUCCESS)
             }));
         }
 
-        let cmd = CompoundCommand::Subshell(vec!(
-            Command::Simple(Box::new(SimpleCommand {
+        let compound: CompoundCommand = Subshell(vec!(
+            Simple(Box::new(SimpleCommand {
                 cmd: None,
                 io: vec!(),
-                vars: vec!((String::from(parent_name), Some(Single(lit(&child_value))))),
+                vars: vec!((parent_name.clone(), Some(word(child_value)))),
             })),
-            Command::Simple(Box::new(SimpleCommand {
+            Simple(Box::new(SimpleCommand {
                 cmd: None,
                 io: vec!(),
-                vars: vec!((String::from(child_name), Some(Single(lit(&child_value))))),
+                vars: vec!((child_name.clone(), Some(word(child_value)))),
             })),
             *cmd!(fn_check_vars)
         ));
-        assert_eq!(cmd.run(&mut env), Ok(EXIT_SUCCESS));
+        assert_eq!(compound.run(&mut env), Ok(EXIT_SUCCESS));
 
-        assert_eq!(&**env.var(parent_name).unwrap(), parent_value);
-        assert_eq!(env.var(child_name), None);
+        assert_eq!(&**env.var(&parent_name).unwrap(), &parent_value);
+        assert_eq!(env.var(&child_name), None);
     }
 
     #[test]
@@ -4529,14 +2025,12 @@ mod tests {
 
         // Subshells should inherit function definitions
         {
-            let default_exit_code = default_exit_code.clone();
             env.set_function(String::from(fn_name_default), MockFn::new(move |_| {
                 Ok(ExitStatus::Code(default_exit_code))
             }));
         }
-        assert_eq!(CompoundCommand::Subshell(vec!(
-            *cmd!(fn_name_default)
-        )).run(&mut env), Ok(ExitStatus::Code(default_exit_code)));
+        let compound: CompoundCommand = Subshell(vec!(*cmd!(fn_name_default)));
+        assert_eq!(compound.run(&mut env), Ok(ExitStatus::Code(default_exit_code)));
     }
 
     #[test]
@@ -4550,25 +2044,25 @@ mod tests {
         let mut env = Env::new().unwrap();
 
         // Defining a new function within subshell should disappear
-        let cmd = CompoundCommand::Subshell(vec!(
-            Command::Function(String::from(fn_name), Rc::new(*exit(override_exit_code))),
+        let compound: CompoundCommand = Subshell(vec!(
+            Function(fn_name.to_string(), Rc::new(*exit(42))),
             *cmd!(fn_name),
         ));
-        assert_eq!(cmd.run(&mut env), Ok(ExitStatus::Code(override_exit_code)));
-        assert_eq!(env.run_function(Rc::new(String::from(fn_name)), vec!()), None);
+        assert_eq!(compound.run(&mut env), Ok(ExitStatus::Code(override_exit_code)));
+        assert_eq!(env.run_function(Rc::new(fn_name.to_string()), vec!()), None);
 
         // Redefining function within subshell should revert to original
         {
             let parent_exit_code = parent_exit_code.clone();
-            env.set_function(String::from(fn_name_parent), MockFn::new(move |_| {
+            env.set_function(fn_name_parent.to_string(), MockFn::new(move |_| {
                 Ok(ExitStatus::Code(parent_exit_code))
             }));
         }
-        let cmd = CompoundCommand::Subshell(vec!(
-            Command::Function(String::from(fn_name_parent), Rc::new(*exit(override_exit_code))),
+        let compound: CompoundCommand = Subshell(vec!(
+            Function(fn_name_parent.to_string(), Rc::new(*exit(42))),
             *cmd!(fn_name_parent),
         ));
-        assert_eq!(cmd.run(&mut env), Ok(ExitStatus::Code(override_exit_code)));
+        assert_eq!(compound.run(&mut env), Ok(ExitStatus::Code(override_exit_code)));
         assert_eq!(cmd!(fn_name_parent).run(&mut env), Ok(ExitStatus::Code(parent_exit_code)));
     }
 
@@ -4583,13 +2077,14 @@ mod tests {
             let writer = Rc::new(writer);
             env.set_file_desc(target_fd, writer.clone(), Permissions::Write);
 
-            assert_eq!(CompoundCommand::Subshell(vec!(
-                Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Single(lit("echo")), vec!(Single(lit(&msg))))),
+            let compound: CompoundCommand = Subshell(vec!(
+                Simple(Box::new(SimpleCommand {
+                    cmd: Some((word("echo"), vec!(word(msg)))),
                     vars: vec!(),
-                    io: vec!(Redirect::DupWrite(Some(STDOUT_FILENO), Single(lit(&target_fd.to_string())))),
+                    io: vec!(Redirect::DupWrite(Some(STDOUT_FILENO), word(target_fd))),
                 }))
-            )).run(&mut env), Ok(EXIT_SUCCESS));
+            ));
+            assert_eq!(compound.run(&mut env), Ok(EXIT_SUCCESS));
 
             env.close_file_desc(target_fd);
             let mut writer = Rc::try_unwrap(writer).unwrap();
@@ -4633,19 +2128,20 @@ mod tests {
                 }));
             }
 
-            assert_eq!(CompoundCommand::Subshell(vec!(
+            let compound: CompoundCommand = Subshell(vec!(
                 *cmd!(exec),
-                Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Single(lit("echo")), vec!(Single(lit(&new_msg.to_string()))))),
+                Simple(Box::new(SimpleCommand {
+                    cmd: Some((word("echo"), vec!(word(new_msg)))),
                     vars: vec!(),
-                    io: vec!(Redirect::DupWrite(Some(STDOUT_FILENO), Single(lit(&new_fd.to_string())))),
+                    io: vec!(Redirect::DupWrite(Some(STDOUT_FILENO), word(new_fd))),
                 })),
-                Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Single(lit("echo")), vec!(Single(lit(&change_msg.to_string()))))),
+                Simple(Box::new(SimpleCommand {
+                    cmd: Some((word("echo"), vec!(word(change_msg)))),
                     vars: vec!(),
-                    io: vec!(Redirect::DupWrite(Some(STDOUT_FILENO), Single(lit(&target_fd.to_string())))),
+                    io: vec!(Redirect::DupWrite(Some(STDOUT_FILENO), word(target_fd))),
                 })),
-            )).run(&mut env), Ok(EXIT_SUCCESS));
+            ));
+            assert_eq!(compound.run(&mut env), Ok(EXIT_SUCCESS));
 
             env.close_file_desc(target_fd);
             assert!(env.file_desc(new_fd).is_none());
@@ -4675,174 +2171,32 @@ mod tests {
 
     #[test]
     fn test_run_command_subshell_error_handling() {
-        let fn_name_check_status = "foo_fn";
-            let fn_name_should_not_run = "foo_fn_should_not_run";
-        let last_status = Rc::new(RefCell::new(EXIT_SUCCESS));
+        test_error_handling_non_fatals(true, |cmd, env| {
+            let compound: CompoundCommand = Subshell(vec!(*cmd, *exit(42)));
+            compound.run(env)
+        }, Some(ExitStatus::Code(42)));
+        test_error_handling_fatals(true, |cmd, env| {
+            let compound: CompoundCommand = Subshell(vec!(*cmd, *exit(42)));
+            compound.run(env)
+        }, None);
 
-        let mut env = Env::new().unwrap();
-        // We'll be printing a lot of errors, so we'll suppress actually printing
-        // to avoid polluting the output of the test runner.
-        // NB: consider removing this line when debugging
-        env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
-        {
-            let last_status = last_status.clone();
-            env.set_function(String::from(fn_name_check_status), MockFn::new(move |env| {
-                *last_status.borrow_mut() = env.last_status();
-                Ok(EXIT_SUCCESS)
+        test_error_handling_non_fatals(true, |cmd, env| {
+            let compound: CompoundCommand = Subshell(vec!(*true_cmd(), *cmd));
+            compound.run(env)
+        }, None);
+        test_error_handling_fatals(true, |cmd, env| {
+            let compound: CompoundCommand = Subshell(vec!(*true_cmd(), *cmd));
+            compound.run(env)
+        }, None);
+
+        test_error_handling_fatals(true, |cmd, env| {
+            let should_not_run = "should not run";
+            env.set_function(should_not_run.to_string(), MockFn::new(|_| {
+                panic!("ran command that should not be run")
             }));
-        }
 
-        let exit_code = ExitStatus::Code(42);
-        let cmd_exit = *exit(42);
-        let cmd_check_status = *cmd!(fn_name_check_status);
-
-        // CommandError::NotFound
-        assert_eq!(CompoundCommand::Subshell(vec!(
-            *cmd!("missing"),
-            cmd_check_status.clone(),
-            cmd_exit.clone(),
-        )).run(&mut env), Ok(exit_code));
-        assert_eq!(*last_status.borrow(), EXIT_CMD_NOT_FOUND);
-        // CommandError::NotFound
-        assert_eq!(CompoundCommand::Subshell(vec!(
-            *cmd!(""),
-            cmd_check_status.clone(),
-            cmd_exit.clone(),
-        )).run(&mut env), Ok(exit_code));
-        assert_eq!(*last_status.borrow(), EXIT_CMD_NOT_FOUND);
-
-        // CommandError::NotExecutable: there isn't a good/consistent test to invoke this error
-
-        // RedirectionError::Ambiguous - empty field
-        assert_eq!(CompoundCommand::Subshell(vec!(
-            Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Single(Word::Simple(Box::new(Param(Parameter::At)))))),
-                vars: vec!(),
-            })),
-            cmd_exit.clone(),
-        )).run(&mut env), Ok(exit_code));
-
-        // RedirectionError::Ambiguous - multiple fields - many
-        {
-            let mut env = Env::with_config(None, Some(vec!(
-                String::from("foo"),
-                String::from("bar"),
-            )), None, None).unwrap();
-
-            // We'll be printing a lot of errors, so we'll suppress actually printing
-            // to avoid polluting the output of the test runner.
-            // NB: consider removing this line when debugging
-            env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
-
-            assert_eq!(CompoundCommand::Subshell(vec!(
-                Command::Simple(Box::new(SimpleCommand {
-                    cmd: Some((Single(lit("echo")), vec!())),
-                    io: vec!(Redirect::DupRead(None, Single(Word::Simple(Box::new(Param(Parameter::At)))))),
-                    vars: vec!(),
-                })),
-                cmd_exit.clone(),
-            )).run(&mut env), Ok(exit_code));
-        }
-
-        // RedirectionError::BadSrcFd - invalid string
-        assert_eq!(CompoundCommand::Subshell(vec!(
-            Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Single(lit("253invalid")))),
-                vars: vec!(),
-            })),
-            cmd_exit.clone(),
-        )).run(&mut env), Ok(exit_code));
-
-        // RedirectionError::BadSrcFd - src fd not open
-        assert_eq!(CompoundCommand::Subshell(vec!(
-            Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!())),
-                io: vec!(Redirect::DupRead(None, Single(lit("42")))),
-                vars: vec!(),
-            })),
-            cmd_exit.clone(),
-        )).run(&mut env), Ok(exit_code));
-
-        // RedirectionError::BadFdPerms - read
-        assert_eq!(CompoundCommand::Subshell(vec!(
-            Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!())),
-                io: vec!(Redirect::DupWrite(None, Single(lit(&STDIN_FILENO.to_string())))),
-                vars: vec!(),
-            })),
-            cmd_exit.clone(),
-        )).run(&mut env), Ok(exit_code));
-
-        // RedirectionError::BadFdPerms - write
-        assert_eq!(CompoundCommand::Subshell(vec!(
-            Command::Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!())),
-                io: vec!(Redirect::DupRead(None, Single(lit(&STDOUT_FILENO.to_string())))),
-                vars: vec!(),
-            })),
-            cmd_exit.clone(),
-        )).run(&mut env), Ok(exit_code));
-
-        // RuntimeError::Io
-        assert_eq!(CompoundCommand::Subshell(vec!(
-            *cmd!("cat", Single(lit("missing file"))),
-            cmd_check_status.clone(),
-            cmd_exit.clone(),
-        )).run(&mut env), Ok(exit_code));
-        assert_eq!(*last_status.borrow(), EXIT_ERROR);
-
-        // RuntimeError::Unimplemented
-        assert_eq!(CompoundCommand::Subshell(vec!(
-            Command::Job(cmd!("echo")),
-            cmd_check_status.clone(),
-            cmd_exit.clone(),
-        )).run(&mut env), Ok(exit_code));
-        assert_eq!(*last_status.borrow(), EXIT_ERROR);
-
-        env.set_function(String::from(fn_name_should_not_run), MockFn::new(|_| {
-            panic!("ran command that should not be run")
-        }));
-
-        let cmd_should_not_run = *cmd!(fn_name_should_not_run);
-
-        assert_eq!(CompoundCommand::Subshell(vec!(
-            *cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
-                Arith::Div(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(0)))
-            )))))))),
-            cmd_should_not_run.clone(),
-        )).run(&mut env), Ok(EXIT_ERROR));
-        assert_eq!(env.last_status(), EXIT_ERROR);
-
-        assert_eq!(CompoundCommand::Subshell(vec!(
-            *cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(ParameterSubstitution::Arithmetic(Some(
-                Arith::Pow(Box::new(Arith::Literal(1)), Box::new(Arith::Literal(-5)))
-            )))))))),
-            cmd_should_not_run.clone(),
-        )).run(&mut env), Ok(EXIT_ERROR));
-        assert_eq!(env.last_status(), EXIT_ERROR);
-
-        assert_eq!(CompoundCommand::Subshell(vec!(
-            *cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(ParameterSubstitution::Assign(
-                true,
-                Parameter::At,
-                Some(Single(lit("foo")))
-            ))))))),
-            cmd_should_not_run.clone(),
-        )).run(&mut env), Ok(EXIT_ERROR));
-        assert_eq!(env.last_status(), EXIT_ERROR);
-
-        let var = Parameter::Var(String::from("var"));
-        let msg = String::from("empty");
-        assert_eq!(CompoundCommand::Subshell(vec!(
-            *cmd!("echo", Single(Word::Simple(Box::new(Subst(Box::new(ParameterSubstitution::Error(
-                true,
-                var.clone(),
-                Some(Single(lit(&msg)))))
-            ))))),
-            cmd_should_not_run.clone(),
-        )).run(&mut env), Ok(EXIT_ERROR));
-        assert_eq!(env.last_status(), EXIT_ERROR);
+            let compound: CompoundCommand = Subshell(vec!(*cmd, *cmd!(should_not_run)));
+            compound.run(env)
+        }, None);
     }
 }

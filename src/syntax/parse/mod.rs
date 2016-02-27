@@ -6,7 +6,7 @@ use std::str::FromStr;
 use syntax::ast;
 use syntax::ast::builder::{self, Builder, SimpleWordKind};
 use syntax::ast::builder::ComplexWordKind::{self, Concat, Single};
-use syntax::ast::builder::WordKind::{self, Simple};
+use syntax::ast::builder::WordKind::{self, DoubleQuoted, Simple, SingleQuoted};
 use syntax::token::Token;
 use syntax::token::Token::*;
 
@@ -307,7 +307,7 @@ macro_rules! eat_maybe {
 macro_rules! arith_parse {
     ($fn_name:ident, $next_expr:ident, $($tok:pat => $constructor:path),+) => {
         #[inline]
-        fn $fn_name(&mut self) -> Result<ast::Arith, ParseError<B::Err>> {
+        fn $fn_name(&mut self) -> Result<ast::Arithmetic, ParseError<B::Err>> {
             let mut expr = try!(self.$next_expr());
             loop {
                 self.skip_whitespace();
@@ -604,9 +604,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             };
 
             match *word {
-                WordKind::Simple(ref s) => simple_could_be_numeric(s),
-                WordKind::SingleQuoted(ref s) => s.chars().all(|c| c.is_digit(10)),
-                WordKind::DoubleQuoted(ref fragments) => fragments.iter().all(simple_could_be_numeric),
+                Simple(ref s) => simple_could_be_numeric(s),
+                SingleQuoted(ref s) => s.chars().all(|c| c.is_digit(10)),
+                DoubleQuoted(ref fragments) => fragments.iter().all(simple_could_be_numeric),
             }
         }
 
@@ -1018,7 +1018,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Identical to `Parser::word_preserve_trailing_whitespace()` but does
     /// not pass the result to the AST builder.
     fn word_preserve_trailing_whitespace_raw(&mut self)
-        -> Result<Option<builder::ComplexWordKind<B::Command>>, ParseError<B::Err>>
+        -> Result<Option<ComplexWordKind<B::Command>>, ParseError<B::Err>>
     {
         self.skip_whitespace();
 
@@ -1131,11 +1131,12 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                         buf.push_str(&try!(t).to_string());
                     }
 
-                    WordKind::SingleQuoted(buf)
+                    SingleQuoted(buf)
                 },
 
-                DoubleQuote => WordKind::DoubleQuoted(
-                    try!(self.word_interpolated_raw(Some((DoubleQuote, DoubleQuote)), start_pos))),
+                DoubleQuote => DoubleQuoted(
+                    try!(self.word_interpolated_raw(Some((DoubleQuote, DoubleQuote)), start_pos))
+                ),
 
                 // Parameters and backticks should have been
                 // handled while peeking above.
@@ -1326,7 +1327,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         match self.iter.next() {
             Some(ParamPositional(p)) => return Ok(SimpleWordKind::Param(Parameter::Positional(p as u32))),
 
-            Some(Token::Dollar) => {
+            Some(Dollar) => {
                 match self.iter.peek() {
                     Some(&Star)      |
                     Some(&Pound)     |
@@ -1347,7 +1348,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         }
 
         let start_pos = self.iter.pos();
-        let param_word = |parser: &mut Self| -> Result<Option<Box<builder::ComplexWordKind<B::Command>>>, ParseError<B::Err>> {
+        let param_word = |parser: &mut Self| -> Result<Option<Box<ComplexWordKind<B::Command>>>, ParseError<B::Err>> {
             let mut words = try!(parser.word_interpolated_raw(Some((CurlyOpen, CurlyClose)), start_pos));
             let ret = if words.is_empty() {
                 None
@@ -1388,7 +1389,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     self.skip_whitespace();
                     eat!(self, { ParenClose => {} });
 
-                    Arithmetic(subst)
+                    Arith(subst)
                 } else {
                     Command(try!(self.subshell_internal(true)))
                 };
@@ -2238,7 +2239,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses the body of any arbitrary arithmetic expression, e.g. `x + $y << 5`.
     /// The caller is responsible for parsing the external `$(( ))` tokens.
-    pub fn arithmetic_substitution(&mut self) -> Result<ast::Arith, ParseError<B::Err>> {
+    pub fn arithmetic_substitution(&mut self) -> Result<ast::Arithmetic, ParseError<B::Err>> {
         let mut exprs = Vec::new();
         loop {
             self.skip_whitespace();
@@ -2253,13 +2254,15 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         if exprs.len() == 1 {
             Ok(exprs.pop().unwrap())
         } else {
-            Ok(ast::Arith::Sequence(exprs))
+            Ok(ast::Arithmetic::Sequence(exprs))
         }
     }
 
     /// Parses expressions such as `var = expr` or `var op= expr`, where `op` is
     /// any of the following operators: *, /, %, +, -, <<, >>, &, |, ^.
-    fn arith_assig(&mut self) -> Result<ast::Arith, ParseError<B::Err>> {
+    fn arith_assig(&mut self) -> Result<ast::Arithmetic, ParseError<B::Err>> {
+        use syntax::ast::Arithmetic::*;
+
         self.skip_whitespace();
 
         let assig = {
@@ -2312,24 +2315,24 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         let value = Box::new(try!(self.arith_assig()));
         let expr = match op {
-            Star    => Box::new(ast::Arith::Mult(Box::new(ast::Arith::Var(var.clone())), value)),
-            Slash   => Box::new(ast::Arith::Div(Box::new(ast::Arith::Var(var.clone())), value)),
-            Percent => Box::new(ast::Arith::Modulo(Box::new(ast::Arith::Var(var.clone())), value)),
-            Plus    => Box::new(ast::Arith::Add(Box::new(ast::Arith::Var(var.clone())), value)),
-            Dash    => Box::new(ast::Arith::Sub(Box::new(ast::Arith::Var(var.clone())), value)),
-            DLess   => Box::new(ast::Arith::ShiftLeft(Box::new(ast::Arith::Var(var.clone())), value)),
-            DGreat  => Box::new(ast::Arith::ShiftRight(Box::new(ast::Arith::Var(var.clone())), value)),
-            Amp     => Box::new(ast::Arith::BitwiseAnd(Box::new(ast::Arith::Var(var.clone())), value)),
-            Pipe    => Box::new(ast::Arith::BitwiseOr(Box::new(ast::Arith::Var(var.clone())), value)),
-            Caret   => Box::new(ast::Arith::BitwiseXor(Box::new(ast::Arith::Var(var.clone())), value)),
+            Star    => Box::new(Mult(Box::new(Var(var.clone())), value)),
+            Slash   => Box::new(Div(Box::new(Var(var.clone())), value)),
+            Percent => Box::new(Modulo(Box::new(Var(var.clone())), value)),
+            Plus    => Box::new(Add(Box::new(Var(var.clone())), value)),
+            Dash    => Box::new(Sub(Box::new(Var(var.clone())), value)),
+            DLess   => Box::new(ShiftLeft(Box::new(Var(var.clone())), value)),
+            DGreat  => Box::new(ShiftRight(Box::new(Var(var.clone())), value)),
+            Amp     => Box::new(BitwiseAnd(Box::new(Var(var.clone())), value)),
+            Pipe    => Box::new(BitwiseOr(Box::new(Var(var.clone())), value)),
+            Caret   => Box::new(BitwiseXor(Box::new(Var(var.clone())), value)),
             Equals  => value,
             _ => unreachable!(),
         };
-        Ok(ast::Arith::Assign(var, expr))
+        Ok(Assign(var, expr))
     }
 
     /// Parses expressions such as `expr ? expr : expr`.
-    fn arith_ternary(&mut self) -> Result<ast::Arith, ParseError<B::Err>> {
+    fn arith_ternary(&mut self) -> Result<ast::Arithmetic, ParseError<B::Err>> {
         let guard = try!(self.arith_logical_or());
         self.skip_whitespace();
         eat_maybe!(self, {
@@ -2338,26 +2341,26 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 self.skip_whitespace();
                 eat!(self, { Colon => {} });
                 let els = try!(self.arith_ternary());
-                Ok(ast::Arith::Ternary(Box::new(guard), Box::new(body), Box::new(els)))
+                Ok(ast::Arithmetic::Ternary(Box::new(guard), Box::new(body), Box::new(els)))
             };
             _ => { Ok(guard) },
         })
     }
 
     /// Parses expressions such as `expr || expr`.
-    arith_parse!(arith_logical_or,  arith_logical_and, OrIf  => ast::Arith::LogicalOr);
+    arith_parse!(arith_logical_or,  arith_logical_and, OrIf  => ast::Arithmetic::LogicalOr);
     /// Parses expressions such as `expr && expr`.
-    arith_parse!(arith_logical_and, arith_bitwise_or,  AndIf => ast::Arith::LogicalAnd);
+    arith_parse!(arith_logical_and, arith_bitwise_or,  AndIf => ast::Arithmetic::LogicalAnd);
     /// Parses expressions such as `expr | expr`.
-    arith_parse!(arith_bitwise_or,  arith_bitwise_xor, Pipe  => ast::Arith::BitwiseOr);
+    arith_parse!(arith_bitwise_or,  arith_bitwise_xor, Pipe  => ast::Arithmetic::BitwiseOr);
     /// Parses expressions such as `expr ^ expr`.
-    arith_parse!(arith_bitwise_xor, arith_bitwise_and, Caret => ast::Arith::BitwiseXor);
+    arith_parse!(arith_bitwise_xor, arith_bitwise_and, Caret => ast::Arithmetic::BitwiseXor);
     /// Parses expressions such as `expr & expr`.
-    arith_parse!(arith_bitwise_and, arith_eq,          Amp   => ast::Arith::BitwiseAnd);
+    arith_parse!(arith_bitwise_and, arith_eq,          Amp   => ast::Arithmetic::BitwiseAnd);
 
     /// Parses expressions such as `expr == expr` or `expr != expr`.
     #[inline]
-    fn arith_eq(&mut self) -> Result<ast::Arith, ParseError<B::Err>> {
+    fn arith_eq(&mut self) -> Result<ast::Arithmetic, ParseError<B::Err>> {
         let mut expr = try!(self.arith_ineq());
         loop {
             self.skip_whitespace();
@@ -2370,9 +2373,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             eat!(self, { Equals => {} });
             let next = try!(self.arith_ineq());
             expr = if eq_type {
-                ast::Arith::Eq(Box::new(expr), Box::new(next))
+                ast::Arithmetic::Eq(Box::new(expr), Box::new(next))
             } else {
-                ast::Arith::NotEq(Box::new(expr), Box::new(next))
+                ast::Arithmetic::NotEq(Box::new(expr), Box::new(next))
             };
         }
         Ok(expr)
@@ -2380,7 +2383,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses expressions such as `expr < expr`,`expr <= expr`,`expr > expr`,`expr >= expr`.
     #[inline]
-    fn arith_ineq(&mut self) -> Result<ast::Arith, ParseError<B::Err>> {
+    fn arith_ineq(&mut self) -> Result<ast::Arithmetic, ParseError<B::Err>> {
         let mut expr = try!(self.arith_shift());
         loop {
             self.skip_whitespace();
@@ -2390,9 +2393,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     let next = try!(self.arith_shift());
 
                     expr = if eq {
-                        ast::Arith::LessEq(Box::new(expr), Box::new(next))
+                        ast::Arithmetic::LessEq(Box::new(expr), Box::new(next))
                     } else {
-                        ast::Arith::Less(Box::new(expr), Box::new(next))
+                        ast::Arithmetic::Less(Box::new(expr), Box::new(next))
                     };
                 },
                 Great => {
@@ -2400,9 +2403,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     let next = try!(self.arith_shift());
 
                     expr = if eq {
-                        ast::Arith::GreatEq(Box::new(expr), Box::new(next))
+                        ast::Arithmetic::GreatEq(Box::new(expr), Box::new(next))
                     } else {
-                        ast::Arith::Great(Box::new(expr), Box::new(next))
+                        ast::Arithmetic::Great(Box::new(expr), Box::new(next))
                     };
                 };
                 _ => { break },
@@ -2413,25 +2416,25 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses expressions such as `expr << expr` or `expr >> expr`.
     arith_parse!(arith_shift, arith_add,
-                 DLess  => ast::Arith::ShiftLeft,
-                 DGreat => ast::Arith::ShiftRight
+                 DLess  => ast::Arithmetic::ShiftLeft,
+                 DGreat => ast::Arithmetic::ShiftRight
     );
 
     /// Parses expressions such as `expr + expr` or `expr - expr`.
     arith_parse!(arith_add, arith_mult,
-                 Plus => ast::Arith::Add,
-                 Dash => ast::Arith::Sub
+                 Plus => ast::Arithmetic::Add,
+                 Dash => ast::Arithmetic::Sub
     );
 
     /// Parses expressions such as `expr * expr`, `expr / expr`, or `expr % expr`.
     arith_parse!(arith_mult, arith_pow,
-                 Star    => ast::Arith::Mult,
-                 Slash   => ast::Arith::Div,
-                 Percent => ast::Arith::Modulo
+                 Star    => ast::Arithmetic::Mult,
+                 Slash   => ast::Arithmetic::Div,
+                 Percent => ast::Arithmetic::Modulo
     );
 
     /// Parses expressions such as `expr ** expr`.
-    fn arith_pow(&mut self) -> Result<ast::Arith, ParseError<B::Err>> {
+    fn arith_pow(&mut self) -> Result<ast::Arithmetic, ParseError<B::Err>> {
         let expr = try!(self.arith_unary_misc());
         self.skip_whitespace();
 
@@ -2443,28 +2446,28 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         if self.iter.peek_many(2) == [&Star, &Star] {
             eat!(self, { Star => {} });
             eat!(self, { Star => {} });
-            Ok(ast::Arith::Pow(Box::new(expr), Box::new(try!(self.arith_pow()))))
+            Ok(ast::Arithmetic::Pow(Box::new(expr), Box::new(try!(self.arith_pow()))))
         } else {
             Ok(expr)
         }
     }
 
     /// Parses expressions such as `!expr`, `~expr`, `+expr`, `-expr`, `++var` and `--var`.
-    fn arith_unary_misc(&mut self) -> Result<ast::Arith, ParseError<B::Err>> {
+    fn arith_unary_misc(&mut self) -> Result<ast::Arithmetic, ParseError<B::Err>> {
         self.skip_whitespace();
         let expr = eat_maybe!(self, {
-            Bang  => { ast::Arith::LogicalNot(Box::new(try!(self.arith_unary_misc()))) },
-            Tilde => { ast::Arith::BitwiseNot(Box::new(try!(self.arith_unary_misc()))) },
+            Bang  => { ast::Arithmetic::LogicalNot(Box::new(try!(self.arith_unary_misc()))) },
+            Tilde => { ast::Arithmetic::BitwiseNot(Box::new(try!(self.arith_unary_misc()))) },
             Plus  => {
                 eat_maybe!(self, {
                     // Although we can optimize this out, we'll let the AST builder handle
                     // optimizations, in case it is interested in such redundant situations.
                     Dash => {
                         let next = try!(self.arith_unary_misc());
-                        ast::Arith::UnaryPlus(Box::new(ast::Arith::UnaryMinus(Box::new(next))))
+                        ast::Arithmetic::UnaryPlus(Box::new(ast::Arithmetic::UnaryMinus(Box::new(next))))
                     },
-                    Plus => { ast::Arith::PreIncr(try!(self.arith_var())) };
-                    _ => { ast::Arith::UnaryPlus(Box::new(try!(self.arith_unary_misc()))) }
+                    Plus => { ast::Arithmetic::PreIncr(try!(self.arith_var())) };
+                    _ => { ast::Arithmetic::UnaryPlus(Box::new(try!(self.arith_unary_misc()))) }
                 })
             },
 
@@ -2474,10 +2477,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     // optimizations, in case it is interested in such redundant situations.
                     Plus => {
                         let next = try!(self.arith_unary_misc());
-                        ast::Arith::UnaryMinus(Box::new(ast::Arith::UnaryPlus(Box::new(next))))
+                        ast::Arithmetic::UnaryMinus(Box::new(ast::Arithmetic::UnaryPlus(Box::new(next))))
                     },
-                    Dash => { ast::Arith::PreDecr(try!(self.arith_var())) };
-                    _ => { ast::Arith::UnaryMinus(Box::new(try!(self.arith_unary_misc()))) }
+                    Dash => { ast::Arithmetic::PreDecr(try!(self.arith_var())) };
+                    _ => { ast::Arithmetic::UnaryMinus(Box::new(try!(self.arith_unary_misc()))) }
                 })
             };
 
@@ -2490,7 +2493,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Numeric literals must appear as a single `Literal` token. `Name` tokens will be
     /// treated as variables.
     #[inline]
-    fn arith_post_incr(&mut self) -> Result<ast::Arith, ParseError<B::Err>> {
+    fn arith_post_incr(&mut self) -> Result<ast::Arithmetic, ParseError<B::Err>> {
         self.skip_whitespace();
         eat_maybe!(self, {
             ParenOpen => {
@@ -2527,7 +2530,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             Some(num) => {
                 // Make sure we consume the Token::Literal which holds the number
                 self.iter.next();
-                ast::Arith::Literal(num)
+                ast::Arithmetic::Literal(num)
             },
             None => {
                 let var = try!(self.arith_var());
@@ -2545,11 +2548,11 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
                 if post_incr {
                     eat!(self, {
-                        Plus => { eat!(self, { Plus => { ast::Arith::PostIncr(var) } }) },
-                        Dash => { eat!(self, { Dash => { ast::Arith::PostDecr(var) } }) },
+                        Plus => { eat!(self, { Plus => { ast::Arithmetic::PostIncr(var) } }) },
+                        Dash => { eat!(self, { Dash => { ast::Arithmetic::PostDecr(var) } }) },
                     })
                 } else {
-                    ast::Arith::Var(var)
+                    ast::Arithmetic::Var(var)
                 }
             }
         };
@@ -2585,24 +2588,42 @@ pub mod test {
     use syntax::parse::ParseError::*;
     use syntax::token::Token;
 
-    pub fn lit(s: &str) -> Word {
+    pub fn lit<W, C>(s: &str) -> Word<W, C> {
         Word::Simple(Box::new(Literal(String::from(s))))
     }
 
-    pub fn escaped(s: &str) -> Word {
+    pub fn escaped<W, C>(s: &str) -> Word<W, C> {
         Word::Simple(Box::new(Escaped(String::from(s))))
     }
 
-    pub fn subst(s: ParameterSubstitution) -> Word {
+    pub fn subst<W, C>(s: ParameterSubstitution<W, C>) -> Word<W, C> {
         Word::Simple(Box::new(SimpleWord::Subst(Box::new(s))))
     }
 
-    pub fn single_quoted(s: &str) -> ComplexWord {
-        Single(Word::SingleQuoted(String::from(s)))
+    pub fn single_quoted(s: &str) -> TopLevelWord {
+        TopLevelWord(Single(Word::SingleQuoted(String::from(s))))
     }
 
-    pub fn double_quoted(s: &str) -> ComplexWord {
-        Single(Word::DoubleQuoted(vec!(Literal(String::from(s)))))
+    pub fn double_quoted(s: &str) -> TopLevelWord {
+        TopLevelWord(Single(Word::DoubleQuoted(vec!(Literal(String::from(s))))))
+    }
+
+    pub fn word(s: &str) -> TopLevelWord {
+        TopLevelWord(Single(lit(s)))
+    }
+
+    pub fn word_escaped(s: &str) -> TopLevelWord {
+        TopLevelWord(Single(escaped(s)))
+    }
+
+    pub fn word_subst(s: ParameterSubstitution<TopLevelWord, Command<TopLevelWord>>)
+        -> TopLevelWord
+    {
+        TopLevelWord(Single(subst(s)))
+    }
+
+    pub fn word_param(p: Parameter) -> TopLevelWord {
+        TopLevelWord(Single(Word::Simple(Box::new(Param(p)))))
     }
 
     pub fn make_parser(src: &str) -> DefaultParser<Lexer<::std::str::Chars>> {
@@ -2613,9 +2634,9 @@ pub mod test {
         DefaultParser::new(src.into_iter())
     }
 
-    fn cmd_args_unboxed(cmd: &str, args: &[&str]) -> Command {
-        let cmd = Single(lit(cmd));
-        let args = args.iter().map(|&a| Single(lit(a))).collect();
+    fn cmd_args_unboxed(cmd: &str, args: &[&str]) -> Command<TopLevelWord> {
+        let cmd = word(cmd);
+        let args = args.iter().map(|&a| word(a)).collect();
 
         Simple(Box::new(SimpleCommand {
             cmd: Some((cmd, args)),
@@ -2624,11 +2645,11 @@ pub mod test {
         }))
     }
 
-    fn cmd_unboxed(cmd: &str) -> Command {
+    fn cmd_unboxed(cmd: &str) -> Command<TopLevelWord> {
         cmd_args_unboxed(cmd, &[])
     }
 
-    fn cmd(cmd: &str) -> Box<Command> {
+    fn cmd(cmd: &str) -> Box<Command<TopLevelWord>> {
         Box::new(cmd_unboxed(cmd))
     }
 
@@ -2640,22 +2661,25 @@ pub mod test {
         }
     }
 
-    pub fn sample_simple_command()
-        -> (Option<(ComplexWord, Vec<ComplexWord>)>, Vec<(String, Option<ComplexWord>)>, Vec<Redirect>) {
+    pub fn sample_simple_command() -> (
+        Option<(TopLevelWord, Vec<TopLevelWord>)>,
+        Vec<(String, Option<TopLevelWord>)>,
+        Vec<Redirect<TopLevelWord>>)
+    {
         (
-            Some((Single(lit("foo")), vec!(
-                Single(lit("bar")),
-                Single(lit("baz")),
+            Some((word("foo"), vec!(
+                word("bar"),
+                word("baz"),
             ))),
             vec!(
-                (String::from("var"), Some(Single(lit("val")))),
-                (String::from("ENV"), Some(Single(lit("true")))),
+                (String::from("var"), Some(word("val"))),
+                (String::from("ENV"), Some(word("true"))),
                 (String::from("BLANK"), None),
             ),
             vec!(
-                Redirect::Clobber(Some(2), Single(lit("clob"))),
-                Redirect::ReadWrite(Some(3), Single(lit("rw"))),
-                Redirect::Read(None, Single(lit("in"))),
+                Redirect::Clobber(Some(2), word("clob")),
+                Redirect::ReadWrite(Some(3), word("rw")),
+                Redirect::Read(None, word("in")),
             ),
         )
     }
@@ -2806,8 +2830,8 @@ pub mod test {
     #[test]
     fn test_comment_cannot_start_mid_whitespace_delimited_word() {
         let mut p = make_parser("hello#world");
-        let word = p.word().unwrap().expect("no valid word was discovered");
-        assert_eq!(word, Single(lit("hello#world")));
+        let w = p.word().unwrap().expect("no valid word was discovered");
+        assert_eq!(w, word("hello#world"));
     }
 
     #[test]
@@ -2868,10 +2892,10 @@ pub mod test {
 
         let mut p = make_parser("$@$*$#$?$-$$$!$3$");
         for param in words {
-            assert_eq!(p.parameter().unwrap(), Single(Word::Simple(Box::new(Param(param)))));
+            assert_eq!(p.parameter().unwrap(), word_param(param));
         }
 
-        assert_eq!(Single(lit("$")), p.parameter().unwrap());
+        assert_eq!(word("$"), p.parameter().unwrap());
         assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
@@ -2892,7 +2916,7 @@ pub mod test {
 
         let mut p = make_parser("${@}${*}${#}${?}${-}${$}${!}${foo}${3}${1000}");
         for param in words {
-            assert_eq!(p.parameter().unwrap(), Single(Word::Simple(Box::new(Param(param)))));
+            assert_eq!(p.parameter().unwrap(), word_param(param));
         }
 
         assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
@@ -2900,17 +2924,17 @@ pub mod test {
 
     #[test]
     fn test_parameter_command_substitution() {
-        let correct = Single(subst(ParameterSubstitution::Command(vec!(
+        let correct = word_subst(ParameterSubstitution::Command(vec!(
             cmd_args_unboxed("echo", &["hello"]),
             cmd_args_unboxed("echo", &["world"]),
-        ))));
+        )));
 
         assert_eq!(correct, make_parser("$(echo hello; echo world)").parameter().unwrap());
     }
 
     #[test]
     fn test_parameter_command_substitution_valid_empty_substitution() {
-        let correct = Single(subst(ParameterSubstitution::Command(vec!())));
+        let correct = word_subst(ParameterSubstitution::Command(vec!()));
         assert_eq!(correct, make_parser("$()").parameter().unwrap());
         assert_eq!(correct, make_parser("$(     )").parameter().unwrap());
         assert_eq!(correct, make_parser("$(\n\n)").parameter().unwrap());
@@ -2919,8 +2943,8 @@ pub mod test {
     #[test]
     fn test_parameter_literal_dollar_if_no_param() {
         let mut p = make_parser("$%asdf");
-        assert_eq!(Single(lit("$")), p.parameter().unwrap());
-        assert_eq!(p.word().unwrap().unwrap(), Single(lit("%asdf")));
+        assert_eq!(word("$"), p.parameter().unwrap());
+        assert_eq!(p.word().unwrap().unwrap(), word("%asdf"));
     }
 
     #[test]
@@ -2941,7 +2965,7 @@ pub mod test {
 
         let mut p = make_parser("${#@}${#*}${##}${#?}${#-}${#$}${#!}${#foo}${#3}${#1000}$(echo foo)");
         for param in words {
-            let correct = Single(Word::Simple(Box::new(Subst(Box::new(param)))));
+            let correct = word_subst(param);
             assert_eq!(correct, p.parameter().unwrap());
         }
 
@@ -2953,7 +2977,7 @@ pub mod test {
         use syntax::ast::Parameter::*;
         use syntax::ast::ParameterSubstitution::*;
 
-        let word = Single(lit("foo"));
+        let word = word("foo");
 
         let substs = vec!(
             RemoveSmallestSuffix(At, Some(word.clone())),
@@ -2985,7 +3009,7 @@ pub mod test {
         let mut p = make_parser(src);
 
         for s in substs {
-            assert_eq!(Single(subst(s)), p.parameter().unwrap());
+            assert_eq!(word_subst(s), p.parameter().unwrap());
         }
 
         assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
@@ -2996,7 +3020,7 @@ pub mod test {
         use syntax::ast::Parameter::*;
         use syntax::ast::ParameterSubstitution::*;
 
-        let word = Single(lit("foo"));
+        let word = word("foo");
 
         let substs = vec!(
             RemoveLargestSuffix(At, Some(word.clone())),
@@ -3028,7 +3052,7 @@ pub mod test {
         let mut p = make_parser(src);
 
         for s in substs {
-            assert_eq!(Single(subst(s)), p.parameter().unwrap());
+            assert_eq!(word_subst(s), p.parameter().unwrap());
         }
 
         assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
@@ -3039,7 +3063,7 @@ pub mod test {
         use syntax::ast::Parameter::*;
         use syntax::ast::ParameterSubstitution::*;
 
-        let word = Single(lit("foo"));
+        let word = word("foo");
 
         let substs = vec!(
             RemoveSmallestPrefix(At, Some(word.clone())),
@@ -3071,7 +3095,7 @@ pub mod test {
         let mut p = make_parser(src);
 
         for s in substs {
-            assert_eq!(Single(subst(s)), p.parameter().unwrap());
+            assert_eq!(word_subst(s), p.parameter().unwrap());
         }
 
         assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
@@ -3082,7 +3106,7 @@ pub mod test {
         use syntax::ast::Parameter::*;
         use syntax::ast::ParameterSubstitution::*;
 
-        let word = Single(lit("foo"));
+        let word = word("foo");
 
         let substs = vec!(
             RemoveLargestPrefix(At, Some(word.clone())),
@@ -3114,7 +3138,7 @@ pub mod test {
         let mut p = make_parser(src);
 
         for s in substs {
-            assert_eq!(Single(subst(s)), p.parameter().unwrap());
+            assert_eq!(word_subst(s), p.parameter().unwrap());
         }
 
         assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
@@ -3125,7 +3149,7 @@ pub mod test {
         use syntax::ast::Parameter::*;
         use syntax::ast::ParameterSubstitution::*;
 
-        let word = Single(lit("foo"));
+        let word = word("foo");
 
         let substs = vec!(
             Default(true, At, Some(word.clone())),
@@ -3155,7 +3179,7 @@ pub mod test {
 
         let src = "${@:-foo}${*:-foo}${#:-foo}${?:-foo}${-:-foo}${$:-foo}${!:-foo}${0:-foo}${10:-foo}${100:-foo}${foo_bar123:-foo}${@:-}${*:-}${#:-}${?:-}${-:-}${$:-}${!:-}${0:-}${10:-}${100:-}${foo_bar123:-}";
         let mut p = make_parser(src);
-        for s in substs { assert_eq!(Single(subst(s)), p.parameter().unwrap()); }
+        for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
         assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
 
         let substs = vec!(
@@ -3186,7 +3210,7 @@ pub mod test {
 
         let src = "${@-foo}${*-foo}${#-foo}${?-foo}${--foo}${$-foo}${!-foo}${0-foo}${10-foo}${100-foo}${foo_bar123-foo}${@-}${*-}${?-}${--}${$-}${!-}${0-}${10-}${100-}${foo_bar123-}";
         let mut p = make_parser(src);
-        for s in substs { assert_eq!(Single(subst(s)), p.parameter().unwrap()); }
+        for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
         assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
@@ -3195,7 +3219,7 @@ pub mod test {
         use syntax::ast::Parameter::*;
         use syntax::ast::ParameterSubstitution::*;
 
-        let word = Single(lit("foo"));
+        let word = word("foo");
 
         let substs = vec!(
             Error(true, At, Some(word.clone())),
@@ -3225,7 +3249,7 @@ pub mod test {
 
         let src = "${@:?foo}${*:?foo}${#:?foo}${?:?foo}${-:?foo}${$:?foo}${!:?foo}${0:?foo}${10:?foo}${100:?foo}${foo_bar123:?foo}${@:?}${*:?}${#:?}${?:?}${-:?}${$:?}${!:?}${0:?}${10:?}${100:?}${foo_bar123:?}";
         let mut p = make_parser(src);
-        for s in substs { assert_eq!(Single(subst(s)), p.parameter().unwrap()); }
+        for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
         assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
 
         let substs = vec!(
@@ -3256,7 +3280,7 @@ pub mod test {
 
         let src = "${@?foo}${*?foo}${#?foo}${??foo}${-?foo}${$?foo}${!?foo}${0?foo}${10?foo}${100?foo}${foo_bar123?foo}${@?}${*?}${??}${-?}${$?}${!?}${0?}${10?}${100?}${foo_bar123?}";
         let mut p = make_parser(src);
-        for s in substs { assert_eq!(Single(subst(s)), p.parameter().unwrap()); }
+        for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
         assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
@@ -3265,7 +3289,7 @@ pub mod test {
         use syntax::ast::Parameter::*;
         use syntax::ast::ParameterSubstitution::*;
 
-        let word = Single(lit("foo"));
+        let word = word("foo");
 
         let substs = vec!(
             Assign(true, At, Some(word.clone())),
@@ -3295,7 +3319,7 @@ pub mod test {
 
         let src = "${@:=foo}${*:=foo}${#:=foo}${?:=foo}${-:=foo}${$:=foo}${!:=foo}${0:=foo}${10:=foo}${100:=foo}${foo_bar123:=foo}${@:=}${*:=}${#:=}${?:=}${-:=}${$:=}${!:=}${0:=}${10:=}${100:=}${foo_bar123:=}";
         let mut p = make_parser(src);
-        for s in substs { assert_eq!(Single(subst(s)), p.parameter().unwrap()); }
+        for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
         assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
 
         let substs = vec!(
@@ -3326,7 +3350,7 @@ pub mod test {
 
         let src = "${@=foo}${*=foo}${#=foo}${?=foo}${-=foo}${$=foo}${!=foo}${0=foo}${10=foo}${100=foo}${foo_bar123=foo}${@=}${*=}${#=}${?=}${-=}${$=}${!=}${0=}${10=}${100=}${foo_bar123=}";
         let mut p = make_parser(src);
-        for s in substs { assert_eq!(Single(subst(s)), p.parameter().unwrap()); }
+        for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
         assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
@@ -3335,7 +3359,7 @@ pub mod test {
         use syntax::ast::Parameter::*;
         use syntax::ast::ParameterSubstitution::*;
 
-        let word = Single(lit("foo"));
+        let word = word("foo");
 
         let substs = vec!(
             Alternative(true, At, Some(word.clone())),
@@ -3365,7 +3389,7 @@ pub mod test {
 
         let src = "${@:+foo}${*:+foo}${#:+foo}${?:+foo}${-:+foo}${$:+foo}${!:+foo}${0:+foo}${10:+foo}${100:+foo}${foo_bar123:+foo}${@:+}${*:+}${#:+}${?:+}${-:+}${$:+}${!:+}${0:+}${10:+}${100:+}${foo_bar123:+}";
         let mut p = make_parser(src);
-        for s in substs { assert_eq!(Single(subst(s)), p.parameter().unwrap()); }
+        for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
         assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
 
         let substs = vec!(
@@ -3396,7 +3420,7 @@ pub mod test {
 
         let src = "${@+foo}${*+foo}${#+foo}${?+foo}${-+foo}${$+foo}${!+foo}${0+foo}${10+foo}${100+foo}${foo_bar123+foo}${@+}${*+}${#+}${?+}${-+}${$+}${!+}${0+}${10+}${100+}${foo_bar123+}";
         let mut p = make_parser(src);
-        for s in substs { assert_eq!(Single(subst(s)), p.parameter().unwrap()); }
+        for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
         assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
     }
 
@@ -3406,13 +3430,13 @@ pub mod test {
         use syntax::ast::ParameterSubstitution::*;
 
         let var = Var(String::from("foo_bar123"));
-        let word = Concat(vec!(
+        let word = TopLevelWord(Concat(vec!(
             lit("foo{"),
             escaped("}"),
             lit(" \t\r "),
             escaped("\n"),
             lit("bar \t\r "),
-        ));
+        )));
 
         let substs = vec!(
             RemoveSmallestSuffix(var.clone(), Some(word.clone())),
@@ -3447,7 +3471,7 @@ pub mod test {
         for (i, s) in substs.into_iter().enumerate() {
             let src = format!("${{foo_bar123{}foo{{\\}} \t\r \\\nbar \t\r }}", src[i]);
             let mut p = make_parser(&src);
-            assert_eq!(Single(subst(s)), p.parameter().unwrap());
+            assert_eq!(word_subst(s), p.parameter().unwrap());
             assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
         }
     }
@@ -3458,13 +3482,13 @@ pub mod test {
         use syntax::ast::ParameterSubstitution::*;
 
         let var = Var(String::from("foo_bar123"));
-        let word = Concat(vec!(
+        let word = TopLevelWord(Concat(vec!(
             lit("#foo{"),
             escaped("}"),
             lit(" \t\r "),
             escaped("\n"),
             lit("bar \t\r "),
-        ));
+        )));
 
         let substs = vec!(
             RemoveSmallestSuffix(var.clone(), Some(word.clone())),
@@ -3499,7 +3523,7 @@ pub mod test {
         for (i, s) in substs.into_iter().enumerate() {
             let src = format!("${{foo_bar123{}#foo{{\\}} \t\r \\\nbar \t\r }}", src[i]);
             let mut p = make_parser(&src);
-            assert_eq!(Single(subst(s)), p.parameter().unwrap());
+            assert_eq!(word_subst(s), p.parameter().unwrap());
             assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
         }
     }
@@ -3510,13 +3534,13 @@ pub mod test {
         use syntax::ast::ParameterSubstitution::*;
 
         let var = Var(String::from("foo_bar123"));
-        let word = Concat(vec!(
+        let word = TopLevelWord(Concat(vec!(
             Word::Simple(Box::new(Param(At))),
             subst(RemoveLargestPrefix(
                 Var(String::from("foo")),
-                Some(Single(lit("bar")))
+                Some(word("bar"))
             )),
-        ));
+        )));
 
         let substs = vec!(
             RemoveSmallestSuffix(var.clone(), Some(word.clone())),
@@ -3551,7 +3575,7 @@ pub mod test {
         for (i, s) in substs.into_iter().enumerate() {
             let src = format!("${{foo_bar123{}$@${{foo##bar}}}}", src[i]);
             let mut p = make_parser(&src);
-            assert_eq!(Single(subst(s)), p.parameter().unwrap());
+            assert_eq!(word_subst(s), p.parameter().unwrap());
             assert_eq!(Err(ParseError::UnexpectedEOF), p.parameter()); // Stream should be exhausted
         }
     }
@@ -3560,9 +3584,9 @@ pub mod test {
     fn test_parameter_substitution_command_close_paren_need_not_be_followed_by_word_delimeter() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(), io: vec!(),
-            cmd: Some((Single(lit("foo")), vec!(Single(Word::DoubleQuoted(vec!(
+            cmd: Some((word("foo"), vec!(TopLevelWord(Single(Word::DoubleQuoted(vec!(
                 Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_unboxed("bar")))))
-            )))))),
+            ))))))),
         })));
         assert_eq!(correct, make_parser("foo \"$(bar)\"").complete_command().unwrap());
     }
@@ -3607,18 +3631,18 @@ pub mod test {
     #[test]
     fn test_redirect_valid_close_without_whitespace() {
         let mut p = make_parser(">&-");
-        assert_eq!(Some(Ok(Redirect::DupWrite(None, Single(lit("-"))))), p.redirect().unwrap());
+        assert_eq!(Some(Ok(Redirect::DupWrite(None, word("-")))), p.redirect().unwrap());
     }
 
     #[test]
     fn test_redirect_valid_close_with_whitespace() {
         let mut p = make_parser("<&       -");
-        assert_eq!(Some(Ok(Redirect::DupRead(None, Single(lit("-"))))), p.redirect().unwrap());
+        assert_eq!(Some(Ok(Redirect::DupRead(None, word("-")))), p.redirect().unwrap());
     }
 
     #[test]
     fn test_redirect_valid_start_with_dash_if_not_dup() {
-        let path = Single(lit("-test"));
+        let path = word("-test");
         let cases = vec!(
             ("4<-test",  Redirect::Read(Some(4), path.clone())),
             ("4>-test",  Redirect::Write(Some(4), path.clone())),
@@ -3631,7 +3655,7 @@ pub mod test {
             match make_parser(s).redirect() {
                 Ok(Some(Ok(ref r))) if *r == correct => {},
                 Ok(r) => {
-                    panic!("Unexpectedly parsed the source \"{}\" as\n{:?} instead of \n{:?}", s, r, correct)
+                    panic!("Unexpectedly parsed the source \"{}\" as\n{:?} instead of\n{:?}", s, r, correct)
                 },
                 Err(err) => panic!("Failed to parse the source \"{}\": {}", s, err),
             }
@@ -3641,31 +3665,31 @@ pub mod test {
     #[test]
     fn test_redirect_valid_return_word_if_no_redirect() {
         let mut p = make_parser("hello");
-        assert_eq!(Some(Err(Single(lit("hello")))), p.redirect().unwrap());
+        assert_eq!(Some(Err(word("hello"))), p.redirect().unwrap());
     }
 
     #[test]
     fn test_redirect_valid_return_word_if_src_fd_is_definitely_non_numeric() {
         let mut p = make_parser("123$$'foo'>out");
-        let correct = Concat(vec!(
+        let correct = TopLevelWord(Concat(vec!(
             lit("123"),
             Word::Simple(Box::new(Param(Parameter::Dollar))),
             Word::SingleQuoted(String::from("foo")),
-        ));
+        )));
         assert_eq!(Some(Err(correct)), p.redirect().unwrap());
     }
 
     #[test]
     fn test_redirect_valid_return_word_if_src_fd_has_escaped_numerics() {
         let mut p = make_parser("\\2>");
-        let correct = Single(escaped("2"));
+        let correct = word_escaped("2");
         assert_eq!(Some(Err(correct)), p.redirect().unwrap());
     }
 
     #[test]
     fn test_redirect_valid_dst_fd_can_have_escaped_numerics() {
         let mut p = make_parser(">\\2");
-        let correct = Redirect::Write(None, Single(escaped("2")));
+        let correct = Redirect::Write(None, word_escaped("2"));
         assert_eq!(Some(Ok(correct)), p.redirect().unwrap());
     }
 
@@ -3679,12 +3703,12 @@ pub mod test {
         let mut p = make_parser(">&123$$$(echo 2)`echo bar`");
         let correct = Redirect::DupWrite(
             None,
-            Concat(vec!(
+            TopLevelWord(Concat(vec!(
                 lit("123"),
                 Word::Simple(Box::new(Param(Parameter::Dollar))),
                 subst(ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["2"])))),
                 subst(ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["bar"])))),
-            )),
+            ))),
         );
         assert_eq!(Some(Ok(correct)), p.redirect().unwrap());
     }
@@ -3704,9 +3728,9 @@ pub mod test {
         let mut p = make_parser("foo 1>>out");
         let cmd = p.simple_command().unwrap();
         assert_eq!(cmd, Simple(Box::new(SimpleCommand {
-            cmd: Some((Single(lit("foo")), vec!())),
+            cmd: Some((word("foo"), vec!())),
             vars: vec!(),
-            io: vec!(Redirect::Append(Some(1), Single(lit("out")))),
+            io: vec!(Redirect::Append(Some(1), word("out"))),
         })));
     }
 
@@ -3715,9 +3739,9 @@ pub mod test {
         let mut p = make_parser("foo 1 <>out");
         let cmd = p.simple_command().unwrap();
         assert_eq!(cmd, Simple(Box::new(SimpleCommand {
-            cmd: Some((Single(lit("foo")), vec!(Single(lit("1"))))),
+            cmd: Some((word("foo"), vec!(word("1")))),
             vars: vec!(),
-            io: vec!(Redirect::ReadWrite(None, Single(lit("out")))),
+            io: vec!(Redirect::ReadWrite(None, word("out"))),
         })));
     }
 
@@ -3726,9 +3750,9 @@ pub mod test {
         let mut p = make_parser("foo 1>&2");
         let cmd = p.simple_command().unwrap();
         assert_eq!(cmd, Simple(Box::new(SimpleCommand {
-            cmd: Some((Single(lit("foo")), vec!())),
+            cmd: Some((word("foo"), vec!())),
             vars: vec!(),
-            io: vec!(Redirect::DupWrite(Some(1), Single(lit("2")))),
+            io: vec!(Redirect::DupWrite(Some(1), word("2"))),
         })));
     }
 
@@ -3737,9 +3761,9 @@ pub mod test {
         let mut p = make_parser("foo 1 <&2");
         let cmd = p.simple_command().unwrap();
         assert_eq!(cmd, Simple(Box::new(SimpleCommand {
-            cmd: Some((Single(lit("foo")), vec!(Single(lit("1"))))),
+            cmd: Some((word("foo"), vec!(word("1")))),
             vars: vec!(),
-            io: vec!(Redirect::DupRead(None, Single(lit("2")))),
+            io: vec!(Redirect::DupRead(None, word("2"))),
         })));
     }
 
@@ -3748,9 +3772,9 @@ pub mod test {
         let mut p = make_parser("foo 1<& 2");
         let cmd = p.simple_command().unwrap();
         assert_eq!(cmd, Simple(Box::new(SimpleCommand {
-            cmd: Some((Single(lit("foo")), vec!())),
+            cmd: Some((word("foo"), vec!())),
             vars: vec!(),
-            io: vec!(Redirect::DupRead(Some(1), Single(lit("2")))),
+            io: vec!(Redirect::DupRead(Some(1), word("2"))),
         })));
     }
 
@@ -3779,9 +3803,9 @@ pub mod test {
 
         let cmd = p.simple_command().unwrap();
         assert_eq!(cmd, Simple(Box::new(SimpleCommand {
-            cmd: Some((Single(lit("foo")), vec!())),
+            cmd: Some((word("foo"), vec!())),
             vars: vec!(),
-            io: vec!(Redirect::DupRead(Some(1234), Single(lit("-")))),
+            io: vec!(Redirect::DupRead(Some(1234), word("-"))),
         })));
     }
 
@@ -3793,7 +3817,7 @@ pub mod test {
             Token::Literal(String::from("34")),
         ));
 
-        let correct = Redirect::DupWrite(None, Single(lit("1234")));
+        let correct = Redirect::DupWrite(None, word("1234"));
         assert_eq!(Some(Ok(correct)), p.redirect().unwrap());
     }
 
@@ -3803,13 +3827,13 @@ pub mod test {
             Token::GreatAnd,
             Token::Literal(String::from("12")),
         ));
-        assert_eq!(Some(Ok(Redirect::DupWrite(None, Single(lit("12"))))), p.redirect().unwrap());
+        assert_eq!(Some(Ok(Redirect::DupWrite(None, word("12")))), p.redirect().unwrap());
 
         let mut p = make_parser_from_tokens(vec!(
             Token::GreatAnd,
             Token::Name(String::from("12")),
         ));
-        assert_eq!(Some(Ok(Redirect::DupWrite(None, Single(lit("12"))))), p.redirect().unwrap());
+        assert_eq!(Some(Ok(Redirect::DupWrite(None, word("12")))), p.redirect().unwrap());
     }
 
     #[test]
@@ -3825,8 +3849,8 @@ pub mod test {
         let mut p = make_parser("var=val ENV=true BLANK= foo var2=val2 bar baz var3=val3");
         let (cmd, vars, _) = sample_simple_command();
         let (cmd, mut args) = cmd.unwrap();
-        args.insert(0, Single(lit("var2=val2")));
-        args.push(Single(lit("var3=val3")));
+        args.insert(0, word("var2=val2"));
+        args.push(word("var3=val3"));
         let correct = Simple(Box::new(SimpleCommand { cmd: Some((cmd, args)), vars: vars, io: vec!() }));
         assert_eq!(correct, p.simple_command().unwrap());
     }
@@ -3851,7 +3875,7 @@ pub mod test {
     fn test_simple_command_redirections_throughout_the_command() {
         let mut p = make_parser("2>|clob var=val 3<>rw ENV=true BLANK= foo bar <in baz 4>&-");
         let (cmd, vars, mut io) = sample_simple_command();
-        io.push(Redirect::DupWrite(Some(4), Single(lit("-"))));
+        io.push(Redirect::DupWrite(Some(4), word("-")));
         let correct = Simple(Box::new(SimpleCommand { cmd: cmd, vars: vars, io: io }));
         assert_eq!(correct, p.simple_command().unwrap());
     }
@@ -3860,8 +3884,8 @@ pub mod test {
     fn test_heredoc_valid() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!())),
-            io: vec!(Redirect::Heredoc(None, Single(lit("hello\n"))))
+            cmd: Some((word("cat"), vec!())),
+            io: vec!(Redirect::Heredoc(None, word("hello\n")))
         })));
 
         assert_eq!(correct, make_parser("cat <<eof\nhello\neof\n").complete_command().unwrap());
@@ -3871,8 +3895,8 @@ pub mod test {
     fn test_heredoc_valid_eof_after_delimiter_allowed() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!())),
-            io: vec!(Redirect::Heredoc(None, Single(lit("hello\n"))))
+            cmd: Some((word("cat"), vec!())),
+            io: vec!(Redirect::Heredoc(None, word("hello\n")))
         })));
 
         assert_eq!(correct, make_parser("cat <<eof\nhello\neof").complete_command().unwrap());
@@ -3882,8 +3906,8 @@ pub mod test {
     fn test_heredoc_valid_with_empty_body() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!())),
-            io: vec!(Redirect::Heredoc(None, Single(lit("")))),
+            cmd: Some((word("cat"), vec!())),
+            io: vec!(Redirect::Heredoc(None, word(""))),
         })));
 
         assert_eq!(correct, make_parser("cat <<eof\neof").complete_command().unwrap());
@@ -3895,8 +3919,8 @@ pub mod test {
     fn test_heredoc_valid_eof_acceptable_as_delimeter() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!())),
-            io: vec!(Redirect::Heredoc(None, Single(lit("hello\n"))))
+            cmd: Some((word("cat"), vec!())),
+            io: vec!(Redirect::Heredoc(None, word("hello\n")))
         })));
 
         assert_eq!(correct, make_parser("cat <<eof\nhello\neof").complete_command().unwrap());
@@ -3905,12 +3929,12 @@ pub mod test {
     #[test]
     fn test_heredoc_valid_does_not_lose_tokens_up_to_next_newline() {
         let mut p = make_parser("cat <<eof1; cat 3<<eof2\nhello\neof1\nworld\neof2");
-        let cat = Some((Single(lit("cat")), vec!()));
+        let cat = Some((word("cat"), vec!()));
         let first = Simple(Box::new(SimpleCommand {
-            cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(None, Single(lit("hello\n"))))
+            cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(None, word("hello\n")))
         }));
         let second = Simple(Box::new(SimpleCommand {
-            cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(Some(3), Single(lit("world\n"))))
+            cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(Some(3), word("world\n")))
         }));
 
         assert_eq!(Some(first), p.complete_command().unwrap());
@@ -3920,12 +3944,12 @@ pub mod test {
     #[test]
     fn test_heredoc_valid_space_before_delimeter_allowed() {
         let mut p = make_parser("cat <<   eof1; cat 3<<- eof2\nhello\neof1\nworld\neof2");
-        let cat = Some((Single(lit("cat")), vec!()));
+        let cat = Some((word("cat"), vec!()));
         let first = Simple(Box::new(SimpleCommand {
-            cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(None, Single(lit("hello\n"))))
+            cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(None, word("hello\n")))
         }));
         let second = Simple(Box::new(SimpleCommand {
-            cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(Some(3), Single(lit("world\n"))))
+            cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(Some(3), word("world\n")))
         }));
 
         assert_eq!(Some(first), p.complete_command().unwrap());
@@ -3934,21 +3958,21 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_unquoted_delimeter_should_expand_body() {
-        let cat = Some((Single(lit("cat")), vec!()));
+        let cat = Some((word("cat"), vec!()));
         let expanded = Some(Simple(Box::new(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(
-                Redirect::Heredoc(None, Concat(vec!(
+                Redirect::Heredoc(None, TopLevelWord(Concat(vec!(
                     Word::Simple(Box::new(Param(Parameter::Dollar))),
                     lit(" "),
                     subst(ParameterSubstitution::Len(Parameter::Bang)),
                     lit(" "),
                     subst(ParameterSubstitution::Command(vec!(cmd_unboxed("foo")))),
                     lit("\n"),
-                ))
+                )))
             ))
         })));
         let literal = Some(Simple(Box::new(SimpleCommand {
-            cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(None, Single(lit("$$ ${#!} `foo`\n"))))
+            cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(None, word("$$ ${#!} `foo`\n")))
         })));
 
         assert_eq!(expanded, make_parser("cat <<eof\n$$ ${#!} `foo`\neof").complete_command().unwrap());
@@ -3961,12 +3985,12 @@ pub mod test {
     #[test]
     fn test_heredoc_valid_leading_tab_removal_works() {
         let mut p = make_parser("cat <<-eof1; cat 3<<-eof2\n\t\thello\n\teof1\n\t\t \t\nworld\n\t\teof2");
-        let cat = Some((Single(lit("cat")), vec!()));
+        let cat = Some((word("cat"), vec!()));
         let first = Simple(Box::new(SimpleCommand {
-            cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(None, Single(lit("hello\n"))))
+            cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(None, word("hello\n")))
         }));
         let second = Simple(Box::new(SimpleCommand {
-            cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(Some(3), Single(lit(" \t\nworld\n"))))
+            cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(Some(3), word(" \t\nworld\n")))
         }));
 
         assert_eq!(Some(first), p.complete_command().unwrap());
@@ -3978,8 +4002,8 @@ pub mod test {
         let mut p = make_parser("cat 3<< -eof\n\t\t \t\nworld\n\t\teof\n\t\t-eof\n-eof");
         let correct = Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!())),
-            io: vec!(Redirect::Heredoc(Some(3), Single(lit("\t\t \t\nworld\n\t\teof\n\t\t-eof\n"))))
+            cmd: Some((word("cat"), vec!())),
+            io: vec!(Redirect::Heredoc(Some(3), word("\t\t \t\nworld\n\t\teof\n\t\t-eof\n")))
         }));
 
         assert_eq!(Some(correct), p.complete_command().unwrap());
@@ -3989,8 +4013,8 @@ pub mod test {
     fn test_heredoc_valid_unquoted_backslashes_in_delimeter_disappear() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!())),
-            io: vec!(Redirect::Heredoc(None, Single(lit("hello\n"))))
+            cmd: Some((word("cat"), vec!())),
+            io: vec!(Redirect::Heredoc(None, word("hello\n")))
         })));
 
         assert_eq!(correct, make_parser("cat <<e\\ f\\f\nhello\ne ff").complete_command().unwrap());
@@ -4000,8 +4024,8 @@ pub mod test {
     fn test_heredoc_valid_balanced_single_quotes_in_delimeter() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!())),
-            io: vec!(Redirect::Heredoc(None, Single(lit("hello\n"))))
+            cmd: Some((word("cat"), vec!())),
+            io: vec!(Redirect::Heredoc(None, word("hello\n")))
         })));
 
         assert_eq!(correct, make_parser("cat <<e'o'f\nhello\neof").complete_command().unwrap());
@@ -4011,8 +4035,8 @@ pub mod test {
     fn test_heredoc_valid_balanced_double_quotes_in_delimeter() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!())),
-            io: vec!(Redirect::Heredoc(None, Single(lit("hello\n"))))
+            cmd: Some((word("cat"), vec!())),
+            io: vec!(Redirect::Heredoc(None, word("hello\n")))
         })));
 
         assert_eq!(correct, make_parser("cat <<e\"\\o${foo}\"f\nhello\ne\\o${foo}f").complete_command().unwrap());
@@ -4022,8 +4046,8 @@ pub mod test {
     fn test_heredoc_valid_balanced_backticks_in_delimeter() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!())),
-            io: vec!(Redirect::Heredoc(None, Single(lit("hello\n"))))
+            cmd: Some((word("cat"), vec!())),
+            io: vec!(Redirect::Heredoc(None, word("hello\n")))
         })));
 
         assert_eq!(correct, make_parser("cat <<e`\\o\\$\\`\\\\${f}`\nhello\ne`\\o$`\\${f}`").complete_command().unwrap());
@@ -4033,8 +4057,8 @@ pub mod test {
     fn test_heredoc_valid_balanced_parens_in_delimeter() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!())),
-            io: vec!(Redirect::Heredoc(None, Single(lit("hello\n"))))
+            cmd: Some((word("cat"), vec!())),
+            io: vec!(Redirect::Heredoc(None, word("hello\n")))
         })));
 
         assert_eq!(correct, make_parser("cat <<eof(  )\nhello\neof(  )").complete_command().unwrap());
@@ -4044,8 +4068,8 @@ pub mod test {
     fn test_heredoc_valid_cmd_subst_in_delimeter() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!())),
-            io: vec!(Redirect::Heredoc(None, Single(lit("hello\n"))))
+            cmd: Some((word("cat"), vec!())),
+            io: vec!(Redirect::Heredoc(None, word("hello\n")))
         })));
 
         assert_eq!(correct, make_parser("cat <<eof$(  )\nhello\neof$(  )").complete_command().unwrap());
@@ -4055,8 +4079,8 @@ pub mod test {
     fn test_heredoc_valid_param_subst_in_delimeter() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!())),
-            io: vec!(Redirect::Heredoc(None, Single(lit("hello\n"))))
+            cmd: Some((word("cat"), vec!())),
+            io: vec!(Redirect::Heredoc(None, word("hello\n")))
         })));
         assert_eq!(correct, make_parser("cat <<eof${  }\nhello\neof${  }").complete_command().unwrap());
     }
@@ -4065,10 +4089,10 @@ pub mod test {
     fn test_heredoc_valid_skip_past_newlines_in_single_quotes() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!(
-                single_quoted("\n"), Single(lit("arg"))
+            cmd: Some((word("cat"), vec!(
+                single_quoted("\n"), word("arg")
             ))),
-            io: vec!(Redirect::Heredoc(None, Single(lit("here\n"))))
+            io: vec!(Redirect::Heredoc(None, word("here\n")))
         })));
         assert_eq!(correct, make_parser("cat <<EOF '\n' arg\nhere\nEOF").complete_command().unwrap());
     }
@@ -4077,11 +4101,11 @@ pub mod test {
     fn test_heredoc_valid_skip_past_newlines_in_double_quotes() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!(
+            cmd: Some((word("cat"), vec!(
                 double_quoted("\n"),
-                Single(lit("arg"))
+                word("arg")
             ))),
-            io: vec!(Redirect::Heredoc(None, Single(lit("here\n"))))
+            io: vec!(Redirect::Heredoc(None, word("here\n")))
         })));
         assert_eq!(correct, make_parser("cat <<EOF \"\n\" arg\nhere\nEOF").complete_command().unwrap());
     }
@@ -4090,11 +4114,11 @@ pub mod test {
     fn test_heredoc_valid_skip_past_newlines_in_backticks() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!(
-                Single(subst(ParameterSubstitution::Command(vec!(cmd_unboxed("echo"))))),
-                Single(lit("arg"))))
-            ),
-            io: vec!(Redirect::Heredoc(None, Single(lit("here\n"))))
+            cmd: Some((word("cat"), vec!(
+                word_subst(ParameterSubstitution::Command(vec!(cmd_unboxed("echo")))),
+                word("arg")
+            ))),
+            io: vec!(Redirect::Heredoc(None, word("here\n")))
         })));
         assert_eq!(correct, make_parser("cat <<EOF `echo \n` arg\nhere\nEOF").complete_command().unwrap());
     }
@@ -4103,8 +4127,8 @@ pub mod test {
     fn test_heredoc_valid_skip_past_newlines_in_parens() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!())),
-            io: vec!(Redirect::Heredoc(None, Single(lit("here\n"))))
+            cmd: Some((word("cat"), vec!())),
+            io: vec!(Redirect::Heredoc(None, word("here\n")))
         })));
         assert_eq!(correct, make_parser("cat <<EOF; (foo\n); arg\nhere\nEOF").complete_command().unwrap());
     }
@@ -4113,11 +4137,11 @@ pub mod test {
     fn test_heredoc_valid_skip_past_newlines_in_cmd_subst() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!(
-                Single(subst(ParameterSubstitution::Command(vec!(cmd_unboxed("foo"))))),
-                Single(lit("arg")),
+            cmd: Some((word("cat"), vec!(
+                word_subst(ParameterSubstitution::Command(vec!(cmd_unboxed("foo")))),
+                word("arg"),
             ))),
-            io: vec!(Redirect::Heredoc(None, Single(lit("here\n"))))
+            io: vec!(Redirect::Heredoc(None, word("here\n")))
         })));
         assert_eq!(correct, make_parser("cat <<EOF $(foo\n) arg\nhere\nEOF").complete_command().unwrap());
     }
@@ -4126,14 +4150,15 @@ pub mod test {
     fn test_heredoc_valid_skip_past_newlines_in_param_subst() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!(
-                Single(subst(ParameterSubstitution::Assign(false,
-                    Parameter::Var(String::from("foo")),
-                    Some(Single(lit("\n")))))
-                ),
-                Single(lit("arg"))
+            cmd: Some((word("cat"), vec!(
+                word_subst(ParameterSubstitution::Assign(
+                        false,
+                        Parameter::Var(String::from("foo")),
+                        Some(word("\n"))
+                )),
+                word("arg")
             ))),
-            io: vec!(Redirect::Heredoc(None, Single(lit("here\n"))))
+            io: vec!(Redirect::Heredoc(None, word("here\n")))
         })));
         assert_eq!(correct, make_parser("cat <<EOF ${foo=\n} arg\nhere\nEOF").complete_command().unwrap());
     }
@@ -4142,8 +4167,8 @@ pub mod test {
     fn test_heredoc_valid_skip_past_escaped_newlines() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!(Single(lit("arg"))))),
-            io: vec!(Redirect::Heredoc(None, Single(lit("here\n"))))
+            cmd: Some((word("cat"), vec!(word("arg")))),
+            io: vec!(Redirect::Heredoc(None, word("here\n")))
         })));
         assert_eq!(correct, make_parser("cat <<EOF \\\n arg\nhere\nEOF").complete_command().unwrap());
     }
@@ -4152,8 +4177,8 @@ pub mod test {
     fn test_heredoc_valid_double_quoted_delim_keeps_backslashe_except_after_specials() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!())),
-            io: vec!(Redirect::Heredoc(None, Single(lit("here\n"))))
+            cmd: Some((word("cat"), vec!())),
+            io: vec!(Redirect::Heredoc(None, word("here\n")))
         })));
         assert_eq!(correct, make_parser("cat <<\"\\EOF\\$\\`\\\"\\\\\"\nhere\n\\EOF$`\"\\\n")
                    .complete_command().unwrap());
@@ -4163,8 +4188,8 @@ pub mod test {
     fn test_heredoc_valid_unquoting_only_removes_outer_quotes_and_backslashes() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!())),
-            io: vec!(Redirect::Heredoc(None, Single(lit("here\n"))))
+            cmd: Some((word("cat"), vec!())),
+            io: vec!(Redirect::Heredoc(None, word("here\n")))
         })));
         assert_eq!(correct, make_parser("cat <<EOF${ 'asdf'}(\"hello'\"){\\o}\nhere\nEOF${ asdf}(hello'){o}")
                    .complete_command().unwrap());
@@ -4174,15 +4199,15 @@ pub mod test {
     fn test_heredoc_valid_delimeter_can_be_followed_by_carriage_return_newline() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!(Single(lit("arg"))))),
-            io: vec!(Redirect::Heredoc(None, Single(lit("here\n"))))
+            cmd: Some((word("cat"), vec!(word("arg")))),
+            io: vec!(Redirect::Heredoc(None, word("here\n")))
         })));
         assert_eq!(correct, make_parser("cat <<EOF arg\nhere\nEOF\r\n").complete_command().unwrap());
 
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!(Single(lit("arg"))))),
-            io: vec!(Redirect::Heredoc(None, Single(lit("here\r\n"))))
+            cmd: Some((word("cat"), vec!(word("arg")))),
+            io: vec!(Redirect::Heredoc(None, word("here\r\n")))
         })));
         assert_eq!(correct, make_parser("cat <<EOF arg\nhere\r\nEOF\r\n").complete_command().unwrap());
     }
@@ -4191,15 +4216,15 @@ pub mod test {
     fn test_heredoc_valid_delimiter_can_start_with() {
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!())),
-            io: vec!(Redirect::Heredoc(None, Single(lit("\thello\n\t\tworld\n"))))
+            cmd: Some((word("cat"), vec!())),
+            io: vec!(Redirect::Heredoc(None, word("\thello\n\t\tworld\n")))
         })));
         assert_eq!(correct, make_parser("cat << -EOF\n\thello\n\t\tworld\n-EOF").complete_command().unwrap());
 
         let correct = Some(Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("cat")), vec!())),
-            io: vec!(Redirect::Heredoc(None, Single(lit("hello\nworld\n"))))
+            cmd: Some((word("cat"), vec!())),
+            io: vec!(Redirect::Heredoc(None, word("hello\nworld\n")))
         })));
         assert_eq!(correct, make_parser("cat <<--EOF\n\thello\n\t\tworld\n-EOF").complete_command().unwrap());
     }
@@ -4251,9 +4276,9 @@ pub mod test {
         let mut p = make_parser("1>>out <& 2 2>&-");
         let io = p.redirect_list().unwrap();
         assert_eq!(io, vec!(
-            Redirect::Append(Some(1), Single(lit("out"))),
-            Redirect::DupRead(None, Single(lit("2"))),
-            Redirect::DupWrite(Some(2), Single(lit("-"))),
+            Redirect::Append(Some(1), word("out")),
+            Redirect::DupRead(None, word("2")),
+            Redirect::DupWrite(Some(2), word("-")),
         ));
     }
 
@@ -4611,32 +4636,32 @@ pub mod test {
     fn test_if_command_valid_with_else() {
         let guard1 = Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("guard1")), vec!())),
-            io: vec!(Redirect::Read(None, Single(lit("in")))),
+            cmd: Some((word("guard1"), vec!())),
+            io: vec!(Redirect::Read(None, word("in"))),
         }));
 
         let guard2 = Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("guard2")), vec!())),
-            io: vec!(Redirect::Write(None, Single(lit("out")))),
+            cmd: Some((word("guard2"), vec!())),
+            io: vec!(Redirect::Write(None, word("out"))),
         }));
 
         let guard3 = Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("guard3")), vec!())),
+            cmd: Some((word("guard3"), vec!())),
             io: vec!(),
         }));
 
         let body1 = Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("body1")), vec!())),
-            io: vec!(Redirect::Clobber(None, Single(lit("clob")))),
+            cmd: Some((word("body1"), vec!())),
+            io: vec!(Redirect::Clobber(None, word("clob"))),
         }));
 
         let body2 = Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("body2")), vec!())),
-            io: vec!(Redirect::Append(Some(2), Single(lit("app")))),
+            cmd: Some((word("body2"), vec!())),
+            io: vec!(Redirect::Append(Some(2), word("app"))),
         }));
 
         let els = cmd_unboxed("else");
@@ -4650,32 +4675,32 @@ pub mod test {
     fn test_if_command_valid_without_else() {
         let guard1 = Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("guard1")), vec!())),
-            io: vec!(Redirect::Read(None, Single(lit("in")))),
+            cmd: Some((word("guard1"), vec!())),
+            io: vec!(Redirect::Read(None, word("in"))),
         }));
 
         let guard2 = Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("guard2")), vec!())),
-            io: vec!(Redirect::Write(None, Single(lit("out")))),
+            cmd: Some((word("guard2"), vec!())),
+            io: vec!(Redirect::Write(None, word("out"))),
         }));
 
         let guard3 = Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("guard3")), vec!())),
+            cmd: Some((word("guard3"), vec!())),
             io: vec!(),
         }));
 
         let body1 = Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("body1")), vec!())),
-            io: vec!(Redirect::Clobber(None, Single(lit("clob")))),
+            cmd: Some((word("body1"), vec!())),
+            io: vec!(Redirect::Clobber(None, word("clob"))),
         }));
 
         let body2 = Simple(Box::new(SimpleCommand {
             vars: vec!(),
-            cmd: Some((Single(lit("body2")), vec!())),
-            io: vec!(Redirect::Append(Some(2), Single(lit("app")))),
+            cmd: Some((word("body2"), vec!())),
+            io: vec!(Redirect::Append(Some(2), word("app"))),
         }));
 
         let correct = (vec!((vec!(guard1, guard2), vec!(body1)), (vec!(guard3), vec!(body2))), None);
@@ -4818,10 +4843,10 @@ pub mod test {
     fn test_braces_literal_unless_brace_group_expected() {
         let source = "echo {} } {";
         let mut p = make_parser(source);
-        assert_eq!(p.word().unwrap().unwrap(), Single(lit("echo")));
-        assert_eq!(p.word().unwrap().unwrap(), Single(lit("{}")));
-        assert_eq!(p.word().unwrap().unwrap(), Single(lit("}")));
-        assert_eq!(p.word().unwrap().unwrap(), Single(lit("{")));
+        assert_eq!(p.word().unwrap().unwrap(), word("echo"));
+        assert_eq!(p.word().unwrap().unwrap(), word("{}"));
+        assert_eq!(p.word().unwrap().unwrap(), word("}"));
+        assert_eq!(p.word().unwrap().unwrap(), word("{"));
 
         let correct = Some(cmd_args_unboxed("echo", &["{}", "}", "{"]));
         assert_eq!(correct, make_parser(source).complete_command().unwrap());
@@ -4834,9 +4859,9 @@ pub mod test {
         assert_eq!(var, "var");
         assert_eq!(var_comment, vec!(Newline(Some(String::from("#comment1")))));
         assert_eq!(words.unwrap(), vec!(
-            Single(lit("one")),
-            Single(lit("two")),
-            Single(lit("three")),
+            word("one"),
+            word("two"),
+            word("three"),
         ));
         assert_eq!(word_comment, Some(vec!(
             Newline(None),
@@ -4846,9 +4871,7 @@ pub mod test {
 
         let correct_body = vec!(Simple(Box::new(SimpleCommand {
             vars: vec!(), io: vec!(),
-            cmd: Some((Single(lit("echo")), vec!(Single(
-                Word::Simple(Box::new(Param(Parameter::Var(String::from("var")))))
-            ))))
+            cmd: Some((word("echo"), vec!(word_param(Parameter::Var(String::from("var"))))))
         })));
 
         assert_eq!(correct_body, body);
@@ -4865,9 +4888,7 @@ pub mod test {
 
         let correct_body = vec!(Simple(Box::new(SimpleCommand {
             vars: vec!(), io: vec!(),
-            cmd: Some((Single(lit("echo")), vec!(Single(
-                Word::Simple(Box::new(Param(Parameter::Var(String::from("var")))))
-            ))))
+            cmd: Some((word("echo"), vec!(word_param(Parameter::Var(String::from("var"))))))
         })));
 
         assert_eq!(correct_body, body);
@@ -5041,7 +5062,7 @@ pub mod test {
             String::from("foo"),
             Rc::new(Compound(
                 Box::new(CompoundCommand::Brace(vec!(Simple(Box::new(SimpleCommand {
-                    cmd: Some((Single(lit("echo")), vec!(Single(lit("body"))))),
+                    cmd: Some((word("echo"), vec!(word("body")))),
                     vars: vec!(),
                     io: vec!(),
                 }))))),
@@ -5075,7 +5096,7 @@ pub mod test {
         let correct = Command::Function(
             String::from("foo"),
             Rc::new(Simple(Box::new(SimpleCommand {
-                cmd: Some((Single(lit("echo")), vec!(Single(lit("body"))))),
+                cmd: Some((word("echo"), vec!(word("body")))),
                 vars: vec!(),
                 io: vec!(),
             })))
@@ -5108,7 +5129,7 @@ pub mod test {
             String::from("foo"),
             Rc::new(Compound(
                 Box::new(CompoundCommand::Subshell(vec!(Simple(Box::new(SimpleCommand {
-                    cmd: Some((Single(lit("echo")), vec!(Single(lit("subshell"))))),
+                    cmd: Some((word("echo"), vec!(word("subshell")))),
                     vars: vec!(),
                     io: vec!(),
                 }))))),
@@ -5289,20 +5310,20 @@ pub mod test {
 
     #[test]
     fn test_case_command_valid() {
-        let correct_word = Single(lit("foo"));
+        let correct_word = word("foo");
         let correct_branches = vec!(
             (
-                (vec!(), vec!(Single(lit("hello")), Single(lit("goodbye"))), vec!()),
+                (vec!(), vec!(word("hello"), word("goodbye")), vec!()),
                 vec!(Simple(Box::new(SimpleCommand {
-                    cmd: Some((Single(lit("echo")), vec!(Single(lit("greeting"))))),
+                    cmd: Some((word("echo"), vec!(word("greeting")))),
                     io: vec!(),
                     vars: vec!(),
                 }))),
             ),
             (
-                (vec!(), vec!(Single(lit("world"))), vec!()),
+                (vec!(), vec!(word("world")), vec!()),
                 vec!(Simple(Box::new(SimpleCommand {
-                    cmd: Some((Single(lit("echo")), vec!(Single(lit("noun"))))),
+                    cmd: Some((word("echo"), vec!(word("noun")))),
                     io: vec!(),
                     vars: vec!(),
                 }))),
@@ -5323,17 +5344,17 @@ pub mod test {
 
     #[test]
     fn test_case_command_valid_with_comments() {
-        let correct_word = Single(lit("foo"));
+        let correct_word = word("foo");
         let correct_post_word = vec!(Newline(Some(String::from("#post_word_a"))), Newline(Some(String::from("#post_word_b"))));
         let correct_branches = vec!(
             (
                 (
                     vec!(Newline(Some(String::from("#pre_pat_1a"))), Newline(Some(String::from("#pre_pat_1b")))),
-                    vec!(Single(lit("hello")), Single(lit("goodbye"))),
+                    vec!(word("hello"), word("goodbye")),
                     vec!(Newline(Some(String::from("#post_pat_1a"))), Newline(Some(String::from("#post_pat_1b")))),
                 ),
                 vec!(Simple(Box::new(SimpleCommand {
-                    cmd: Some((Single(lit("echo")), vec!(Single(lit("greeting"))))),
+                    cmd: Some((word("echo"), vec!(word("greeting")))),
                     io: vec!(),
                     vars: vec!(),
                 }))),
@@ -5341,11 +5362,11 @@ pub mod test {
             (
                 (
                     vec!(Newline(Some(String::from("#pre_pat_2a"))), Newline(Some(String::from("#pre_pat_2b")))),
-                    vec!(Single(lit("world"))),
+                    vec!(word("world")),
                     vec!(Newline(Some(String::from("#post_pat_2a"))), Newline(Some(String::from("#post_pat_2b")))),
                 ),
                 vec!(Simple(Box::new(SimpleCommand {
-                    cmd: Some((Single(lit("echo")), vec!(Single(lit("noun"))))),
+                    cmd: Some((word("echo"), vec!(word("noun")))),
                     io: vec!(),
                     vars: vec!(),
                 }))),
@@ -5378,7 +5399,7 @@ pub mod test {
 
     #[test]
     fn test_case_command_valid_with_comments_no_body() {
-        let correct_word = Single(lit("foo"));
+        let correct_word = word("foo");
         let correct_post_word = vec!(Newline(Some(String::from("#post_word_a"))), Newline(Some(String::from("#post_word_b"))));
         let correct_branches = vec!();
         let correct_post_branch = vec!(Newline(Some(String::from("#one"))), Newline(Some(String::from("#two"))), Newline(Some(String::from("#three"))));
@@ -5623,7 +5644,7 @@ pub mod test {
 
     #[test]
     fn test_compound_command_delegates_valid_commands_case() {
-        let correct = Compound(Box::new(Case(Single(lit("foo")), vec!())), vec!());
+        let correct = Compound(Box::new(Case(word("foo"), vec!())), vec!());
         assert_eq!(correct, make_parser("case foo in esac").compound_command().unwrap());
     }
 
@@ -5680,9 +5701,9 @@ pub mod test {
         for cmd in cases.iter() {
             match make_parser(cmd).compound_command() {
                 Ok(Compound(_, io)) => assert_eq!(io, vec!(
-                    Redirect::Append(Some(1), Single(lit("out"))),
-                    Redirect::DupRead(None, Single(lit("2"))),
-                    Redirect::DupWrite(Some(2), Single(lit("-"))),
+                    Redirect::Append(Some(1), word("out")),
+                    Redirect::DupRead(None, word("2")),
+                    Redirect::DupWrite(Some(2), word("-")),
                 )),
 
                 Ok(result) => panic!("Parsed \"{}\" as an unexpected command type:\n{:#?}", cmd, result),
@@ -5882,7 +5903,7 @@ pub mod test {
 
     #[test]
     fn test_command_delegates_valid_commands_case() {
-        let correct = Compound(Box::new(Case(Single(lit("foo")), vec!())), vec!());
+        let correct = Compound(Box::new(Case(word("foo"), vec!())), vec!());
         assert_eq!(correct, make_parser("case foo in esac").command().unwrap());
     }
 
@@ -6255,98 +6276,98 @@ pub mod test {
 
     #[test]
     fn test_word_double_quote_valid() {
-        let correct = Single(Word::DoubleQuoted(vec!(Literal(String::from("abc&&||\n\n#comment\nabc")))));
+        let correct = TopLevelWord(Single(Word::DoubleQuoted(vec!(Literal(String::from("abc&&||\n\n#comment\nabc"))))));
         assert_eq!(Some(correct), make_parser("\"abc&&||\n\n#comment\nabc\"").word().unwrap());
     }
 
     #[test]
     fn test_word_double_quote_valid_recognizes_parameters() {
-        let correct = Single(Word::DoubleQuoted(vec!(
+        let correct = TopLevelWord(Single(Word::DoubleQuoted(vec!(
             Literal(String::from("test asdf")),
             Param(Parameter::Var(String::from("foo"))),
             Literal(String::from(" $")),
-        )));
+        ))));
 
         assert_eq!(Some(correct), make_parser("\"test asdf$foo $\"").word().unwrap());
     }
 
     #[test]
     fn test_word_double_quote_valid_recognizes_backticks() {
-        let correct = Single(Word::DoubleQuoted(vec!(
+        let correct = TopLevelWord(Single(Word::DoubleQuoted(vec!(
             Literal(String::from("test asdf ")),
             Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_unboxed("foo"))))),
-        )));
+        ))));
 
         assert_eq!(Some(correct), make_parser("\"test asdf `foo`\"").word().unwrap());
     }
 
     #[test]
     fn test_word_double_quote_valid_slash_escapes_dollar() {
-        let correct = Single(Word::DoubleQuoted(vec!(
+        let correct = TopLevelWord(Single(Word::DoubleQuoted(vec!(
             Literal(String::from("test")),
             Escaped(String::from("$")),
             Literal(String::from("foo ")),
             Param(Parameter::At),
-        )));
+        ))));
 
         assert_eq!(Some(correct), make_parser("\"test\\$foo $@\"").word().unwrap());
     }
 
     #[test]
     fn test_word_double_quote_valid_slash_escapes_backtick() {
-        let correct = Single(Word::DoubleQuoted(vec!(
+        let correct = TopLevelWord(Single(Word::DoubleQuoted(vec!(
             Literal(String::from("test")),
             Escaped(String::from("`")),
             Literal(String::from(" ")),
             Param(Parameter::Star),
-        )));
+        ))));
 
         assert_eq!(Some(correct), make_parser("\"test\\` $*\"").word().unwrap());
     }
 
     #[test]
     fn test_word_double_quote_valid_slash_escapes_double_quote() {
-        let correct = Single(Word::DoubleQuoted(vec!(
+        let correct = TopLevelWord(Single(Word::DoubleQuoted(vec!(
             Literal(String::from("test")),
             Escaped(String::from("\"")),
             Literal(String::from(" ")),
             Param(Parameter::Pound),
-        )));
+        ))));
 
         assert_eq!(Some(correct), make_parser("\"test\\\" $#\"").word().unwrap());
     }
 
     #[test]
     fn test_word_double_quote_valid_slash_escapes_newline() {
-        let correct = Single(Word::DoubleQuoted(vec!(
+        let correct = TopLevelWord(Single(Word::DoubleQuoted(vec!(
             Literal(String::from("test")),
             Escaped(String::from("\n")),
             Literal(String::from(" ")),
             Param(Parameter::Question),
             Literal(String::from("\n")),
-        )));
+        ))));
 
         assert_eq!(Some(correct), make_parser("\"test\\\n $?\n\"").word().unwrap());
     }
 
     #[test]
     fn test_word_double_quote_valid_slash_escapes_slash() {
-        let correct = Single(Word::DoubleQuoted(vec!(
+        let correct = TopLevelWord(Single(Word::DoubleQuoted(vec!(
             Literal(String::from("test")),
             Escaped(String::from("\\")),
             Literal(String::from(" ")),
             Param(Parameter::Positional(0)),
-        )));
+        ))));
 
         assert_eq!(Some(correct), make_parser("\"test\\\\ $0\"").word().unwrap());
     }
 
     #[test]
     fn test_word_double_quote_valid_slash_remains_literal_in_general_case() {
-        let correct = Single(Word::DoubleQuoted(vec!(
+        let correct = TopLevelWord(Single(Word::DoubleQuoted(vec!(
             Literal(String::from("t\\est ")),
             Param(Parameter::Dollar),
-        )));
+        ))));
 
         assert_eq!(Some(correct), make_parser("\"t\\est $$\"").word().unwrap());
     }
@@ -6382,7 +6403,7 @@ pub mod test {
 
         for p in params.into_iter() {
             match make_parser(p).word() {
-                Ok(Some(Single(Word::Simple(w)))) => if let Param(_) = *w {} else {
+                Ok(Some(TopLevelWord(Single(Word::Simple(w))))) => if let Param(_) = *w {} else {
                     panic!("Unexpectedly parsed \"{}\" as a non-parameter word:\n{:#?}", p, w);
                 },
                 Ok(Some(w)) => panic!("Unexpectedly parsed \"{}\" as a non-parameter word:\n{:#?}", p, w),
@@ -6394,7 +6415,7 @@ pub mod test {
 
     #[test]
     fn test_word_literal_dollar_if_not_param() {
-        let correct = Single(lit("$%asdf"));
+        let correct = word("$%asdf");
         assert_eq!(correct, make_parser("$%asdf").word().unwrap().unwrap());
     }
 
@@ -6409,7 +6430,7 @@ pub mod test {
 
     #[test]
     fn test_word_pound_in_middle_is_not_comment() {
-        let correct = Single(lit("abc#def"));
+        let correct = word("abc#def");
         assert_eq!(Ok(Some(correct)), make_parser("abc#def\n").word());
     }
 
@@ -6426,7 +6447,7 @@ pub mod test {
         for w in words.into_iter() {
             match make_parser(w).word() {
                 Ok(Some(res)) => {
-                    let correct = Single(lit(*w));
+                    let correct = word(*w);
                     if correct != res {
                         panic!("Unexpectedly parsed \"{}\": expected:\n{:#?}\ngot:\n{:#?}", w, correct, res);
                     }
@@ -6439,23 +6460,23 @@ pub mod test {
 
     #[test]
     fn test_word_concatenation_works() {
-        let correct = Concat(vec!(
+        let correct = TopLevelWord(Concat(vec!(
             lit("foo=bar"),
             Word::DoubleQuoted(vec!(Literal(String::from("double")))),
             Word::SingleQuoted(String::from("single")),
-        ));
+        )));
 
         assert_eq!(Ok(Some(correct)), make_parser("foo=bar\"double\"'single'").word());
     }
 
     #[test]
     fn test_word_special_words_recognized_as_such() {
-        assert_eq!(Ok(Some(Single(Word::Simple(Box::new(Star))))),        make_parser("*").word());
-        assert_eq!(Ok(Some(Single(Word::Simple(Box::new(Question))))),    make_parser("?").word());
-        assert_eq!(Ok(Some(Single(Word::Simple(Box::new(Tilde))))),       make_parser("~").word());
-        assert_eq!(Ok(Some(Single(Word::Simple(Box::new(SquareOpen))))),  make_parser("[").word());
-        assert_eq!(Ok(Some(Single(Word::Simple(Box::new(SquareClose))))), make_parser("]").word());
-        assert_eq!(Ok(Some(Single(Word::Simple(Box::new(Colon))))),       make_parser(":").word());
+        assert_eq!(Ok(Some(TopLevelWord(Single(Word::Simple(Box::new(Star)))))),        make_parser("*").word());
+        assert_eq!(Ok(Some(TopLevelWord(Single(Word::Simple(Box::new(Question)))))),    make_parser("?").word());
+        assert_eq!(Ok(Some(TopLevelWord(Single(Word::Simple(Box::new(Tilde)))))),       make_parser("~").word());
+        assert_eq!(Ok(Some(TopLevelWord(Single(Word::Simple(Box::new(SquareOpen)))))),  make_parser("[").word());
+        assert_eq!(Ok(Some(TopLevelWord(Single(Word::Simple(Box::new(SquareClose)))))), make_parser("]").word());
+        assert_eq!(Ok(Some(TopLevelWord(Single(Word::Simple(Box::new(Colon)))))),       make_parser(":").word());
     }
 
     #[test]
@@ -6474,7 +6495,7 @@ pub mod test {
             let src = format!("\\{}", l);
             match make_parser(&src).word() {
                 Ok(Some(res)) => {
-                    let correct = Single(escaped(l));
+                    let correct = word_escaped(l);
                     if correct != res {
                         panic!("Unexpectedly parsed \"{}\": expected:\n{:#?}\ngot:\n{:#?}", src, correct, res);
                     }
@@ -6488,93 +6509,93 @@ pub mod test {
     #[test]
     fn test_word_escaped_newline_becomes_whitespace() {
         let mut p = make_parser("foo\\\nbar");
-        assert_eq!(Ok(Some(Single(lit("foo")))), p.word());
-        assert_eq!(Ok(Some(Single(lit("bar")))), p.word());
+        assert_eq!(Ok(Some(word("foo"))), p.word());
+        assert_eq!(Ok(Some(word("bar"))), p.word());
     }
 
     #[test]
     fn test_backticked_valid() {
-        let correct = Single(subst(ParameterSubstitution::Command(vec!(cmd_unboxed("foo")))));
+        let correct = word_subst(ParameterSubstitution::Command(vec!(cmd_unboxed("foo"))));
         assert_eq!(correct, make_parser("`foo`").backticked_command_substitution().unwrap());
     }
 
     #[test]
     fn test_backticked_valid_backslashes_removed_if_before_dollar_backslash_and_backtick() {
-        let correct = Single(subst(ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
+        let correct = word_subst(ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
             vars: vec!(), io: vec!(),
-            cmd: Some((Single(lit("foo")), vec!(
-                Concat(vec!(
+            cmd: Some((word("foo"), vec!(
+                TopLevelWord(Concat(vec!(
                     Word::Simple(Box::new(Param(Parameter::Dollar))),
                     escaped("`"),
                     escaped("o"),
-                ))
+                )))
             ))),
-        }))))));
+        })))));
         assert_eq!(correct, make_parser("`foo \\$\\$\\\\\\`\\o`").backticked_command_substitution().unwrap());
     }
 
     #[test]
     fn test_backticked_nested_backticks() {
-        let correct = Single(subst(ParameterSubstitution::Command(vec!(
+        let correct = word_subst(ParameterSubstitution::Command(vec!(
             Simple(Box::new(SimpleCommand {
                 vars: vec!(), io: vec!(),
-                cmd: Some((Single(lit("foo")), vec!(
-                    Single(subst(
+                cmd: Some((word("foo"), vec!(
+                    word_subst(
                         ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
                             vars: vec!(), io: vec!(),
-                            cmd: Some((Single(lit("bar")), vec!(Concat(vec!(escaped("$"), escaped("$"))))))
+                            cmd: Some((word("bar"), vec!(TopLevelWord(Concat(vec!(escaped("$"), escaped("$")))))))
                         }))))
-                    ))
+                    )
                 ))),
             }))
-        ))));
+        )));
         assert_eq!(correct, make_parser(r#"`foo \`bar \\\\$\\\\$\``"#).backticked_command_substitution().unwrap());
     }
 
     #[test]
     fn test_backticked_nested_backticks_x2() {
-        let correct = Single(subst(ParameterSubstitution::Command(vec!(
+        let correct = word_subst(ParameterSubstitution::Command(vec!(
             Simple(Box::new(SimpleCommand {
                 vars: vec!(), io: vec!(),
-                cmd: Some((Single(lit("foo")), vec!(Single(subst(
+                cmd: Some((word("foo"), vec!(word_subst(
                     ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
                         vars: vec!(), io: vec!(),
-                        cmd: Some((Single(lit("bar")), vec!(Single(subst(
+                        cmd: Some((word("bar"), vec!(word_subst(
                             ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
                                 vars: vec!(), io: vec!(),
-                                cmd: Some((Single(lit("baz")), vec!(Concat(vec!(escaped("$"), escaped("$"))))))
+                                cmd: Some((word("baz"), vec!(TopLevelWord(Concat(vec!(escaped("$"), escaped("$")))))))
                             }))))
-                        )))))
+                        ))))
                     }))))
-                )))))
+                ))))
             }))
-        ))));
+        )));
         assert_eq!(correct, make_parser(r#"`foo \`bar \\\`baz \\\\\\\\$\\\\\\\\$ \\\`\``"#).backticked_command_substitution().unwrap());
     }
 
     #[test]
     fn test_backticked_nested_backticks_x3() {
-        let correct = Single(subst(ParameterSubstitution::Command(vec!(
+        let correct = word_subst(ParameterSubstitution::Command(vec!(
             Simple(Box::new(SimpleCommand {
                 vars: vec!(), io: vec!(),
-                cmd: Some((Single(lit("foo")), vec!(Single(subst(
+                cmd: Some((word("foo"), vec!(word_subst(
                     ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
                         vars: vec!(), io: vec!(),
-                        cmd: Some((Single(lit("bar")), vec!(Single(subst(
+                        cmd: Some((word("bar"), vec!(word_subst(
                             ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
                                 vars: vec!(), io: vec!(),
-                                cmd: Some((Single(lit("baz")), vec!(Single(subst(
+                                cmd: Some((word("baz"), vec!(word_subst(
                                     ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
                                         vars: vec!(), io: vec!(),
-                                        cmd: Some((Single(lit("qux")), vec!(Concat(vec!(escaped("$"), escaped("$"))))))
+                                        cmd: Some((word("qux"), vec!(TopLevelWord(Concat(vec!(escaped("$"), escaped("$")))))))
                                     }))))
-                                ))))),
+                                )))),
                             }))))
-                        )))))
+                        ))))
                     }))))
-                )))))
+                ))))
             }))
-        ))));
+        )));
         assert_eq!(correct, make_parser(
             r#"`foo \`bar \\\`baz \\\\\\\`qux \\\\\\\\\\\\\\\\$\\\\\\\\\\\\\\\\$ \\\\\\\` \\\`\``"#
         ).backticked_command_substitution().unwrap());
@@ -6646,11 +6667,11 @@ pub mod test {
 
     #[test]
     fn test_arithmetic_substitution_valid() {
-        use syntax::ast::Arith::*;
+        use syntax::ast::Arithmetic::*;
 
-        fn x() -> Box<Arith> { Box::new(Var(String::from("x"))) }
-        fn y() -> Box<Arith> { Box::new(Var(String::from("y"))) }
-        fn z() -> Box<Arith> { Box::new(Var(String::from("z"))) }
+        fn x() -> Box<Arithmetic> { Box::new(Var(String::from("x"))) }
+        fn y() -> Box<Arithmetic> { Box::new(Var(String::from("y"))) }
+        fn z() -> Box<Arithmetic> { Box::new(Var(String::from("z"))) }
 
         let cases = vec!(
             ("$(( x ))", *x()),
@@ -6708,53 +6729,53 @@ pub mod test {
         );
 
         for (s, a) in cases.into_iter() {
-            let correct = Single(subst(ParameterSubstitution::Arithmetic(Some(a))));
+            let correct = word_subst(ParameterSubstitution::Arith(Some(a)));
             match make_parser(s).parameter() {
                 Ok(w) => if w != correct {
-                    panic!("Unexpectedly parsed the source \"{}\" as\n{:?} instead of \n{:?}", s, w, correct)
+                    panic!("Unexpectedly parsed the source \"{}\" as\n{:?} instead of\n{:?}", s, w, correct)
                 },
                 Err(err) => panic!("Failed to parse the source \"{}\": {}", s, err),
             }
         }
 
-        let correct = Single(subst(ParameterSubstitution::Arithmetic(None)));
+        let correct = word_subst(ParameterSubstitution::Arith(None));
         assert_eq!(correct, make_parser("$(( ))").parameter().unwrap());
     }
 
     #[test]
     fn test_arithmetic_substitution_left_to_right_associativity() {
-        use syntax::ast::Arith::*;
+        use syntax::ast::Arithmetic::*;
 
-        fn x() -> Box<Arith> { Box::new(Var(String::from("x"))) }
-        fn y() -> Box<Arith> { Box::new(Var(String::from("y"))) }
-        fn z() -> Box<Arith> { Box::new(Var(String::from("z"))) }
+        fn x() -> Box<Arithmetic> { Box::new(Var(String::from("x"))) }
+        fn y() -> Box<Arithmetic> { Box::new(Var(String::from("y"))) }
+        fn z() -> Box<Arithmetic> { Box::new(Var(String::from("z"))) }
 
         macro_rules! check {
             ($constructor:path, $op:tt) => {{
-                let correct = Single(subst(ParameterSubstitution::Arithmetic(Some(
+                let correct = word_subst(ParameterSubstitution::Arith(Some(
                     $constructor(Box::new($constructor(x(), y())), z())
-                ))));
+                )));
 
                 let src = format!("$((x {0} y {0} z))", stringify!($op));
                 match make_parser(&src).parameter() {
                     Ok(w) => if w != correct {
-                        panic!("Unexpectedly parsed the source \"{}\" as\n{:?} instead of \n{:?}", src, w, correct)
+                        panic!("Unexpectedly parsed the source \"{}\" as\n{:?} instead of\n{:?}", src, w, correct)
                     },
                     Err(err) => panic!("Failed to parse the source \"{}\": {}", src, err),
                 }
             }};
 
             (assig: $constructor:path, $op:tt) => {{
-                let correct = Single(subst(ParameterSubstitution::Arithmetic(Some(
+                let correct = word_subst(ParameterSubstitution::Arith(Some(
                     Assign(String::from("x"), Box::new(
                         $constructor(x(), Box::new(Assign(String::from("y"), Box::new($constructor(y(), z())))))
                     ))
-                ))));
+                )));
 
                 let src = format!("$((x {0}= y {0}= z))", stringify!($op));
                 match make_parser(&src).parameter() {
                     Ok(w) => if w != correct {
-                        panic!("Unexpectedly parsed the source \"{}\" as\n{:?} instead of \n{:?}", src, w, correct)
+                        panic!("Unexpectedly parsed the source \"{}\" as\n{:?} instead of\n{:?}", src, w, correct)
                     },
                     Err(err) => panic!("Failed to parse the source \"{}\": {}", src, err),
                 }
@@ -6791,21 +6812,21 @@ pub mod test {
         check!(assig: BitwiseXor, ^ );
         check!(assig: BitwiseOr,  | );
 
-        let correct = Single(subst(ParameterSubstitution::Arithmetic(Some(
+        let correct = word_subst(ParameterSubstitution::Arith(Some(
             Assign(String::from("x"), Box::new(Assign(String::from("y"), z())))
-        ))));
+        )));
         assert_eq!(correct, make_parser("$(( x = y = z ))").parameter().unwrap());
     }
 
     #[test]
     fn test_arithmetic_substitution_right_to_left_associativity() {
-        use syntax::ast::Arith::*;
+        use syntax::ast::Arithmetic::*;
 
-        fn x() -> Box<Arith> { Box::new(Var(String::from("x"))) }
-        fn y() -> Box<Arith> { Box::new(Var(String::from("y"))) }
-        fn z() -> Box<Arith> { Box::new(Var(String::from("z"))) }
-        fn w() -> Box<Arith> { Box::new(Var(String::from("w"))) }
-        fn v() -> Box<Arith> { Box::new(Var(String::from("v"))) }
+        fn x() -> Box<Arithmetic> { Box::new(Var(String::from("x"))) }
+        fn y() -> Box<Arithmetic> { Box::new(Var(String::from("y"))) }
+        fn z() -> Box<Arithmetic> { Box::new(Var(String::from("z"))) }
+        fn w() -> Box<Arithmetic> { Box::new(Var(String::from("w"))) }
+        fn v() -> Box<Arithmetic> { Box::new(Var(String::from("v"))) }
 
         let cases = vec!(
             ("$(( x ** y ** z ))", Pow(x(), Box::new(Pow(y(), z())))),
@@ -6813,10 +6834,10 @@ pub mod test {
         );
 
         for (s, a) in cases.into_iter() {
-            let correct = Single(subst(ParameterSubstitution::Arithmetic(Some(a))));
+            let correct = word_subst(ParameterSubstitution::Arith(Some(a)));
             match make_parser(s).parameter() {
                 Ok(w) => if w != correct {
-                    panic!("Unexpectedly parsed the source \"{}\" as\n{:?} instead of \n{:?}", s, w, correct)
+                    panic!("Unexpectedly parsed the source \"{}\" as\n{:?} instead of\n{:?}", s, w, correct)
                 },
                 Err(err) => panic!("Failed to parse the source \"{}\": {}", s, err),
             }
@@ -6928,9 +6949,9 @@ pub mod test {
 
     #[test]
     fn test_arithmetic_substitution_precedence() {
-        use syntax::ast::Arith::*;
+        use syntax::ast::Arithmetic::*;
 
-        fn var(x: &str) -> Box<Arith> { Box::new(Var(String::from(x))) }
+        fn var(x: &str) -> Box<Arithmetic> { Box::new(Var(String::from(x))) }
 
         let cases = vec!(
             ("~o++",   BitwiseNot(Box::new(PostIncr(String::from("o"))))),
@@ -6941,7 +6962,7 @@ pub mod test {
         );
 
         for (s, end) in cases.into_iter() {
-            let correct = Single(subst(ParameterSubstitution::Arithmetic(Some(
+            let correct = word_subst(ParameterSubstitution::Arith(Some(
                 Sequence(vec!(
                     *var("x"),
                     Assign(String::from("a"), Box::new(
@@ -6970,12 +6991,12 @@ pub mod test {
                         ))
                     ))
                 ))
-            ))));
+            )));
 
             let src = format!("$(( x , a = b?c: d || e && f | g ^ h & i == j < k << l + m * n ** {} ))", s);
             match make_parser(&src).parameter() {
                 Ok(w) => if w != correct {
-                    panic!("Unexpectedly parsed the source \"{}\" as\n{:?} instead of \n{:?}", src, w, correct)
+                    panic!("Unexpectedly parsed the source \"{}\" as\n{:?} instead of\n{:?}", src, w, correct)
                 },
                 Err(err) => panic!("Failed to parse the source \"{}\": {}", src, err),
             }
@@ -6984,12 +7005,12 @@ pub mod test {
 
     #[test]
     fn test_arithmetic_substitution_operators_of_equal_precedence() {
-        use syntax::ast::Arith::*;
+        use syntax::ast::Arithmetic::*;
 
-        fn x() -> Box<Arith> { Box::new(Var(String::from("x"))) }
-        fn y() -> Box<Arith> { Box::new(Var(String::from("y"))) }
-        fn z() -> Box<Arith> { Box::new(Var(String::from("z"))) }
-        fn w() -> Box<Arith> { Box::new(Var(String::from("w"))) }
+        fn x() -> Box<Arithmetic> { Box::new(Var(String::from("x"))) }
+        fn y() -> Box<Arithmetic> { Box::new(Var(String::from("y"))) }
+        fn z() -> Box<Arithmetic> { Box::new(Var(String::from("z"))) }
+        fn w() -> Box<Arithmetic> { Box::new(Var(String::from("w"))) }
 
         let cases = vec!(
             ("$(( x != y == z ))", Eq(Box::new(NotEq(x(), y())), z())),
@@ -7037,10 +7058,10 @@ pub mod test {
         );
 
         for (s, a) in cases.into_iter() {
-            let correct = Single(subst(ParameterSubstitution::Arithmetic(Some(a))));
+            let correct = word_subst(ParameterSubstitution::Arith(Some(a)));
             match make_parser(s).parameter() {
                 Ok(w) => if w != correct {
-                    panic!("Unexpectedly parsed the source \"{}\" as\n{:?} instead of \n{:?}", s, w, correct)
+                    panic!("Unexpectedly parsed the source \"{}\" as\n{:?} instead of\n{:?}", s, w, correct)
                 },
                 Err(err) => panic!("Failed to parse the source \"{}\": {}", s, err),
             }

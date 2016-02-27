@@ -1,5 +1,5 @@
 //! Defines abstract representations of the shell source.
-use std::fmt;
+use std::{fmt, ops};
 use std::rc::Rc;
 
 pub mod builder;
@@ -29,74 +29,84 @@ pub enum Parameter {
 }
 
 /// A parameter substitution, e.g. `${param-word}`.
+/// Generic over the top-level representation of a shell word and command.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum ParameterSubstitution {
+pub enum ParameterSubstitution<W, C> {
     /// Returns the standard output of running a command, e.g. `$(cmd)`
-    Command(Vec<Command>),
+    Command(Vec<C>),
     /// Returns the length of the value of a parameter, e.g. `${#param}`
     Len(Parameter),
     /// Returns the resulting value of an arithmetic subsitution, e.g. `$(( x++ ))`
-    Arithmetic(Option<Arith>),
+    Arith(Option<Arithmetic>),
     /// Use a provided value if the parameter is null or unset, e.g.
     /// `${param:-[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Default(bool, Parameter, Option<ComplexWord>),
+    Default(bool, Parameter, Option<W>),
     /// Assign a provided value to the parameter if it is null or unset,
     /// e.g. `${param:=[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Assign(bool, Parameter, Option<ComplexWord>),
+    Assign(bool, Parameter, Option<W>),
     /// If the parameter is null or unset, an error should result with the provided
     /// message, e.g. `${param:?[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Error(bool, Parameter, Option<ComplexWord>),
+    Error(bool, Parameter, Option<W>),
     /// If the parameter is NOT null or unset, a provided word will be used,
     /// e.g. `${param:+[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Alternative(bool, Parameter, Option<ComplexWord>),
+    Alternative(bool, Parameter, Option<W>),
     /// Remove smallest suffix pattern from a parameter's value, e.g. `${param%pattern}`
-    RemoveSmallestSuffix(Parameter, Option<ComplexWord>),
+    RemoveSmallestSuffix(Parameter, Option<W>),
     /// Remove largest suffix pattern from a parameter's value, e.g. `${param%%pattern}`
-    RemoveLargestSuffix(Parameter, Option<ComplexWord>),
+    RemoveLargestSuffix(Parameter, Option<W>),
     /// Remove smallest prefix pattern from a parameter's value, e.g. `${param#pattern}`
-    RemoveSmallestPrefix(Parameter, Option<ComplexWord>),
+    RemoveSmallestPrefix(Parameter, Option<W>),
     /// Remove largest prefix pattern from a parameter's value, e.g. `${param##pattern}`
-    RemoveLargestPrefix(Parameter, Option<ComplexWord>),
+    RemoveLargestPrefix(Parameter, Option<W>),
 }
 
-/// Represents whitespace delimited text.
+/// A top-level representation of a shell word. This wrapper unifies the provided
+/// top-level word representation, `ComplexWord`, and the top-level command
+/// representation, `Command`, while allowing them to be generic on their own.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum ComplexWord {
+pub struct TopLevelWord(pub ComplexWord<TopLevelWord, Command<TopLevelWord>>);
+
+/// Represents whitespace delimited text.
+/// Generic over the top-level representation of a shell word and command.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum ComplexWord<W, C> {
     /// Several distinct words concatenated together.
-    Concat(Vec<Word>),
+    Concat(Vec<Word<W, C>>),
     /// A regular word.
-    Single(Word),
+    Single(Word<W, C>),
 }
 
 /// Represents whitespace delimited text.
+/// Generic over the top-level representation of a shell word and command.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Word {
+pub enum Word<W, C> {
     /// A regular word.
-    Simple(Box<SimpleWord>),
+    Simple(Box<SimpleWord<W, C>>),
     /// List of words concatenated within double quotes.
-    DoubleQuoted(Vec<SimpleWord>),
+    DoubleQuoted(Vec<SimpleWord<W, C>>),
     /// List of words concatenated within single quotes. Virtually
     /// identical as a literal, but makes a distinction between the two.
     SingleQuoted(String),
 }
 
 /// Represents whitespace delimited text.
+/// Generic over the top-level representation of a shell word and command.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum SimpleWord {
+pub enum SimpleWord<W, C> {
     /// A non-special literal word.
     Literal(String),
     /// Access of a value inside a parameter, e.g. `$foo` or `$$`.
     Param(Parameter),
     /// A parameter substitution, e.g. `${param-word}`.
-    Subst(Box<ParameterSubstitution>),
+    Subst(Box<ParameterSubstitution<W, C>>),
     /// A token which normally has a special meaning is treated as a literal
     /// because it was escaped, typically with a backslash, e.g. `\"`.
     Escaped(String),
@@ -115,112 +125,116 @@ pub enum SimpleWord {
 }
 
 /// Represents redirecting a command's file descriptors.
+/// Generic over the top-level representation of a shell word.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Redirect {
+pub enum Redirect<W> {
     /// Open a file for reading, e.g. `[n]< file`.
-    Read(Option<u16>, ComplexWord),
+    Read(Option<u16>, W),
     /// Open a file for writing after truncating, e.g. `[n]> file`.
-    Write(Option<u16>, ComplexWord),
+    Write(Option<u16>, W),
     /// Open a file for reading and writing, e.g. `[n]<> file`.
-    ReadWrite(Option<u16>, ComplexWord),
+    ReadWrite(Option<u16>, W),
     /// Open a file for writing, appending to the end, e.g. `[n]>> file`.
-    Append(Option<u16>, ComplexWord),
+    Append(Option<u16>, W),
     /// Open a file for writing, failing if the `noclobber` shell option is set, e.g. `[n]>| file`.
-    Clobber(Option<u16>, ComplexWord),
+    Clobber(Option<u16>, W),
     /// Lines contained in the source that should be provided by as input to a file descriptor.
-    Heredoc(Option<u16>, ComplexWord),
+    Heredoc(Option<u16>, W),
     /// Duplicate a file descriptor for reading, e.g. `[n]<& [n|-]`.
-    DupRead(Option<u16>, ComplexWord),
+    DupRead(Option<u16>, W),
     /// Duplicate a file descriptor for writing, e.g. `[n]>& [n|-]`.
-    DupWrite(Option<u16>, ComplexWord),
+    DupWrite(Option<u16>, W),
 }
 
 /// Represents any valid shell command.
+/// Generic over the top-level representation of a shell word.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Command {
+pub enum Command<W> {
     /// A compound command which runs the second if the first succeeds,
     /// e.g. `foo && bar`.
-    And(Box<Command>, Box<Command>),
+    And(Box<Command<W>>, Box<Command<W>>),
     /// A compound command which runs the second if the first fails,
     /// e.g. `foo || bar`.
-    Or(Box<Command>, Box<Command>),
+    Or(Box<Command<W>>, Box<Command<W>>),
     /// A chain of concurrent commands where the standard output of the
     /// previous becomes the standard input of the next, e.g.
     /// `[!] foo | bar | baz`.
     ///
     /// The bool indicates if a logical negation of the last command's status
     /// should be returned.
-    Pipe(bool, Vec<Command>),
+    Pipe(bool, Vec<Command<W>>),
     /// A command that runs asynchronously, that is, the shell will not wait
     /// for it to exit before running the next command, e.g. `foo &`.
-    Job(Box<Command>),
+    Job(Box<Command<W>>),
     /// A class of commands where redirection is applied to a command group.
-    Compound(Box<CompoundCommand>, Vec<Redirect>),
+    Compound(Box<CompoundCommand<W, Command<W>>>, Vec<Redirect<W>>),
     /// A function declaration, associating a name with a group of commands,
     /// e.g. `function foo() { echo foo function; }`.
-    Function(String, Rc<Command>),
+    Function(String, Rc<Command<W>>),
     /// The simplest possible command: an executable with arguments,
     /// environment variable assignments, and redirections.
-    Simple(Box<SimpleCommand>),
+    Simple(Box<SimpleCommand<W>>),
 }
 
 /// A class of commands where redirection is applied to a command group.
+/// Generic over the top-level representation of a shell word and command.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum CompoundCommand {
+pub enum CompoundCommand<W, C> {
     /// A group of commands that should be executed in the current environment.
-    Brace(Vec<Command>),
+    Brace(Vec<C>),
     /// A group of commands that should be executed in a subshell environment.
-    Subshell(Vec<Command>),
+    Subshell(Vec<C>),
     /// A command that executes its body as long as its guard exits successfully.
     ///
     /// Variant structure: `While(guard, body)`.
-    While(Vec<Command>, Vec<Command>),
+    While(Vec<C>, Vec<C>),
     /// A command that executes its body as until as its guard exits unsuccessfully.
     ///
     /// Variant structure: `Until(guard, body)`.
-    Until(Vec<Command>, Vec<Command>),
+    Until(Vec<C>, Vec<C>),
     /// A conditional command that runs the respective command branch when a
     /// certain of the first condition that exits successfully.
     ///
     /// Variant structure: `If( (guard, branch)+, else_branch )`.
-    If(Vec<(Vec<Command>, Vec<Command>)>, Option<Vec<Command>>),
+    If(Vec<(Vec<C>, Vec<C>)>, Option<Vec<C>>),
     /// A command that binds a variable to a number of provided words and runs
     /// its body once for each binding.
     ///
     /// Variant structure: `For(var_name, words, body)`.
-    For(String, Option<Vec<ComplexWord>>, Vec<Command>),
+    For(String, Option<Vec<W>>, Vec<C>),
     /// A command that behaves much like a `match` statment in Rust, running
     /// a branch of commands if a specified word matches another literal or
     /// glob pattern.
     ///
     /// Variant structure: `Case( to_match, (pattern_alternative+, commands*)* )`
-    Case(ComplexWord, Vec<(Vec<ComplexWord>, Vec<Command>)>),
+    Case(W, Vec<(Vec<W>, Vec<C>)>),
 }
 
 /// The simplest possible command: an executable with arguments,
 /// environment variable assignments, and redirections.
+/// Generic over the top-level representation of a shell word.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct SimpleCommand {
+pub struct SimpleCommand<W> {
     /// Name or path of the executable along with any arguments. It's possible to
     /// have to have a command that is only an assigment which would set a value
     /// in the global environment, making the executable optional.
-    pub cmd: Option<(ComplexWord, Vec<ComplexWord>)>,
+    pub cmd: Option<(W, Vec<W>)>,
     /// Environment variable assignments for this command, bound as
     /// tuples of (var name, value).
-    pub vars: Vec<(String, Option<ComplexWord>)>,
+    pub vars: Vec<(String, Option<W>)>,
     /// All redirections that should be applied before running the command.
-    pub io: Vec<Redirect>,
+    pub io: Vec<Redirect<W>>,
 }
 
 /// Represents an expression within an arithmetic subsitution.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Arith {
+pub enum Arithmetic {
     /// The value of a variable, e.g. `$var` or `var`.
     Var(String),
     /// A numeric literal such as `42` or `0xdeadbeef`.
     Literal(isize),
     /// `left ** right`.
-    Pow(Box<Arith>, Box<Arith>),
+    Pow(Box<Arithmetic>, Box<Arithmetic>),
     /// Returns the current value of a variable,
     /// and then increments its value immediately after, e.g. `var++`
     PostIncr(String),
@@ -232,56 +246,76 @@ pub enum Arith {
     /// Decrements the value of a variable and returns the new value, e.g. `--var`.
     PreDecr(String),
     /// Ensures the sign of the underlying result is positive, e.g. `+(1-2)`.
-    UnaryPlus(Box<Arith>),
+    UnaryPlus(Box<Arithmetic>),
     /// Ensures the sign of the underlying result is negative, e.g. `-(1+2)`.
-    UnaryMinus(Box<Arith>),
+    UnaryMinus(Box<Arithmetic>),
     /// Returns one if the underlying result is zero, or zero otherwise, e.g. `!expr`.
-    LogicalNot(Box<Arith>),
+    LogicalNot(Box<Arithmetic>),
     /// Flips all bits from the underlying result, e.g. `~expr`.
-    BitwiseNot(Box<Arith>),
+    BitwiseNot(Box<Arithmetic>),
     /// `left * right`
-    Mult(Box<Arith>, Box<Arith>),
+    Mult(Box<Arithmetic>, Box<Arithmetic>),
     /// `left / right`
-    Div(Box<Arith>, Box<Arith>),
+    Div(Box<Arithmetic>, Box<Arithmetic>),
     /// `left % right`
-    Modulo(Box<Arith>, Box<Arith>),
+    Modulo(Box<Arithmetic>, Box<Arithmetic>),
     /// `left + right`
-    Add(Box<Arith>, Box<Arith>),
+    Add(Box<Arithmetic>, Box<Arithmetic>),
     /// `left - right`
-    Sub(Box<Arith>, Box<Arith>),
+    Sub(Box<Arithmetic>, Box<Arithmetic>),
     /// `left << right`
-    ShiftLeft(Box<Arith>, Box<Arith>),
+    ShiftLeft(Box<Arithmetic>, Box<Arithmetic>),
     /// `left >> right`
-    ShiftRight(Box<Arith>, Box<Arith>),
+    ShiftRight(Box<Arithmetic>, Box<Arithmetic>),
     /// `left < right`
-    Less(Box<Arith>, Box<Arith>),
+    Less(Box<Arithmetic>, Box<Arithmetic>),
     /// `left <= right`
-    LessEq(Box<Arith>, Box<Arith>),
+    LessEq(Box<Arithmetic>, Box<Arithmetic>),
     /// `left > right`
-    Great(Box<Arith>, Box<Arith>),
+    Great(Box<Arithmetic>, Box<Arithmetic>),
     /// `left >= right`
-    GreatEq(Box<Arith>, Box<Arith>),
+    GreatEq(Box<Arithmetic>, Box<Arithmetic>),
     /// `left == right`
-    Eq(Box<Arith>, Box<Arith>),
+    Eq(Box<Arithmetic>, Box<Arithmetic>),
     /// `left != right`
-    NotEq(Box<Arith>, Box<Arith>),
+    NotEq(Box<Arithmetic>, Box<Arithmetic>),
     /// `left & right`
-    BitwiseAnd(Box<Arith>, Box<Arith>),
+    BitwiseAnd(Box<Arithmetic>, Box<Arithmetic>),
     /// `left ^ right`
-    BitwiseXor(Box<Arith>, Box<Arith>),
+    BitwiseXor(Box<Arithmetic>, Box<Arithmetic>),
     /// `left | right`
-    BitwiseOr(Box<Arith>, Box<Arith>),
+    BitwiseOr(Box<Arithmetic>, Box<Arithmetic>),
     /// `left && right`
-    LogicalAnd(Box<Arith>, Box<Arith>),
+    LogicalAnd(Box<Arithmetic>, Box<Arithmetic>),
     /// `left || right`
-    LogicalOr(Box<Arith>, Box<Arith>),
+    LogicalOr(Box<Arithmetic>, Box<Arithmetic>),
     /// `first ? second : third`
-    Ternary(Box<Arith>, Box<Arith>, Box<Arith>),
+    Ternary(Box<Arithmetic>, Box<Arithmetic>, Box<Arithmetic>),
     /// Assigns the value of an underlying expression to a
     /// variable and returns the value, e.g. `x = 5`, or `x += 2`.
-    Assign(String, Box<Arith>),
+    Assign(String, Box<Arithmetic>),
     /// `expr[, expr[, ...]]`
-    Sequence(Vec<Arith>),
+    Sequence(Vec<Arithmetic>),
+}
+
+impl ops::Deref for TopLevelWord {
+    type Target = ComplexWord<TopLevelWord, Command<TopLevelWord>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl ops::DerefMut for TopLevelWord {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl ::std::cmp::PartialEq<ComplexWord<TopLevelWord, Command<TopLevelWord>>> for TopLevelWord {
+    fn eq(&self, other: &ComplexWord<TopLevelWord, Command<TopLevelWord>>) -> bool {
+        &self.0 == other
+    }
 }
 
 impl fmt::Display for Parameter {
@@ -312,7 +346,10 @@ mod tests {
     #[test]
     fn test_display_parameter() {
         use super::Parameter::*;
-        use super::{ComplexWord, SimpleWord, Word};
+        use super::ComplexWord::Single;
+        use super::SimpleWord::Param;
+        use super::TopLevelWord;
+        use super::Word::Simple;
         use syntax::parse::test::make_parser;
 
         let params = vec!(
@@ -327,11 +364,11 @@ mod tests {
             Positional(10),
             Positional(100),
             Var(String::from("foo_bar123")),
-            );
+        );
 
         for p in params {
             let src = p.to_string();
-            let correct = ComplexWord::Single(Word::Simple(Box::new(SimpleWord::Param(p))));
+            let correct = TopLevelWord(Single(Simple(Box::new(Param(p)))));
 
             let parsed = match make_parser(&src).word() {
                 Ok(Some(w)) => w,

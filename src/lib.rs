@@ -1,6 +1,8 @@
 //! A library for parsing, executing, and analyzing programs
 //! written in the shell programming language.
 
+#![deny(unused_import_braces)]
+
 #![cfg_attr(feature = "runtime", feature(zero_one))]
 #![cfg_attr(all(windows, feature = "runtime"), feature(unique))]
 

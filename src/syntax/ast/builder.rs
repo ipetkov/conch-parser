@@ -12,8 +12,8 @@
 use std::cmp::{PartialEq, Eq};
 use std::error::Error;
 use std::rc::Rc;
-use syntax::ast::{Arith, Command, CompoundCommand, ComplexWord, Parameter,
-                  ParameterSubstitution, SimpleCommand, SimpleWord, Redirect, Word};
+use syntax::ast::{Arithmetic, Command, CompoundCommand, ComplexWord, Parameter,
+                  ParameterSubstitution, Redirect, SimpleCommand, SimpleWord, TopLevelWord, Word};
 
 /// An indicator to the builder of how complete commands are separated.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -129,7 +129,7 @@ pub enum ParameterSubstitutionKind<C, W> {
     /// Returns the length of the value of a parameter, e.g. ${#param}
     Len(Parameter),
     /// Returns the resulting value of an arithmetic subsitution, e.g. `$(( x++ ))`
-    Arithmetic(Option<Arith>),
+    Arith(Option<Arithmetic>),
     /// Use a provided value if the parameter is null or unset, e.g.
     /// `${param:-[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
@@ -377,19 +377,19 @@ pub trait Builder {
 }
 
 impl Builder for DefaultBuilder {
-    type Command  = Command;
-    type Word     = ComplexWord;
-    type Redirect = Redirect;
+    type Command  = Command<Self::Word>;
+    type Word     = TopLevelWord;
+    type Redirect = Redirect<Self::Word>;
     type Err      = ::void::Void;
 
     /// Constructs a `Command::Job` node with the provided inputs if the command
     /// was delimited by an ampersand or the command itself otherwise.
     fn complete_command(&mut self,
                         _pre_cmd_comments: Vec<Newline>,
-                        cmd: Command,
+                        cmd: Self::Command,
                         separator: SeparatorKind,
                         _pos_cmd_comments: Vec<Newline>)
-        -> Result<Command, Self::Err>
+        -> Result<Self::Command, Self::Err>
     {
         match separator {
             SeparatorKind::Semi  |
@@ -401,11 +401,11 @@ impl Builder for DefaultBuilder {
 
     /// Constructs a `Command::And` or `Command::Or` node with the provided inputs.
     fn and_or(&mut self,
-              first: Command,
+              first: Self::Command,
               kind: AndOrKind,
               _post_separator_comments: Vec<Newline>,
-              second: Command)
-        -> Result<Command, Self::Err>
+              second: Self::Command)
+        -> Result<Self::Command, Self::Err>
     {
         match kind {
             AndOrKind::And => Ok(Command::And(Box::new(first), Box::new(second))),
@@ -417,11 +417,11 @@ impl Builder for DefaultBuilder {
     /// node if only a single command with no status inversion is supplied.
     fn pipeline(&mut self,
                 bang: bool,
-                cmds: Vec<(Vec<Newline>, Command)>)
-        -> Result<Command, Self::Err>
+                cmds: Vec<(Vec<Newline>, Self::Command)>)
+        -> Result<Self::Command, Self::Err>
     {
         debug_assert_eq!(cmds.is_empty(), false);
-        let mut cmds: Vec<Command> = cmds.into_iter().map(|(_, c)| c).collect();
+        let mut cmds: Vec<Self::Command> = cmds.into_iter().map(|(_, c)| c).collect();
 
         // Command::Pipe is the only AST node which allows for a status
         // negation, so we are forced to use it even if we have a single
@@ -438,8 +438,8 @@ impl Builder for DefaultBuilder {
     fn simple_command(&mut self,
                       mut env_vars: Vec<(String, Option<Self::Word>)>,
                       mut cmd: Option<(Self::Word, Vec<Self::Word>)>,
-                      mut redirects: Vec<Redirect>)
-        -> Result<Command, Self::Err>
+                      mut redirects: Vec<Self::Redirect>)
+        -> Result<Self::Command, Self::Err>
     {
         env_vars.shrink_to_fit();
         redirects.shrink_to_fit();
@@ -457,9 +457,9 @@ impl Builder for DefaultBuilder {
 
     /// Constructs a `Command::Compound(Brace)` node with the provided inputs.
     fn brace_group(&mut self,
-                   mut cmds: Vec<Command>,
-                   mut redirects: Vec<Redirect>)
-        -> Result<Command, Self::Err>
+                   mut cmds: Vec<Self::Command>,
+                   mut redirects: Vec<Self::Redirect>)
+        -> Result<Self::Command, Self::Err>
     {
         cmds.shrink_to_fit();
         redirects.shrink_to_fit();
@@ -468,9 +468,9 @@ impl Builder for DefaultBuilder {
 
     /// Constructs a `Command::Compound(Subshell)` node with the provided inputs.
     fn subshell(&mut self,
-                mut cmds: Vec<Command>,
-                mut redirects: Vec<Redirect>)
-        -> Result<Command, Self::Err>
+                mut cmds: Vec<Self::Command>,
+                mut redirects: Vec<Self::Redirect>)
+        -> Result<Self::Command, Self::Err>
     {
         cmds.shrink_to_fit();
         redirects.shrink_to_fit();
@@ -480,10 +480,10 @@ impl Builder for DefaultBuilder {
     /// Constructs a `Command::Compound(Loop)` node with the provided inputs.
     fn loop_command(&mut self,
                     kind: LoopKind,
-                    mut guard: Vec<Command>,
-                    mut body: Vec<Command>,
-                    mut redirects: Vec<Redirect>)
-        -> Result<Command, Self::Err>
+                    mut guard: Vec<Self::Command>,
+                    mut body: Vec<Self::Command>,
+                    mut redirects: Vec<Self::Redirect>)
+        -> Result<Self::Command, Self::Err>
     {
         guard.shrink_to_fit();
         body.shrink_to_fit();
@@ -499,10 +499,10 @@ impl Builder for DefaultBuilder {
 
     /// Constructs a `Command::Compound(If)` node with the provided inputs.
     fn if_command(&mut self,
-                  mut branches: Vec<(Vec<Command>, Vec<Command>)>,
-                  mut else_part: Option<Vec<Command>>,
-                  mut redirects: Vec<Redirect>)
-        -> Result<Command, Self::Err>
+                  mut branches: Vec<(Vec<Self::Command>, Vec<Self::Command>)>,
+                  mut else_part: Option<Vec<Self::Command>>,
+                  mut redirects: Vec<Self::Redirect>)
+        -> Result<Self::Command, Self::Err>
     {
         for &mut (ref mut guard, ref mut body) in branches.iter_mut() {
             guard.shrink_to_fit();
@@ -521,9 +521,9 @@ impl Builder for DefaultBuilder {
                    _post_var_comments: Vec<Newline>,
                    mut in_words: Option<Vec<Self::Word>>,
                    _post_word_comments: Option<Vec<Newline>>,
-                   mut body: Vec<Command>,
-                   mut redirects: Vec<Redirect>)
-        -> Result<Command, Self::Err>
+                   mut body: Vec<Self::Command>,
+                   mut redirects: Vec<Self::Redirect>)
+        -> Result<Self::Command, Self::Err>
     {
         for word in in_words.iter_mut() { word.shrink_to_fit(); }
         body.shrink_to_fit();
@@ -535,10 +535,10 @@ impl Builder for DefaultBuilder {
     fn case_command(&mut self,
                     word: Self::Word,
                     _post_word_comments: Vec<Newline>,
-                    branches: Vec<( (Vec<Newline>, Vec<Self::Word>, Vec<Newline>), Vec<Command>)>,
+                    branches: Vec<( (Vec<Newline>, Vec<Self::Word>, Vec<Newline>), Vec<Self::Command>)>,
                     _post_branch_comments: Vec<Newline>,
-                    mut redirects: Vec<Redirect>)
-        -> Result<Command, Self::Err>
+                    mut redirects: Vec<Self::Redirect>)
+        -> Result<Self::Command, Self::Err>
     {
         let branches = branches.into_iter().map(|((_, mut pats, _), mut cmds)| {
             pats.shrink_to_fit();
@@ -553,8 +553,8 @@ impl Builder for DefaultBuilder {
     /// Constructs a `Command::Function` node with the provided inputs.
     fn function_declaration(&mut self,
                             name: String,
-                            body: Command)
-        -> Result<Command, Self::Err>
+                            body: Self::Command)
+        -> Result<Self::Command, Self::Err>
     {
         Ok(Command::Function(name, Rc::new(body)))
     }
@@ -569,8 +569,8 @@ impl Builder for DefaultBuilder {
 
     /// Constructs a `ast::Word` from the provided input.
     fn word(&mut self,
-            kind: ComplexWordKind<Command>)
-        -> Result<ComplexWord, Self::Err>
+            kind: ComplexWordKind<Self::Command>)
+        -> Result<Self::Word, Self::Err>
     {
         use self::ParameterSubstitutionKind::*;
 
@@ -602,7 +602,7 @@ impl Builder for DefaultBuilder {
                 SimpleWordKind::Subst(s) => SimpleWord::Subst(Box::new(match s {
                     Len(p)                     => ParameterSubstitution::Len(p),
                     Command(c)                 => ParameterSubstitution::Command(c),
-                    Arithmetic(a)              => ParameterSubstitution::Arithmetic(a),
+                    Arith(a)                   => ParameterSubstitution::Arith(a),
                     Default(c, p, w)           => ParameterSubstitution::Default(c, p, map!(w)),
                     Assign(c, p, w)            => ParameterSubstitution::Assign(c, p, map!(w)),
                     Error(c, p, w)             => ParameterSubstitution::Error(c, p, map!(w)),
@@ -623,7 +623,7 @@ impl Builder for DefaultBuilder {
                 WordKind::DoubleQuoted(v) => Word::DoubleQuoted(try!(
                     v.into_iter()
                      .map(&mut map_simple)
-                     .collect::<Result<Vec<SimpleWord>, Self::Err>>()
+                     .collect::<Result<Vec<SimpleWord<Self::Word, Self::Command>>, Self::Err>>()
                 )),
             };
             Ok(word)
@@ -634,17 +634,17 @@ impl Builder for DefaultBuilder {
             ComplexWordKind::Concat(words) => ComplexWord::Concat(try!(
                     words.into_iter()
                          .map(map_word)
-                         .collect::<Result<Vec<Word>, Self::Err>>()
+                         .collect::<Result<Vec<Word<Self::Word, Self::Command>>, Self::Err>>()
             )),
         };
 
-        Ok(word)
+        Ok(TopLevelWord(word))
     }
 
     /// Constructs a `ast::Redirect` from the provided input.
     fn redirect(&mut self,
                 kind: RedirectKind<Self::Word>)
-        -> Result<Redirect, Self::Err>
+        -> Result<Self::Redirect, Self::Err>
     {
         let io = match kind {
             RedirectKind::Read(fd, path)      => Redirect::Read(fd, path),
@@ -930,9 +930,9 @@ where C: PartialEq, W: PartialEq {
     fn eq(&self, other: &Self) -> bool {
         use self::ParameterSubstitutionKind::*;
         match (self, other) {
-            (&Command(ref v1),    &Command(ref v2))    if v1 == v2 => true,
-            (&Len(ref s1),        &Len(ref s2))        if s1 == s2 => true,
-            (&Arithmetic(ref a1), &Arithmetic(ref a2)) if a1 == a2 => true,
+            (&Command(ref v1), &Command(ref v2))    if v1 == v2 => true,
+            (&Len(ref s1),     &Len(ref s2))        if s1 == s2 => true,
+            (&Arith(ref a1),   &Arith(ref a2)) if a1 == a2 => true,
 
             (&RemoveSmallestSuffix(ref p1, ref w1), &RemoveSmallestSuffix(ref p2, ref w2)) |
             (&RemoveLargestSuffix(ref p1, ref w1),  &RemoveLargestSuffix(ref p2, ref w2))  |
@@ -956,9 +956,9 @@ impl<C, W> Clone for ParameterSubstitutionKind<C, W> where C: Clone, W: Clone {
         use self::ParameterSubstitutionKind::*;
 
         match *self {
-            Command(ref v)    => Command(v.clone()),
-            Len(ref s)        => Len(s.clone()),
-            Arithmetic(ref a) => Arithmetic(a.clone()),
+            Command(ref v) => Command(v.clone()),
+            Len(ref s)     => Len(s.clone()),
+            Arith(ref a)   => Arith(a.clone()),
 
             Default(c, ref p, ref w)     => Default(c, p.clone(), w.clone()),
             Assign(c, ref p, ref w)      => Assign(c, p.clone(), w.clone()),
