@@ -7,7 +7,7 @@ authors = ["Ivan Petkov <ivanppetkov@gmail.com>"]
 runtime = ["glob", "libc", "winapi", "kernel32-sys"]
 
 [dependencies]
-void = "*"
+void = "1"
 
 [dependencies.glob]
 version = "0.2"
