@@ -1,3 +1,5 @@
+//! A module which defines evaluating any kind of redirection.
+
 use std::fs::OpenOptions;
 use std::rc::Rc;
 use syntax::ast::Redirect;
@@ -26,7 +28,7 @@ impl<W: WordEval> Redirect<W> {
             let path = try!(eval_path(path, env));
             match options.open(&**path) {
                 Ok(file) => Ok((fd, Some((Rc::new(file.into()), permissions)))),
-                Err(io) => Err(RuntimeError::Io(io, path).into()),
+                Err(io) => Err(RuntimeError::Io(io, rc_to_owned(path))),
             }
         };
 
@@ -82,6 +84,7 @@ fn eval_path(path: &WordEval, env: &mut Environment) -> Result<Rc<String>> {
             Ok(v.pop().unwrap())
         } else {
             env.set_last_status(EXIT_ERROR);
+            let v = v.into_iter().map(rc_to_owned).collect();
             return Err(RedirectionError::Ambiguous(v).into())
         },
         Fields::Zero => {
@@ -116,10 +119,10 @@ fn dup_fd(dst_fd: Fd, src_fd: &WordEval, readable: bool, env: &mut Environment)
                 }
             },
 
-            None => Err(RedirectionError::BadFdSrc(src_fd).into()),
+            None => Err(RedirectionError::BadFdSrc(rc_to_owned(src_fd)).into()),
         },
 
-        Err(_) => Err(RedirectionError::BadFdSrc(src_fd).into()),
+        Err(_) => Err(RedirectionError::BadFdSrc(rc_to_owned(src_fd)).into()),
     };
 
     let src_fdes = match src_fdes {
@@ -132,4 +135,9 @@ fn dup_fd(dst_fd: Fd, src_fd: &WordEval, readable: bool, env: &mut Environment)
 
     let perms = if readable { Permissions::Read } else { Permissions::Write };
     Ok((dst_fd, Some((src_fdes, perms))))
+}
+
+/// Attempts to unwrap an Rc<T>, cloning the inner value if the unwrap fails.
+fn rc_to_owned<T: Clone>(rc: Rc<T>) -> T {
+    Rc::try_unwrap(rc).unwrap_or_else(|rc| (*rc).clone())
 }

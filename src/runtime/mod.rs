@@ -493,7 +493,7 @@ impl<W: WordEval> Run for SimpleCommand<W> {
             Some(exe) => exe,
             None => {
                 env.set_last_status(EXIT_CMD_NOT_FOUND);
-                return Err(CommandError::NotFound(Rc::new(String::new())).into());
+                return Err(CommandError::NotFound(String::new()).into());
             },
         };
 
@@ -513,7 +513,7 @@ impl<W: WordEval> Run for SimpleCommand<W> {
                     Some(ret) => ret,
                     None => {
                         env.set_last_status(EXIT_CMD_NOT_FOUND);
-                        Err(CommandError::NotFound(cmd_name).into())
+                        Err(CommandError::NotFound(rc_to_owned(cmd_name)).into())
                     },
                 }
             });
@@ -545,8 +545,7 @@ impl<W: WordEval> Run for SimpleCommand<W> {
         let get_redirect = |handle: Option<Rc<FileDesc>>, fd_debug| -> Result<Stdio> {
             let unwrap_fdes = |fdes: Rc<FileDesc>| Rc::try_unwrap(fdes)
                 .or_else(|rc| rc.duplicate())
-                .map_err(|io| RuntimeError::Io(io, Rc::new(format!("file descriptor {}", fd_debug))));
-
+                .map_err(|io| RuntimeError::Io(io, format!("file descriptor {}", fd_debug)));
 
             handle.map_or_else(|| Ok(Stdio::null()),
                                |fdes| unwrap_fdes(fdes).map(|fdes| fdes.into()))
@@ -578,12 +577,13 @@ impl<W: WordEval> Run for SimpleCommand<W> {
 
         match cmd.status() {
             Err(e) => {
+                let cmd_name = rc_to_owned(cmd_name);
                 let (exit, err) = if IoErrorKind::NotFound == e.kind() {
                     (EXIT_CMD_NOT_FOUND, CommandError::NotFound(cmd_name).into())
                 } else if is_enoexec(&e) {
                     (EXIT_CMD_NOT_EXECUTABLE, CommandError::NotExecutable(cmd_name).into())
                 } else {
-                    (EXIT_ERROR, RuntimeError::Io(e, cmd_name.clone()))
+                    (EXIT_ERROR, RuntimeError::Io(e, cmd_name))
                 };
                 env.set_last_status(exit);
                 return Err(err);
@@ -849,6 +849,11 @@ pub fn run_with_local_redirections<'a, I, F, W, T>(env: &mut Environment, redire
     ret
 }
 
+/// Attempts to unwrap an Rc<T>, cloning the inner value if the unwrap fails.
+fn rc_to_owned<T: Clone>(rc: Rc<T>) -> T {
+    Rc::try_unwrap(rc).unwrap_or_else(|rc| (*rc).clone())
+}
+
 #[cfg(test)]
 mod tests {
     extern crate tempdir;
@@ -1022,13 +1027,13 @@ mod tests {
         env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
 
         run_test!(swallow_errors, test, env, ok_status,
-            RuntimeError::Command(CommandError::NotFound(Rc::new("".to_string()))),
-            RuntimeError::Command(CommandError::NotExecutable(Rc::new("".to_string()))),
+            RuntimeError::Command(CommandError::NotFound("".to_string())),
+            RuntimeError::Command(CommandError::NotExecutable("".to_string())),
             RuntimeError::Redirection(RedirectionError::Ambiguous(vec!())),
-            RuntimeError::Redirection(RedirectionError::BadFdSrc(Rc::new("".to_string()))),
+            RuntimeError::Redirection(RedirectionError::BadFdSrc("".to_string())),
             RuntimeError::Redirection(RedirectionError::BadFdPerms(0, Permissions::Read)),
             RuntimeError::Unimplemented("unimplemented"),
-            RuntimeError::Io(IoError::last_os_error(), Rc::new("".to_string())),
+            RuntimeError::Io(IoError::last_os_error(), "".to_string()),
         );
     }
 
@@ -1048,7 +1053,7 @@ mod tests {
             RuntimeError::Expansion(ExpansionError::DivideByZero),
             RuntimeError::Expansion(ExpansionError::NegativeExponent),
             RuntimeError::Expansion(ExpansionError::BadAssig(Parameter::At)),
-            RuntimeError::Expansion(ExpansionError::EmptyParameter(Parameter::At, Rc::new("".to_string()))),
+            RuntimeError::Expansion(ExpansionError::EmptyParameter(Parameter::At, "".to_string())),
         );
     }
 
@@ -1735,6 +1740,59 @@ mod tests {
         assert!(env.file_desc(3).is_none());
         assert!(env.file_desc(4).is_none());
         assert!(env.file_desc(5).is_none());
+        assert_eq!(**env.var(var).unwrap(), value);
+    }
+
+    #[test]
+    fn test_run_compound_redirections_closed_after_command_exits_side_effects_remain_after_error() {
+        use syntax::ast::ParameterSubstitution::Assign;
+        use syntax::ast::ComplexWord::Single;
+        use syntax::ast::SimpleWord::{Literal, Subst};
+        use syntax::ast::TopLevelWord;
+        use syntax::ast::Word::Simple;
+
+        let var = "var";
+        let value = "foobar";
+        let tempdir = mktmp!();
+
+        let mut file_path = PathBuf::new();
+        file_path.push(tempdir.path());
+        file_path.push(String::from("out"));
+
+        let mut missing_file_path = PathBuf::new();
+        missing_file_path.push(tempdir.path());
+        missing_file_path.push(String::from("if_this_file_exists_the_unverse_has_ended"));
+
+        let file = file_path.display().to_string();
+        let file = TopLevelWord(Single(Simple(Box::new(Literal(file)))));
+
+        let missing = missing_file_path.display().to_string();
+        let missing = TopLevelWord(Single(Simple(Box::new(Literal(missing)))));
+
+        let var_value = TopLevelWord(Single(Simple(Box::new(Literal(value.to_string())))));
+
+
+        let mut env = Env::new().unwrap();
+
+        let cmd = Compound(
+            Box::new(Brace(vec!())),
+            vec!(
+                Redirect::Write(Some(3), file.clone()),
+                Redirect::Write(Some(4), file.clone()),
+                Redirect::Write(Some(5), TopLevelWord(Single(Simple(Box::new(Subst(Box::new(Assign(
+                    true,
+                    Parameter::Var(var.to_string()),
+                    Some(var_value),
+                )))))))),
+                Redirect::Read(Some(6), missing)
+            )
+        );
+
+        cmd.run(&mut env).unwrap_err();
+        assert!(env.file_desc(3).is_none());
+        assert!(env.file_desc(4).is_none());
+        assert!(env.file_desc(5).is_none());
+        assert!(env.file_desc(6).is_none());
         assert_eq!(**env.var(var).unwrap(), value);
     }
 

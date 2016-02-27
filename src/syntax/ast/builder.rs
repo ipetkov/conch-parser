@@ -181,7 +181,7 @@ pub trait Builder {
     /// The type which represents a file descriptor redirection.
     type Redirect;
     /// An error type that the builder may want to return.
-    type Err: Error;
+    type Err: Error + Send + Sync;
 
     /// Invoked once a complete command is found. That is, a command delimited by a
     /// newline, semicolon, ampersand, or the end of input.

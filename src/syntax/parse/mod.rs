@@ -56,7 +56,7 @@ impl SourcePos {
 
 /// The error type which is returned from parsing shell commands.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum ParseError<T: Error> {
+pub enum ParseError<T: Error + Send + Sync> {
     /// Encountered a word that could not be interpreted as a valid file descriptor.
     /// Stores the start and end position of the invalid word.
     BadFd(SourcePos, SourcePos),
@@ -80,7 +80,7 @@ pub enum ParseError<T: Error> {
     External(T),
 }
 
-impl<T: Error> Error for ParseError<T> {
+impl<T: Error + Send + Sync> Error for ParseError<T> {
     fn description(&self) -> &str {
         match *self {
             ParseError::BadFd(..)       => "bad file descriptor found",
@@ -108,7 +108,7 @@ impl<T: Error> Error for ParseError<T> {
     }
 }
 
-impl<T: Error> fmt::Display for ParseError<T> {
+impl<T: Error + Send + Sync> fmt::Display for ParseError<T> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             ParseError::BadFd(ref start, ref end)  =>
@@ -137,13 +137,13 @@ impl fmt::Display for SourcePos {
     }
 }
 
-impl<T: Error> ::std::convert::From<T> for ParseError<T> {
+impl<T: Error + Send + Sync> ::std::convert::From<T> for ParseError<T> {
     fn from(err: T) -> ParseError<T> {
         ParseError::External(err)
     }
 }
 
-impl<T: Error> ::std::convert::From<iter::UnmatchedError> for ParseError<T> {
+impl<T: Error + Send + Sync> ::std::convert::From<iter::UnmatchedError> for ParseError<T> {
     fn from(err: iter::UnmatchedError) -> ParseError<T> {
         ParseError::Unmatched(err.0, err.1)
     }
@@ -7067,5 +7067,22 @@ pub mod test {
                 Err(err) => panic!("Failed to parse the source \"{}\": {}", s, err),
             }
         }
+    }
+
+    #[test]
+    fn ensure_parse_errors_are_send_and_sync() {
+        use std::{error, fmt};
+
+        #[derive(Debug)]
+        struct SendAndSyncError;
+        impl error::Error for SendAndSyncError {
+            fn description(&self) -> &str { "" }
+        }
+        impl fmt::Display for SendAndSyncError {
+            fn fmt(&self, _: &mut fmt::Formatter) -> fmt::Result { Ok(()) }
+        }
+
+        fn send_and_sync<T: Send + Sync>() {}
+        send_and_sync::<ParseError<SendAndSyncError>>();
     }
 }

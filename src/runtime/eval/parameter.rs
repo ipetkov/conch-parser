@@ -197,8 +197,11 @@ impl<W: WordEval, C: Run> ParameterSubstitution<W, C> {
             Error(strict, ref p, ref msg) => {
                 check_param_subst!(p, env, strict);
                 let msg = match *msg {
-                    None => Rc::new(String::from("parameter null or not set")),
-                    Some(ref w) => try!(w.eval_with_config(env, cfg)).join(),
+                    None => String::from("parameter null or not set"),
+                    Some(ref w) => {
+                        let rc = try!(w.eval_with_config(env, cfg)).join();
+                        Rc::try_unwrap(rc).unwrap_or_else(|rc| (*rc).clone())
+                    },
                 };
 
                 env.set_last_status(EXIT_ERROR);
@@ -1271,7 +1274,7 @@ mod tests {
 
         let var_value = Rc::new("foobar".to_string());
         let null      = Rc::new("".to_string());
-        let err_msg   = Rc::new(ERR_MSG.to_string());
+        let err_msg   = ERR_MSG.to_string();
 
         let mut env = Env::new().unwrap();
         env.set_var(var.clone(), var_value.clone());

@@ -4,7 +4,6 @@ use std::error::Error;
 use std::fmt::{Display, Formatter, Result};
 use std::io::Error as IoError;
 use std::io::Write;
-use std::rc::Rc;
 use super::Fd;
 use syntax::ast::Parameter;
 use runtime::io::Permissions;
@@ -19,7 +18,7 @@ pub enum ExpansionError {
     /// Attempted to assign a special parameter, e.g. `${!:-value}`.
     BadAssig(Parameter),
     /// Attempted to evaluate a null or unset parameter, i.e. `${var:?msg}`.
-    EmptyParameter(Parameter, Rc<String>),
+    EmptyParameter(Parameter, String),
 }
 
 impl Error for ExpansionError {
@@ -48,9 +47,9 @@ impl Display for ExpansionError {
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub enum RedirectionError {
     /// A redirect path evaluated to multiple fields.
-    Ambiguous(Vec<Rc<String>>),
+    Ambiguous(Vec<String>),
     /// Attempted to duplicate an invalid file descriptor.
-    BadFdSrc(Rc<String>),
+    BadFdSrc(String),
     /// Attempted to duplicate a file descriptor with Read/Write
     /// access that differs from the original.
     BadFdPerms(Fd, Permissions /* new perms */),
@@ -89,9 +88,9 @@ impl Display for RedirectionError {
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub enum CommandError {
     /// Unable to find a command/function/builtin to execute.
-    NotFound(Rc<String>),
+    NotFound(String),
     /// Utility or script does not have executable permissions.
-    NotExecutable(Rc<String>),
+    NotExecutable(String),
 }
 
 impl Error for CommandError {
@@ -116,7 +115,7 @@ impl Display for CommandError {
 #[derive(Debug)]
 pub enum RuntimeError {
     /// Any I/O error returned by the OS during execution and the file that caused the error.
-    Io(IoError, Rc<String>),
+    Io(IoError, String),
     /// Any error that occured during a parameter expansion.
     Expansion(ExpansionError),
     /// Any error that occured during a redirection.
@@ -193,5 +192,20 @@ impl From<RedirectionError> for RuntimeError {
 impl From<CommandError> for RuntimeError {
     fn from(err: CommandError) -> Self {
         RuntimeError::Command(err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_runtime_errors_are_send_and_sync() {
+        fn send_and_sync<T: Send + Sync>() {}
+
+        send_and_sync::<ExpansionError>();
+        send_and_sync::<RedirectionError>();
+        send_and_sync::<CommandError>();
+        send_and_sync::<RuntimeError>();
     }
 }
