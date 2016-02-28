@@ -2159,4 +2159,54 @@ mod tests {
         let subst: ParamSubst = RemoveLargestPrefix(Parameter::Star, Some(pat));
         assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Star(fields_args.clone())));
     }
+
+    #[test]
+    fn test_eval_parameter_substitution_forwards_tilde_expansion() {
+        use syntax::ast::ParameterSubstitution::*;
+        use runtime::Result;
+
+        #[derive(Copy, Clone, Debug)]
+        struct MockWord(TildeExpansion);
+
+        impl WordEval for MockWord {
+            fn eval_with_config(&self, _: &mut Environment, cfg: WordEvalConfig) -> Result<Fields>
+            {
+                assert_eq!(self.0, cfg.tilde_expansion);
+                assert_eq!(cfg.split_fields_further, false);
+                Ok(Fields::Zero)
+            }
+        }
+
+        type ParamSubst = ParameterSubstitution<MockWord, MockCmd>;
+
+        let name = "var".to_string();
+        let var = Parameter::Var(name.clone());
+        let mut env = Env::new().unwrap();
+
+        let cases = vec!(TildeExpansion::None, TildeExpansion::First, TildeExpansion::All);
+        for tilde_expansion in cases {
+            let cfg = WordEvalConfig {
+                tilde_expansion: tilde_expansion,
+                split_fields_further: true, // Should not affect inner word
+            };
+
+            let mock = MockWord(tilde_expansion);
+
+            env.unset_var(name.clone());
+            let subst: ParamSubst = Default(true, var.clone(), Some(mock));
+            subst.eval(&mut env, cfg).unwrap();
+
+            env.unset_var(name.clone());
+            let subst: ParamSubst = Assign(true, var.clone(), Some(mock));
+            subst.eval(&mut env, cfg).unwrap();
+
+            env.unset_var(name.clone());
+            let subst: ParamSubst = Error(true, var.clone(), Some(mock));
+            subst.eval(&mut env, cfg).unwrap_err();
+
+            env.set_var(name.clone(), "some value".to_string().into());
+            let subst: ParamSubst = Alternative(true, var.clone(), Some(mock));
+            subst.eval(&mut env, cfg).unwrap();
+        }
+    }
 }
