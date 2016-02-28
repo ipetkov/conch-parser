@@ -7,6 +7,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::convert::{From, Into};
+use std::error;
 use std::fmt;
 use std::io::{Error as IoError, ErrorKind as IoErrorKind, Result as IoResult, Write};
 use std::iter::{IntoIterator, Iterator};
@@ -55,6 +56,7 @@ macro_rules! try_and_swallow_non_fatal {
         match $result {
             Ok(exit) => exit,
             Err(err) => match err {
+                RuntimeError::Custom(..) |
                 RuntimeError::Expansion(..) => return Err(err),
 
                 RuntimeError::Io(..)            |
@@ -63,7 +65,7 @@ macro_rules! try_and_swallow_non_fatal {
                 RuntimeError::Unimplemented(..) => {
                     // Whoever returned the error should have been responsible
                     // enough to set the last status as appropriate.
-                    $env.report_error(err);
+                    $env.report_error(&err);
                     let exit = $env.last_status();
                     debug_assert_eq!(exit.success(), false);
                     exit
@@ -287,8 +289,8 @@ pub trait Environment {
     fn close_file_desc(&mut self, fd: Fd);
     /// Indicates if running in interactive mode.
     fn is_interactive(&self) -> bool;
-    /// Consumes `RuntimeError`s and reports them as appropriate, e.g. print to stderr.
-    fn report_error(&mut self, err: RuntimeError) {
+    /// Reports any `Error` as appropriate, e.g. print to stderr.
+    fn report_error(&mut self, err: &error::Error) {
         // We *could* duplicate the handle here and ensure that we are the only
         // owners of that *copy*, but it won't make much difference. On Unix
         // sytems file descriptor duplication is effectively just an alias, and
@@ -700,7 +702,7 @@ impl<W: WordEval, C: Run> Run for CompoundCommand<W, C> {
                 match run(body, env) {
                     Ok(exit) => exit,
                     Err(err) => {
-                        env.report_error(err);
+                        env.report_error(&err);
                         let exit = env.last_status();
                         debug_assert_eq!(exit.success(), false);
                         exit
@@ -1042,6 +1044,9 @@ mod tests {
                                          ok_status: Option<ExitStatus>)
         where F: Fn(Box<Command<'a>>, &mut Environment) -> Result<ExitStatus>
     {
+        use std::error::Error;
+        use std::fmt;
+
         // We'll be printing a lot of errors, so we'll suppress actually printing
         // to avoid polluting the output of the test runner.
         // NB: consider removing this line when debugging
@@ -1055,6 +1060,28 @@ mod tests {
             RuntimeError::Expansion(ExpansionError::BadAssig(Parameter::At)),
             RuntimeError::Expansion(ExpansionError::EmptyParameter(Parameter::At, "".to_string())),
         );
+
+        // Custom errors might not be Eq so we have to be more creative to check them.
+        #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+        struct MockErr(isize);
+        impl Error for MockErr {
+            fn description(&self) -> &str { "" }
+        }
+        impl fmt::Display for MockErr {
+            fn fmt(&self, _: &mut fmt::Formatter) -> fmt::Result { Ok(()) }
+        }
+
+        let result = test(
+            cmd!(move || { RuntimeError::Custom(Box::new(MockErr(42))) }),
+            &mut *env.sub_env()
+        );
+
+        if swallow_fatals {
+            assert_eq!(result, Ok(ok_status.clone().unwrap_or(EXIT_ERROR_MOCK)));
+        } else {
+            // Good enough for now
+            assert!(result.is_err());
+        }
     }
 
     /// For exhaustively testing against handling of different error types
@@ -1495,7 +1522,7 @@ mod tests {
             let mut env = Env::new().unwrap();
             let writer = Rc::new(writer);
             env.set_file_desc(STDERR_FILENO, writer.clone(), Permissions::Write);
-            env.report_error(RuntimeError::Expansion(ExpansionError::DivideByZero));
+            env.report_error(&RuntimeError::Expansion(ExpansionError::DivideByZero));
             env.close_file_desc(STDERR_FILENO);
             let mut writer = Rc::try_unwrap(writer).unwrap();
             writer.flush().unwrap();
