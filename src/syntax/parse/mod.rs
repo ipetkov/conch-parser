@@ -7085,4 +7085,10 @@ pub mod test {
         fn send_and_sync<T: Send + Sync>() {}
         send_and_sync::<ParseError<SendAndSyncError>>();
     }
+
+    #[test]
+    fn ensure_parser_could_be_send_and_sync() {
+        fn send_and_sync<T: Send + Sync>() {}
+        send_and_sync::<Parser<::std::vec::IntoIter<Token>, builder::DefaultBuilder>>();
+    }
 }
