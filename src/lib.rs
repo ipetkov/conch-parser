@@ -18,6 +18,19 @@
 #[cfg(feature = "runtime")] extern crate libc;
 extern crate void;
 
+/// Poor man's mktmp. A macro for creating "unique" test directories.
+#[cfg(test)]
+macro_rules! mktmp {
+    () => {{
+        let path = concat!("test-", module_path!(), "-", line!(), "-", column!());
+        if cfg!(windows) {
+            TempDir::new(&path.replace(":", "_")).unwrap()
+        } else {
+            TempDir::new(path).unwrap()
+        }
+    }};
+}
+
 #[cfg(feature = "runtime")]
 pub mod runtime;
 pub mod syntax;

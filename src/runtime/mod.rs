@@ -153,13 +153,15 @@ pub struct Env<'a> {
     last_status: ExitStatus,
     /// A parent environment for looking up previously set values.
     parent_env: Option<&'a Env<'a>>,
+    /// If the shell is running in interactive mode
+    interactive: bool,
 }
 
 impl<'a> Env<'a> {
     /// Creates a new default environment.
     /// See the docs for `Env::with_config` for more information.
     pub fn new() -> IoResult<Self> {
-        Self::with_config(None, None, None, None)
+        Self::with_config(false, None, None, None, None)
     }
 
     /// Creates an environment using provided overrides, or data from the
@@ -183,7 +185,8 @@ impl<'a> Env<'a> {
     ///
     /// Note: Any data taken from the current process (e.g. environment
     /// variables) which is not valid Unicode will be ignored.
-    pub fn with_config(name: Option<String>,
+    pub fn with_config(interactive: bool,
+                       name: Option<String>,
                        args: Option<Vec<String>>,
                        env: Option<Vec<(String, String)>>,
                        fds: Option<Vec<(Fd, Rc<FileDesc>, Permissions)>>) -> IoResult<Self>
@@ -222,6 +225,7 @@ impl<'a> Env<'a> {
             fds: fds,
             last_status: EXIT_SUCCESS,
             parent_env: None,
+            interactive: interactive,
         })
     }
 
@@ -317,6 +321,7 @@ impl<'a> Environment for Env<'a> {
             fds: HashMap::new(),
             last_status: self.last_status,
             parent_env: Some(self),
+            interactive: self.interactive,
         })
     }
 
@@ -453,7 +458,7 @@ impl<'a> Environment for Env<'a> {
     }
 
     fn is_interactive(&self) -> bool {
-        false
+        self.interactive
     }
 }
 
@@ -785,6 +790,8 @@ pub fn run_with_local_redirections<'a, I, F, W, T>(env: &mut Environment, redire
           F: FnOnce(&mut Environment) -> Result<T>,
           W: 'a + WordEval,
 {
+    use runtime::eval::RedirectAction::*;
+
     struct RedirectionOverride {
         /// The local FileDesc that should be temporarily placed in/removed from the environment.
         override_fdes: Option<Rc<FileDesc>>,
@@ -808,7 +815,12 @@ pub fn run_with_local_redirections<'a, I, F, W, T>(env: &mut Environment, redire
                 break;
             },
 
-            Ok((fd, fdes_and_perms)) => {
+            Ok(redirect_action) => {
+                let (fd, fdes_and_perms) = match redirect_action {
+                    Close(fd) => (fd, None),
+                    Open(fd, fdes, perms) => (fd, Some((fdes, perms))),
+                };
+
                 let new_fdes = fdes_and_perms.as_ref().map(|&(ref fdes, _)| fdes.clone());
 
                 // Only backup any descriptor which has NOT already been LOCALLY
@@ -883,16 +895,10 @@ mod tests {
     const EXIT_ERROR_MOCK: ExitStatus = ExitStatus::Code(::std::i32::MAX);
 
     #[cfg(unix)]
-    const DEV_NULL: &'static str = "/dev/null";
+    pub const DEV_NULL: &'static str = "/dev/null";
 
     #[cfg(windows)]
-    const DEV_NULL: &'static str = "NUL";
-
-    macro_rules! mktmp {
-        () => {
-            TempDir::new(concat!("test-", module_path!(), "-", line!(), "-", column!())).unwrap()
-        }
-    }
+    pub const DEV_NULL: &'static str = "NUL";
 
     struct MockFn<F: FnMut(&mut Environment) -> Result<ExitStatus>> {
         callback: RefCell<F>,
@@ -927,7 +933,7 @@ mod tests {
     }
 
     #[derive(Clone)]
-    enum MockWord<'a> {
+    pub enum MockWord<'a> {
         Regular(Rc<String>),
         Error(Rc<Fn() -> RuntimeError + 'a>),
     }
@@ -972,7 +978,7 @@ mod tests {
         }
     }
 
-    fn word<'a, T: ToString>(s: T) -> MockWord<'a> {
+    pub fn word<'a, T: ToString>(s: T) -> MockWord<'a> {
         MockWord::Regular(Rc::new(s.to_string()))
     }
 
@@ -1095,7 +1101,7 @@ mod tests {
     #[test]
     fn test_env_name() {
         let name = "shell";
-        let env = Env::with_config(Some(String::from(name)), None, None, None).unwrap();
+        let env = Env::with_config(false, Some(String::from(name)), None, None, None).unwrap();
         assert_eq!(&**env.name(), name);
         assert_eq!(&**env.arg(0).unwrap(), name);
     }
@@ -1103,7 +1109,7 @@ mod tests {
     #[test]
     fn test_env_name_should_be_same_in_child_environment() {
         let name = "shell";
-        let env = Env::with_config(Some(String::from(name)), None, None, None).unwrap();
+        let env = Env::with_config(false, Some(String::from(name)), None, None, None).unwrap();
         let child = env.sub_env();
         assert_eq!(&**child.name(), name);
         assert_eq!(&**child.arg(0).unwrap(), name);
@@ -1251,7 +1257,7 @@ mod tests {
             String::from("parent arg3"),
         );
 
-        let mut env = Env::with_config(Some(shell_name_owned), Some(parent_args.clone()), None, None).unwrap();
+        let mut env = Env::with_config(false, Some(shell_name_owned), Some(parent_args.clone()), None, None).unwrap();
 
         let fn_name_owned = String::from("fn name");
         let fn_name = Rc::new(fn_name_owned.clone());
@@ -1433,7 +1439,7 @@ mod tests {
         };
 
         let owned_vars = env_vars.iter().map(|&(k, v)| (String::from(k), String::from(v))).collect();
-        let env = Env::with_config(None, None, Some(owned_vars), None).unwrap();
+        let env = Env::with_config(false, None, None, Some(owned_vars), None).unwrap();
         let mut vars: Vec<_> = (&*env.env()).into();
         vars.sort();
         assert_eq!(vars, env_vars);
@@ -1586,7 +1592,7 @@ mod tests {
     #[test]
     fn test_run_compound_local_redirections_applied_correctly_with_no_prev_redirections() {
         // Make sure the environment has NO open file descriptors
-        let mut env = Env::with_config(None, None, None, Some(vec!())).unwrap();
+        let mut env = Env::with_config(false, None, None, None, Some(vec!())).unwrap();
         let tempdir = mktmp!();
 
         let mut file_path = PathBuf::new();
@@ -1640,7 +1646,7 @@ mod tests {
         let file_out = Permissions::Write.open(&file_path_out).unwrap();
         let file_err = Permissions::Write.open(&file_path_err).unwrap();
 
-        let mut env = Env::with_config(None, None, None, Some(vec!(
+        let mut env = Env::with_config(false, None, None, None, Some(vec!(
             (STDOUT_FILENO, Rc::new(FileDesc::from(file_out)), Permissions::Write),
             (STDERR_FILENO, Rc::new(FileDesc::from(file_err)), Permissions::Write),
         ))).unwrap();
@@ -1700,7 +1706,7 @@ mod tests {
 
         let file_default = Permissions::Write.open(&file_path_default).unwrap();
 
-        let mut env = Env::with_config(None, None, None, Some(vec!(
+        let mut env = Env::with_config(false, None, None, None, Some(vec!(
             (STDOUT_FILENO, Rc::new(FileDesc::from(file_default)), Permissions::Write),
         ))).unwrap();
 
@@ -1846,7 +1852,7 @@ mod tests {
 
         let file_default = Permissions::Write.open(&file_path_default).unwrap();
 
-        let mut env = Env::with_config(None, None, None, Some(vec!(
+        let mut env = Env::with_config(false, None, None, None, Some(vec!(
             (FD_EXEC_CLOSE, Rc::new(FileDesc::from(file_default)), Permissions::Write),
         ))).unwrap();
 
@@ -1906,7 +1912,7 @@ mod tests {
 
         let file = Permissions::Write.open(&file_path).unwrap();
 
-        let mut env = Env::with_config(None, None, None, Some(vec!(
+        let mut env = Env::with_config(false, None, None, None, Some(vec!(
             (STDOUT_FILENO, Rc::new(file.into()), Permissions::Write)
         ))).unwrap();
 

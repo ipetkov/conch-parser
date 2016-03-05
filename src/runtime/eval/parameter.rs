@@ -562,7 +562,7 @@ mod tests {
         );
 
         let env_args = args.iter().map(|rc| (**rc).clone()).collect();
-        let mut env = Env::with_config(None, Some(env_args), None, None).unwrap();
+        let mut env = Env::with_config(false, None, Some(env_args), None, None).unwrap();
         env.set_var("var1".to_string(), var1.clone());
         env.set_var("var2".to_string(), var2.clone());
         env.set_var("var3".to_string(), var3.clone());
@@ -600,7 +600,7 @@ mod tests {
 
     #[test]
     fn test_eval_parameter_with_unset_vars() {
-        let mut env = Env::with_config(None, Some(vec!()), None, None).unwrap();
+        let mut env = Env::with_config(false, None, Some(vec!()), None, None).unwrap();
 
         assert_eq!(Parameter::At.eval(false, &mut env), Some(Fields::Zero));
         assert_eq!(Parameter::Star.eval(false, &mut env), Some(Fields::Zero));
@@ -630,7 +630,7 @@ mod tests {
         );
 
         let env_args = args.iter().map(|rc| (**rc).clone()).collect();
-        let mut env = Env::with_config(None, Some(env_args), None, None).unwrap();
+        let mut env = Env::with_config(false, None, Some(env_args), None, None).unwrap();
         env.set_var("var1".to_string(), val1.clone());
         env.set_var("var2".to_string(), val2.clone());
 
@@ -673,7 +673,7 @@ mod tests {
         );
 
         let env_args = args.iter().map(|rc| (**rc).clone()).collect();
-        let mut env = Env::with_config(None, Some(env_args), None, None).unwrap();
+        let mut env = Env::with_config(false, None, Some(env_args), None, None).unwrap();
         env.set_var("IFS".to_string(), "0 ".to_string().into());
 
         env.set_var("var1".to_string(), val1.clone());
@@ -761,7 +761,7 @@ mod tests {
         );
 
         let env_args = args.iter().map(|rc| (**rc).clone()).collect();
-        let mut env = Env::with_config(None, Some(env_args), None, None).unwrap();
+        let mut env = Env::with_config(false, None, Some(env_args), None, None).unwrap();
         env.set_var("IFS".to_string(), "".to_string().into());
         env.set_var("var1".to_string(), val1.clone());
         env.set_var("var2".to_string(), val2.clone());
@@ -934,7 +934,7 @@ mod tests {
         let name  = "shell name".to_string();
         let var   = "var".to_string();
         let value = "foo bar".to_string();
-        let mut env = Env::with_config(Some(name.clone()), Some(vec!(
+        let mut env = Env::with_config(false, Some(name.clone()), Some(vec!(
             "one".to_string(),
             "two".to_string(),
             "three".to_string(),
@@ -1079,7 +1079,7 @@ mod tests {
             );
 
             let args_value = args.iter().cloned().map(Rc::new).collect::<Vec<_>>();
-            let mut env = Env::with_config(None, Some(args), None, None).unwrap();
+            let mut env = Env::with_config(false, None, Some(args), None, None).unwrap();
 
             let subst: ParamSubst = Default(true, Parameter::At, Some(default));
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
@@ -1102,7 +1102,7 @@ mod tests {
 
         // Args all null
         {
-            let mut env = Env::with_config(None, Some(vec!(
+            let mut env = Env::with_config(false, None, Some(vec!(
                 "".to_string(),
                 "".to_string(),
                 "".to_string(),
@@ -1375,7 +1375,7 @@ mod tests {
             );
 
             let args_value = args.iter().cloned().map(Rc::new).collect::<Vec<_>>();
-            let mut env = Env::with_config(None, Some(args), None, None).unwrap();
+            let mut env = Env::with_config(false, None, Some(args), None, None).unwrap();
 
             let subst: ParamSubst = Error(true, Parameter::At, Some(err_msg.clone()));
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
@@ -1398,7 +1398,7 @@ mod tests {
 
         // Args all null
         {
-            let mut env = Env::with_config(None, Some(vec!(
+            let mut env = Env::with_config(false, None, Some(vec!(
                 "".to_string(),
                 "".to_string(),
                 "".to_string(),
@@ -1553,7 +1553,7 @@ mod tests {
                 "".to_string(),
             );
 
-            let mut env = Env::with_config(None, Some(args), None, None).unwrap();
+            let mut env = Env::with_config(false, None, Some(args), None, None).unwrap();
 
             let subst: ParamSubst = Alternative(true, Parameter::At, Some(alternative.clone()));
             assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
@@ -1576,7 +1576,7 @@ mod tests {
 
         // Args all null
         {
-            let mut env = Env::with_config(None, Some(vec!(
+            let mut env = Env::with_config(false, None, Some(vec!(
                 "".to_string(),
                 "".to_string(),
                 "".to_string(),
@@ -1650,7 +1650,7 @@ mod tests {
 
         let var_null = var2.clone();
 
-        let mut env = Env::with_config(None, Some(args.clone()), None, None).unwrap();
+        let mut env = Env::with_config(false, None, Some(args.clone()), None, None).unwrap();
         env.set_var("var1".to_string(), val1.clone());
         env.set_var("var2".to_string(), val2.clone());
 
@@ -1791,7 +1791,7 @@ mod tests {
         let var_null = var3.clone();
         let var_missing = Parameter::Var("missing".to_string());
 
-        let mut env = Env::with_config(None, Some(args.clone()), None, None).unwrap();
+        let mut env = Env::with_config(false, None, Some(args.clone()), None, None).unwrap();
         env.set_var("IFS".to_string(), Rc::new("0 ".to_string()));
 
         env.set_var("var1".to_string(), val1.clone());
@@ -2001,7 +2001,7 @@ mod tests {
             split_fields_further: false,
         };
 
-        let mut env = Env::with_config(None, Some(args), None, None).unwrap();
+        let mut env = Env::with_config(false, None, Some(args), None, None).unwrap();
 
         let subst: ParamSubst = RemoveSmallestSuffix(foobar, None);
         assert_eq!(subst.eval(&mut env, cfg), Ok("foobar".to_string().into()));
@@ -2048,7 +2048,7 @@ mod tests {
             split_fields_further: false,
         };
 
-        let mut env = Env::with_config(None, Some(args), None, None).unwrap();
+        let mut env = Env::with_config(false, None, Some(args), None, None).unwrap();
 
         let subst: ParamSubst = RemoveLargestSuffix(foobar, None);
         assert_eq!(subst.eval(&mut env, cfg), Ok("foobar".to_string().into()));
@@ -2096,7 +2096,7 @@ mod tests {
             split_fields_further: false,
         };
 
-        let mut env = Env::with_config(None, Some(args), None, None).unwrap();
+        let mut env = Env::with_config(false, None, Some(args), None, None).unwrap();
 
         let subst: ParamSubst = RemoveSmallestPrefix(foobar, None);
         assert_eq!(subst.eval(&mut env, cfg), Ok("foobar".to_string().into()));
@@ -2144,7 +2144,7 @@ mod tests {
             split_fields_further: false,
         };
 
-        let mut env = Env::with_config(None, Some(args), None, None).unwrap();
+        let mut env = Env::with_config(false, None, Some(args), None, None).unwrap();
 
         let subst: ParamSubst = RemoveLargestPrefix(foobar, None);
         assert_eq!(subst.eval(&mut env, cfg), Ok("foobar".to_string().into()));

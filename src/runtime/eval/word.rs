@@ -448,7 +448,7 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::with_config(None, Some(vec!(
+        let mut env = Env::with_config(false, None, Some(vec!(
             "one".to_string(),
             "two".to_string(),
             "three".to_string(),
@@ -495,7 +495,7 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::with_config(None, Some(vec!(
+        let mut env = Env::with_config(false, None, Some(vec!(
             "one".to_string(),
             "two".to_string(),
             "three".to_string(),
@@ -706,7 +706,7 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::with_config(None, Some(vec!(
+        let mut env = Env::with_config(false, None, Some(vec!(
             "one".to_string(),
             "two".to_string(),
             "three four".to_string(),
@@ -728,7 +728,7 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::with_config(None, Some(vec!(
+        let mut env = Env::with_config(false, None, Some(vec!(
             "one".to_string(),
             "two".to_string(),
             "three four".to_string(),
