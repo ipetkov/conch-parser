@@ -10,10 +10,10 @@
 //! struct to the parser if you wish to use the default AST implementation.
 
 use std::cmp::{PartialEq, Eq};
-use std::error::Error;
 use std::rc::Rc;
 use syntax::ast::{Arithmetic, Command, CompoundCommand, ComplexWord, Parameter,
                   ParameterSubstitution, Redirect, SimpleCommand, SimpleWord, TopLevelWord, Word};
+use syntax::parse::Result;
 
 /// An indicator to the builder of how complete commands are separated.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -180,8 +180,6 @@ pub trait Builder {
     type Word;
     /// The type which represents a file descriptor redirection.
     type Redirect;
-    /// An error type that the builder may want to return.
-    type Err: Error + Send + Sync;
 
     /// Invoked once a complete command is found. That is, a command delimited by a
     /// newline, semicolon, ampersand, or the end of input.
@@ -196,7 +194,7 @@ pub trait Builder {
                         cmd: Self::Command,
                         separator: SeparatorKind,
                         pos_cmd_comments: Vec<Newline>)
-        -> Result<Self::Command, Self::Err>;
+        -> Result<Self::Command>;
 
     /// Invoked once two pipeline commands are parsed, which are separated by '&&' or '||'.
     /// Typically the second command is run based on the exit status of the first, running
@@ -213,7 +211,7 @@ pub trait Builder {
               kind: AndOrKind,
               post_separator_comments: Vec<Newline>,
               second: Self::Command)
-        -> Result<Self::Command, Self::Err>;
+        -> Result<Self::Command>;
 
     /// Invoked when a pipeline of commands is parsed.
     /// A pipeline is one or more commands where the standard output of the previous
@@ -227,7 +225,7 @@ pub trait Builder {
     fn pipeline(&mut self,
                 bang: bool,
                 cmds: Vec<(Vec<Newline>, Self::Command)>)
-        -> Result<Self::Command, Self::Err>;
+        -> Result<Self::Command>;
 
     /// Invoked when the "simplest" possible command is parsed: an executable with arguments.
     ///
@@ -241,7 +239,7 @@ pub trait Builder {
                       env_vars: Vec<(String, Option<Self::Word>)>,
                       cmd: Option<(Self::Word, Vec<Self::Word>)>,
                       redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Err>;
+        -> Result<Self::Command>;
 
     /// Invoked when a non-zero number of commands were parsed between balanced curly braces.
     /// Typically these commands should run within the current shell environment.
@@ -252,7 +250,7 @@ pub trait Builder {
     fn brace_group(&mut self,
                    cmds: Vec<Self::Command>,
                    redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Err>;
+        -> Result<Self::Command>;
 
     /// Invoked when a non-zero number of commands were parsed between balanced parentheses.
     /// Typically these commands should run within their own environment without affecting
@@ -264,7 +262,7 @@ pub trait Builder {
     fn subshell(&mut self,
                 cmds: Vec<Self::Command>,
                 redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Err>;
+        -> Result<Self::Command>;
 
     /// Invoked when a loop command like `while` or `until` is parsed.
     /// Typically these commands will execute their body based on the exit status of their guard.
@@ -279,7 +277,7 @@ pub trait Builder {
                     guard: Vec<Self::Command>,
                     body: Vec<Self::Command>,
                     redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Err>;
+        -> Result<Self::Command>;
 
     /// Invoked when an `if` conditional command is parsed.
     /// Typically an `if` command is made up of one or more guard-body pairs, where the body
@@ -294,7 +292,7 @@ pub trait Builder {
                   branches: Vec<(Vec<Self::Command>, Vec<Self::Command>)>,
                   else_part: Option<Vec<Self::Command>>,
                   redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Err>;
+        -> Result<Self::Command>;
 
     /// Invoked when a `for` command is parsed.
     /// Typically a `for` command binds a variable to each member in a group of words and
@@ -315,7 +313,7 @@ pub trait Builder {
                    post_word_comments: Option<Vec<Newline>>,
                    body: Vec<Self::Command>,
                    redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Err>;
+        -> Result<Self::Command>;
 
     /// Invoked when a `case` command is parsed.
     /// Typically this command will execute certain commands when a given word matches a pattern.
@@ -335,7 +333,7 @@ pub trait Builder {
                     branches: Vec<( (Vec<Newline>, Vec<Self::Word>, Vec<Newline>), Vec<Self::Command>)>,
                     post_branch_comments: Vec<Newline>,
                     redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Err>;
+        -> Result<Self::Command>;
 
     /// Invoked when a function declaration is parsed.
     /// Typically a function declaration overwrites any previously defined function
@@ -347,7 +345,7 @@ pub trait Builder {
     fn function_declaration(&mut self,
                             name: String,
                             body: Self::Command)
-        -> Result<Self::Command, Self::Err>;
+        -> Result<Self::Command>;
 
     /// Invoked when only comments are parsed with no commands following.
     /// This can occur if an entire shell script is commented out or if there
@@ -357,7 +355,7 @@ pub trait Builder {
     /// * comments: the parsed comments
     fn comments(&mut self,
                 comments: Vec<Newline>)
-        -> Result<(), Self::Err>;
+        -> Result<()>;
 
     /// Invoked when a word is parsed.
     ///
@@ -365,7 +363,7 @@ pub trait Builder {
     /// * kind: the type of word that was parsed
     fn word(&mut self,
             kind: ComplexWordKind<Self::Command>)
-        -> Result<Self::Word, Self::Err>;
+        -> Result<Self::Word>;
 
     /// Invoked when a redirect is parsed.
     ///
@@ -373,14 +371,13 @@ pub trait Builder {
     /// * kind: the type of redirect that was parsed
     fn redirect(&mut self,
                 kind: RedirectKind<Self::Word>)
-        -> Result<Self::Redirect, Self::Err>;
+        -> Result<Self::Redirect>;
 }
 
 impl Builder for DefaultBuilder {
     type Command  = Command<Self::Word>;
     type Word     = TopLevelWord;
     type Redirect = Redirect<Self::Word>;
-    type Err      = ::void::Void;
 
     /// Constructs a `Command::Job` node with the provided inputs if the command
     /// was delimited by an ampersand or the command itself otherwise.
@@ -389,7 +386,7 @@ impl Builder for DefaultBuilder {
                         cmd: Self::Command,
                         separator: SeparatorKind,
                         _pos_cmd_comments: Vec<Newline>)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         match separator {
             SeparatorKind::Semi  |
@@ -405,7 +402,7 @@ impl Builder for DefaultBuilder {
               kind: AndOrKind,
               _post_separator_comments: Vec<Newline>,
               second: Self::Command)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         match kind {
             AndOrKind::And => Ok(Command::And(Box::new(first), Box::new(second))),
@@ -418,7 +415,7 @@ impl Builder for DefaultBuilder {
     fn pipeline(&mut self,
                 bang: bool,
                 cmds: Vec<(Vec<Newline>, Self::Command)>)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         debug_assert_eq!(cmds.is_empty(), false);
         let mut cmds: Vec<Self::Command> = cmds.into_iter().map(|(_, c)| c).collect();
@@ -439,7 +436,7 @@ impl Builder for DefaultBuilder {
                       mut env_vars: Vec<(String, Option<Self::Word>)>,
                       mut cmd: Option<(Self::Word, Vec<Self::Word>)>,
                       mut redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         env_vars.shrink_to_fit();
         redirects.shrink_to_fit();
@@ -459,7 +456,7 @@ impl Builder for DefaultBuilder {
     fn brace_group(&mut self,
                    mut cmds: Vec<Self::Command>,
                    mut redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         cmds.shrink_to_fit();
         redirects.shrink_to_fit();
@@ -470,7 +467,7 @@ impl Builder for DefaultBuilder {
     fn subshell(&mut self,
                 mut cmds: Vec<Self::Command>,
                 mut redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         cmds.shrink_to_fit();
         redirects.shrink_to_fit();
@@ -483,7 +480,7 @@ impl Builder for DefaultBuilder {
                     mut guard: Vec<Self::Command>,
                     mut body: Vec<Self::Command>,
                     mut redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         guard.shrink_to_fit();
         body.shrink_to_fit();
@@ -502,7 +499,7 @@ impl Builder for DefaultBuilder {
                   mut branches: Vec<(Vec<Self::Command>, Vec<Self::Command>)>,
                   mut else_part: Option<Vec<Self::Command>>,
                   mut redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         for &mut (ref mut guard, ref mut body) in branches.iter_mut() {
             guard.shrink_to_fit();
@@ -523,7 +520,7 @@ impl Builder for DefaultBuilder {
                    _post_word_comments: Option<Vec<Newline>>,
                    mut body: Vec<Self::Command>,
                    mut redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         for word in in_words.iter_mut() { word.shrink_to_fit(); }
         body.shrink_to_fit();
@@ -538,7 +535,7 @@ impl Builder for DefaultBuilder {
                     branches: Vec<( (Vec<Newline>, Vec<Self::Word>, Vec<Newline>), Vec<Self::Command>)>,
                     _post_branch_comments: Vec<Newline>,
                     mut redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         let branches = branches.into_iter().map(|((_, mut pats, _), mut cmds)| {
             pats.shrink_to_fit();
@@ -554,7 +551,7 @@ impl Builder for DefaultBuilder {
     fn function_declaration(&mut self,
                             name: String,
                             body: Self::Command)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         Ok(Command::Function(name, Rc::new(body)))
     }
@@ -562,7 +559,7 @@ impl Builder for DefaultBuilder {
     /// Ignored by the builder.
     fn comments(&mut self,
                 _comments: Vec<Newline>)
-        -> Result<(), Self::Err>
+        -> Result<()>
     {
         Ok(())
     }
@@ -570,7 +567,7 @@ impl Builder for DefaultBuilder {
     /// Constructs a `ast::Word` from the provided input.
     fn word(&mut self,
             kind: ComplexWordKind<Self::Command>)
-        -> Result<Self::Word, Self::Err>
+        -> Result<Self::Word>
     {
         use self::ParameterSubstitutionKind::*;
 
@@ -623,7 +620,7 @@ impl Builder for DefaultBuilder {
                 WordKind::DoubleQuoted(v) => Word::DoubleQuoted(try!(
                     v.into_iter()
                      .map(&mut map_simple)
-                     .collect::<Result<Vec<SimpleWord<Self::Word, Self::Command>>, Self::Err>>()
+                     .collect::<Result<Vec<SimpleWord<Self::Word, Self::Command>>>>()
                 )),
             };
             Ok(word)
@@ -634,7 +631,7 @@ impl Builder for DefaultBuilder {
             ComplexWordKind::Concat(words) => ComplexWord::Concat(try!(
                     words.into_iter()
                          .map(map_word)
-                         .collect::<Result<Vec<Word<Self::Word, Self::Command>>, Self::Err>>()
+                         .collect::<Result<Vec<Word<Self::Word, Self::Command>>>>()
             )),
         };
 
@@ -644,7 +641,7 @@ impl Builder for DefaultBuilder {
     /// Constructs a `ast::Redirect` from the provided input.
     fn redirect(&mut self,
                 kind: RedirectKind<Self::Word>)
-        -> Result<Self::Redirect, Self::Err>
+        -> Result<Self::Redirect>
     {
         let io = match kind {
             RedirectKind::Read(fd, path)      => Redirect::Read(fd, path),
@@ -665,14 +662,13 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
     type Command = T::Command;
     type Word = T::Word;
     type Redirect = T::Redirect;
-    type Err = T::Err;
 
     fn complete_command(&mut self,
                         pre_cmd_comments: Vec<Newline>,
                         cmd: Self::Command,
                         separator: SeparatorKind,
                         post_cmd_comments: Vec<Newline>)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         (**self).complete_command(pre_cmd_comments, cmd, separator, post_cmd_comments)
     }
@@ -682,7 +678,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
               kind: AndOrKind,
               post_separator_comments: Vec<Newline>,
               second: Self::Command)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         (**self).and_or(first, kind, post_separator_comments, second)
     }
@@ -690,7 +686,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
     fn pipeline(&mut self,
                 bang: bool,
                 cmds: Vec<(Vec<Newline>, Self::Command)>)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         (**self).pipeline(bang, cmds)
     }
@@ -699,7 +695,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
                       env_vars: Vec<(String, Option<Self::Word>)>,
                       cmd: Option<(Self::Word, Vec<Self::Word>)>,
                       redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         (**self).simple_command(env_vars, cmd, redirects)
     }
@@ -707,7 +703,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
     fn brace_group(&mut self,
                    cmds: Vec<Self::Command>,
                    redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         (**self).brace_group(cmds, redirects)
     }
@@ -715,7 +711,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
     fn subshell(&mut self,
                 cmds: Vec<Self::Command>,
                 redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         (**self).subshell(cmds, redirects)
     }
@@ -725,7 +721,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
                     guard: Vec<Self::Command>,
                     body: Vec<Self::Command>,
                     redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         (**self).loop_command(kind, guard, body, redirects)
     }
@@ -734,7 +730,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
                   branches: Vec<(Vec<Self::Command>, Vec<Self::Command>)>,
                   else_part: Option<Vec<Self::Command>>,
                   redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         (**self).if_command(branches, else_part, redirects)
     }
@@ -746,7 +742,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
                    post_word_comments: Option<Vec<Newline>>,
                    body: Vec<Self::Command>,
                    redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         (**self).for_command(var, post_var_comments, in_words, post_word_comments, body, redirects)
     }
@@ -757,7 +753,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
                     branches: Vec<( (Vec<Newline>, Vec<Self::Word>, Vec<Newline>), Vec<Self::Command>)>,
                     post_branch_comments: Vec<Newline>,
                     redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         (**self).case_command(word, post_word_comments, branches, post_branch_comments, redirects)
     }
@@ -765,28 +761,28 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
     fn function_declaration(&mut self,
                             name: String,
                             body: Self::Command)
-        -> Result<Self::Command, Self::Err>
+        -> Result<Self::Command>
     {
         (**self).function_declaration(name, body)
     }
 
     fn comments(&mut self,
                 comments: Vec<Newline>)
-        -> Result<(), Self::Err>
+        -> Result<()>
     {
         (**self).comments(comments)
     }
 
     fn word(&mut self,
             kind: ComplexWordKind<Self::Command>)
-        -> Result<Self::Word, Self::Err>
+        -> Result<Self::Word>
     {
         (**self).word(kind)
     }
 
     fn redirect(&mut self,
                 kind: RedirectKind<Self::Word>)
-        -> Result<Self::Redirect, Self::Err>
+        -> Result<Self::Redirect>
     {
         (**self).redirect(kind)
     }
@@ -990,7 +986,7 @@ impl<I: Iterator, F> Coalesce<I, F> {
     }
 }
 
-type CoalesceResult<T> = Result<T, (T, T)>;
+type CoalesceResult<T> = ::std::result::Result<T, (T, T)>;
 impl<I, F> Iterator for Coalesce<I, F>
     where I: Iterator,
           F: FnMut(I::Item, I::Item) -> CoalesceResult<I::Item>

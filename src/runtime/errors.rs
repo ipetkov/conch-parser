@@ -1,4 +1,3 @@
-use std::cmp::{Eq, PartialEq};
 use std::convert::From;
 use std::error::Error;
 use std::fmt::{Display, Formatter, Result};
@@ -124,15 +123,22 @@ pub enum RuntimeError {
     Command(CommandError),
     /// Runtime feature not currently supported.
     Unimplemented(&'static str),
-    /// Any external error.
+    /// A custom error.
     Custom(Box<Error + Send + Sync>),
+}
+
+impl RuntimeError {
+    /// Create a new RuntimeError which wraps any custom error type.
+    pub fn custom<T: Into<Box<Error + Send + Sync>>>(err: T) -> RuntimeError {
+        RuntimeError::Custom(err.into())
+    }
 }
 
 // IoErrors and other extension errors may not implement Eq/PartialEq, but
 // equality checking is invaluable for testing, so we'll compromise and implement
 // some equality checking for testing.
-#[cfg(test)] impl Eq for RuntimeError {}
-#[cfg(test)] impl PartialEq for RuntimeError {
+#[cfg(test)] impl ::std::cmp::Eq for RuntimeError {}
+#[cfg(test)] impl ::std::cmp::PartialEq for RuntimeError {
     fn eq(&self, other: &Self) -> bool {
         use self::RuntimeError::*;
 
@@ -142,11 +148,8 @@ pub enum RuntimeError {
             (&Redirection(ref a),   &Redirection(ref b))   => a == b,
             (&Command(ref a),       &Command(ref b))       => a == b,
             (&Unimplemented(ref a), &Unimplemented(ref b)) => a == b,
-            (&Custom(ref a),        &Custom(ref b))        => {
-                let a: *const _ = &**a;
-                let b: *const _ = &**b;
-                a == b
-            },
+            (&Custom(_),            &Custom(_))            =>
+                panic!("unable to compare custom errors without downcasting"),
 
             _ => false,
         }
@@ -171,7 +174,7 @@ impl Error for RuntimeError {
             RuntimeError::Expansion(ref e)   => Some(e),
             RuntimeError::Redirection(ref e) => Some(e),
             RuntimeError::Command(ref e)     => Some(e),
-            RuntimeError::Custom(ref e)      => e.cause(),
+            RuntimeError::Custom(ref e)      => Some(&**e),
             RuntimeError::Unimplemented(_)   => None,
         }
     }
