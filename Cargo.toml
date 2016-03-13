@@ -7,23 +7,12 @@ authors = ["Ivan Petkov <ivanppetkov@gmail.com>"]
 runtime = ["glob", "libc", "winapi", "kernel32-sys"]
 
 [dependencies]
-void = "1"
-
-[dependencies.glob]
-version = "0.2"
-optional = true
-
-[dependencies.kernel32-sys]
-version = "0.2.1"
-optional = true
-
-[dependencies.libc]
-version = "0.2"
-optional = true
-
-[dependencies.winapi]
-version = "0.2.5"
-optional = true
+void         = "1"
+clippy       = { version = "0.0.51", optional = true }
+glob         = { version = "0.2",    optional = true }
+kernel32-sys = { version = "0.2.1",  optional = true }
+libc         = { version = "0.2",    optional = true }
+winapi       = { version = "0.2.5",  optional = true }
 
 [dev-dependencies]
 tempdir = "0.3"

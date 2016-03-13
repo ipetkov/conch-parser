@@ -1,5 +1,7 @@
 //! A library for parsing, executing, and analyzing programs
 //! written in the shell programming language.
+#![cfg_attr(feature = "clippy", feature(plugin))]
+#![cfg_attr(feature = "clippy", plugin(clippy))]
 
 #![deny(missing_copy_implementations)]
 #![deny(missing_debug_implementations)]
@@ -16,7 +18,7 @@
 
 #[cfg(feature = "runtime")] extern crate glob;
 #[cfg(feature = "runtime")] extern crate libc;
-extern crate void;
+#[cfg(feature = "runtime")] extern crate void;
 
 /// Poor man's mktmp. A macro for creating "unique" test directories.
 #[cfg(test)]
