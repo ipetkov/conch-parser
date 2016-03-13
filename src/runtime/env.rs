@@ -87,7 +87,7 @@ impl<'a> Env<'a> {
             path.file_name().and_then(|os_str| os_str.to_str().map(|s| s.to_string()))
         }).unwrap_or_default());
 
-        let args = args.map_or(Vec::new(), |args| args.into_iter().map(|s| Rc::new(s)).collect());
+        let args = args.map_or(Vec::new(), |args| args.into_iter().map(Rc::new).collect());
 
         let vars = env.map_or_else(
             || env::vars().map(|(k, v)| (k, Some((Rc::new(v), true)))).collect(),

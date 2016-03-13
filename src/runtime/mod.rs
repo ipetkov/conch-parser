@@ -118,7 +118,7 @@ impl From<process::ExitStatus> for ExitStatus {
 
         match exit.code() {
             Some(code) => ExitStatus::Code(code),
-            None => get_signal(exit).map_or(EXIT_ERROR, |s| ExitStatus::Signal(s)),
+            None => get_signal(exit).map_or(EXIT_ERROR, ExitStatus::Signal),
         }
     }
 }
