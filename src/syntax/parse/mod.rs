@@ -2506,7 +2506,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 } else {
                     isize::from_str_radix(&s[2..], 16).ok()
                 }
-            } else if s.starts_with("0") {
+            } else if s.starts_with('0') {
                 isize::from_str_radix(s, 8).ok()
             } else {
                 isize::from_str_radix(s, 10).ok()
