@@ -36,7 +36,7 @@ impl fmt::Debug for Unique<HANDLE> {
 /// A wrapper around an owned Windows HANDLE. The wrapper
 /// allows reading from or write to the HANDLE, and will
 /// close it once it goes out of scope.
-#[derive(Debug)]
+#[derive(Debug, Eq)]
 pub struct RawIo {
     /// The underlying HANDLE.
     handle: Unique<HANDLE>,
@@ -45,7 +45,6 @@ pub struct RawIo {
     must_close: bool,
 }
 
-impl Eq for RawIo {}
 impl PartialEq<RawIo> for RawIo {
     fn eq(&self, other: &RawIo) -> bool {
         **(self.handle) == **(other.handle)

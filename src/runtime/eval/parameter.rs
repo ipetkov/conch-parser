@@ -1176,11 +1176,11 @@ mod tests {
         let assig_value     = Fields::Single(assig_var_value.clone());
 
         // Variable set and non-null
-        let subst: ParamSubst = Assign(true, Parameter::Var(var.clone()), Some(assig.clone()));
+        let subst: ParamSubst = Assign(true, Parameter::Var(var.clone()), Some(assig));
         assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
         let subst: ParamSubst = Assign(true, Parameter::Var(var.clone()), None);
         assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
-        let subst: ParamSubst = Assign(false, Parameter::Var(var.clone()), Some(assig.clone()));
+        let subst: ParamSubst = Assign(false, Parameter::Var(var.clone()), Some(assig));
         assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
         let subst: ParamSubst = Assign(false, Parameter::Var(var.clone()), None);
         assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
@@ -1188,7 +1188,7 @@ mod tests {
 
         // Variable set but null
         env.set_var(var_null.clone(), null.clone());
-        let subst: ParamSubst = Assign(true, Parameter::Var(var_null.clone()), Some(assig.clone()));
+        let subst: ParamSubst = Assign(true, Parameter::Var(var_null.clone()), Some(assig));
         assert_eq!(subst.eval(&mut env, cfg), Ok(assig_value.clone()));
         assert_eq!(env.var(&var_null), Some(&assig_var_value));
 
@@ -1198,7 +1198,7 @@ mod tests {
         assert_eq!(env.var(&var_null), Some(&null));
 
         env.set_var(var_null.clone(), null.clone());
-        let subst: ParamSubst = Assign(false, Parameter::Var(var_null.clone()), Some(assig.clone()));
+        let subst: ParamSubst = Assign(false, Parameter::Var(var_null.clone()), Some(assig));
         assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
         assert_eq!(env.var(&var_null), Some(&null));
 
@@ -1211,7 +1211,7 @@ mod tests {
         // Variable unset
         {
             let mut env = env.sub_env();
-            let subst: ParamSubst = Assign(true, Parameter::Var(var_unset.clone()), Some(assig.clone()));
+            let subst: ParamSubst = Assign(true, Parameter::Var(var_unset.clone()), Some(assig));
             assert_eq!(subst.eval(&mut *env, cfg), Ok(assig_value.clone()));
             assert_eq!(env.var(&var_unset), Some(&assig_var_value));
         }
@@ -1225,7 +1225,7 @@ mod tests {
 
         {
             let mut env = env.sub_env();
-            let subst: ParamSubst = Assign(false, Parameter::Var(var_unset.clone()), Some(assig.clone()));
+            let subst: ParamSubst = Assign(false, Parameter::Var(var_unset.clone()), Some(assig));
             assert_eq!(subst.eval(&mut *env, cfg), Ok(assig_value.clone()));
             assert_eq!(env.var(&var_unset), Some(&assig_var_value));
         }
@@ -1252,7 +1252,7 @@ mod tests {
 
         for param in unassignable_params {
             let err = ExpansionError::BadAssig(param.clone());
-            let subst: ParamSubst = Assign(true, param.clone(), Some(assig.clone()));
+            let subst: ParamSubst = Assign(true, param.clone(), Some(assig));
             assert_eq!(subst.eval(&mut env, cfg), Err(RuntimeError::Expansion(err.clone())));
             assert_eq!(env.last_status(), EXIT_ERROR);
         }
@@ -1295,16 +1295,16 @@ mod tests {
         let err_msg = MockSubstWord(ERR_MSG);
 
         // Strict with error message
-        let subst: ParamSubst = Error(true, Parameter::Var(var.clone()), Some(err_msg.clone()));
+        let subst: ParamSubst = Error(true, Parameter::Var(var.clone()), Some(err_msg));
         assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
 
         env.set_last_status(EXIT_SUCCESS);
-        let subst: ParamSubst = Error(true, Parameter::Var(var_null.clone()), Some(err_msg.clone()));
+        let subst: ParamSubst = Error(true, Parameter::Var(var_null.clone()), Some(err_msg));
         assert_eq!(subst.eval(&mut env, cfg).as_ref(), Err(&err_null));
         assert_eq!(env.last_status(), EXIT_ERROR);
 
         env.set_last_status(EXIT_SUCCESS);
-        let subst: ParamSubst = Error(true, Parameter::Var(var_unset.clone()), Some(err_msg.clone()));
+        let subst: ParamSubst = Error(true, Parameter::Var(var_unset.clone()), Some(err_msg));
         assert_eq!(subst.eval(&mut env, cfg).as_ref(), Err(&err_unset));
         assert_eq!(env.last_status(), EXIT_ERROR);
 
@@ -1335,14 +1335,14 @@ mod tests {
 
 
         // Non-strict with error message
-        let subst: ParamSubst = Error(false, Parameter::Var(var.clone()), Some(err_msg.clone()));
+        let subst: ParamSubst = Error(false, Parameter::Var(var.clone()), Some(err_msg));
         assert_eq!(subst.eval(&mut env, cfg), Ok(var_value.clone()));
 
-        let subst: ParamSubst = Error(false, Parameter::Var(var_null.clone()), Some(err_msg.clone()));
+        let subst: ParamSubst = Error(false, Parameter::Var(var_null.clone()), Some(err_msg));
         assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
 
         env.set_last_status(EXIT_SUCCESS);
-        let subst: ParamSubst = Error(false, Parameter::Var(var_unset.clone()), Some(err_msg.clone()));
+        let subst: ParamSubst = Error(false, Parameter::Var(var_unset.clone()), Some(err_msg));
         assert_eq!(subst.eval(&mut env, cfg).as_ref(), Err(&err_unset));
         assert_eq!(env.last_status(), EXIT_ERROR);
 
@@ -1377,20 +1377,20 @@ mod tests {
             let args_value = args.iter().cloned().map(Rc::new).collect::<Vec<_>>();
             let mut env = Env::with_config(false, None, Some(args), None, None).unwrap();
 
-            let subst: ParamSubst = Error(true, Parameter::At, Some(err_msg.clone()));
+            let subst: ParamSubst = Error(true, Parameter::At, Some(err_msg));
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
             let subst: ParamSubst = Error(true, Parameter::At, None);
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
-            let subst: ParamSubst = Error(true, Parameter::Star, Some(err_msg.clone()));
+            let subst: ParamSubst = Error(true, Parameter::Star, Some(err_msg));
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Star(args_value.clone())));
             let subst: ParamSubst = Error(true, Parameter::Star, None);
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Star(args_value.clone())));
 
-            let subst: ParamSubst = Error(false, Parameter::At, Some(err_msg.clone()));
+            let subst: ParamSubst = Error(false, Parameter::At, Some(err_msg));
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
             let subst: ParamSubst = Error(false, Parameter::At, None);
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
-            let subst: ParamSubst = Error(false, Parameter::Star, Some(err_msg.clone()));
+            let subst: ParamSubst = Error(false, Parameter::Star, Some(err_msg));
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Star(args_value.clone())));
             let subst: ParamSubst = Error(false, Parameter::Star, None);
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Star(args_value.clone())));
@@ -1405,7 +1405,7 @@ mod tests {
             )), None, None).unwrap();
 
             env.set_last_status(EXIT_SUCCESS);
-            let subst: ParamSubst = Error(true, Parameter::At, Some(err_msg.clone()));
+            let subst: ParamSubst = Error(true, Parameter::At, Some(err_msg));
             assert_eq!(subst.eval(&mut env, cfg).as_ref(), Err(&err_at));
             assert_eq!(env.last_status(), EXIT_ERROR);
 
@@ -1419,7 +1419,7 @@ mod tests {
             }
 
             env.set_last_status(EXIT_SUCCESS);
-            let subst: ParamSubst = Error(true, Parameter::Star, Some(err_msg.clone()));
+            let subst: ParamSubst = Error(true, Parameter::Star, Some(err_msg));
             assert_eq!(subst.eval(&mut env, cfg).as_ref(), Err(&err_star));
             assert_eq!(env.last_status(), EXIT_ERROR);
 
@@ -1433,11 +1433,11 @@ mod tests {
             }
 
 
-            let subst: ParamSubst = Error(false, Parameter::At, Some(err_msg.clone()));
+            let subst: ParamSubst = Error(false, Parameter::At, Some(err_msg));
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
             let subst: ParamSubst = Error(false, Parameter::At, None);
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
-            let subst: ParamSubst = Error(false, Parameter::Star, Some(err_msg.clone()));
+            let subst: ParamSubst = Error(false, Parameter::Star, Some(err_msg));
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
             let subst: ParamSubst = Error(false, Parameter::Star, None);
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
@@ -1448,7 +1448,7 @@ mod tests {
             let mut env = Env::new().unwrap();
 
             env.set_last_status(EXIT_SUCCESS);
-            let subst: ParamSubst = Error(true, Parameter::At, Some(err_msg.clone()));
+            let subst: ParamSubst = Error(true, Parameter::At, Some(err_msg));
             assert_eq!(subst.eval(&mut env, cfg).as_ref(), Err(&err_at));
             assert_eq!(env.last_status(), EXIT_ERROR);
 
@@ -1462,7 +1462,7 @@ mod tests {
             }
 
             env.set_last_status(EXIT_SUCCESS);
-            let subst: ParamSubst = Error(true, Parameter::Star, Some(err_msg.clone()));
+            let subst: ParamSubst = Error(true, Parameter::Star, Some(err_msg));
             assert_eq!(subst.eval(&mut env, cfg).as_ref(), Err(&err_star));
             assert_eq!(env.last_status(), EXIT_ERROR);
 
@@ -1475,11 +1475,11 @@ mod tests {
                 panic!("Unexpected evaluation: {:?}", eval);
             }
 
-            let subst: ParamSubst = Error(false, Parameter::At, Some(err_msg.clone()));
+            let subst: ParamSubst = Error(false, Parameter::At, Some(err_msg));
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
             let subst: ParamSubst = Error(false, Parameter::At, None);
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
-            let subst: ParamSubst = Error(false, Parameter::Star, Some(err_msg.clone()));
+            let subst: ParamSubst = Error(false, Parameter::Star, Some(err_msg));
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
             let subst: ParamSubst = Error(false, Parameter::Star, None);
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
@@ -1511,11 +1511,11 @@ mod tests {
         let alt_value = Fields::Single(Rc::new(alt_value.to_string()));
 
         // Strict with alternative
-        let subst: ParamSubst = Alternative(true, Parameter::Var(var.clone()), Some(alternative.clone()));
+        let subst: ParamSubst = Alternative(true, Parameter::Var(var.clone()), Some(alternative));
         assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
-        let subst: ParamSubst = Alternative(true, Parameter::Var(var_null.clone()), Some(alternative.clone()));
+        let subst: ParamSubst = Alternative(true, Parameter::Var(var_null.clone()), Some(alternative));
         assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
-        let subst: ParamSubst = Alternative(true, Parameter::Var(var_unset.clone()), Some(alternative.clone()));
+        let subst: ParamSubst = Alternative(true, Parameter::Var(var_unset.clone()), Some(alternative));
         assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
 
         // Strict without alternative
@@ -1528,11 +1528,11 @@ mod tests {
 
 
         // Non-strict with alternative
-        let subst: ParamSubst = Alternative(false, Parameter::Var(var.clone()), Some(alternative.clone()));
+        let subst: ParamSubst = Alternative(false, Parameter::Var(var.clone()), Some(alternative));
         assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
-        let subst: ParamSubst = Alternative(false, Parameter::Var(var_null.clone()), Some(alternative.clone()));
+        let subst: ParamSubst = Alternative(false, Parameter::Var(var_null.clone()), Some(alternative));
         assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
-        let subst: ParamSubst = Alternative(false, Parameter::Var(var_unset.clone()), Some(alternative.clone()));
+        let subst: ParamSubst = Alternative(false, Parameter::Var(var_unset.clone()), Some(alternative));
         assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
 
         // Non-strict without alternative
@@ -1555,20 +1555,20 @@ mod tests {
 
             let mut env = Env::with_config(false, None, Some(args), None, None).unwrap();
 
-            let subst: ParamSubst = Alternative(true, Parameter::At, Some(alternative.clone()));
+            let subst: ParamSubst = Alternative(true, Parameter::At, Some(alternative));
             assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
             let subst: ParamSubst = Alternative(true, Parameter::At, None);
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
-            let subst: ParamSubst = Alternative(true, Parameter::Star, Some(alternative.clone()));
+            let subst: ParamSubst = Alternative(true, Parameter::Star, Some(alternative));
             assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
             let subst: ParamSubst = Alternative(true, Parameter::Star, None);
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
 
-            let subst: ParamSubst = Alternative(false, Parameter::At, Some(alternative.clone()));
+            let subst: ParamSubst = Alternative(false, Parameter::At, Some(alternative));
             assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
             let subst: ParamSubst = Alternative(false, Parameter::At, None);
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
-            let subst: ParamSubst = Alternative(false, Parameter::Star, Some(alternative.clone()));
+            let subst: ParamSubst = Alternative(false, Parameter::Star, Some(alternative));
             assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
             let subst: ParamSubst = Alternative(false, Parameter::Star, None);
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
@@ -1582,20 +1582,20 @@ mod tests {
                 "".to_string(),
             )), None, None).unwrap();
 
-            let subst: ParamSubst = Alternative(true, Parameter::At, Some(alternative.clone()));
+            let subst: ParamSubst = Alternative(true, Parameter::At, Some(alternative));
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
             let subst: ParamSubst = Alternative(true, Parameter::At, None);
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
-            let subst: ParamSubst = Alternative(true, Parameter::Star, Some(alternative.clone()));
+            let subst: ParamSubst = Alternative(true, Parameter::Star, Some(alternative));
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
             let subst: ParamSubst = Alternative(true, Parameter::Star, None);
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
 
-            let subst: ParamSubst = Alternative(false, Parameter::At, Some(alternative.clone()));
+            let subst: ParamSubst = Alternative(false, Parameter::At, Some(alternative));
             assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
             let subst: ParamSubst = Alternative(false, Parameter::At, None);
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
-            let subst: ParamSubst = Alternative(false, Parameter::Star, Some(alternative.clone()));
+            let subst: ParamSubst = Alternative(false, Parameter::Star, Some(alternative));
             assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
             let subst: ParamSubst = Alternative(false, Parameter::Star, None);
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
@@ -1605,20 +1605,20 @@ mod tests {
         {
             let mut env = Env::new().unwrap();
 
-            let subst: ParamSubst = Alternative(true, Parameter::At, Some(alternative.clone()));
+            let subst: ParamSubst = Alternative(true, Parameter::At, Some(alternative));
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
             let subst: ParamSubst = Alternative(true, Parameter::At, None);
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
-            let subst: ParamSubst = Alternative(true, Parameter::Star, Some(alternative.clone()));
+            let subst: ParamSubst = Alternative(true, Parameter::Star, Some(alternative));
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
             let subst: ParamSubst = Alternative(true, Parameter::Star, None);
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
 
-            let subst: ParamSubst = Alternative(false, Parameter::At, Some(alternative.clone()));
+            let subst: ParamSubst = Alternative(false, Parameter::At, Some(alternative));
             assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
             let subst: ParamSubst = Alternative(false, Parameter::At, None);
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
-            let subst: ParamSubst = Alternative(false, Parameter::Star, Some(alternative.clone()));
+            let subst: ParamSubst = Alternative(false, Parameter::Star, Some(alternative));
             assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
             let subst: ParamSubst = Alternative(false, Parameter::Star, None);
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));

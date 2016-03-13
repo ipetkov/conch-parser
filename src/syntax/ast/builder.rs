@@ -9,7 +9,6 @@
 //! the `Builder` trait for your AST. Otherwise you can provide the `DefaultBuilder`
 //! struct to the parser if you wish to use the default AST implementation.
 
-use std::cmp::{PartialEq, Eq};
 use std::rc::Rc;
 use syntax::ast::{Arithmetic, Command, CompoundCommand, ComplexWord, GuardBodyPair, Parameter,
                   ParameterSubstitution, Redirect, SimpleCommand, SimpleWord, TopLevelWord, Word};
@@ -101,7 +100,7 @@ pub struct CasePatternFragments<W> {
 }
 
 /// An indicator to the builder what kind of complex word was parsed.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum ComplexWordKind<C> {
     /// Several distinct words concatenated together.
     Concat(Vec<WordKind<C>>),
@@ -110,7 +109,7 @@ pub enum ComplexWordKind<C> {
 }
 
 /// An indicator to the builder what kind of word was parsed.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum WordKind<C> {
     /// A regular word.
     Simple(SimpleWordKind<C>),
@@ -122,7 +121,7 @@ pub enum WordKind<C> {
 }
 
 /// An indicator to the builder what kind of simple word was parsed.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum SimpleWordKind<C> {
     /// A non-special literal word.
     Literal(String),
@@ -150,7 +149,7 @@ pub enum SimpleWordKind<C> {
 }
 
 /// Represents redirecting a command's file descriptors.
-#[derive(Debug)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum RedirectKind<W> {
     /// Open a file for reading, e.g. `[n]< file`.
     Read(Option<u16>, W),
@@ -171,7 +170,7 @@ pub enum RedirectKind<W> {
 }
 
 /// Represents the type of parameter that was parsed
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum ParameterSubstitutionKind<C, W> {
     /// Returns the standard output of running a command, e.g. `$(cmd)`
     Command(Vec<C>),
@@ -813,178 +812,6 @@ pub struct DefaultBuilder;
 impl ::std::default::Default for DefaultBuilder {
     fn default() -> DefaultBuilder {
         DefaultBuilder
-    }
-}
-
-impl<W> Eq for RedirectKind<W> where W: Eq {}
-impl<W> PartialEq<RedirectKind<W>> for RedirectKind<W> where W: PartialEq<W> {
-    fn eq(&self, other: &Self) -> bool {
-        use self::RedirectKind::*;
-        match (self, other) {
-            (&Read(ref fd1, ref w1),      &Read(ref fd2, ref w2))      => fd1 == fd2 && w1 == w2,
-            (&Write(ref fd1, ref w1),     &Write(ref fd2, ref w2))     => fd1 == fd2 && w1 == w2,
-            (&ReadWrite(ref fd1, ref w1), &ReadWrite(ref fd2, ref w2)) => fd1 == fd2 && w1 == w2,
-            (&Append(ref fd1, ref w1),    &Append(ref fd2, ref w2))    => fd1 == fd2 && w1 == w2,
-            (&Clobber(ref fd1, ref w1),   &Clobber(ref fd2, ref w2))   => fd1 == fd2 && w1 == w2,
-            (&Heredoc(ref fd1, ref b1),   &Clobber(ref fd2, ref b2))   => fd1 == fd2 && b1 == b2,
-            (&DupRead(ref fd1, ref w1),   &DupRead(ref fd2, ref w2))   => fd1 == fd2 && w1 == w2,
-            (&DupWrite(ref fd1, ref w1),  &DupWrite(ref fd2, ref w2))  => fd1 == fd2 && w1 == w2,
-            _ => false,
-        }
-    }
-}
-
-impl<W> Clone for RedirectKind<W> where W: Clone {
-    fn clone(&self) -> Self {
-        use self::RedirectKind::*;
-        match *self {
-            Read(ref fd, ref w)      => Read(fd.clone(), w.clone()),
-            Write(ref fd, ref w)     => Write(fd.clone(), w.clone()),
-            ReadWrite(ref fd, ref w) => ReadWrite(fd.clone(), w.clone()),
-            Append(ref fd, ref w)    => Append(fd.clone(), w.clone()),
-            Clobber(ref fd, ref w)   => Clobber(fd.clone(), w.clone()),
-            Heredoc(ref fd, ref b)   => Clobber(fd.clone(), b.clone()),
-            DupRead(ref fd, ref w)   => DupRead(fd.clone(), w.clone()),
-            DupWrite(ref fd, ref w)  => DupWrite(fd.clone(), w.clone()),
-        }
-    }
-}
-
-impl<C> Eq for ComplexWordKind<C> where C: Eq {}
-impl<C> PartialEq<ComplexWordKind<C>> for ComplexWordKind<C> where C: PartialEq {
-    fn eq(&self, other: &Self) -> bool {
-        use self::ComplexWordKind::*;
-        match (self, other) {
-            (&Concat(ref a), &Concat(ref b)) if a == b => true,
-            (&Single(ref a), &Single(ref b)) if a == b => true,
-            _ => false,
-        }
-    }
-}
-
-impl<C> Clone for ComplexWordKind<C> where C: Clone {
-    fn clone(&self) -> Self {
-        use self::ComplexWordKind::*;
-
-        match *self {
-            Concat(ref v) => Concat(v.clone()),
-            Single(ref s) => Single(s.clone()),
-        }
-    }
-}
-
-impl<C> Eq for WordKind<C> where C: Eq {}
-impl<C> PartialEq<WordKind<C>> for WordKind<C> where C: PartialEq {
-    fn eq(&self, other: &Self) -> bool {
-        use self::WordKind::*;
-        match (self, other) {
-            (&Simple(ref a),       &Simple(ref b))       if a == b => true,
-            (&DoubleQuoted(ref a), &DoubleQuoted(ref b)) if a == b => true,
-            (&SingleQuoted(ref a), &SingleQuoted(ref b)) if a == b => true,
-            _ => false,
-        }
-    }
-}
-
-impl<C> Clone for WordKind<C> where C: Clone {
-    fn clone(&self) -> Self {
-        use self::WordKind::*;
-
-        match *self {
-            Simple(ref s)       => Simple(s.clone()),
-            DoubleQuoted(ref v) => DoubleQuoted(v.clone()),
-            SingleQuoted(ref s) => SingleQuoted(s.clone()),
-        }
-    }
-}
-
-impl<C> Eq for SimpleWordKind<C> where C: Eq {}
-impl<C> PartialEq<SimpleWordKind<C>> for SimpleWordKind<C> where C: PartialEq {
-    fn eq(&self, other: &Self) -> bool {
-        use self::SimpleWordKind::*;
-        match (self, other) {
-            (&Literal(ref a),      &Literal(ref b))      if a == b => true,
-            (&Param(ref a),        &Param(ref b))        if a == b => true,
-            (&Subst(ref a),        &Subst(ref b))        if a == b => true,
-            (&CommandSubst(ref a), &CommandSubst(ref b)) if a == b => true,
-            (&Escaped(ref a),      &Escaped(ref b))      if a == b => true,
-            (&Star,                &Star)                          => true,
-            (&Question,            &Question)                      => true,
-            (&SquareOpen,          &SquareOpen)                    => true,
-            (&SquareClose,         &SquareClose)                   => true,
-            (&Tilde,               &Tilde)                         => true,
-            (&Colon,               &Colon)                         => true,
-            _ => false,
-        }
-    }
-}
-
-impl<C> Clone for SimpleWordKind<C> where C: Clone {
-    fn clone(&self) -> Self {
-        use self::SimpleWordKind::*;
-
-        match *self {
-            Literal(ref s)      => Literal(s.clone()),
-            Param(ref p)        => Param(p.clone()),
-            Subst(ref p)        => Subst(p.clone()),
-            CommandSubst(ref c) => CommandSubst(c.clone()),
-            Escaped(ref s)      => Escaped(s.clone()),
-            Star                => Star,
-            Question            => Question,
-            SquareOpen          => SquareOpen,
-            SquareClose         => SquareClose,
-            Tilde               => Tilde,
-            Colon               => Colon,
-        }
-    }
-}
-
-impl<C, W> Eq for ParameterSubstitutionKind<C, W> where C: Eq, W: Eq {}
-impl<C, W> PartialEq<ParameterSubstitutionKind<C, W>> for ParameterSubstitutionKind<C, W>
-where C: PartialEq, W: PartialEq {
-    fn eq(&self, other: &Self) -> bool {
-        use self::ParameterSubstitutionKind::*;
-        match (self, other) {
-            (&Command(ref v1), &Command(ref v2))    if v1 == v2 => true,
-            (&Len(ref s1),     &Len(ref s2))        if s1 == s2 => true,
-            (&Arith(ref a1),   &Arith(ref a2)) if a1 == a2 => true,
-
-            (&RemoveSmallestSuffix(ref p1, ref w1), &RemoveSmallestSuffix(ref p2, ref w2)) |
-            (&RemoveLargestSuffix(ref p1, ref w1),  &RemoveLargestSuffix(ref p2, ref w2))  |
-            (&RemoveSmallestPrefix(ref p1, ref w1), &RemoveSmallestPrefix(ref p2, ref w2)) |
-            (&RemoveLargestPrefix(ref p1, ref w1),  &RemoveLargestPrefix(ref p2, ref w2))
-                if p1 == p2 && w1 == w2 => true,
-
-            (&Default(c1, ref p1, ref w1),     &Default(c2, ref p2, ref w2))     |
-            (&Assign(c1, ref p1, ref w1),      &Assign(c2, ref p2, ref w2))      |
-            (&Error(c1, ref p1, ref w1),       &Error(c2, ref p2, ref w2))       |
-            (&Alternative(c1, ref p1, ref w1), &Alternative(c2, ref p2, ref w2))
-                if c1 == c2 && p1 == p2 && w1 == w2 => true,
-
-            _ => false,
-        }
-    }
-}
-
-impl<C, W> Clone for ParameterSubstitutionKind<C, W> where C: Clone, W: Clone {
-    fn clone(&self) -> Self {
-        use self::ParameterSubstitutionKind::*;
-
-        match *self {
-            Command(ref v) => Command(v.clone()),
-            Len(ref s)     => Len(s.clone()),
-            Arith(ref a)   => Arith(a.clone()),
-
-            Default(c, ref p, ref w)     => Default(c, p.clone(), w.clone()),
-            Assign(c, ref p, ref w)      => Assign(c, p.clone(), w.clone()),
-            Error(c, ref p, ref w)       => Error(c, p.clone(), w.clone()),
-            Alternative(c, ref p, ref w) => Alternative(c, p.clone(), w.clone()),
-
-            RemoveSmallestSuffix(ref p, ref w) => RemoveSmallestSuffix(p.clone(), w.clone()),
-            RemoveLargestSuffix(ref p, ref w)  => RemoveLargestSuffix(p.clone(), w.clone()),
-            RemoveSmallestPrefix(ref p, ref w) => RemoveSmallestPrefix(p.clone(), w.clone()),
-            RemoveLargestPrefix(ref p, ref w)  => RemoveLargestPrefix(p.clone(), w.clone()),
-        }
     }
 }
 

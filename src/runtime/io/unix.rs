@@ -12,7 +12,7 @@ use super::FileDesc;
 /// A wrapper around an owned UNIX file descriptor. The wrapper
 /// allows reading from or write to the descriptor, and will
 /// close it once it goes out of scope.
-#[derive(Debug)]
+#[derive(Debug, Eq)]
 pub struct RawIo {
     /// The underlying descriptor.
     fd: RawFd,
@@ -21,7 +21,6 @@ pub struct RawIo {
     must_close: bool,
 }
 
-impl Eq for RawIo {}
 impl PartialEq<RawIo> for RawIo {
     fn eq(&self, other: &RawIo) -> bool {
         self.fd == other.fd

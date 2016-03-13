@@ -1350,12 +1350,10 @@ mod tests {
         assert_eq!(env.run_function(Rc::new(fn_name.to_string()), vec!()), None);
 
         // Redefining function within subshell should revert to original
-        {
-            let parent_exit_code = parent_exit_code.clone();
-            env.set_function(fn_name_parent.to_string(), MockFn::new(move |_| {
-                Ok(ExitStatus::Code(parent_exit_code))
-            }));
-        }
+        env.set_function(fn_name_parent.to_string(), MockFn::new(move |_| {
+            Ok(ExitStatus::Code(parent_exit_code))
+        }));
+
         let compound: CompoundCommand = Subshell(vec!(
             Function(fn_name_parent.to_string(), Rc::new(*exit(42))),
             *cmd!(fn_name_parent),
