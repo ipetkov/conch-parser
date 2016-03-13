@@ -1159,7 +1159,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             words.push(w);
         }
 
-        let ret = if words.len() == 0 {
+        let ret = if words.is_empty() {
             None
         } else if words.len() == 1 {
             Some(Single(words.pop().unwrap()))
