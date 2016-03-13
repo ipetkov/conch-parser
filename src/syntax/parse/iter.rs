@@ -26,9 +26,9 @@ impl TokenOrPos {
     /// Returns `true` if `self` is a `Tok` value.
     #[inline]
     fn is_tok(&self) -> bool {
-        match self {
-            &TokenOrPos::Tok(_) => true,
-            &TokenOrPos::Pos(_) => false,
+        match *self {
+            TokenOrPos::Tok(_) => true,
+            TokenOrPos::Pos(_) => false,
         }
     }
 }
@@ -158,9 +158,9 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
         }
 
         self.peek_buf.iter()
-            .filter_map(|t| match t {
-                &TokenOrPos::Tok(ref t) => Some(t),
-                &TokenOrPos::Pos(_) => None,
+            .filter_map(|t| match *t {
+                TokenOrPos::Tok(ref t) => Some(t),
+                TokenOrPos::Pos(_) => None,
             })
             .take(amt)
             .collect()

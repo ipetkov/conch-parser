@@ -315,10 +315,10 @@ impl<'a> Environment for Env<'a> {
             Ok(None) // Force the traversal to walk the entire chain
         });
 
-        let ret: Vec<_> = env.into_iter().filter_map(|(k, v)| match v {
-            &Some((ref v, true)) => Some((k, &***v)),
-            &Some((_, false)) => None,
-            &None => None,
+        let ret: Vec<_> = env.into_iter().filter_map(|(k, v)| match *v {
+            Some((ref v, true)) => Some((k, &***v)),
+            Some((_, false)) => None,
+            None => None,
         }).collect();
         Cow::Owned(ret)
     }

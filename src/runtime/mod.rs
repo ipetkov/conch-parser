@@ -199,7 +199,7 @@ impl<W: WordEval> Run for SimpleCommand<W> {
 
         // Then do any local insertions/overrides
         for &(ref var, ref val) in &self.vars {
-            if let &Some(ref w) = val {
+            if let Some(ref w) = *val {
                 match try!(w.eval(env)) {
                     Fields::Zero      => continue,
                     Fields::Single(s) => cmd.env(var, &*s),

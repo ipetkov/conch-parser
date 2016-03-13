@@ -154,9 +154,9 @@ impl<W: WordEval, C: Run> ParameterSubstitution<W, C> {
                 Some(Fields::Split(_)) => unreachable!(),
             })),
 
-            Arith(ref a) => Fields::Single(Rc::new(match a {
-                &Some(ref a) => try!(a.eval(env)).to_string(),
-                &None => String::from("0"),
+            Arith(ref a) => Fields::Single(Rc::new(match *a {
+                Some(ref a) => try!(a.eval(env)).to_string(),
+                None => String::from("0"),
             })),
 
             Default(strict, ref p, ref default) => {

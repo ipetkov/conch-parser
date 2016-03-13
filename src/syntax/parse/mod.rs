@@ -2079,7 +2079,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         }
 
         let care_about_whitespace = tokens.iter().any(|tok| {
-            if let &Whitespace(_) = tok {
+            if let Whitespace(_) = *tok {
                 true
             } else {
                 false
