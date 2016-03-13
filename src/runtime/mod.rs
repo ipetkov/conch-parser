@@ -136,7 +136,7 @@ impl<'a, T: Run + ?Sized> Run for &'a T {
 impl<W: WordEval> Run for SimpleCommand<W> {
     fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
         if self.cmd.is_none() {
-            for &(ref var, ref val) in self.vars.iter() {
+            for &(ref var, ref val) in &self.vars {
                 if let Some(val) = val.as_ref() {
                     let val = try!(val.eval_as_assignment(env));
                     env.set_var(var.clone(), val);
@@ -198,7 +198,7 @@ impl<W: WordEval> Run for SimpleCommand<W> {
         }
 
         // Then do any local insertions/overrides
-        for &(ref var, ref val) in self.vars.iter() {
+        for &(ref var, ref val) in &self.vars {
             if let &Some(ref w) = val {
                 match try!(w.eval(env)) {
                     Fields::Zero      => continue,

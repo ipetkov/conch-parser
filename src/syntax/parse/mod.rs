@@ -910,7 +910,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                         // slow to stringify each and every line (and alloc it in memory)
                         // when token length checks are available without converting to strings.
                         let mut line_len = 0;
-                        for t in line.iter() {
+                        for t in &line {
                             line_len += t.len();
                             if line_len > delim_r_len {
                                 break;
@@ -5673,7 +5673,7 @@ pub mod test {
 
         let correct = Compound(Box::new(Subshell(vec!(cmd_unboxed("foo")))), vec!());
 
-        for cmd in commands.iter() {
+        for cmd in &commands {
             match make_parser(cmd).compound_command() {
                 Ok(ref result) if result == &correct => {},
                 Ok(result) => panic!("Parsed \"{}\" as an unexpected command type:\n{:#?}", cmd, result),
@@ -5758,7 +5758,7 @@ pub mod test {
             ("\"case\" foo in esac",         Unexpected(Token::DoubleQuote, src(0,1,1))),
         ];
 
-        for &(src, ref e) in cases.iter() {
+        for &(src, ref e) in &cases {
             match make_parser(src).compound_command() {
                 Ok(result) =>
                     panic!("Parse::compound_command unexpectedly succeeded parsing \"{}\" with result:\n{:#?}",
@@ -5783,7 +5783,7 @@ pub mod test {
             "case foo in esac 1>>out <& 2 2>&-",
         ];
 
-        for cmd in cases.iter() {
+        for cmd in &cases {
             match make_parser(cmd).compound_command() {
                 Ok(Compound(_, io)) => assert_eq!(io, vec!(
                     Redirect::Append(Some(1), word("out")),
@@ -5953,7 +5953,7 @@ pub mod test {
 
         let correct = Compound(Box::new(Subshell(vec!(cmd_unboxed("foo")))), vec!());
 
-        for cmd in commands.iter() {
+        for cmd in &commands {
             match make_parser(cmd).command() {
                 Ok(ref result) if result == &correct => {},
                 Ok(result) => panic!("Parsed \"{}\" as an unexpected command type:\n{:#?}", cmd, result),
@@ -6035,7 +6035,7 @@ pub mod test {
 
         let correct = Function(String::from("foo"), Rc::new(Compound(Box::new(Brace(vec!(cmd_args_unboxed("echo", &["body"])))), vec!())));
 
-        for cmd in commands.iter() {
+        for cmd in &commands {
             match make_parser(cmd).command() {
                 Ok(ref result) if result == &correct => {},
                 Ok(result) => panic!("Parsed \"{}\" as an unexpected command type:\n{:#?}", cmd, result),
@@ -6069,7 +6069,7 @@ pub mod test {
             "\"case\" foo in esac",
         ];
 
-        for cmd in cases.iter() {
+        for cmd in &cases {
             match make_parser(cmd).command() {
                 Ok(Simple(_)) => {},
                 Ok(result) =>
@@ -6729,7 +6729,7 @@ pub mod test {
             (r#"`foo \`bar \\\`baz \\\\\\\`qux \\\\\\\\\\\\\\\\$ \\\\\\\\\\\\\\\\$ \\\`\``"#, src(26,1,27)),
         ];
 
-        for &(s, p) in src.iter() {
+        for &(s, p) in &src {
             let correct = Unmatched(Token::Backtick, p);
             match make_parser(s).backticked_command_substitution() {
                 Ok(w) => panic!("Unexpectedly parsed the source \"{}\" as\n{:?}", s, w),
@@ -6750,7 +6750,7 @@ pub mod test {
             (r#"`foo \`bar \\\`baz \\\\\\\`qux ${invalid param} \\\\\\\` \\\`\``"#, src(40,1,41)),
         ];
 
-        for &(s, p) in src.iter() {
+        for &(s, p) in &src {
             let correct = BadSubst(Token::Whitespace(String::from(" ")), p);
             match make_parser(s).backticked_command_substitution() {
                 Ok(w) => panic!("Unexpectedly parsed the source \"{}\" as\n{:?}", s, w),
