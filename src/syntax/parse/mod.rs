@@ -1453,7 +1453,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 let param = match param {
                     Err(p) => Err(p),
                     Ok(p) => if let Some(&CurlyClose) = self.iter.peek() { Ok(p) } else {
-                        let c = if let Some(&Colon) = self.iter.peek() {
+                        let has_colon = if let Some(&Colon) = self.iter.peek() {
                             self.iter.next();
                             true
                         } else {
@@ -1471,7 +1471,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                         };
 
                         let word = try!(param_word(self));
-                        let maybe_len = p == Parameter::Pound && c == false && word.is_none();
+                        let maybe_len = p == Parameter::Pound && !has_colon && word.is_none();
 
                         // We must carefully check if we get ${#-} or ${#?}, in which case
                         // we have parsed a Len substitution and not something else
@@ -1481,10 +1481,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                             Err(Len(Parameter::Question))
                         } else {
                             match op {
-                                Dash     => Err(Default(c, p, word)),
-                                Equals   => Err(Assign(c, p, word)),
-                                Question => Err(Error(c, p, word)),
-                                Plus     => Err(Alternative(c, p, word)),
+                                Dash     => Err(Default(has_colon, p, word)),
+                                Equals   => Err(Assign(has_colon, p, word)),
+                                Question => Err(Error(has_colon, p, word)),
+                                Plus     => Err(Alternative(has_colon, p, word)),
                                 _ => unreachable!(),
                             }
                         }
