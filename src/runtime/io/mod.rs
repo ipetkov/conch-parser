@@ -353,10 +353,9 @@ mod tests {
         let Pipe { reader, writer } = Pipe::new().unwrap();
 
         let guard = thread::spawn(move || {
-            let mut writer = unsafe { writer.unsafe_write() };
-            writer.write_all(msg.as_bytes()).unwrap();
-            writer.flush().unwrap();
-            drop(writer);
+            let mut writer_ref = unsafe { writer.unsafe_write() };
+            writer_ref.write_all(msg.as_bytes()).unwrap();
+            writer_ref.flush().unwrap();
         });
 
         let mut read = String::new();
