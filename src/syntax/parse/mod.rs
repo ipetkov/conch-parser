@@ -2892,7 +2892,7 @@ pub mod test {
     #[test]
     fn test_complete_command_valid_no_input() {
         let mut p = make_parser("");
-        p.complete_command().ok().expect("no input caused an error");
+        p.complete_command().expect("no input caused an error");
     }
 
     #[test]
