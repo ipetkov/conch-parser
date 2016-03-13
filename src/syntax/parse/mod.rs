@@ -1786,15 +1786,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             }
 
             (Some(words), Some(post_words_comments))
-        } else {
+        } else if self.peek_reserved_word(&["do"]).is_none() {
             // If we didn't find an `in` keyword, and we havent hit the body
             // (a `do` keyword), then we can reasonably say the script has
             // words without an `in` keyword.
-            if self.peek_reserved_word(&["do"]).is_none() {
-                return Err(ParseError::IncompleteCmd("for", start_pos, "in", self.iter.pos()));
-            } else {
-                (None, None)
-            }
+            return Err(ParseError::IncompleteCmd("for", start_pos, "in", self.iter.pos()));
+        } else {
+            (None, None)
         };
 
         if self.peek_reserved_word(&["do"]).is_none() {
@@ -1970,38 +1968,34 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             self.skip_whitespace();
             eat!(self, { ParenClose => {} });
             None
+        } else if found_fn && Some(&Newline) == self.iter.peek() {
+            // Do nothing, function declaration satisfied
+            None
         } else {
-            if found_fn && Some(&Newline) == self.iter.peek() {
+            eat!(self, { Whitespace(_) => {} });
+            self.skip_whitespace();
+
+            // If we didn't find the function keyword, we MUST find `()` at this time
+            if !found_fn {
+                eat!(self, { ParenOpen => {} });
+                self.skip_whitespace();
+                eat!(self, { ParenClose => {} });
+                None
+            } else if Some(&Newline) == self.iter.peek() {
                 // Do nothing, function declaration satisfied
                 None
-            } else {
-                eat!(self, { Whitespace(_) => {} });
-                self.skip_whitespace();
-
-                // If we didn't find the function keyword, we MUST find `()` at this time
-                if !found_fn {
-                    eat!(self, { ParenOpen => {} });
-                    self.skip_whitespace();
-                    eat!(self, { ParenClose => {} });
+            } else if Some(&ParenOpen) == self.iter.peek() {
+                // Otherwise it is possible for there to be a subshell as the body
+                let subshell = try!(self.subshell_internal(true));
+                if subshell.is_empty() {
+                    // Case like `function foo () ...`
                     None
                 } else {
-                    if Some(&Newline) == self.iter.peek() {
-                        // Do nothing, function declaration satisfied
-                        None
-                    } else if Some(&ParenOpen) == self.iter.peek() {
-                        // Otherwise it is possible for there to be a subshell as the body
-                        let subshell = try!(self.subshell_internal(true));
-                        if subshell.is_empty() {
-                            // Case like `function foo () ...`
-                            None
-                        } else {
-                            // Case like `function foo (subshell)`
-                            Some(try!(self.builder.subshell(subshell, Vec::new())))
-                        }
-                    } else {
-                        None
-                    }
+                    // Case like `function foo (subshell)`
+                    Some(try!(self.builder.subshell(subshell, Vec::new())))
                 }
+            } else {
+                None
             }
         };
 
