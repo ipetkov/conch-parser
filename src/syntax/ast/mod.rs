@@ -146,6 +146,16 @@ pub enum Redirect<W> {
     DupWrite(Option<u16>, W),
 }
 
+/// A grouping of guard and body commands.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct GuardBodyPair<C> {
+    /// The guard commands, which if successful, should lead to the
+    /// execution of the body commands.
+    pub guard: Vec<C>,
+    /// The body commands to execute if the guard is successful.
+    pub body: Vec<C>,
+}
+
 /// Represents any valid shell command.
 /// Generic over the top-level representation of a shell word.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -185,18 +195,14 @@ pub enum CompoundCommand<W, C> {
     /// A group of commands that should be executed in a subshell environment.
     Subshell(Vec<C>),
     /// A command that executes its body as long as its guard exits successfully.
-    ///
-    /// Variant structure: `While(guard, body)`.
-    While(Vec<C>, Vec<C>),
+    While(GuardBodyPair<C>),
     /// A command that executes its body as until as its guard exits unsuccessfully.
-    ///
-    /// Variant structure: `Until(guard, body)`.
-    Until(Vec<C>, Vec<C>),
+    Until(GuardBodyPair<C>),
     /// A conditional command that runs the respective command branch when a
     /// certain of the first condition that exits successfully.
     ///
-    /// Variant structure: `If( (guard, branch)+, else_branch )`.
-    If(Vec<(Vec<C>, Vec<C>)>, Option<Vec<C>>),
+    /// Variant structure: `If( conditional+, else_branch )`.
+    If(Vec<GuardBodyPair<C>>, Option<Vec<C>>),
     /// A command that binds a variable to a number of provided words and runs
     /// its body once for each binding.
     ///

@@ -13,7 +13,7 @@ use std::process::{self, Stdio};
 use std::rc::Rc;
 use std::result;
 
-use syntax::ast::{Command, CompoundCommand, SimpleCommand, Redirect};
+use syntax::ast::{Command, CompoundCommand, GuardBodyPair, SimpleCommand, Redirect};
 use runtime::eval::{Fields, TildeExpansion, WordEval, WordEvalConfig};
 use runtime::io::{FileDesc, Permissions};
 
@@ -313,8 +313,8 @@ impl<W: WordEval, C: Run> Run for CompoundCommand<W, C> {
             // for the caller to decide how to handle.
             Brace(ref cmds) => try!(run(cmds, env)),
 
-            While(ref guard, ref body) |
-            Until(ref guard, ref body) => {
+            While(GuardBodyPair { ref guard, ref body }) |
+            Until(GuardBodyPair { ref guard, ref body }) => {
                 let invert_guard_status = if let Until(..) = *self { true } else { false };
                 let mut exit = EXIT_SUCCESS;
 
@@ -337,7 +337,7 @@ impl<W: WordEval, C: Run> Run for CompoundCommand<W, C> {
                 exit
             },
 
-            If(ref branches, ref els) => if branches.is_empty() {
+            If(ref conditionals, ref els) => if conditionals.is_empty() {
                 // An `If` AST node without any branches (conditional guards)
                 // isn't really a valid instantiation, but we'll just
                 // pretend it was an unsuccessful command (which it sort of is).
@@ -346,7 +346,7 @@ impl<W: WordEval, C: Run> Run for CompoundCommand<W, C> {
                 exit
             } else {
                 let mut exit = None;
-                for &(ref guard, ref body) in branches.iter() {
+                for &GuardBodyPair { ref guard, ref body } in conditionals.iter() {
                     if try_and_swallow_non_fatal!(run(guard, env), env).success() {
                         exit = Some(try!(run(body, env)));
                         break;
@@ -1158,6 +1158,8 @@ mod tests {
 
     #[test]
     fn test_run_command_if() {
+        use syntax::ast::GuardBodyPair;
+
         let fn_name_should_not_run = "foo_fn_should_not_run";
         let cmd_should_not_run = *cmd!(fn_name_should_not_run);
         let cmd_exit = *exit(42);
@@ -1169,15 +1171,15 @@ mod tests {
         }));
 
         let body_with_true_guard = vec!(
-            (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
-            (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
-            (vec!(*true_cmd()), vec!(cmd_exit.clone())),
-            (vec!(cmd_should_not_run.clone()), vec!(cmd_should_not_run.clone())),
+            GuardBodyPair { guard: vec!(*false_cmd()), body: vec!(cmd_should_not_run.clone()) },
+            GuardBodyPair { guard: vec!(*false_cmd()), body: vec!(cmd_should_not_run.clone()) },
+            GuardBodyPair { guard: vec!(*true_cmd()), body: vec!(cmd_exit.clone()) },
+            GuardBodyPair { guard: vec!(cmd_should_not_run.clone()), body: vec!(cmd_should_not_run.clone()) },
         );
 
         let body_without_true_guard = vec!(
-            (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
-            (vec!(*false_cmd()), vec!(cmd_should_not_run.clone())),
+            GuardBodyPair { guard: vec!(*false_cmd()), body: vec!(cmd_should_not_run.clone()) },
+            GuardBodyPair { guard: vec!(*false_cmd()), body: vec!(cmd_should_not_run.clone()) },
         );
 
         let compound: CompoundCommand =
@@ -1208,6 +1210,8 @@ mod tests {
 
     #[test]
     fn test_run_command_if_error_handling() {
+        use syntax::ast::GuardBodyPair;
+
         let should_not_run = "foo_fn_should_not_run";
         let fn_should_not_run = MockFn::new(|_| {
             panic!("ran command that should not be run")
@@ -1217,7 +1221,7 @@ mod tests {
         test_error_handling(true, |cmd, env| {
             env.set_function(should_not_run.to_string(), fn_should_not_run.clone());
             let compound: CompoundCommand = If(
-                vec!((vec!(*cmd), vec!(*cmd!(should_not_run)))),
+                vec!(GuardBodyPair { guard: vec!(*cmd), body: vec!(*cmd!(should_not_run)) }),
                 Some(vec!(*exit(42)))
             );
             compound.run(env)
@@ -1227,7 +1231,7 @@ mod tests {
         test_error_handling(true, |cmd, env| {
             env.set_function(should_not_run.to_string(), fn_should_not_run.clone());
             let compound: CompoundCommand = If(
-                vec!((vec!(*true_cmd()), vec!(*cmd))),
+                vec!(GuardBodyPair { guard: vec!(*true_cmd()), body: vec!(*cmd) }),
                 Some(vec!(*cmd!(should_not_run)))
             );
             compound.run(env)
@@ -1237,7 +1241,7 @@ mod tests {
         test_error_handling(true, |cmd, env| {
             env.set_function(should_not_run.to_string(), fn_should_not_run.clone());
             let compound: CompoundCommand = If(
-                vec!((vec!(*false_cmd()), vec!(*cmd!(should_not_run)))),
+                vec!(GuardBodyPair { guard: vec!(*false_cmd()), body: vec!(*cmd!(should_not_run))}),
                 Some(vec!(*cmd))
             );
             compound.run(env)

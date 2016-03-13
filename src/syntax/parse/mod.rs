@@ -245,29 +245,10 @@ pub struct Parser<I: Iterator<Item = Token>, B: Builder> {
 }
 
 impl<I: Iterator<Item = Token>, B: Builder + Default> Parser<I, B> {
-    /// Creates a new Parser from a Token iterator.
-    pub fn new(iter: I) -> Parser<I, B> {
-        Parser::with_builder(iter, Default::default())
+    /// Creates a new Parser from a Token iterator or collection.
+    pub fn new<T>(iter: T) -> Parser<I, B> where T: IntoIterator<Item = Token, IntoIter = I> {
+        Parser::with_builder(iter.into_iter(), Default::default())
     }
-}
-
-/// A macro that will consume a specified token from the parser's iterator
-/// an run a corresponding action block to do something with the token,
-/// or it will construct and return an appropriate Unexpected(EOF) error.
-macro_rules! eat {
-    ($parser:expr, { $($tok:pat => $blk:block),+, }) => { eat!($parser, {$($tok => $blk),+}) };
-
-    ($parser:expr, {$($tok:pat => $blk:block),+}) => {{
-        match $parser.iter.peek() {
-            $(Some(&$tok) => {}),+,
-            Some(_) | None => return Err($parser.make_unexpected_err()),
-        }
-
-        match $parser.iter.next() {
-            $(Some($tok) => $blk),+,
-            _ => unreachable!(),
-        }
-    }};
 }
 
 /// A macro that will consume and return a token that matches a specified pattern
@@ -281,24 +262,27 @@ macro_rules! eat_maybe {
         eat_maybe!($parser, { $($tok => $blk),+ })
     };
 
-    ($parser:expr, { $($tok:pat => $blk:block),+; _ => $default:block }) => {
-        match $parser.iter.peek() {
-            $(Some(&$tok) => {
-                $parser.iter.next();
-                $blk
-            }),+,
-            _ => $default,
-        }
+    ($parser:expr, { $($tok:pat => $blk:block),+ }) => {
+        eat_maybe!($parser, { $($tok => $blk),+; _ => {} })
     };
 
-    ($parser:expr, { $($tok:pat => $blk:block),+ }) => {
-        match $parser.iter.peek() {
-            $(Some(&$tok) => {
-                $parser.iter.next();
-                $blk
-            }),+
-            _ => {},
+    ($parser:expr, { $($tok:pat => $blk:block),+; _ => $default:block }) => {
+        $(if let Some(&$tok) = $parser.iter.peek() {
+            $parser.iter.next();
+            $blk
+        } else)+ {
+            $default
         }
+    };
+}
+
+/// A macro that will consume a specified token from the parser's iterator
+/// an run a corresponding action block to do something with the token,
+/// or it will construct and return an appropriate Unexpected(EOF) error.
+macro_rules! eat {
+    ($parser:expr, { $($tok:pat => $blk:block),+, }) => { eat!($parser, {$($tok => $blk),+}) };
+    ($parser:expr, {$($tok:pat => $blk:block),+}) => {
+        eat_maybe!($parser, {$($tok => $blk),+; _ => { return Err($parser.make_unexpected_err()) } })
     };
 }
 
@@ -1641,28 +1625,28 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     fn compound_command_internal(&mut self, kw: Option<CompoundCmdKeyword>) -> Result<B::Command> {
         let cmd = match kw.or_else(|| self.next_compound_command_type()) {
             Some(CompoundCmdKeyword::If) => {
-                let (branches, els) = try!(self.if_command());
+                let fragments = try!(self.if_command());
                 let io = try!(self.redirect_list());
-                try!(self.builder.if_command(branches, els, io))
+                try!(self.builder.if_command(fragments, io))
             },
 
             Some(CompoundCmdKeyword::While) |
             Some(CompoundCmdKeyword::Until) => {
-                let (until, guard, body) = try!(self.loop_command());
+                let (until, guard_body_pair) = try!(self.loop_command());
                 let io = try!(self.redirect_list());
-                try!(self.builder.loop_command(until, guard, body, io))
+                try!(self.builder.loop_command(until, guard_body_pair, io))
             },
 
             Some(CompoundCmdKeyword::For) => {
-                let (var, post_var_comments, words, post_word_comments, body) = try!(self.for_command());
+                let for_fragments = try!(self.for_command());
                 let io = try!(self.redirect_list());
-                try!(self.builder.for_command(var, post_var_comments, words, post_word_comments, body, io))
+                try!(self.builder.for_command(for_fragments, io))
             },
 
             Some(CompoundCmdKeyword::Case) => {
-                let (word, post_word_comments, branches, post_branch_comments) = try!(self.case_command());
+                let fragments = try!(self.case_command());
                 let io = try!(self.redirect_list());
-                try!(self.builder.case_command(word, post_word_comments, branches, post_branch_comments, io))
+                try!(self.builder.case_command(fragments, io))
             },
 
             Some(CompoundCmdKeyword::Brace) => {
@@ -1689,9 +1673,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Since they are compound commands (and can have redirections applied to
     /// the entire loop) this method returns the relevant parts of the loop command,
     /// without constructing an AST node, it so that the caller can do so with redirections.
-    ///
-    /// Return structure is `Result(loop_kind, guard_commands, body_commands)`.
-    pub fn loop_command(&mut self) -> Result<(builder::LoopKind, Vec<B::Command>, Vec<B::Command>)> {
+    pub fn loop_command(&mut self) -> Result<(builder::LoopKind, ast::GuardBodyPair<B::Command>)> {
         let start_pos = self.iter.pos();
         let kind = match try!(self.reserved_word(&["while", "until"])
                               .map_err(|_| self.make_unexpected_err())) {
@@ -1701,7 +1683,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         };
         let guard = try!(self.command_list(&["do"], &[]));
         match self.peek_reserved_word(&["do"]) {
-            Some(_) => Ok((kind, guard, try!(self.do_group()))),
+            Some(_) => Ok((kind, ast::GuardBodyPair {
+                guard: guard,
+                body: try!(self.do_group())
+            })),
             None => Err(ParseError::IncompleteCmd("while", start_pos, "do", self.iter.pos())),
         }
     }
@@ -1711,12 +1696,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Since `if` is a compound command (and can have redirections applied to it) this
     /// method returns the relevant parts of the `if` command, without constructing an
     /// AST node, it so that the caller can do so with redirections.
-    ///
-    /// Return structure is `Result( (condition, body)+, else_part )`.
-    pub fn if_command(&mut self) -> Result<(
-        Vec<(Vec<B::Command>, Vec<B::Command>)>,
-        Option<Vec<B::Command>>)>
-    {
+    pub fn if_command(&mut self) -> Result<builder::IfFragments<B::Command>> {
         let start_pos = self.iter.pos();
         try!(self.reserved_word(&["if"]).map_err(|_| self.make_unexpected_err()));
 
@@ -1728,13 +1708,16 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             () => { |_| ParseError::IncompleteCmd("if", start_pos, "then", self.iter.pos()) }
         }
 
-        let mut branches = Vec::new();
+        let mut conditionals = Vec::new();
         loop {
             let guard = try!(self.command_list(&["then"], &[]));
             try!(self.reserved_word(&["then"]).map_err(missing_then!()));
 
             let body = try!(self.command_list(&["elif", "else", "fi"], &[]));
-            branches.push((guard, body));
+            conditionals.push(ast::GuardBodyPair {
+                guard: guard,
+                body: body,
+            });
 
             let els = match try!(self.reserved_word(&["elif", "else", "fi"]).map_err(missing_fi!())) {
                 "elif" => continue,
@@ -1747,7 +1730,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 _ => unreachable!(),
             };
 
-            return Ok((branches, els))
+            return Ok(builder::IfFragments { conditionals: conditionals, else_part: els })
         }
     }
 
@@ -1756,15 +1739,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Since `for` is a compound command (and can have redirections applied to it) this
     /// method returns the relevant parts of the `for` command, without constructing an
     /// AST node, it so that the caller can do so with redirections.
-    ///
-    /// Return structure is `Result(var_name, comments_after_var, in_words, comments_after_words, body)`.
-    pub fn for_command(&mut self) -> Result<(
-        String,
-        Vec<builder::Newline>,
-        Option<Vec<B::Word>>,
-        Option<Vec<builder::Newline>>,
-        Vec<B::Command>)>
-    {
+    pub fn for_command(&mut self) -> Result<builder::ForFragments<B::Word, B::Command>> {
         let start_pos = self.iter.pos();
         try!(self.reserved_word(&["for"]).map_err(|_| self.make_unexpected_err()));
 
@@ -1788,7 +1763,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         eat!(self, { Whitespace(_) => {} });
 
         let post_var_comments = self.linebreak();
-        let (words, post_word_comments) = if self.peek_reserved_word(&["in"]).is_some() {
+        let (words, post_words_comments) = if self.peek_reserved_word(&["in"]).is_some() {
             self.reserved_word(&["in"]).unwrap();
 
             let mut words = Vec::new();
@@ -1805,12 +1780,12 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
             // We need either a newline or a ; to separate the words from the body
             // Thus if neither is found it is considered an error
-            let post_word_comments = self.linebreak();
-            if !found_semi && post_word_comments.is_empty() {
+            let post_words_comments = self.linebreak();
+            if !found_semi && post_words_comments.is_empty() {
                 return Err(self.make_unexpected_err());
             }
 
-            (Some(words), Some(post_word_comments))
+            (Some(words), Some(post_words_comments))
         } else {
             // If we didn't find an `in` keyword, and we havent hit the body
             // (a `do` keyword), then we can reasonably say the script has
@@ -1827,7 +1802,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         }
 
         let body = try!(self.do_group());
-        Ok((var, post_var_comments, words, post_word_comments, body))
+        Ok(builder::ForFragments {
+            var: var,
+            post_var_comments: post_var_comments,
+            words: words,
+            post_words_comments: post_words_comments,
+            body: body,
+        })
     }
 
     /// Parses a single `case` command but does not parse any redirections that may follow.
@@ -1835,16 +1816,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Since `case` is a compound command (and can have redirections applied to it) this
     /// method returns the relevant parts of the `case` command, without constructing an
     /// AST node, it so that the caller can do so with redirections.
-    ///
-    /// Return structure is `Result( word_to_match, comments_after_word,
-    /// ( (pre_pat_comments, pattern_alternatives+, post_pat_comments), cmds_to_run_on_match)* )`.
-    pub fn case_command(&mut self) -> Result<(
-            B::Word,
-            Vec<builder::Newline>,
-            Vec<( (Vec<builder::Newline>, Vec<B::Word>, Vec<builder::Newline>), Vec<B::Command> )>,
-            Vec<builder::Newline>
-        )>
-    {
+    pub fn case_command(&mut self) -> Result<builder::CaseFragments<B::Word, B::Command>> {
         let start_pos = self.iter.pos();
 
         macro_rules! missing_in {
@@ -1866,7 +1838,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         try!(self.reserved_word(&["in"]).map_err(missing_in!()));
 
         let mut pre_esac_comments = None;
-        let mut branches = Vec::new();
+        let mut arms = Vec::new();
         loop {
             let pre_pat_comments = self.linebreak();
             if self.peek_reserved_word(&["esac"]).is_some() {
@@ -1913,7 +1885,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
             // NB: we must capture linebreaks here since `peek_reserved_word`
             // will not consume them, and it could mistake a reserved word for a command.
-            let patterns = (pre_pat_comments, patterns, self.linebreak());
+            let post_pattern_comments = self.linebreak();
 
             // DSemi's are always special tokens, hence they aren't
             // reserved words, and thus the `command_list` method doesn't apply.
@@ -1929,7 +1901,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 }
             }
 
-            branches.push((patterns, cmds));
+            let pat_fragments = builder::CasePatternFragments {
+                pre_pattern_comments: pre_pat_comments,
+                pattern_alternatives: patterns,
+                post_pattern_comments: post_pattern_comments,
+            };
+
+            arms.push((pat_fragments, cmds));
 
             match self.iter.peek() {
                 Some(&DSemi) => {
@@ -1939,6 +1917,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 _ => break,
             }
         }
+
         let remaining_comments = self.linebreak();
         let pre_esac_comments = match pre_esac_comments {
             Some(mut comments) => {
@@ -1950,7 +1929,12 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         try!(self.reserved_word(&["esac"]).map_err(missing_esac!()));
 
-        Ok((word, post_word_comments, branches, pre_esac_comments))
+        Ok(builder::CaseFragments {
+            word: word,
+            post_word_comments: post_word_comments,
+            arms: arms,
+            post_arms_comments: pre_esac_comments,
+        })
     }
 
     /// Parses a single function declaration.
@@ -2693,27 +2677,29 @@ pub mod test {
         }
     }
 
-    pub fn sample_simple_command() -> (
-        Option<(TopLevelWord, Vec<TopLevelWord>)>,
-        Vec<(String, Option<TopLevelWord>)>,
-        Vec<Redirect<TopLevelWord>>)
-    {
-        (
-            Some((word("foo"), vec!(
+    struct SimpleCommandFragments {
+        cmd: Option<(TopLevelWord, Vec<TopLevelWord>)>,
+        vars: Vec<(String, Option<TopLevelWord>)>,
+        io: Vec<Redirect<TopLevelWord>>,
+    }
+
+    fn sample_simple_command() -> SimpleCommandFragments {
+        SimpleCommandFragments {
+            cmd: Some((word("foo"), vec!(
                 word("bar"),
                 word("baz"),
             ))),
-            vec!(
+            vars: vec!(
                 (String::from("var"), Some(word("val"))),
                 (String::from("ENV"), Some(word("true"))),
                 (String::from("BLANK"), None),
             ),
-            vec!(
+            io: vec!(
                 Redirect::Clobber(Some(2), word("clob")),
                 Redirect::ReadWrite(Some(3), word("rw")),
                 Redirect::Read(None, word("in")),
             ),
-        )
+        }
     }
 
     #[test]
@@ -3871,7 +3857,7 @@ pub mod test {
     #[test]
     fn test_simple_command_valid_assignments_at_start_of_command() {
         let mut p = make_parser("var=val ENV=true BLANK= foo bar baz");
-        let (cmd, vars, _) = sample_simple_command();
+        let SimpleCommandFragments { cmd, vars, ..} = sample_simple_command();
         let correct = Simple(Box::new(SimpleCommand { cmd: cmd, vars: vars, io: vec!() }));
         assert_eq!(correct, p.simple_command().unwrap());
     }
@@ -3879,7 +3865,7 @@ pub mod test {
     #[test]
     fn test_simple_command_assignments_after_start_of_command_should_be_args() {
         let mut p = make_parser("var=val ENV=true BLANK= foo var2=val2 bar baz var3=val3");
-        let (cmd, vars, _) = sample_simple_command();
+        let SimpleCommandFragments { cmd, vars, ..} = sample_simple_command();
         let (cmd, mut args) = cmd.unwrap();
         args.insert(0, word("var2=val2"));
         args.push(word("var3=val3"));
@@ -3890,7 +3876,7 @@ pub mod test {
     #[test]
     fn test_simple_command_redirections_at_start_of_command() {
         let mut p = make_parser("2>|clob 3<>rw <in var=val ENV=true BLANK= foo bar baz");
-        let (cmd, vars, io) = sample_simple_command();
+        let SimpleCommandFragments { cmd, vars, io } = sample_simple_command();
         let correct = Simple(Box::new(SimpleCommand { cmd: cmd, vars: vars, io: io }));
         assert_eq!(correct, p.simple_command().unwrap());
     }
@@ -3898,7 +3884,7 @@ pub mod test {
     #[test]
     fn test_simple_command_redirections_at_end_of_command() {
         let mut p = make_parser("var=val ENV=true BLANK= foo bar baz 2>|clob 3<>rw <in");
-        let (cmd, vars, io) = sample_simple_command();
+        let SimpleCommandFragments { cmd, vars, io } = sample_simple_command();
         let correct = Simple(Box::new(SimpleCommand { cmd: cmd, vars: vars, io: io }));
         assert_eq!(correct, p.simple_command().unwrap());
     }
@@ -3906,7 +3892,7 @@ pub mod test {
     #[test]
     fn test_simple_command_redirections_throughout_the_command() {
         let mut p = make_parser("2>|clob var=val 3<>rw ENV=true BLANK= foo bar <in baz 4>&-");
-        let (cmd, vars, mut io) = sample_simple_command();
+        let SimpleCommandFragments { cmd, vars, mut io } = sample_simple_command();
         io.push(Redirect::DupWrite(Some(4), word("-")));
         let correct = Simple(Box::new(SimpleCommand { cmd: cmd, vars: vars, io: io }));
         assert_eq!(correct, p.simple_command().unwrap());
@@ -4541,27 +4527,27 @@ pub mod test {
     #[test]
     fn test_loop_command_while_valid() {
         let mut p = make_parser("while guard1; guard2; do foo\nbar; baz; done");
-        let (until, guards, cmds) = p.loop_command().unwrap();
+        let (until, GuardBodyPair { guard, body }) = p.loop_command().unwrap();
 
-        let correct_guards = vec!(cmd_unboxed("guard1"), cmd_unboxed("guard2"));
-        let correct_cmds = vec!(cmd_unboxed("foo"), cmd_unboxed("bar"), cmd_unboxed("baz"));
+        let correct_guard = vec!(cmd_unboxed("guard1"), cmd_unboxed("guard2"));
+        let correct_body = vec!(cmd_unboxed("foo"), cmd_unboxed("bar"), cmd_unboxed("baz"));
 
         assert_eq!(until, builder::LoopKind::While);
-        assert_eq!(correct_guards, guards);
-        assert_eq!(correct_cmds, cmds);
+        assert_eq!(correct_guard, guard);
+        assert_eq!(correct_body, body);
     }
 
     #[test]
     fn test_loop_command_until_valid() {
         let mut p = make_parser("until guard1\n guard2\n do foo\nbar; baz; done");
-        let (until, guards, cmds) = p.loop_command().unwrap();
+        let (until, GuardBodyPair { guard, body }) = p.loop_command().unwrap();
 
-        let correct_guards = vec!(cmd_unboxed("guard1"), cmd_unboxed("guard2"));
-        let correct_cmds = vec!(cmd_unboxed("foo"), cmd_unboxed("bar"), cmd_unboxed("baz"));
+        let correct_guard = vec!(cmd_unboxed("guard1"), cmd_unboxed("guard2"));
+        let correct_body = vec!(cmd_unboxed("foo"), cmd_unboxed("bar"), cmd_unboxed("baz"));
 
         assert_eq!(until, builder::LoopKind::Until);
-        assert_eq!(correct_guards, guards);
-        assert_eq!(correct_cmds, cmds);
+        assert_eq!(correct_guard, guard);
+        assert_eq!(correct_body, body);
     }
 
     #[test]
@@ -4698,7 +4684,13 @@ pub mod test {
 
         let els = cmd_unboxed("else");
 
-        let correct = (vec!((vec!(guard1, guard2), vec!(body1)), (vec!(guard3), vec!(body2))), Some(vec!(els)));
+        let correct = builder::IfFragments {
+            conditionals: vec!(
+                GuardBodyPair { guard: vec!(guard1, guard2), body: vec!(body1) },
+                GuardBodyPair { guard: vec!(guard3), body: vec!(body2) },
+            ),
+            else_part: Some(vec!(els)),
+        };
         let mut p = make_parser("if guard1 <in; >out guard2; then body1 >|clob\n elif guard3; then body2 2>>app; else else; fi");
         assert_eq!(correct, p.if_command().unwrap());
     }
@@ -4735,7 +4727,13 @@ pub mod test {
             io: vec!(Redirect::Append(Some(2), word("app"))),
         }));
 
-        let correct = (vec!((vec!(guard1, guard2), vec!(body1)), (vec!(guard3), vec!(body2))), None);
+        let correct = builder::IfFragments {
+            conditionals: vec!(
+                GuardBodyPair { guard: vec!(guard1, guard2), body: vec!(body1) },
+                GuardBodyPair { guard: vec!(guard3), body: vec!(body2) },
+            ),
+            else_part: None,
+        };
         let mut p = make_parser("if guard1 <in; >out guard2; then body1 >|clob\n elif guard3; then body2 2>>app; fi");
         assert_eq!(correct, p.if_command().unwrap());
     }
@@ -4887,15 +4885,15 @@ pub mod test {
     #[test]
     fn test_for_command_valid_with_words() {
         let mut p = make_parser("for var #comment1\nin one two three\n#comment2\n\ndo echo $var; done");
-        let (var, var_comment, words, word_comment, body) = p.for_command().unwrap();
-        assert_eq!(var, "var");
-        assert_eq!(var_comment, vec!(Newline(Some(String::from("#comment1")))));
-        assert_eq!(words.unwrap(), vec!(
+        let fragments = p.for_command().unwrap();
+        assert_eq!(fragments.var, "var");
+        assert_eq!(fragments.post_var_comments, vec!(Newline(Some(String::from("#comment1")))));
+        assert_eq!(fragments.words.unwrap(), vec!(
             word("one"),
             word("two"),
             word("three"),
         ));
-        assert_eq!(word_comment, Some(vec!(
+        assert_eq!(fragments.post_words_comments, Some(vec!(
             Newline(None),
             Newline(Some(String::from("#comment2"))),
             Newline(None),
@@ -4906,24 +4904,24 @@ pub mod test {
             cmd: Some((word("echo"), vec!(word_param(Parameter::Var(String::from("var"))))))
         })));
 
-        assert_eq!(correct_body, body);
+        assert_eq!(correct_body, fragments.body);
     }
 
     #[test]
     fn test_for_command_valid_without_words() {
         let mut p = make_parser("for var #comment\ndo echo $var; done");
-        let (var, var_comment, words, word_comment, body) = p.for_command().unwrap();
-        assert_eq!(var, "var");
-        assert_eq!(var_comment, vec!(Newline(Some(String::from("#comment")))));
-        assert_eq!(words, None);
-        assert_eq!(word_comment, None);
+        let fragments = p.for_command().unwrap();
+        assert_eq!(fragments.var, "var");
+        assert_eq!(fragments.post_var_comments, vec!(Newline(Some(String::from("#comment")))));
+        assert_eq!(fragments.words, None);
+        assert_eq!(fragments.post_words_comments, None);
 
         let correct_body = vec!(Simple(Box::new(SimpleCommand {
             vars: vec!(), io: vec!(),
             cmd: Some((word("echo"), vec!(word_param(Parameter::Var(String::from("var"))))))
         })));
 
-        assert_eq!(correct_body, body);
+        assert_eq!(correct_body, fragments.body);
     }
 
     #[test]
@@ -5342,87 +5340,118 @@ pub mod test {
 
     #[test]
     fn test_case_command_valid() {
-        let correct_word = word("foo");
-        let correct_branches = vec!(
-            (
-                (vec!(), vec!(word("hello"), word("goodbye")), vec!()),
-                vec!(Simple(Box::new(SimpleCommand {
-                    cmd: Some((word("echo"), vec!(word("greeting")))),
-                    io: vec!(),
-                    vars: vec!(),
-                }))),
+        let correct = builder::CaseFragments {
+            word: word("foo"),
+            post_word_comments: vec!(),
+            arms: vec!(
+                (
+                    builder::CasePatternFragments {
+                        pre_pattern_comments: vec!(),
+                        pattern_alternatives: vec!(word("hello"), word("goodbye")),
+                        post_pattern_comments: vec!(),
+                    },
+                    vec!(cmd_args_unboxed("echo", &["greeting"])),
+                ),
+                (
+                    builder::CasePatternFragments {
+                        pre_pattern_comments: vec!(),
+                        pattern_alternatives: vec!(word("world")),
+                        post_pattern_comments: vec!(),
+                    },
+                    vec!(cmd_args_unboxed("echo", &["noun"])),
+                ),
             ),
-            (
-                (vec!(), vec!(word("world")), vec!()),
-                vec!(Simple(Box::new(SimpleCommand {
-                    cmd: Some((word("echo"), vec!(word("noun")))),
-                    io: vec!(),
-                    vars: vec!(),
-                }))),
-            ),
+            post_arms_comments: vec!(),
+        };
+
+        let cases = vec!(
+            // `(` before pattern is optional
+            "case foo in  hello | goodbye) echo greeting;;  world) echo noun;; esac",
+            "case foo in (hello | goodbye) echo greeting;;  world) echo noun;; esac",
+            "case foo in (hello | goodbye) echo greeting;; (world) echo noun;; esac",
+
+            // Final `;;` is optional as long as last command is complete
+            "case foo in hello | goodbye) echo greeting;; world) echo noun\nesac",
+            "case foo in hello | goodbye) echo greeting;; world) echo noun; esac",
         );
 
-        let correct = (correct_word, vec!(), correct_branches, vec!());
-
-        // `(` before pattern is optional
-        assert_eq!(correct, make_parser("case foo in  hello | goodbye) echo greeting;;  world) echo noun;; esac").case_command().unwrap());
-        assert_eq!(correct, make_parser("case foo in (hello | goodbye) echo greeting;;  world) echo noun;; esac").case_command().unwrap());
-        assert_eq!(correct, make_parser("case foo in (hello | goodbye) echo greeting;; (world) echo noun;; esac").case_command().unwrap());
-
-        // Final `;;` is optional as long as last command is complete
-        assert_eq!(correct, make_parser("case foo in hello | goodbye) echo greeting;; world) echo noun\nesac").case_command().unwrap());
-        assert_eq!(correct, make_parser("case foo in hello | goodbye) echo greeting;; world) echo noun; esac").case_command().unwrap());
+        for src in cases {
+            assert_eq!(correct, make_parser(src).case_command().unwrap());
+        }
     }
 
     #[test]
     fn test_case_command_valid_with_comments() {
-        let correct_word = word("foo");
-        let correct_post_word = vec!(Newline(Some(String::from("#post_word_a"))), Newline(Some(String::from("#post_word_b"))));
-        let correct_branches = vec!(
-            (
-                (
-                    vec!(Newline(Some(String::from("#pre_pat_1a"))), Newline(Some(String::from("#pre_pat_1b")))),
-                    vec!(word("hello"), word("goodbye")),
-                    vec!(Newline(Some(String::from("#post_pat_1a"))), Newline(Some(String::from("#post_pat_1b")))),
-                ),
-                vec!(Simple(Box::new(SimpleCommand {
-                    cmd: Some((word("echo"), vec!(word("greeting")))),
-                    io: vec!(),
-                    vars: vec!(),
-                }))),
+        let correct = builder::CaseFragments {
+            word: word("foo"),
+            post_word_comments: vec!(
+                Newline(Some(String::from("#post_word_a"))),
+                Newline(None),
+                Newline(Some(String::from("#post_word_b"))),
             ),
-            (
+            arms: vec!(
                 (
-                    vec!(Newline(Some(String::from("#pre_pat_2a"))), Newline(Some(String::from("#pre_pat_2b")))),
-                    vec!(word("world")),
-                    vec!(Newline(Some(String::from("#post_pat_2a"))), Newline(Some(String::from("#post_pat_2b")))),
+                    builder::CasePatternFragments {
+                        pre_pattern_comments: vec!(
+                            Newline(Some(String::from("#pre_pat_1a"))),
+                            Newline(None),
+                            Newline(Some(String::from("#pre_pat_1b"))),
+                        ),
+                        pattern_alternatives: vec!(word("hello"), word("goodbye")),
+                        post_pattern_comments: vec!(
+                            Newline(Some(String::from("#post_pat_1a"))),
+                            Newline(None),
+                            Newline(Some(String::from("#post_pat_1b"))),
+                        ),
+                    },
+                    vec!(cmd_args_unboxed("echo", &["greeting"])),
                 ),
-                vec!(Simple(Box::new(SimpleCommand {
-                    cmd: Some((word("echo"), vec!(word("noun")))),
-                    io: vec!(),
-                    vars: vec!(),
-                }))),
+                (
+                    builder::CasePatternFragments {
+                        pre_pattern_comments: vec!(
+                            Newline(Some(String::from("#pre_pat_2a"))),
+                            Newline(None),
+                            Newline(Some(String::from("#pre_pat_2b"))),
+                        ),
+                        pattern_alternatives: vec!(word("world")),
+                        post_pattern_comments: vec!(
+                            Newline(Some(String::from("#post_pat_2a"))),
+                            Newline(None),
+                            Newline(Some(String::from("#post_pat_2b"))),
+                        ),
+                    },
+                    vec!(cmd_args_unboxed("echo", &["noun"])),
+                ),
             ),
-        );
-        let correct_post_branch = vec!(Newline(Some(String::from("#post_branch_a"))), Newline(Some(String::from("#post_branch_b"))));
-
-        let correct = (correct_word, correct_post_word, correct_branches, correct_post_branch);
+            post_arms_comments: vec!(
+                Newline(Some(String::from("#post_branch_a"))),
+                Newline(None),
+                Newline(Some(String::from("#post_branch_b"))),
+            ),
+        };
 
         // Various newlines and comments allowed within the command
         let cmd =
             "case foo #post_word_a
+
             #post_word_b
             in #pre_pat_1a
+
             #pre_pat_1b
             (hello | goodbye) #post_pat_1a
+
             #post_pat_1b
             echo greeting #post_cmd
+
             #post_cmd
             ;; #pre_pat_2a
+
             #pre_pat_2b
             world) #post_pat_2a
+
             #post_pat_2b
             echo noun;; #post_branch_a
+
             #post_branch_b
             esac";
 
@@ -5431,20 +5460,29 @@ pub mod test {
 
     #[test]
     fn test_case_command_valid_with_comments_no_body() {
-        let correct_word = word("foo");
-        let correct_post_word = vec!(Newline(Some(String::from("#post_word_a"))), Newline(Some(String::from("#post_word_b"))));
-        let correct_branches = vec!();
-        let correct_post_branch = vec!(Newline(Some(String::from("#one"))), Newline(Some(String::from("#two"))), Newline(Some(String::from("#three"))));
-
-        let correct = (correct_word, correct_post_word, correct_branches, correct_post_branch);
+        let correct = builder::CaseFragments {
+            word: word("foo"),
+            post_word_comments: vec!(
+                Newline(Some(String::from("#post_word_a"))),
+                Newline(None),
+                Newline(Some(String::from("#post_word_b"))),
+            ),
+            arms: vec!(),
+            post_arms_comments: vec!(
+                Newline(Some(String::from("#post_branch_a"))),
+                Newline(None),
+                Newline(Some(String::from("#post_branch_b"))),
+            ),
+        };
 
         // Various newlines and comments allowed within the command
         let cmd =
             "case foo #post_word_a
+
             #post_word_b
-            in #one
-            #two
-            #three
+            in #post_branch_a
+
+            #post_branch_b
             esac";
 
         assert_eq!(correct, make_parser(cmd).case_command().unwrap());
@@ -5652,13 +5690,25 @@ pub mod test {
 
     #[test]
     fn test_compound_command_delegates_valid_commands_while() {
-        let correct = Compound(Box::new(While(vec!(cmd_unboxed("guard")), vec!(cmd_unboxed("foo")))), vec!());
+        let correct = Compound(
+            Box::new(While(GuardBodyPair {
+                guard: vec!(cmd_unboxed("guard")),
+                body: vec!(cmd_unboxed("foo")),
+            })),
+            vec!()
+        );
         assert_eq!(correct, make_parser("while guard; do foo; done").compound_command().unwrap());
     }
 
     #[test]
     fn test_compound_command_delegates_valid_commands_until() {
-        let correct = Compound(Box::new(Until(vec!(cmd_unboxed("guard")), vec!(cmd_unboxed("foo")))), vec!());
+        let correct = Compound(
+            Box::new(Until(GuardBodyPair {
+                guard: vec!(cmd_unboxed("guard")),
+                body: vec!(cmd_unboxed("foo")),
+            })),
+            vec!()
+        );
         assert_eq!(correct, make_parser("until guard; do foo; done").compound_command().unwrap());
     }
 
@@ -5670,7 +5720,16 @@ pub mod test {
 
     #[test]
     fn test_compound_command_delegates_valid_commands_if() {
-        let correct = Compound(Box::new(If(vec!((vec!(cmd_unboxed("guard")), vec!(cmd_unboxed("body")))), None)), vec!());
+        let correct = Compound(
+            Box::new(If(
+                vec!(GuardBodyPair {
+                    guard: vec!(cmd_unboxed("guard")),
+                    body: vec!(cmd_unboxed("body")),
+                }),
+                None)
+            ),
+            vec!()
+        );
         assert_eq!(correct, make_parser("if guard; then body; fi").compound_command().unwrap());
     }
 
@@ -5911,13 +5970,25 @@ pub mod test {
 
     #[test]
     fn test_command_delegates_valid_commands_while() {
-        let correct = Compound(Box::new(While(vec!(cmd_unboxed("guard")), vec!(cmd_unboxed("foo")))), vec!());
+        let correct = Compound(
+            Box::new(While(GuardBodyPair {
+                guard: vec!(cmd_unboxed("guard")),
+                body: vec!(cmd_unboxed("foo")),
+            })),
+            vec!()
+        );
         assert_eq!(correct, make_parser("while guard; do foo; done").command().unwrap());
     }
 
     #[test]
     fn test_command_delegates_valid_commands_until() {
-        let correct = Compound(Box::new(Until(vec!(cmd_unboxed("guard")), vec!(cmd_unboxed("foo")))), vec!());
+        let correct = Compound(
+            Box::new(Until(GuardBodyPair {
+                guard: vec!(cmd_unboxed("guard")),
+                body: vec!(cmd_unboxed("foo")),
+            })),
+            vec!()
+        );
         assert_eq!(correct, make_parser("until guard; do foo; done").command().unwrap());
     }
 
@@ -5929,7 +6000,16 @@ pub mod test {
 
     #[test]
     fn test_command_delegates_valid_commands_if() {
-        let correct = Compound(Box::new(If(vec!((vec!(cmd_unboxed("guard")), vec!(cmd_unboxed("body")))), None)), vec!());
+        let correct = Compound(
+            Box::new(If(
+                vec!(GuardBodyPair {
+                    guard: vec!(cmd_unboxed("guard")),
+                    body: vec!(cmd_unboxed("body")),
+                }),
+                None)
+            ),
+            vec!()
+        );
         assert_eq!(correct, make_parser("if guard; then body; fi").command().unwrap());
     }
 

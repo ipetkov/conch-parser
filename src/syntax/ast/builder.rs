@@ -11,7 +11,7 @@
 
 use std::cmp::{PartialEq, Eq};
 use std::rc::Rc;
-use syntax::ast::{Arithmetic, Command, CompoundCommand, ComplexWord, Parameter,
+use syntax::ast::{Arithmetic, Command, CompoundCommand, ComplexWord, GuardBodyPair, Parameter,
                   ParameterSubstitution, Redirect, SimpleCommand, SimpleWord, TopLevelWord, Word};
 use syntax::parse::Result;
 
@@ -49,6 +49,55 @@ pub enum LoopKind {
     /// An `until` command was parsed, normally indicating the loop's body should be run
     /// until the guard's exit status becomes successful.
     Until,
+}
+
+/// Parsed fragments relating to a shell `if` command.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct IfFragments<C> {
+    /// A list of conditionals branches.
+    pub conditionals: Vec<GuardBodyPair<C>>,
+    /// The `else` branch, if any,
+    pub else_part: Option<Vec<C>>,
+}
+
+/// Parsed fragments relating to a shell `for` command.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct ForFragments<W, C> {
+    /// The name of the variable to which each of the words will be bound.
+    pub var: String,
+    /// Any comments that appear after the variable declaration.
+    pub post_var_comments: Vec<Newline>,
+    /// A group of words to iterate over, if present.
+    pub words: Option<Vec<W>>,
+    /// Any comments that appear after the `words` declaration (if it exists).
+    pub post_words_comments: Option<Vec<Newline>>,
+    /// The body to be invoked for every iteration.
+    pub body: Vec<C>,
+}
+
+/// Parsed fragments relating to a shell `case` command.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct CaseFragments<W, C> {
+    /// The word to be matched against.
+    pub word: W,
+    /// The comments appearing after the word to match but before the `in` reserved word.
+    pub post_word_comments: Vec<Newline>,
+    /// The different arms in the case command. Each arm has a number of pattern alternatives,
+    /// and a body of commands to run if any pattern matches.
+    pub arms: Vec<(CasePatternFragments<W>, Vec<C>)>,
+    /// The comments appearing after the last arm but before the `esac` reserved word
+    pub post_arms_comments: Vec<Newline>,
+}
+
+/// Parsed fragments relating to patterns in a shell `case` command.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct CasePatternFragments<W> {
+    /// Comments appearing after a previous arm, but before the start of a pattern.
+    pub pre_pattern_comments: Vec<Newline>,
+    /// Pattern alternatives which all correspond to the same case arm.
+    pub pattern_alternatives: Vec<W>,
+    /// Comments appearing after the patterns but before the start of the case arm.
+    pub post_pattern_comments: Vec<Newline>,
 }
 
 /// An indicator to the builder what kind of complex word was parsed.
@@ -274,8 +323,7 @@ pub trait Builder {
     /// * redirects: any redirects to be applied over **all** commands part of the loop
     fn loop_command(&mut self,
                     kind: LoopKind,
-                    guard: Vec<Self::Command>,
-                    body: Vec<Self::Command>,
+                    guard_body_pair: GuardBodyPair<Self::Command>,
                     redirects: Vec<Self::Redirect>)
         -> Result<Self::Command>;
 
@@ -285,12 +333,10 @@ pub trait Builder {
     /// `else` part to be run if no guard is successful.
     ///
     /// # Arguments
-    /// * branches: a collection of (guard, body) command groups
-    /// * else_part: optional group of commands to be run if no guard exited successfully
+    /// * fragments: parsed fragments relating to a shell `if` command.
     /// * redirects: any redirects to be applied over **all** commands within the `if` command
     fn if_command(&mut self,
-                  branches: Vec<(Vec<Self::Command>, Vec<Self::Command>)>,
-                  else_part: Option<Vec<Self::Command>>,
+                  fragments: IfFragments<Self::Command>,
                   redirects: Vec<Self::Redirect>)
         -> Result<Self::Command>;
 
@@ -300,18 +346,10 @@ pub trait Builder {
     /// specified, the command will iterate over the arguments to the script or enclosing function.
     ///
     /// # Arguments
-    /// * var: the name of the variable to which each of the words will be bound
-    /// * post_var_comments: any comments that appear after the variable declaration
-    /// * in_words: a group of words to iterate over if present
-    /// * post_word_comments: any comments that appear after the `in_words` declaration (if it exists)
-    /// * body: the body to be invoked for every iteration
+    /// * fragments: parsed fragments relating to a shell `for` command.
     /// * redirects: any redirects to be applied over **all** commands within the `for` command
     fn for_command(&mut self,
-                   var: String,
-                   post_var_comments: Vec<Newline>,
-                   in_words: Option<Vec<Self::Word>>,
-                   post_word_comments: Option<Vec<Newline>>,
-                   body: Vec<Self::Command>,
+                   fragments: ForFragments<Self::Word, Self::Command>,
                    redirects: Vec<Self::Redirect>)
         -> Result<Self::Command>;
 
@@ -319,19 +357,10 @@ pub trait Builder {
     /// Typically this command will execute certain commands when a given word matches a pattern.
     ///
     /// # Arguments
-    /// * word: the word to be matched against
-    /// * post_word_comments: the comments appearing after the word to match but before the `in` reserved word
-    /// * branches: the various alternatives that the `case` command can take. The first part of the tuple
-    /// is a list of alternative patterns, while the second is the group of commands to be run in case
-    /// any of the alternative patterns is matched. The patterns are wrapped in an internal tuple which
-    /// holds all comments appearing before and after the pattern (but before the command start).
-    /// * post_branch_comments: the comments appearing after the last arm but before the `esac` reserved word
+    /// * fragments: parsed fragments relating to a shell `case` command.
     /// * redirects: any redirects to be applied over **all** commands part of the `case` block
     fn case_command(&mut self,
-                    word: Self::Word,
-                    post_word_comments: Vec<Newline>,
-                    branches: Vec<( (Vec<Newline>, Vec<Self::Word>, Vec<Newline>), Vec<Self::Command>)>,
-                    post_branch_comments: Vec<Newline>,
+                    fragments: CaseFragments<Self::Word, Self::Command>,
                     redirects: Vec<Self::Redirect>)
         -> Result<Self::Command>;
 
@@ -477,18 +506,17 @@ impl Builder for DefaultBuilder {
     /// Constructs a `Command::Compound(Loop)` node with the provided inputs.
     fn loop_command(&mut self,
                     kind: LoopKind,
-                    mut guard: Vec<Self::Command>,
-                    mut body: Vec<Self::Command>,
+                    mut guard_body_pair: GuardBodyPair<Self::Command>,
                     mut redirects: Vec<Self::Redirect>)
         -> Result<Self::Command>
     {
-        guard.shrink_to_fit();
-        body.shrink_to_fit();
+        guard_body_pair.guard.shrink_to_fit();
+        guard_body_pair.body.shrink_to_fit();
         redirects.shrink_to_fit();
 
         let loop_cmd = match kind {
-            LoopKind::While => CompoundCommand::While(guard, body),
-            LoopKind::Until => CompoundCommand::Until(guard, body),
+            LoopKind::While => CompoundCommand::While(guard_body_pair),
+            LoopKind::Until => CompoundCommand::Until(guard_body_pair),
         };
 
         Ok(Command::Compound(Box::new(loop_cmd), redirects))
@@ -496,55 +524,60 @@ impl Builder for DefaultBuilder {
 
     /// Constructs a `Command::Compound(If)` node with the provided inputs.
     fn if_command(&mut self,
-                  mut branches: Vec<(Vec<Self::Command>, Vec<Self::Command>)>,
-                  mut else_part: Option<Vec<Self::Command>>,
+                  fragments: IfFragments<Self::Command>,
                   mut redirects: Vec<Self::Redirect>)
         -> Result<Self::Command>
     {
-        for &mut (ref mut guard, ref mut body) in branches.iter_mut() {
-            guard.shrink_to_fit();
-            body.shrink_to_fit();
+        let IfFragments { mut conditionals, mut else_part } = fragments;
+
+        for guard_body_pair in &mut conditionals {
+            guard_body_pair.guard.shrink_to_fit();
+            guard_body_pair.body.shrink_to_fit();
         }
 
-        for els in else_part.iter_mut() { els.shrink_to_fit(); }
+        for els in &mut else_part {
+            els.shrink_to_fit();
+        }
+
         redirects.shrink_to_fit();
 
-        Ok(Command::Compound(Box::new(CompoundCommand::If(branches, else_part)), redirects))
+        Ok(Command::Compound(Box::new(CompoundCommand::If(conditionals, else_part)), redirects))
     }
 
     /// Constructs a `Command::Compound(For)` node with the provided inputs.
     fn for_command(&mut self,
-                   var: String,
-                   _post_var_comments: Vec<Newline>,
-                   mut in_words: Option<Vec<Self::Word>>,
-                   _post_word_comments: Option<Vec<Newline>>,
-                   mut body: Vec<Self::Command>,
+                   mut fragments: ForFragments<Self::Word, Self::Command>,
                    mut redirects: Vec<Self::Redirect>)
         -> Result<Self::Command>
     {
-        for word in in_words.iter_mut() { word.shrink_to_fit(); }
-        body.shrink_to_fit();
+        for word in &mut fragments.words {
+            word.shrink_to_fit();
+        }
+
+        fragments.var.shrink_to_fit();
+        fragments.body.shrink_to_fit();
         redirects.shrink_to_fit();
-        Ok(Command::Compound(Box::new(CompoundCommand::For(var, in_words, body)), redirects))
+        Ok(Command::Compound(
+            Box::new(CompoundCommand::For(fragments.var, fragments.words, fragments.body)),
+            redirects
+        ))
     }
 
     /// Constructs a `Command::Compound(Case)` node with the provided inputs.
     fn case_command(&mut self,
-                    word: Self::Word,
-                    _post_word_comments: Vec<Newline>,
-                    branches: Vec<( (Vec<Newline>, Vec<Self::Word>, Vec<Newline>), Vec<Self::Command>)>,
-                    _post_branch_comments: Vec<Newline>,
+                    fragments: CaseFragments<Self::Word, Self::Command>,
                     mut redirects: Vec<Self::Redirect>)
         -> Result<Self::Command>
     {
-        let branches = branches.into_iter().map(|((_, mut pats, _), mut cmds)| {
-            pats.shrink_to_fit();
-            cmds.shrink_to_fit();
-            (pats, cmds)
+        let arms = fragments.arms.into_iter().map(|(pat_fragment, mut body)| {
+            let mut patterns = pat_fragment.pattern_alternatives;
+            patterns.shrink_to_fit();
+            body.shrink_to_fit();
+            (patterns, body)
         }).collect();
 
         redirects.shrink_to_fit();
-        Ok(Command::Compound(Box::new(CompoundCommand::Case(word, branches)), redirects))
+        Ok(Command::Compound(Box::new(CompoundCommand::Case(fragments.word, arms)), redirects))
     }
 
     /// Constructs a `Command::Function` node with the provided inputs.
@@ -557,18 +590,12 @@ impl Builder for DefaultBuilder {
     }
 
     /// Ignored by the builder.
-    fn comments(&mut self,
-                _comments: Vec<Newline>)
-        -> Result<()>
-    {
+    fn comments(&mut self, _comments: Vec<Newline>) -> Result<()> {
         Ok(())
     }
 
     /// Constructs a `ast::Word` from the provided input.
-    fn word(&mut self,
-            kind: ComplexWordKind<Self::Command>)
-        -> Result<Self::Word>
-    {
+    fn word(&mut self, kind: ComplexWordKind<Self::Command>) -> Result<Self::Word> {
         use self::ParameterSubstitutionKind::*;
 
         macro_rules! map {
@@ -718,44 +745,35 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
 
     fn loop_command(&mut self,
                     kind: LoopKind,
-                    guard: Vec<Self::Command>,
-                    body: Vec<Self::Command>,
+                    guard_body_pair: GuardBodyPair<Self::Command>,
                     redirects: Vec<Self::Redirect>)
         -> Result<Self::Command>
     {
-        (**self).loop_command(kind, guard, body, redirects)
+        (**self).loop_command(kind, guard_body_pair, redirects)
     }
 
     fn if_command(&mut self,
-                  branches: Vec<(Vec<Self::Command>, Vec<Self::Command>)>,
-                  else_part: Option<Vec<Self::Command>>,
+                  fragments: IfFragments<Self::Command>,
                   redirects: Vec<Self::Redirect>)
         -> Result<Self::Command>
     {
-        (**self).if_command(branches, else_part, redirects)
+        (**self).if_command(fragments, redirects)
     }
 
     fn for_command(&mut self,
-                   var: String,
-                   post_var_comments: Vec<Newline>,
-                   in_words: Option<Vec<Self::Word>>,
-                   post_word_comments: Option<Vec<Newline>>,
-                   body: Vec<Self::Command>,
+                   fragments: ForFragments<Self::Word, Self::Command>,
                    redirects: Vec<Self::Redirect>)
         -> Result<Self::Command>
     {
-        (**self).for_command(var, post_var_comments, in_words, post_word_comments, body, redirects)
+        (**self).for_command(fragments, redirects)
     }
 
     fn case_command(&mut self,
-                    word: Self::Word,
-                    post_word_comments: Vec<Newline>,
-                    branches: Vec<( (Vec<Newline>, Vec<Self::Word>, Vec<Newline>), Vec<Self::Command>)>,
-                    post_branch_comments: Vec<Newline>,
+                    fragments: CaseFragments<Self::Word, Self::Command>,
                     redirects: Vec<Self::Redirect>)
         -> Result<Self::Command>
     {
-        (**self).case_command(word, post_word_comments, branches, post_branch_comments, redirects)
+        (**self).case_command(fragments, redirects)
     }
 
     fn function_declaration(&mut self,
