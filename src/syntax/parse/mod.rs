@@ -30,6 +30,12 @@ pub struct SourcePos {
     pub col: usize,
 }
 
+impl Default for SourcePos {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SourcePos {
     /// Constructs a new, starting, source position
     pub fn new() -> SourcePos {
