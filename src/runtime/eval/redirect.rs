@@ -266,7 +266,7 @@ mod tests {
             Permissions::Write,
             || {
                 let mut file = File::create(&file_path).unwrap();
-                file.write_all("should be overwritten".as_bytes()).unwrap();
+                file.write_all(b"should be overwritten").unwrap();
                 file.flush().unwrap();
             },
             |mut file_desc| {

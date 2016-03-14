@@ -1037,6 +1037,9 @@ mod tests {
         const FD_EXEC_CLOSE: Fd = STDERR_FILENO;
         const FD_EXEC_CHANGE: Fd = 3;
 
+        let msg_fd_exec_open = "msg_fd_exec_open";
+        let msg_fd_exec_change = "msg_fd_exec_change";
+
         let fn_name = String::from("foofn");
         let tempdir = mktmp!();
 
@@ -1087,17 +1090,19 @@ mod tests {
         assert!(env.file_desc(FD_EXEC_CLOSE).is_none());
 
         unsafe {
-            env.file_desc(FD_EXEC_OPEN).unwrap().0.unsafe_write().write(stringify!(FD_EXEC_OPEN).as_bytes()).unwrap();
-            env.file_desc(FD_EXEC_CHANGE).unwrap().0.unsafe_write().write(stringify!(FD_EXEC_CHANGE).as_bytes()).unwrap();
+            env.file_desc(FD_EXEC_OPEN).unwrap().0.unsafe_write()
+                .write(msg_fd_exec_open.as_bytes()).unwrap();
+            env.file_desc(FD_EXEC_CHANGE).unwrap().0.unsafe_write()
+                .write(msg_fd_exec_change.as_bytes()).unwrap();
         }
 
         let mut read = String::new();
         Permissions::Read.open(&file_exec_open_path).unwrap().read_to_string(&mut read).unwrap();
-        assert_eq!(read, stringify!(FD_EXEC_OPEN));
+        assert_eq!(read, msg_fd_exec_open);
 
         read.clear();
         Permissions::Read.open(&file_exec_change_path).unwrap().read_to_string(&mut read).unwrap();
-        assert_eq!(read, stringify!(FD_EXEC_CHANGE));
+        assert_eq!(read, msg_fd_exec_change);
 
         read.clear();
         Permissions::Read.open(&file_path_default).unwrap().read_to_string(&mut read).unwrap();

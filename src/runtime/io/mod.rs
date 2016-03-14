@@ -376,19 +376,19 @@ mod tests {
 
         let mut file: FileDesc = File::create(&file_path).unwrap().into();
 
-        file.write_all("foobarbaz".as_bytes()).unwrap();
+        file.write_all(b"foobarbaz").unwrap();
         file.flush().unwrap();
 
         file.seek(SeekFrom::Start(3)).unwrap();
-        file.write_all("???".as_bytes()).unwrap();
+        file.write_all(b"???").unwrap();
         file.flush().unwrap();
 
         file.seek(SeekFrom::End(-3)).unwrap();
-        file.write_all("!!!".as_bytes()).unwrap();
+        file.write_all(b"!!!").unwrap();
         file.flush().unwrap();
 
         file.seek(SeekFrom::Current(-9)).unwrap();
-        file.write_all("***".as_bytes()).unwrap();
+        file.write_all(b"***").unwrap();
         file.flush().unwrap();
 
         let mut file: FileDesc = File::open(&file_path).unwrap().into();
