@@ -272,19 +272,19 @@ mod tests {
         let mut env = Env::new().unwrap();
 
         env.set_var(String::from("IFS"), "!".to_string().into());
-        assert_eq!(&*Fields::Zero.join_with_ifs(&mut env), "");
-        assert_eq!(&*Fields::Single("foo".to_string().into()).join_with_ifs(&mut env), "foo");
-        assert_eq!(&*Fields::At(strs.clone()).join_with_ifs(&mut env), "foo!!bar");
-        assert_eq!(&*Fields::Star(strs.clone()).join_with_ifs(&mut env), "foo!!bar");
-        assert_eq!(&*Fields::Split(strs.clone()).join_with_ifs(&mut env), "foo!!bar");
+        assert_eq!(&*Fields::Zero.join_with_ifs(&env), "");
+        assert_eq!(&*Fields::Single("foo".to_string().into()).join_with_ifs(&env), "foo");
+        assert_eq!(&*Fields::At(strs.clone()).join_with_ifs(&env), "foo!!bar");
+        assert_eq!(&*Fields::Star(strs.clone()).join_with_ifs(&env), "foo!!bar");
+        assert_eq!(&*Fields::Split(strs.clone()).join_with_ifs(&env), "foo!!bar");
 
         // Blank IFS
         env.set_var(String::from("IFS"), "".to_string().into());
-        assert_eq!(&*Fields::Zero.join_with_ifs(&mut env), "");
-        assert_eq!(&*Fields::Single("foo".to_string().into()).join_with_ifs(&mut env), "foo");
-        assert_eq!(&*Fields::At(strs.clone()).join_with_ifs(&mut env), "foobar");
-        assert_eq!(&*Fields::Star(strs.clone()).join_with_ifs(&mut env), "foobar");
-        assert_eq!(&*Fields::Split(strs.clone()).join_with_ifs(&mut env), "foobar");
+        assert_eq!(&*Fields::Zero.join_with_ifs(&env), "");
+        assert_eq!(&*Fields::Single("foo".to_string().into()).join_with_ifs(&env), "foo");
+        assert_eq!(&*Fields::At(strs.clone()).join_with_ifs(&env), "foobar");
+        assert_eq!(&*Fields::Star(strs.clone()).join_with_ifs(&env), "foobar");
+        assert_eq!(&*Fields::Split(strs.clone()).join_with_ifs(&env), "foobar");
 
         // FIXME: test with unset IFS
     }

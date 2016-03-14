@@ -567,56 +567,56 @@ mod tests {
         env.set_var("var2".to_string(), var2.clone());
         env.set_var("var3".to_string(), var3.clone());
 
-        assert_eq!(Parameter::At.eval(false, &mut env), Some(Fields::At(args.clone())));
-        assert_eq!(Parameter::Star.eval(false, &mut env), Some(Fields::Star(args.clone())));
+        assert_eq!(Parameter::At.eval(false, &env), Some(Fields::At(args.clone())));
+        assert_eq!(Parameter::Star.eval(false, &env), Some(Fields::Star(args.clone())));
 
-        assert_eq!(Parameter::Dollar.eval(false, &mut env), Some(Fields::Single(unsafe {
+        assert_eq!(Parameter::Dollar.eval(false, &env), Some(Fields::Single(unsafe {
             ::libc::getpid().to_string().into()
         })));
 
         // FIXME: test these
-        //assert_eq!(Parameter::Dash.eval(false, &mut env), ...);
-        //assert_eq!(Parameter::Bang.eval(false, &mut env), ...);
+        //assert_eq!(Parameter::Dash.eval(false, &env), ...);
+        //assert_eq!(Parameter::Bang.eval(false, &env), ...);
 
         // Before anything is run it should be considered a success
-        assert_eq!(Parameter::Question.eval(false, &mut env), Some(Fields::Single("0".to_string().into())));
+        assert_eq!(Parameter::Question.eval(false, &env), Some(Fields::Single("0".to_string().into())));
         env.set_last_status(ExitStatus::Code(3));
-        assert_eq!(Parameter::Question.eval(false, &mut env), Some(Fields::Single("3".to_string().into())));
+        assert_eq!(Parameter::Question.eval(false, &env), Some(Fields::Single("3".to_string().into())));
         // Signals should have 128 added to them
         env.set_last_status(ExitStatus::Signal(5));
-        assert_eq!(Parameter::Question.eval(false, &mut env), Some(Fields::Single("133".to_string().into())));
+        assert_eq!(Parameter::Question.eval(false, &env), Some(Fields::Single("133".to_string().into())));
 
-        assert_eq!(Parameter::Positional(0).eval(false, &mut env), Some(Fields::Single(env.name().clone())));
-        assert_eq!(Parameter::Positional(1).eval(false, &mut env), Some(Fields::Single(arg1)));
-        assert_eq!(Parameter::Positional(2).eval(false, &mut env), Some(Fields::Single(arg2)));
-        assert_eq!(Parameter::Positional(3).eval(false, &mut env), Some(Fields::Single(arg3)));
+        assert_eq!(Parameter::Positional(0).eval(false, &env), Some(Fields::Single(env.name().clone())));
+        assert_eq!(Parameter::Positional(1).eval(false, &env), Some(Fields::Single(arg1)));
+        assert_eq!(Parameter::Positional(2).eval(false, &env), Some(Fields::Single(arg2)));
+        assert_eq!(Parameter::Positional(3).eval(false, &env), Some(Fields::Single(arg3)));
 
-        assert_eq!(Parameter::Var("var1".to_string()).eval(false, &mut env), Some(Fields::Single(var1)));
-        assert_eq!(Parameter::Var("var2".to_string()).eval(false, &mut env), Some(Fields::Single(var2)));
-        assert_eq!(Parameter::Var("var3".to_string()).eval(false, &mut env), Some(Fields::Single(var3)));
+        assert_eq!(Parameter::Var("var1".to_string()).eval(false, &env), Some(Fields::Single(var1)));
+        assert_eq!(Parameter::Var("var2".to_string()).eval(false, &env), Some(Fields::Single(var2)));
+        assert_eq!(Parameter::Var("var3".to_string()).eval(false, &env), Some(Fields::Single(var3)));
 
-        assert_eq!(Parameter::Pound.eval(false, &mut env), Some(Fields::Single("3".to_string().into())));
+        assert_eq!(Parameter::Pound.eval(false, &env), Some(Fields::Single("3".to_string().into())));
     }
 
     #[test]
     fn test_eval_parameter_with_unset_vars() {
-        let mut env = Env::with_config(false, None, Some(vec!()), None, None).unwrap();
+        let env = Env::with_config(false, None, Some(vec!()), None, None).unwrap();
 
-        assert_eq!(Parameter::At.eval(false, &mut env), Some(Fields::Zero));
-        assert_eq!(Parameter::Star.eval(false, &mut env), Some(Fields::Zero));
+        assert_eq!(Parameter::At.eval(false, &env), Some(Fields::Zero));
+        assert_eq!(Parameter::Star.eval(false, &env), Some(Fields::Zero));
 
         // FIXME: test these
-        //assert_eq!(Parameter::Dash.eval(false, &mut env), ...);
-        //assert_eq!(Parameter::Bang.eval(false, &mut env), ...);
+        //assert_eq!(Parameter::Dash.eval(false, &env), ...);
+        //assert_eq!(Parameter::Bang.eval(false, &env), ...);
 
-        assert_eq!(Parameter::Positional(0).eval(false, &mut env), Some(Fields::Single(env.name().clone())));
-        assert_eq!(Parameter::Positional(1).eval(false, &mut env), None);
-        assert_eq!(Parameter::Positional(2).eval(false, &mut env), None);
+        assert_eq!(Parameter::Positional(0).eval(false, &env), Some(Fields::Single(env.name().clone())));
+        assert_eq!(Parameter::Positional(1).eval(false, &env), None);
+        assert_eq!(Parameter::Positional(2).eval(false, &env), None);
 
-        assert_eq!(Parameter::Var("var1".to_string()).eval(false, &mut env), None);
-        assert_eq!(Parameter::Var("var2".to_string()).eval(false, &mut env), None);
+        assert_eq!(Parameter::Var("var1".to_string()).eval(false, &env), None);
+        assert_eq!(Parameter::Var("var2".to_string()).eval(false, &env), None);
 
-        assert_eq!(Parameter::Pound.eval(false, &mut env), Some(Fields::Single("0".to_string().into())));
+        assert_eq!(Parameter::Pound.eval(false, &env), Some(Fields::Single("0".to_string().into())));
     }
 
     #[test]
@@ -638,26 +638,26 @@ mod tests {
         let fields_args = vec!("foo".to_string().into(), "bar".to_string().into());
 
         // With splitting
-        assert_eq!(Parameter::At.eval(true, &mut env), Some(Fields::At(fields_args.clone())));
-        assert_eq!(Parameter::Star.eval(true, &mut env), Some(Fields::Star(fields_args.clone())));
+        assert_eq!(Parameter::At.eval(true, &env), Some(Fields::At(fields_args.clone())));
+        assert_eq!(Parameter::Star.eval(true, &env), Some(Fields::Star(fields_args.clone())));
 
         let fields_foo_bar = Fields::Split(fields_args.clone());
 
-        assert_eq!(Parameter::Positional(1).eval(true, &mut env), Some(fields_foo_bar.clone()));
-        assert_eq!(Parameter::Positional(2).eval(true, &mut env), Some(Fields::Zero));
+        assert_eq!(Parameter::Positional(1).eval(true, &env), Some(fields_foo_bar.clone()));
+        assert_eq!(Parameter::Positional(2).eval(true, &env), Some(Fields::Zero));
 
-        assert_eq!(Parameter::Var("var1".to_string()).eval(true, &mut env), Some(fields_foo_bar.clone()));
-        assert_eq!(Parameter::Var("var2".to_string()).eval(true, &mut env), Some(Fields::Zero));
+        assert_eq!(Parameter::Var("var1".to_string()).eval(true, &env), Some(fields_foo_bar.clone()));
+        assert_eq!(Parameter::Var("var2".to_string()).eval(true, &env), Some(Fields::Zero));
 
         // Without splitting
-        assert_eq!(Parameter::At.eval(false, &mut env), Some(Fields::At(args.clone())));
-        assert_eq!(Parameter::Star.eval(false, &mut env), Some(Fields::Star(args.clone())));
+        assert_eq!(Parameter::At.eval(false, &env), Some(Fields::At(args.clone())));
+        assert_eq!(Parameter::Star.eval(false, &env), Some(Fields::Star(args.clone())));
 
-        assert_eq!(Parameter::Positional(1).eval(false, &mut env), Some(Fields::Single(val1.clone())));
-        assert_eq!(Parameter::Positional(2).eval(false, &mut env), Some(Fields::Single(val2.clone())));
+        assert_eq!(Parameter::Positional(1).eval(false, &env), Some(Fields::Single(val1.clone())));
+        assert_eq!(Parameter::Positional(2).eval(false, &env), Some(Fields::Single(val2.clone())));
 
-        assert_eq!(Parameter::Var("var1".to_string()).eval(false, &mut env), Some(Fields::Single(val1)));
-        assert_eq!(Parameter::Var("var2".to_string()).eval(false, &mut env), Some(Fields::Single(val2)));
+        assert_eq!(Parameter::Var("var1".to_string()).eval(false, &env), Some(Fields::Single(val1)));
+        assert_eq!(Parameter::Var("var2".to_string()).eval(false, &env), Some(Fields::Single(val2)));
     }
 
     #[test]
@@ -696,8 +696,8 @@ mod tests {
         );
 
         // With splitting
-        assert_eq!(Parameter::At.eval(true, &mut env), Some(Fields::At(fields_args.clone())));
-        assert_eq!(Parameter::Star.eval(true, &mut env), Some(Fields::Star(fields_args.clone())));
+        assert_eq!(Parameter::At.eval(true, &env), Some(Fields::At(fields_args.clone())));
+        assert_eq!(Parameter::Star.eval(true, &env), Some(Fields::Star(fields_args.clone())));
 
         let fields_foo_bar = Fields::Split(vec!(
             "foo".to_string().into(),
@@ -715,39 +715,39 @@ mod tests {
             "".to_string().into(),
         ));
 
-        assert_eq!(Parameter::Positional(1).eval(true, &mut env), Some(fields_foo_bar.clone()));
-        assert_eq!(Parameter::Positional(2).eval(true, &mut env), Some(fields_all_blanks.clone()));
-        assert_eq!(Parameter::Positional(3).eval(true, &mut env), Some(Fields::Zero));
+        assert_eq!(Parameter::Positional(1).eval(true, &env), Some(fields_foo_bar.clone()));
+        assert_eq!(Parameter::Positional(2).eval(true, &env), Some(fields_all_blanks.clone()));
+        assert_eq!(Parameter::Positional(3).eval(true, &env), Some(Fields::Zero));
 
-        assert_eq!(Parameter::Var("var1".to_string()).eval(true, &mut env), Some(fields_foo_bar));
-        assert_eq!(Parameter::Var("var2".to_string()).eval(true, &mut env), Some(fields_all_blanks));
-        assert_eq!(Parameter::Var("var3".to_string()).eval(true, &mut env), Some(Fields::Zero));
+        assert_eq!(Parameter::Var("var1".to_string()).eval(true, &env), Some(fields_foo_bar));
+        assert_eq!(Parameter::Var("var2".to_string()).eval(true, &env), Some(fields_all_blanks));
+        assert_eq!(Parameter::Var("var3".to_string()).eval(true, &env), Some(Fields::Zero));
 
         // FIXME: test these
-        //assert_eq!(Parameter::Dash.eval(false, &mut env), ...);
-        //assert_eq!(Parameter::Bang.eval(false, &mut env), ...);
+        //assert_eq!(Parameter::Dash.eval(false, &env), ...);
+        //assert_eq!(Parameter::Bang.eval(false, &env), ...);
 
         env.set_last_status(EXIT_SUCCESS);
-        assert_eq!(Parameter::Question.eval(true, &mut env), Some(Fields::Single("".to_string().into())));
+        assert_eq!(Parameter::Question.eval(true, &env), Some(Fields::Single("".to_string().into())));
 
         // Without splitting
-        assert_eq!(Parameter::At.eval(false, &mut env), Some(Fields::At(args.clone())));
-        assert_eq!(Parameter::Star.eval(false, &mut env), Some(Fields::Star(args.clone())));
+        assert_eq!(Parameter::At.eval(false, &env), Some(Fields::At(args.clone())));
+        assert_eq!(Parameter::Star.eval(false, &env), Some(Fields::Star(args.clone())));
 
-        assert_eq!(Parameter::Positional(1).eval(false, &mut env), Some(Fields::Single(val1.clone())));
-        assert_eq!(Parameter::Positional(2).eval(false, &mut env), Some(Fields::Single(val2.clone())));
-        assert_eq!(Parameter::Positional(3).eval(false, &mut env), Some(Fields::Single(val3.clone())));
+        assert_eq!(Parameter::Positional(1).eval(false, &env), Some(Fields::Single(val1.clone())));
+        assert_eq!(Parameter::Positional(2).eval(false, &env), Some(Fields::Single(val2.clone())));
+        assert_eq!(Parameter::Positional(3).eval(false, &env), Some(Fields::Single(val3.clone())));
 
-        assert_eq!(Parameter::Var("var1".to_string()).eval(false, &mut env), Some(Fields::Single(val1)));
-        assert_eq!(Parameter::Var("var2".to_string()).eval(false, &mut env), Some(Fields::Single(val2)));
-        assert_eq!(Parameter::Var("var3".to_string()).eval(false, &mut env), Some(Fields::Single(val3)));
+        assert_eq!(Parameter::Var("var1".to_string()).eval(false, &env), Some(Fields::Single(val1)));
+        assert_eq!(Parameter::Var("var2".to_string()).eval(false, &env), Some(Fields::Single(val2)));
+        assert_eq!(Parameter::Var("var3".to_string()).eval(false, &env), Some(Fields::Single(val3)));
 
         // FIXME: test these
-        //assert_eq!(Parameter::Dash.eval(false, &mut env), ...);
-        //assert_eq!(Parameter::Bang.eval(false, &mut env), ...);
+        //assert_eq!(Parameter::Dash.eval(false, &env), ...);
+        //assert_eq!(Parameter::Bang.eval(false, &env), ...);
 
         env.set_last_status(EXIT_SUCCESS);
-        assert_eq!(Parameter::Question.eval(false, &mut env), Some(Fields::Single("0".to_string().into())));
+        assert_eq!(Parameter::Question.eval(false, &env), Some(Fields::Single("0".to_string().into())));
     }
 
     #[test]
@@ -772,24 +772,24 @@ mod tests {
         let field2 = Fields::Single(val2);
 
         // With splitting
-        assert_eq!(Parameter::At.eval(true, &mut env), Some(Fields::At(field_args.clone())));
-        assert_eq!(Parameter::Star.eval(true, &mut env), Some(Fields::Star(field_args.clone())));
+        assert_eq!(Parameter::At.eval(true, &env), Some(Fields::At(field_args.clone())));
+        assert_eq!(Parameter::Star.eval(true, &env), Some(Fields::Star(field_args.clone())));
 
-        assert_eq!(Parameter::Positional(1).eval(true, &mut env), Some(field1.clone()));
-        assert_eq!(Parameter::Positional(2).eval(true, &mut env), Some(field2.clone()));
+        assert_eq!(Parameter::Positional(1).eval(true, &env), Some(field1.clone()));
+        assert_eq!(Parameter::Positional(2).eval(true, &env), Some(field2.clone()));
 
-        assert_eq!(Parameter::Var("var1".to_string()).eval(true, &mut env), Some(field1.clone()));
-        assert_eq!(Parameter::Var("var2".to_string()).eval(true, &mut env), Some(field2.clone()));
+        assert_eq!(Parameter::Var("var1".to_string()).eval(true, &env), Some(field1.clone()));
+        assert_eq!(Parameter::Var("var2".to_string()).eval(true, &env), Some(field2.clone()));
 
         // Without splitting
-        assert_eq!(Parameter::At.eval(false, &mut env), Some(Fields::At(field_args.clone())));
-        assert_eq!(Parameter::Star.eval(false, &mut env), Some(Fields::Star(field_args.clone())));
+        assert_eq!(Parameter::At.eval(false, &env), Some(Fields::At(field_args.clone())));
+        assert_eq!(Parameter::Star.eval(false, &env), Some(Fields::Star(field_args.clone())));
 
-        assert_eq!(Parameter::Positional(1).eval(false, &mut env), Some(field1.clone()));
-        assert_eq!(Parameter::Positional(2).eval(false, &mut env), Some(field2.clone()));
+        assert_eq!(Parameter::Positional(1).eval(false, &env), Some(field1.clone()));
+        assert_eq!(Parameter::Positional(2).eval(false, &env), Some(field2.clone()));
 
-        assert_eq!(Parameter::Var("var1".to_string()).eval(false, &mut env), Some(field1.clone()));
-        assert_eq!(Parameter::Var("var2".to_string()).eval(false, &mut env), Some(field2.clone()));
+        assert_eq!(Parameter::Var("var1".to_string()).eval(false, &env), Some(field1.clone()));
+        assert_eq!(Parameter::Var("var2".to_string()).eval(false, &env), Some(field2.clone()));
     }
 
     #[test]
