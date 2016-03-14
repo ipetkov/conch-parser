@@ -976,7 +976,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             if body.len() > 1 {
                 Concat(body.into_iter().map(Simple).collect())
             } else {
-                let body = body.pop().unwrap_or(SimpleWordKind::Literal(String::new()));
+                let body = body.pop().unwrap_or_else(|| SimpleWordKind::Literal(String::new()));
                 Single(Simple(body))
             }
         };
