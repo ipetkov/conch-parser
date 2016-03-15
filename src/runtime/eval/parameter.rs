@@ -33,7 +33,7 @@ impl Parameter {
 
             Parameter::Pound  => Some(Fields::Single(Rc::new(env.args_len().to_string()))),
             Parameter::Dollar => Some(Fields::Single(Rc::new(unsafe { libc::getpid() }.to_string()))),
-            Parameter::Dash   => None, // FIXME: implement properly
+            Parameter::Dash   |        // FIXME: implement properly
             Parameter::Bang   => None, // FIXME: eventual job control would be nice
 
             Parameter::Question => Some(Fields::Single(Rc::new(match env.last_status() {

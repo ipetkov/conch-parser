@@ -154,10 +154,10 @@ impl fmt::Display for Token {
             DLessDash           => fmt.write_str("<<-"),
             Clobber             => fmt.write_str(">|"),
             LessGreat           => fmt.write_str("<>"),
-            Whitespace(ref s)   => fmt.write_str(s),
-            Name(ref s)         => fmt.write_str(s),
-            Literal(ref s)      => fmt.write_str(s),
             ParamPositional(p)  => write!(fmt, "${}", p),
+            Whitespace(ref s)   |
+            Name(ref s)         |
+            Literal(ref s)      => fmt.write_str(s),
         }
     }
 }
