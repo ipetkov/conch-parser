@@ -1978,6 +1978,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             // Do nothing, function declaration satisfied
             None
         } else {
+            // Enforce at least one whitespace between function declaration and body
             eat!(self, { Whitespace(_) => {} });
             self.skip_whitespace();
 
@@ -1986,9 +1987,6 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 eat!(self, { ParenOpen => {} });
                 self.skip_whitespace();
                 eat!(self, { ParenClose => {} });
-                None
-            } else if Some(&Newline) == self.iter.peek() {
-                // Do nothing, function declaration satisfied
                 None
             } else if Some(&ParenOpen) == self.iter.peek() {
                 // Otherwise it is possible for there to be a subshell as the body
