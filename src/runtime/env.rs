@@ -611,11 +611,11 @@ mod tests {
                 let num_calls = depth.get().saturating_sub(1);
                 env.set_var(format!("var{}", num_calls), Rc::new(num_calls.to_string()));
 
-                if num_calls != 0 {
+                if num_calls == 0 {
+                    Ok(EXIT_SUCCESS)
+                } else {
                     depth.set(num_calls);
                     env.run_function(fn_name.clone(), vec!()).unwrap()
-                } else {
-                    Ok(EXIT_SUCCESS)
                 }
             }));
         }
@@ -645,7 +645,9 @@ mod tests {
             env.set_function(fn_name_owned, MockFnRecursive::new(move |env| {
                 let num_calls = depth.get().saturating_sub(1);
 
-                if num_calls != 0 {
+                if num_calls == 0 {
+                    Ok(EXIT_SUCCESS)
+                } else {
                     depth.set(num_calls);
                     let cur_args: Vec<_> = env.args().iter().cloned().collect();
 
@@ -656,8 +658,6 @@ mod tests {
                     let ret = env.run_function(fn_name.clone(), next_args).unwrap();
                     assert_eq!(&*cur_args, &*env.args());
                     ret
-                } else {
-                    Ok(EXIT_SUCCESS)
                 }
             }));
         }

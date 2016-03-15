@@ -387,6 +387,7 @@ impl Arithmetic {
     /// Evaluates an arithmetic expression in the context of an environment.
     /// A mutable reference to the environment is needed since an arithmetic
     /// expression could mutate environment variables.
+    #[cfg_attr(feature = "clippy", allow(if_not_else))]
     pub fn eval(&self, env: &mut Environment) -> result::Result<isize, ExpansionError> {
         use syntax::ast::Arithmetic::*;
 
