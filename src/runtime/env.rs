@@ -829,6 +829,7 @@ mod tests {
         let mut msg = String::new();
         reader.read_to_string(&mut msg).unwrap();
         guard.join().unwrap();
-        assert!(msg.contains(&format!("{}", RuntimeError::Expansion(ExpansionError::DivideByZero))));
+        let expected_msg = format!("{}", RuntimeError::Expansion(ExpansionError::DivideByZero));
+        assert!(msg.contains(&expected_msg));
     }
 }
