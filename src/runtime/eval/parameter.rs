@@ -76,22 +76,7 @@ impl<W: WordEval, C: Run> ParameterSubstitution<W, C> {
     fn eval_inner(&self, env: &mut Environment, tilde_expansion: TildeExpansion) -> Result<Fields> {
         use syntax::ast::ParameterSubstitution::*;
 
-        // Since we will do field splitting in the outer, public method,
-        // we don't want internal word evaluations to also do field splitting
-        // otherwise we will doubly split and potentially lose some fields.
-        let cfg = WordEvalConfig {
-            tilde_expansion: tilde_expansion,
-            split_fields_further: false,
-        };
-
         const EMPTY_FIELD: Fields = Fields::Zero;
-
-        let null_str   = Rc::new(String::new());
-        let match_opts = glob::MatchOptions {
-            case_sensitive: true,
-            require_literal_separator: false,
-            require_literal_leading_dot: false,
-        };
 
         fn remove_pattern<W, F>(param: &Parameter,
                              pat: &Option<W>,
@@ -117,6 +102,21 @@ impl<W: WordEval, C: Run> ParameterSubstitution<W, C> {
                 },
             }
         }
+
+        // Since we will do field splitting in the outer, public method,
+        // we don't want internal word evaluations to also do field splitting
+        // otherwise we will doubly split and potentially lose some fields.
+        let cfg = WordEvalConfig {
+            tilde_expansion: tilde_expansion,
+            split_fields_further: false,
+        };
+
+        let null_str   = Rc::new(String::new());
+        let match_opts = glob::MatchOptions {
+            case_sensitive: true,
+            require_literal_separator: false,
+            require_literal_leading_dot: false,
+        };
 
         // A macro that evaluates a parameter in some environment and immediately
         // returns the result as long as there is at least one non-empty field inside.
@@ -1015,6 +1015,8 @@ mod tests {
     fn test_eval_parameter_substitution_default() {
         use syntax::ast::ParameterSubstitution::Default;
 
+        const DEFAULT_VALUE: &'static str = "some default value";
+
         let cfg = WordEvalConfig {
             tilde_expansion: TildeExpansion::None,
             split_fields_further: false,
@@ -1031,7 +1033,6 @@ mod tests {
         env.set_var(var.clone(),      var_value.clone());
         env.set_var(var_null.clone(), null.clone());
 
-        const DEFAULT_VALUE: &'static str = "some default value";
         let default_value = Fields::Single(Rc::new(DEFAULT_VALUE.to_string()));
         let var_value     = Fields::Single(var_value);
 
@@ -1263,12 +1264,12 @@ mod tests {
     fn test_eval_parameter_substitution_error() {
         use syntax::ast::ParameterSubstitution::Error;
 
+        const ERR_MSG: &'static str = "this variable is not set!";
+
         let cfg = WordEvalConfig {
             tilde_expansion: TildeExpansion::None,
             split_fields_further: false,
         };
-
-        const ERR_MSG: &'static str = "this variable is not set!";
 
         let var       = "non_empty_var".to_string();
         let var_null  = "var with empty value".to_string();

@@ -135,6 +135,12 @@ impl<'a, T: Run + ?Sized> Run for &'a T {
 
 impl<W: WordEval> Run for SimpleCommand<W> {
     fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
+        #[cfg(unix)]
+        fn is_enoexec(err: &IoError) -> bool { Some(libc::ENOEXEC) == err.raw_os_error() }
+
+        #[cfg(windows)]
+        fn is_enoexec(_err: &IoError) -> bool { false }
+
         if self.cmd.is_none() {
             for &(ref var, ref val) in &self.vars {
                 if let Some(val) = val.as_ref() {
@@ -236,12 +242,6 @@ impl<W: WordEval> Run for SimpleCommand<W> {
         cmd.stdin(try!(get_redirect(cmd_std_in,   STDIN_FILENO)));
         cmd.stdout(try!(get_redirect(cmd_std_out, STDOUT_FILENO)));
         cmd.stderr(try!(get_redirect(cmd_std_err, STDERR_FILENO)));
-
-        #[cfg(unix)]
-        fn is_enoexec(err: &IoError) -> bool { Some(libc::ENOEXEC) == err.raw_os_error() }
-
-        #[cfg(windows)]
-        fn is_enoexec(_err: &IoError) -> bool { false }
 
         match cmd.status() {
             Err(e) => {
@@ -698,6 +698,16 @@ mod tests {
         use std::error::Error;
         use std::fmt;
 
+        // Custom errors might not be Eq so we have to be more creative to check them.
+        #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+        struct MockErr(isize);
+        impl Error for MockErr {
+            fn description(&self) -> &str { "" }
+        }
+        impl fmt::Display for MockErr {
+            fn fmt(&self, _: &mut fmt::Formatter) -> fmt::Result { Ok(()) }
+        }
+
         // We'll be printing a lot of errors, so we'll suppress actually printing
         // to avoid polluting the output of the test runner.
         // NB: consider removing this line when debugging
@@ -711,16 +721,6 @@ mod tests {
             RuntimeError::Expansion(ExpansionError::BadAssig(Parameter::At)),
             RuntimeError::Expansion(ExpansionError::EmptyParameter(Parameter::At, "".to_string())),
         );
-
-        // Custom errors might not be Eq so we have to be more creative to check them.
-        #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-        struct MockErr(isize);
-        impl Error for MockErr {
-            fn description(&self) -> &str { "" }
-        }
-        impl fmt::Display for MockErr {
-            fn fmt(&self, _: &mut fmt::Formatter) -> fmt::Result { Ok(()) }
-        }
 
         let result = test(
             cmd!(move || { RuntimeError::Custom(Box::new(MockErr(42))) }),
@@ -1165,10 +1165,10 @@ mod tests {
     fn test_run_command_if() {
         use syntax::ast::GuardBodyPair;
 
+        const EXIT: ExitStatus = ExitStatus::Code(42);
         let fn_name_should_not_run = "foo_fn_should_not_run";
         let cmd_should_not_run = *cmd!(fn_name_should_not_run);
         let cmd_exit = *exit(42);
-        const EXIT: ExitStatus = ExitStatus::Code(42);
 
         let mut env = Env::new().unwrap();
         env.set_function(String::from(fn_name_should_not_run), MockFn::new(|_| {
