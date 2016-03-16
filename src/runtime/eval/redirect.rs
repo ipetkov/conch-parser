@@ -99,11 +99,11 @@ fn eval_path(path: &WordEval, env: &mut Environment) -> Result<Rc<String>> {
         } else {
             env.set_last_status(EXIT_ERROR);
             let v = v.into_iter().map(rc_to_owned).collect();
-            return Err(RedirectionError::Ambiguous(v).into())
+            Err(RedirectionError::Ambiguous(v).into())
         },
         Fields::Zero => {
             env.set_last_status(EXIT_ERROR);
-            return Err(RedirectionError::Ambiguous(Vec::new()).into())
+            Err(RedirectionError::Ambiguous(Vec::new()).into())
         },
     }
 }

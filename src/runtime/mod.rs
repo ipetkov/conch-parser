@@ -254,7 +254,7 @@ impl<W: WordEval> Run for SimpleCommand<W> {
                     (EXIT_ERROR, RuntimeError::Io(e, cmd_name))
                 };
                 env.set_last_status(exit);
-                return Err(err);
+                Err(err)
             },
 
             Ok(exit) => {

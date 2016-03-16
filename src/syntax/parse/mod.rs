@@ -2066,7 +2066,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 Some(builder::Newline(None))
             },
 
-            _ => return None,
+            _ => None,
         }
     }
 
