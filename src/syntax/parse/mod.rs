@@ -2116,9 +2116,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 };
 
                 if is_delim {
-                    match tokens.iter().find(|&t| t == tok) {
-                        ret@Some(_) => return ret,
-                        None => {},
+                    if let ret@Some(_) = tokens.iter().find(|&t| t == tok) {
+                        return ret;
                     }
                 }
             }
