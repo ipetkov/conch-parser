@@ -186,21 +186,21 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
     /// Returns an iterator that yields tokens up to when a (closing) single quote
     /// is reached (assuming that the caller has reached the opening quote and
     /// wishes to continue up to but not including the closing quote).
-    pub fn single_quoted<'a>(&'a mut self, pos: SourcePos) -> Balanced<'a, I> {
+    pub fn single_quoted(&mut self, pos: SourcePos) -> Balanced<I> {
         Balanced::new(self.by_ref(), Some(SingleQuote), true, pos)
     }
 
     /// Returns an iterator that yields tokens up to when a (closing) double quote
     /// is reached (assuming that the caller has reached the opening quote and
     /// wishes to continue up to but not including the closing quote).
-    pub fn double_quoted<'a>(&'a mut self, pos: SourcePos) -> Balanced<'a, I> {
+    pub fn double_quoted(&mut self, pos: SourcePos) -> Balanced<I> {
         Balanced::new(self.by_ref(), Some(DoubleQuote), true, pos)
     }
 
     /// Returns an iterator that yields tokens up to when a (closing) backtick
     /// is reached (assuming that the caller has reached the opening backtick and
     /// wishes to continue up to but not including the closing backtick).
-    pub fn backticked<'a>(&'a mut self, pos: SourcePos) -> Balanced<'a, I> {
+    pub fn backticked(&mut self, pos: SourcePos) -> Balanced<I> {
         Balanced::new(self.by_ref(), Some(Backtick), true, pos)
     }
 
@@ -208,7 +208,7 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
     /// is reached (assuming that the caller has reached the opening backtick and
     /// wishes to continue up to but not including the closing backtick).
     /// Any backslashes followed by \, $, or ` are removed from the stream.
-    pub fn backticked_remove_backslashes<'a>(&'a mut self, pos: SourcePos) -> BacktickBackslashRemover<'a, I> {
+    pub fn backticked_remove_backslashes(&mut self, pos: SourcePos) -> BacktickBackslashRemover<I> {
         BacktickBackslashRemover::new(self.backticked(pos))
     }
 
@@ -225,7 +225,7 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
     /// Returns an iterator that yields at least one token, but continues to yield
     /// tokens until all matching cases of single/double quotes, backticks,
     /// ${ }, $( ), or ( ) are found.
-    pub fn balanced<'a>(&'a mut self) -> Balanced<'a, I> {
+    pub fn balanced(&mut self) -> Balanced<I> {
         let pos = self.pos();
         Balanced::new(self.by_ref(), None, false, pos)
     }
