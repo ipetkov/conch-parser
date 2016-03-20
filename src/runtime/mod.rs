@@ -722,16 +722,17 @@ mod tests {
             RuntimeError::Expansion(ExpansionError::EmptyParameter(Parameter::At, "".to_owned())),
         );
 
-        let result = test(
+        let custom_err_result = test(
             cmd!(move || { RuntimeError::Custom(Box::new(MockErr(42))) }),
             &mut *env.sub_env()
         );
 
         if swallow_fatals {
-            assert_eq!(result, Ok(ok_status.clone().unwrap_or(EXIT_ERROR_MOCK)));
+            assert_eq!(custom_err_result, Ok(ok_status.clone().unwrap_or(EXIT_ERROR_MOCK)));
+        } else if let RuntimeError::Custom(err) = custom_err_result.unwrap_err() {
+            assert_eq!(*err.downcast::<MockErr>().unwrap(), MockErr(42));
         } else {
-            // Good enough for now
-            assert!(result.is_err());
+            panic!("Did not get the expected Custom error");
         }
     }
 
