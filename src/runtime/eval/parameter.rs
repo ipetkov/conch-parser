@@ -536,7 +536,7 @@ mod tests {
             // while the substitution is evaluating them. Any splitting should be done
             // before returning the substitution result to the caller.
             assert_eq!(cfg.split_fields_further, false);
-            Ok(self.0.to_string().into())
+            Ok(self.0.to_owned().into())
         }
 
         fn eval_as_pattern(&self, _: &mut Environment) -> Result<glob::Pattern> {
@@ -548,13 +548,13 @@ mod tests {
 
     #[test]
     fn test_eval_parameter_with_set_vars() {
-        let var1 = Rc::new("var1_value".to_string());
-        let var2 = Rc::new("var2_value".to_string());
-        let var3 = Rc::new("".to_string()); // var3 is set to the empty string
+        let var1 = Rc::new("var1_value".to_owned());
+        let var2 = Rc::new("var2_value".to_owned());
+        let var3 = Rc::new("".to_owned()); // var3 is set to the empty string
 
-        let arg1 = Rc::new("arg1_value".to_string());
-        let arg2 = Rc::new("arg2_value".to_string());
-        let arg3 = Rc::new("arg3_value".to_string());
+        let arg1 = Rc::new("arg1_value".to_owned());
+        let arg2 = Rc::new("arg2_value".to_owned());
+        let arg3 = Rc::new("arg3_value".to_owned());
 
         let args = vec!(
             arg1.clone(),
@@ -564,9 +564,9 @@ mod tests {
 
         let env_args = args.iter().map(|rc| (**rc).clone()).collect();
         let mut env = Env::with_config(false, None, Some(env_args), None, None).unwrap();
-        env.set_var("var1".to_string(), var1.clone());
-        env.set_var("var2".to_string(), var2.clone());
-        env.set_var("var3".to_string(), var3.clone());
+        env.set_var("var1".to_owned(), var1.clone());
+        env.set_var("var2".to_owned(), var2.clone());
+        env.set_var("var3".to_owned(), var3.clone());
 
         assert_eq!(Parameter::At.eval(false, &env), Some(Fields::At(args.clone())));
         assert_eq!(Parameter::Star.eval(false, &env), Some(Fields::Star(args.clone())));
@@ -580,23 +580,23 @@ mod tests {
         //assert_eq!(Parameter::Bang.eval(false, &env), ...);
 
         // Before anything is run it should be considered a success
-        assert_eq!(Parameter::Question.eval(false, &env), Some(Fields::Single("0".to_string().into())));
+        assert_eq!(Parameter::Question.eval(false, &env), Some(Fields::Single("0".to_owned().into())));
         env.set_last_status(ExitStatus::Code(3));
-        assert_eq!(Parameter::Question.eval(false, &env), Some(Fields::Single("3".to_string().into())));
+        assert_eq!(Parameter::Question.eval(false, &env), Some(Fields::Single("3".to_owned().into())));
         // Signals should have 128 added to them
         env.set_last_status(ExitStatus::Signal(5));
-        assert_eq!(Parameter::Question.eval(false, &env), Some(Fields::Single("133".to_string().into())));
+        assert_eq!(Parameter::Question.eval(false, &env), Some(Fields::Single("133".to_owned().into())));
 
         assert_eq!(Parameter::Positional(0).eval(false, &env), Some(Fields::Single(env.name().clone())));
         assert_eq!(Parameter::Positional(1).eval(false, &env), Some(Fields::Single(arg1)));
         assert_eq!(Parameter::Positional(2).eval(false, &env), Some(Fields::Single(arg2)));
         assert_eq!(Parameter::Positional(3).eval(false, &env), Some(Fields::Single(arg3)));
 
-        assert_eq!(Parameter::Var("var1".to_string()).eval(false, &env), Some(Fields::Single(var1)));
-        assert_eq!(Parameter::Var("var2".to_string()).eval(false, &env), Some(Fields::Single(var2)));
-        assert_eq!(Parameter::Var("var3".to_string()).eval(false, &env), Some(Fields::Single(var3)));
+        assert_eq!(Parameter::Var("var1".to_owned()).eval(false, &env), Some(Fields::Single(var1)));
+        assert_eq!(Parameter::Var("var2".to_owned()).eval(false, &env), Some(Fields::Single(var2)));
+        assert_eq!(Parameter::Var("var3".to_owned()).eval(false, &env), Some(Fields::Single(var3)));
 
-        assert_eq!(Parameter::Pound.eval(false, &env), Some(Fields::Single("3".to_string().into())));
+        assert_eq!(Parameter::Pound.eval(false, &env), Some(Fields::Single("3".to_owned().into())));
     }
 
     #[test]
@@ -614,16 +614,16 @@ mod tests {
         assert_eq!(Parameter::Positional(1).eval(false, &env), None);
         assert_eq!(Parameter::Positional(2).eval(false, &env), None);
 
-        assert_eq!(Parameter::Var("var1".to_string()).eval(false, &env), None);
-        assert_eq!(Parameter::Var("var2".to_string()).eval(false, &env), None);
+        assert_eq!(Parameter::Var("var1".to_owned()).eval(false, &env), None);
+        assert_eq!(Parameter::Var("var2".to_owned()).eval(false, &env), None);
 
-        assert_eq!(Parameter::Pound.eval(false, &env), Some(Fields::Single("0".to_string().into())));
+        assert_eq!(Parameter::Pound.eval(false, &env), Some(Fields::Single("0".to_owned().into())));
     }
 
     #[test]
     fn test_eval_parameter_splitting_with_default_ifs() {
-        let val1 = Rc::new(" \t\nfoo\n\n\nbar \t\n".to_string());
-        let val2 = Rc::new("".to_string());
+        let val1 = Rc::new(" \t\nfoo\n\n\nbar \t\n".to_owned());
+        let val2 = Rc::new("".to_owned());
 
         let args = vec!(
             val1.clone(),
@@ -632,11 +632,11 @@ mod tests {
 
         let env_args = args.iter().map(|rc| (**rc).clone()).collect();
         let mut env = Env::with_config(false, None, Some(env_args), None, None).unwrap();
-        env.set_var("var1".to_string(), val1.clone());
-        env.set_var("var2".to_string(), val2.clone());
+        env.set_var("var1".to_owned(), val1.clone());
+        env.set_var("var2".to_owned(), val2.clone());
 
         // Splitting should NOT keep any IFS whitespace fields
-        let fields_args = vec!("foo".to_string().into(), "bar".to_string().into());
+        let fields_args = vec!("foo".to_owned().into(), "bar".to_owned().into());
 
         // With splitting
         assert_eq!(Parameter::At.eval(true, &env), Some(Fields::At(fields_args.clone())));
@@ -647,8 +647,8 @@ mod tests {
         assert_eq!(Parameter::Positional(1).eval(true, &env), Some(fields_foo_bar.clone()));
         assert_eq!(Parameter::Positional(2).eval(true, &env), Some(Fields::Zero));
 
-        assert_eq!(Parameter::Var("var1".to_string()).eval(true, &env), Some(fields_foo_bar.clone()));
-        assert_eq!(Parameter::Var("var2".to_string()).eval(true, &env), Some(Fields::Zero));
+        assert_eq!(Parameter::Var("var1".to_owned()).eval(true, &env), Some(fields_foo_bar.clone()));
+        assert_eq!(Parameter::Var("var2".to_owned()).eval(true, &env), Some(Fields::Zero));
 
         // Without splitting
         assert_eq!(Parameter::At.eval(false, &env), Some(Fields::At(args.clone())));
@@ -657,15 +657,15 @@ mod tests {
         assert_eq!(Parameter::Positional(1).eval(false, &env), Some(Fields::Single(val1.clone())));
         assert_eq!(Parameter::Positional(2).eval(false, &env), Some(Fields::Single(val2.clone())));
 
-        assert_eq!(Parameter::Var("var1".to_string()).eval(false, &env), Some(Fields::Single(val1)));
-        assert_eq!(Parameter::Var("var2".to_string()).eval(false, &env), Some(Fields::Single(val2)));
+        assert_eq!(Parameter::Var("var1".to_owned()).eval(false, &env), Some(Fields::Single(val1)));
+        assert_eq!(Parameter::Var("var2".to_owned()).eval(false, &env), Some(Fields::Single(val2)));
     }
 
     #[test]
     fn test_eval_parameter_splitting_with_custom_ifs() {
-        let val1 = Rc::new("   foo000bar   ".to_string());
-        let val2 = Rc::new("  00 0 00  0 ".to_string());
-        let val3 = Rc::new("".to_string());
+        let val1 = Rc::new("   foo000bar   ".to_owned());
+        let val2 = Rc::new("  00 0 00  0 ".to_owned());
+        let val3 = Rc::new("".to_owned());
 
         let args = vec!(
             val1.clone(),
@@ -675,24 +675,24 @@ mod tests {
 
         let env_args = args.iter().map(|rc| (**rc).clone()).collect();
         let mut env = Env::with_config(false, None, Some(env_args), None, None).unwrap();
-        env.set_var("IFS".to_string(), "0 ".to_string().into());
+        env.set_var("IFS".to_owned(), "0 ".to_owned().into());
 
-        env.set_var("var1".to_string(), val1.clone());
-        env.set_var("var2".to_string(), val2.clone());
-        env.set_var("var3".to_string(), val3.clone());
+        env.set_var("var1".to_owned(), val1.clone());
+        env.set_var("var2".to_owned(), val2.clone());
+        env.set_var("var3".to_owned(), val3.clone());
 
         // Splitting SHOULD keep empty fields between IFS chars which are NOT whitespace
         let fields_args = vec!(
-            "foo".to_string().into(),
-            "".to_string().into(),
-            "".to_string().into(),
-            "bar".to_string().into(),
-            "".to_string().into(),
-            "".to_string().into(),
-            "".to_string().into(),
-            "".to_string().into(),
-            "".to_string().into(),
-            "".to_string().into(),
+            "foo".to_owned().into(),
+            "".to_owned().into(),
+            "".to_owned().into(),
+            "bar".to_owned().into(),
+            "".to_owned().into(),
+            "".to_owned().into(),
+            "".to_owned().into(),
+            "".to_owned().into(),
+            "".to_owned().into(),
+            "".to_owned().into(),
             // Already empty word should result in Zero fields
         );
 
@@ -701,35 +701,35 @@ mod tests {
         assert_eq!(Parameter::Star.eval(true, &env), Some(Fields::Star(fields_args.clone())));
 
         let fields_foo_bar = Fields::Split(vec!(
-            "foo".to_string().into(),
-            "".to_string().into(),
-            "".to_string().into(),
-            "bar".to_string().into(),
+            "foo".to_owned().into(),
+            "".to_owned().into(),
+            "".to_owned().into(),
+            "bar".to_owned().into(),
         ));
 
         let fields_all_blanks = Fields::Split(vec!(
-            "".to_string().into(),
-            "".to_string().into(),
-            "".to_string().into(),
-            "".to_string().into(),
-            "".to_string().into(),
-            "".to_string().into(),
+            "".to_owned().into(),
+            "".to_owned().into(),
+            "".to_owned().into(),
+            "".to_owned().into(),
+            "".to_owned().into(),
+            "".to_owned().into(),
         ));
 
         assert_eq!(Parameter::Positional(1).eval(true, &env), Some(fields_foo_bar.clone()));
         assert_eq!(Parameter::Positional(2).eval(true, &env), Some(fields_all_blanks.clone()));
         assert_eq!(Parameter::Positional(3).eval(true, &env), Some(Fields::Zero));
 
-        assert_eq!(Parameter::Var("var1".to_string()).eval(true, &env), Some(fields_foo_bar));
-        assert_eq!(Parameter::Var("var2".to_string()).eval(true, &env), Some(fields_all_blanks));
-        assert_eq!(Parameter::Var("var3".to_string()).eval(true, &env), Some(Fields::Zero));
+        assert_eq!(Parameter::Var("var1".to_owned()).eval(true, &env), Some(fields_foo_bar));
+        assert_eq!(Parameter::Var("var2".to_owned()).eval(true, &env), Some(fields_all_blanks));
+        assert_eq!(Parameter::Var("var3".to_owned()).eval(true, &env), Some(Fields::Zero));
 
         // FIXME: test these
         //assert_eq!(Parameter::Dash.eval(false, &env), ...);
         //assert_eq!(Parameter::Bang.eval(false, &env), ...);
 
         env.set_last_status(EXIT_SUCCESS);
-        assert_eq!(Parameter::Question.eval(true, &env), Some(Fields::Single("".to_string().into())));
+        assert_eq!(Parameter::Question.eval(true, &env), Some(Fields::Single("".to_owned().into())));
 
         // Without splitting
         assert_eq!(Parameter::At.eval(false, &env), Some(Fields::At(args.clone())));
@@ -739,22 +739,22 @@ mod tests {
         assert_eq!(Parameter::Positional(2).eval(false, &env), Some(Fields::Single(val2.clone())));
         assert_eq!(Parameter::Positional(3).eval(false, &env), Some(Fields::Single(val3.clone())));
 
-        assert_eq!(Parameter::Var("var1".to_string()).eval(false, &env), Some(Fields::Single(val1)));
-        assert_eq!(Parameter::Var("var2".to_string()).eval(false, &env), Some(Fields::Single(val2)));
-        assert_eq!(Parameter::Var("var3".to_string()).eval(false, &env), Some(Fields::Single(val3)));
+        assert_eq!(Parameter::Var("var1".to_owned()).eval(false, &env), Some(Fields::Single(val1)));
+        assert_eq!(Parameter::Var("var2".to_owned()).eval(false, &env), Some(Fields::Single(val2)));
+        assert_eq!(Parameter::Var("var3".to_owned()).eval(false, &env), Some(Fields::Single(val3)));
 
         // FIXME: test these
         //assert_eq!(Parameter::Dash.eval(false, &env), ...);
         //assert_eq!(Parameter::Bang.eval(false, &env), ...);
 
         env.set_last_status(EXIT_SUCCESS);
-        assert_eq!(Parameter::Question.eval(false, &env), Some(Fields::Single("0".to_string().into())));
+        assert_eq!(Parameter::Question.eval(false, &env), Some(Fields::Single("0".to_owned().into())));
     }
 
     #[test]
     fn test_eval_parameter_splitting_with_empty_ifs() {
-        let val1 = Rc::new(" \t\nfoo\n\n\nbar \t\n".to_string());
-        let val2 = Rc::new("".to_string());
+        let val1 = Rc::new(" \t\nfoo\n\n\nbar \t\n".to_owned());
+        let val2 = Rc::new("".to_owned());
 
         let args = vec!(
             val1.clone(),
@@ -763,9 +763,9 @@ mod tests {
 
         let env_args = args.iter().map(|rc| (**rc).clone()).collect();
         let mut env = Env::with_config(false, None, Some(env_args), None, None).unwrap();
-        env.set_var("IFS".to_string(), "".to_string().into());
-        env.set_var("var1".to_string(), val1.clone());
-        env.set_var("var2".to_string(), val2.clone());
+        env.set_var("IFS".to_owned(), "".to_owned().into());
+        env.set_var("var1".to_owned(), val1.clone());
+        env.set_var("var2".to_owned(), val2.clone());
 
         // Splitting with empty IFS should keep fields as they are
         let field_args = args;
@@ -779,8 +779,8 @@ mod tests {
         assert_eq!(Parameter::Positional(1).eval(true, &env), Some(field1.clone()));
         assert_eq!(Parameter::Positional(2).eval(true, &env), Some(field2.clone()));
 
-        assert_eq!(Parameter::Var("var1".to_string()).eval(true, &env), Some(field1.clone()));
-        assert_eq!(Parameter::Var("var2".to_string()).eval(true, &env), Some(field2.clone()));
+        assert_eq!(Parameter::Var("var1".to_owned()).eval(true, &env), Some(field1.clone()));
+        assert_eq!(Parameter::Var("var2".to_owned()).eval(true, &env), Some(field2.clone()));
 
         // Without splitting
         assert_eq!(Parameter::At.eval(false, &env), Some(Fields::At(field_args.clone())));
@@ -789,8 +789,8 @@ mod tests {
         assert_eq!(Parameter::Positional(1).eval(false, &env), Some(field1.clone()));
         assert_eq!(Parameter::Positional(2).eval(false, &env), Some(field2.clone()));
 
-        assert_eq!(Parameter::Var("var1".to_string()).eval(false, &env), Some(field1.clone()));
-        assert_eq!(Parameter::Var("var2".to_string()).eval(false, &env), Some(field2.clone()));
+        assert_eq!(Parameter::Var("var1".to_owned()).eval(false, &env), Some(field1.clone()));
+        assert_eq!(Parameter::Var("var2".to_owned()).eval(false, &env), Some(field2.clone()));
     }
 
     #[test]
@@ -804,19 +804,19 @@ mod tests {
 
         let mut env = Env::new().unwrap();
         let env = &mut env;
-        let var = "var name".to_string();
+        let var = "var name".to_owned();
         let var_value = 10;
-        let var_string = "var string".to_string();
+        let var_string = "var string".to_owned();
         let var_string_value = "asdf";
 
         env.set_var(var.clone(),        var_value.to_string().into());
-        env.set_var(var_string.clone(), var_string_value.to_string().into());
+        env.set_var(var_string.clone(), var_string_value.to_owned().into());
 
         assert_eq!(Literal(5).eval(env), Ok(5));
 
         assert_eq!(Var(var.clone()).eval(env), Ok(var_value));
         assert_eq!(Var(var_string.clone()).eval(env), Ok(0));
-        assert_eq!(Var("missing var".to_string()).eval(env), Ok(0));
+        assert_eq!(Var("missing var".to_owned()).eval(env), Ok(0));
 
         assert_eq!(PostIncr(var.clone()).eval(env), Ok(var_value));
         assert_eq!(&**env.var(&var).unwrap(), &*(var_value + 1).to_string());
@@ -919,9 +919,9 @@ mod tests {
         assert_eq!(&**env.var(&var).unwrap(), "42");
 
         assert_eq!(Sequence(vec!(
-            Assign("x".to_string(), lit(5)),
-            Assign("y".to_string(), lit(10)),
-            Add(Box::new(PreIncr("x".to_string())), Box::new(PostDecr("y".to_string()))),
+            Assign("x".to_owned(), lit(5)),
+            Assign("y".to_owned(), lit(10)),
+            Add(Box::new(PreIncr("x".to_owned())), Box::new(PostDecr("y".to_owned()))),
         )).eval(env), Ok(16));
 
         assert_eq!(&**env.var("x").unwrap(), "6");
@@ -932,13 +932,13 @@ mod tests {
     fn test_eval_parameter_substitution_len() {
         use syntax::ast::ParameterSubstitution::Len;
 
-        let name  = "shell name".to_string();
-        let var   = "var".to_string();
-        let value = "foo bar".to_string();
+        let name  = "shell name".to_owned();
+        let var   = "var".to_owned();
+        let value = "foo bar".to_owned();
         let mut env = Env::with_config(false, Some(name.clone()), Some(vec!(
-            "one".to_string(),
-            "two".to_string(),
-            "three".to_string(),
+            "one".to_owned(),
+            "two".to_owned(),
+            "three".to_owned(),
         )), None, None).unwrap();
 
         env.set_var(var.clone(), Rc::new(value.clone()));
@@ -957,7 +957,7 @@ mod tests {
             (Parameter::Positional(3), 5),
             (Parameter::Positional(5), 0),
             (Parameter::Var(var), value.len()),
-            (Parameter::Var("missing".to_string()), 0),
+            (Parameter::Var("missing".to_owned()), 0),
         );
 
         for tilde in vec!(TildeExpansion::None, TildeExpansion::First, TildeExpansion::All) {
@@ -975,9 +975,9 @@ mod tests {
 
                 env.set_last_status(EXIT_SUCCESS);
                 let len: ParamSubst = Len(Parameter::Question);
-                assert_eq!(len.eval(&mut env, cfg), Ok(Fields::Single("1".to_string().into())));
+                assert_eq!(len.eval(&mut env, cfg), Ok(Fields::Single("1".to_owned().into())));
                 env.set_last_status(ExitStatus::Signal(5)); // Signals have an offset
-                assert_eq!(len.eval(&mut env, cfg), Ok(Fields::Single("3".to_string().into())));
+                assert_eq!(len.eval(&mut env, cfg), Ok(Fields::Single("3".to_owned().into())));
             }
         }
     }
@@ -997,10 +997,10 @@ mod tests {
                 };
 
                 let arith: ParamSubst = Arith(None);
-                assert_eq!(arith.eval(&mut env, cfg), Ok(Fields::Single("0".to_string().into())));
+                assert_eq!(arith.eval(&mut env, cfg), Ok(Fields::Single("0".to_owned().into())));
 
                 let arith: ParamSubst = Arith(Some(Arithmetic::Literal(5)));
-                assert_eq!(arith.eval(&mut env, cfg), Ok(Fields::Single("5".to_string().into())));
+                assert_eq!(arith.eval(&mut env, cfg), Ok(Fields::Single("5".to_owned().into())));
 
                 let arith: ParamSubst = Arith(Some(
                     Arithmetic::Div(Box::new(Arithmetic::Literal(1)), Box::new(Arithmetic::Literal(0)))
@@ -1022,18 +1022,18 @@ mod tests {
             split_fields_further: false,
         };
 
-        let var       = "non_empty_var".to_string();
-        let var_null  = "var with empty value".to_string();
-        let var_unset = "var_not_set_in_env".to_string();
+        let var       = "non_empty_var".to_owned();
+        let var_null  = "var with empty value".to_owned();
+        let var_unset = "var_not_set_in_env".to_owned();
 
-        let var_value = Rc::new("foobar".to_string());
-        let null      = Rc::new("".to_string());
+        let var_value = Rc::new("foobar".to_owned());
+        let null      = Rc::new("".to_owned());
 
         let mut env = Env::new().unwrap();
         env.set_var(var.clone(),      var_value.clone());
         env.set_var(var_null.clone(), null.clone());
 
-        let default_value = Fields::Single(Rc::new(DEFAULT_VALUE.to_string()));
+        let default_value = Fields::Single(Rc::new(DEFAULT_VALUE.to_owned()));
         let var_value     = Fields::Single(var_value);
 
         let default = MockSubstWord(DEFAULT_VALUE);
@@ -1074,10 +1074,10 @@ mod tests {
         // Args have one non-null argument
         {
             let args = vec!(
-                "".to_string(),
-                "foo".to_string(),
-                "".to_string(),
-                "".to_string(),
+                "".to_owned(),
+                "foo".to_owned(),
+                "".to_owned(),
+                "".to_owned(),
             );
 
             let args_value = args.iter().cloned().map(Rc::new).collect::<Vec<_>>();
@@ -1105,9 +1105,9 @@ mod tests {
         // Args all null
         {
             let mut env = Env::with_config(false, None, Some(vec!(
-                "".to_string(),
-                "".to_string(),
-                "".to_string(),
+                "".to_owned(),
+                "".to_owned(),
+                "".to_owned(),
             )), None, None).unwrap();
 
             let subst: ParamSubst = Default(true, Parameter::At, Some(default));
@@ -1162,10 +1162,10 @@ mod tests {
             split_fields_further: false,
         };
 
-        let var         = "non_empty_var".to_string();
-        let var_value   = "foobar".to_string();
-        let var_null    = "var with empty value".to_string();
-        let var_unset   = "var_not_set_in_env".to_string();
+        let var         = "non_empty_var".to_owned();
+        let var_value   = "foobar".to_owned();
+        let var_null    = "var with empty value".to_owned();
+        let var_unset   = "var_not_set_in_env".to_owned();
 
         let null = Rc::new(String::new());
         let assig = MockSubstWord("assigned value");
@@ -1173,7 +1173,7 @@ mod tests {
         let mut env = Env::new().unwrap();
         env.set_var(var.clone(), Rc::new(var_value.clone()));
 
-        let assig_var_value = Rc::new(assig.0.to_string());
+        let assig_var_value = Rc::new(assig.0.to_owned());
         let var_value       = Fields::Single(Rc::new(var_value));
         let assig_value     = Fields::Single(assig_var_value.clone());
 
@@ -1271,13 +1271,13 @@ mod tests {
             split_fields_further: false,
         };
 
-        let var       = "non_empty_var".to_string();
-        let var_null  = "var with empty value".to_string();
-        let var_unset = "var_not_set_in_env".to_string();
+        let var       = "non_empty_var".to_owned();
+        let var_null  = "var with empty value".to_owned();
+        let var_unset = "var_not_set_in_env".to_owned();
 
-        let var_value = Rc::new("foobar".to_string());
-        let null      = Rc::new("".to_string());
-        let err_msg   = ERR_MSG.to_string();
+        let var_value = Rc::new("foobar".to_owned());
+        let null      = Rc::new("".to_owned());
+        let err_msg   = ERR_MSG.to_owned();
 
         let mut env = Env::new().unwrap();
         env.set_var(var.clone(), var_value.clone());
@@ -1370,10 +1370,10 @@ mod tests {
         // Args have one non-null argument
         {
             let args = vec!(
-                "".to_string(),
-                "foo".to_string(),
-                "".to_string(),
-                "".to_string(),
+                "".to_owned(),
+                "foo".to_owned(),
+                "".to_owned(),
+                "".to_owned(),
             );
 
             let args_value = args.iter().cloned().map(Rc::new).collect::<Vec<_>>();
@@ -1401,9 +1401,9 @@ mod tests {
         // Args all null
         {
             let mut env = Env::with_config(false, None, Some(vec!(
-                "".to_string(),
-                "".to_string(),
-                "".to_string(),
+                "".to_owned(),
+                "".to_owned(),
+                "".to_owned(),
             )), None, None).unwrap();
 
             env.set_last_status(EXIT_SUCCESS);
@@ -1497,11 +1497,11 @@ mod tests {
             split_fields_further: false,
         };
 
-        let var       = "non_empty_var".to_string();
-        let var_value = "foobar".to_string();
-        let var_null  = "var with empty value".to_string();
-        let null      = "".to_string();
-        let var_unset = "var_not_set_in_env".to_string();
+        let var       = "non_empty_var".to_owned();
+        let var_value = "foobar".to_owned();
+        let var_null  = "var with empty value".to_owned();
+        let null      = "".to_owned();
+        let var_unset = "var_not_set_in_env".to_owned();
 
         let alt_value = "some alternative value";
         let alternative = MockSubstWord(alt_value);
@@ -1510,7 +1510,7 @@ mod tests {
         env.set_var(var.clone(),      Rc::new(var_value.clone()));
         env.set_var(var_null.clone(), Rc::new(null.clone()));
 
-        let alt_value = Fields::Single(Rc::new(alt_value.to_string()));
+        let alt_value = Fields::Single(Rc::new(alt_value.to_owned()));
 
         // Strict with alternative
         let subst: ParamSubst = Alternative(true, Parameter::Var(var.clone()), Some(alternative));
@@ -1549,10 +1549,10 @@ mod tests {
         // Args have one non-null argument
         {
             let args = vec!(
-                "".to_string(),
-                "foo".to_string(),
-                "".to_string(),
-                "".to_string(),
+                "".to_owned(),
+                "foo".to_owned(),
+                "".to_owned(),
+                "".to_owned(),
             );
 
             let mut env = Env::with_config(false, None, Some(args), None, None).unwrap();
@@ -1579,9 +1579,9 @@ mod tests {
         // Args all null
         {
             let mut env = Env::with_config(false, None, Some(vec!(
-                "".to_string(),
-                "".to_string(),
-                "".to_string(),
+                "".to_owned(),
+                "".to_owned(),
+                "".to_owned(),
             )), None, None).unwrap();
 
             let subst: ParamSubst = Alternative(true, Parameter::At, Some(alternative));
@@ -1637,8 +1637,8 @@ mod tests {
         let mock1 = MockSubstWord(val1);
         let mock2 = MockSubstWord(val2);
 
-        let val1 = val1.to_string();
-        let val2 = val2.to_string();
+        let val1 = val1.to_owned();
+        let val2 = val2.to_owned();
 
         let args = vec!(
             val1.clone(),
@@ -1647,19 +1647,19 @@ mod tests {
 
         let val1 = Rc::new(val1);
         let val2 = Rc::new(val2);
-        let var1 = Parameter::Var("var1".to_string());
-        let var2 = Parameter::Var("var2".to_string());
+        let var1 = Parameter::Var("var1".to_owned());
+        let var2 = Parameter::Var("var2".to_owned());
 
         let var_null = var2.clone();
 
         let mut env = Env::with_config(false, None, Some(args.clone()), None, None).unwrap();
-        env.set_var("var1".to_string(), val1.clone());
-        env.set_var("var2".to_string(), val2.clone());
+        env.set_var("var1".to_owned(), val1.clone());
+        env.set_var("var2".to_owned(), val2.clone());
 
         // Splitting should NOT keep empty fields between IFS chars which ARE whitespace
         let fields_foo_bar = Fields::Split(vec!(
-            "foo".to_string().into(),
-            "bar".to_string().into(),
+            "foo".to_owned().into(),
+            "bar".to_owned().into(),
         ));
 
         // With splitting
@@ -1773,9 +1773,9 @@ mod tests {
         let mock2 = MockSubstWord(val2);
         let mock3 = MockSubstWord(val3);
 
-        let val1 = val1.to_string();
-        let val2 = val2.to_string();
-        let val3 = val3.to_string();
+        let val1 = val1.to_owned();
+        let val2 = val2.to_owned();
+        let val3 = val3.to_owned();
 
         let args = vec!(
             val1.clone(),
@@ -1786,35 +1786,35 @@ mod tests {
         let val1 = Rc::new(val1);
         let val2 = Rc::new(val2);
         let val3 = Rc::new(val3);
-        let var1 = Parameter::Var("var1".to_string());
-        let var2 = Parameter::Var("var2".to_string());
-        let var3 = Parameter::Var("var3".to_string());
+        let var1 = Parameter::Var("var1".to_owned());
+        let var2 = Parameter::Var("var2".to_owned());
+        let var3 = Parameter::Var("var3".to_owned());
 
         let var_null = var3.clone();
-        let var_missing = Parameter::Var("missing".to_string());
+        let var_missing = Parameter::Var("missing".to_owned());
 
         let mut env = Env::with_config(false, None, Some(args.clone()), None, None).unwrap();
-        env.set_var("IFS".to_string(), Rc::new("0 ".to_string()));
+        env.set_var("IFS".to_owned(), Rc::new("0 ".to_owned()));
 
-        env.set_var("var1".to_string(), val1.clone());
-        env.set_var("var2".to_string(), val2.clone());
-        env.set_var("var3".to_string(), val3.clone());
+        env.set_var("var1".to_owned(), val1.clone());
+        env.set_var("var2".to_owned(), val2.clone());
+        env.set_var("var3".to_owned(), val3.clone());
 
         // Splitting SHOULD keep empty fields between IFS chars which are NOT whitespace
         let fields_foo_bar = Fields::Split(vec!(
-            "foo".to_string().into(),
-            "".to_string().into(),
-            "".to_string().into(),
-            "bar".to_string().into(),
+            "foo".to_owned().into(),
+            "".to_owned().into(),
+            "".to_owned().into(),
+            "bar".to_owned().into(),
         ));
 
         let fields_all_blanks = Fields::Split(vec!(
-            "".to_string().into(),
-            "".to_string().into(),
-            "".to_string().into(),
-            "".to_string().into(),
-            "".to_string().into(),
-            "".to_string().into(),
+            "".to_owned().into(),
+            "".to_owned().into(),
+            "".to_owned().into(),
+            "".to_owned().into(),
+            "".to_owned().into(),
+            "".to_owned().into(),
         ));
 
         // With splitting
@@ -1825,7 +1825,7 @@ mod tests {
 
         // FIXME: test Command
         let subst: ParamSubst = Len(var_missing.clone());
-        assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Single("".to_string().into())));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Single("".to_owned().into())));
 
         let subst: ParamSubst = Arith(Some(Arithmetic::Add(
             Box::new(Arithmetic::Literal(100)),
@@ -1833,8 +1833,8 @@ mod tests {
         )));
         assert_eq!(subst.eval(&mut env, cfg), Ok(
             Fields::Split(vec!(
-                "1".to_string().into(),
-                "5".to_string().into(),
+                "1".to_owned().into(),
+                "5".to_owned().into(),
             )))
         );
 
@@ -1903,13 +1903,13 @@ mod tests {
 
         // FIXME: test Command
         let subst: ParamSubst = Len(var_missing.clone());
-        assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Single("0".to_string().into())));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Single("0".to_owned().into())));
 
         let subst: ParamSubst = Arith(Some(Arithmetic::Add(
             Box::new(Arithmetic::Literal(100)),
             Box::new(Arithmetic::Literal(5)),
         )));
-        assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Single("105".to_string().into())));
+        assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Single("105".to_owned().into())));
 
         let val1 = Fields::Single(val1.clone());
         let val2 = Fields::Single(val2.clone());
@@ -1977,11 +1977,11 @@ mod tests {
         use syntax::ast::ParameterSubstitution::RemoveSmallestSuffix;
 
         let args = vec!(
-            "foobar".to_string(),
-            "foobaar".to_string(),
-            "bazbaar".to_string(),
-            "def".to_string(),
-            "".to_string(),
+            "foobar".to_owned(),
+            "foobaar".to_owned(),
+            "bazbaar".to_owned(),
+            "def".to_owned(),
+            "".to_owned(),
         );
 
         let foobar  = Parameter::Positional(1);
@@ -1991,11 +1991,11 @@ mod tests {
         let pat = MockSubstWord("a*");
 
         let fields_args = vec!(
-            "foob".to_string().into(),
-            "fooba".to_string().into(),
-            "bazba".to_string().into(),
-            "def".to_string().into(),
-            "".to_string().into(),
+            "foob".to_owned().into(),
+            "fooba".to_owned().into(),
+            "bazba".to_owned().into(),
+            "def".to_owned().into(),
+            "".to_owned().into(),
         );
 
         let cfg = WordEvalConfig {
@@ -2006,7 +2006,7 @@ mod tests {
         let mut env = Env::with_config(false, None, Some(args), None, None).unwrap();
 
         let subst: ParamSubst = RemoveSmallestSuffix(foobar, None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok("foobar".to_string().into()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok("foobar".to_owned().into()));
 
         let subst: ParamSubst = RemoveSmallestSuffix(unset, Some(pat));
         assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
@@ -2024,11 +2024,11 @@ mod tests {
         use syntax::ast::ParameterSubstitution::RemoveLargestSuffix;
 
         let args = vec!(
-            "foobar".to_string(),
-            "foobaar".to_string(),
-            "bazbaar".to_string(),
-            "def".to_string(),
-            "".to_string(),
+            "foobar".to_owned(),
+            "foobaar".to_owned(),
+            "bazbaar".to_owned(),
+            "def".to_owned(),
+            "".to_owned(),
         );
 
         let foobar  = Parameter::Positional(1);
@@ -2038,11 +2038,11 @@ mod tests {
         let pat = MockSubstWord("a*");
 
         let fields_args = vec!(
-            "foob".to_string().into(),
-            "foob".to_string().into(),
-            "b".to_string().into(),
-            "def".to_string().into(),
-            "".to_string().into(),
+            "foob".to_owned().into(),
+            "foob".to_owned().into(),
+            "b".to_owned().into(),
+            "def".to_owned().into(),
+            "".to_owned().into(),
         );
 
         let cfg = WordEvalConfig {
@@ -2053,7 +2053,7 @@ mod tests {
         let mut env = Env::with_config(false, None, Some(args), None, None).unwrap();
 
         let subst: ParamSubst = RemoveLargestSuffix(foobar, None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok("foobar".to_string().into()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok("foobar".to_owned().into()));
 
         let subst: ParamSubst = RemoveLargestSuffix(unset, Some(pat));
         assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
@@ -2071,11 +2071,11 @@ mod tests {
         use syntax::ast::ParameterSubstitution::RemoveSmallestPrefix;
 
         let args = vec!(
-            "foobar".to_string(),
-            "foofoo".to_string(),
-            "bazfooqux".to_string(),
-            "abc".to_string(),
-            "".to_string(),
+            "foobar".to_owned(),
+            "foofoo".to_owned(),
+            "bazfooqux".to_owned(),
+            "abc".to_owned(),
+            "".to_owned(),
         );
 
         let foobar  = Parameter::Positional(1);
@@ -2086,11 +2086,11 @@ mod tests {
         let pat = MockSubstWord("*o");
 
         let fields_args = vec!(
-            "obar".to_string().into(),
-            "ofoo".to_string().into(),
-            "oqux".to_string().into(),
-            "abc".to_string().into(),
-            "".to_string().into(),
+            "obar".to_owned().into(),
+            "ofoo".to_owned().into(),
+            "oqux".to_owned().into(),
+            "abc".to_owned().into(),
+            "".to_owned().into(),
         );
 
         let cfg = WordEvalConfig {
@@ -2101,7 +2101,7 @@ mod tests {
         let mut env = Env::with_config(false, None, Some(args), None, None).unwrap();
 
         let subst: ParamSubst = RemoveSmallestPrefix(foobar, None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok("foobar".to_string().into()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok("foobar".to_owned().into()));
 
         let subst: ParamSubst = RemoveSmallestPrefix(abc, Some(MockSubstWord("abc")));
         assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
@@ -2122,10 +2122,10 @@ mod tests {
         use syntax::ast::ParameterSubstitution::RemoveLargestPrefix;
 
         let args = vec!(
-            "foobar".to_string(),
-            "foofoo".to_string(),
-            "bazfooqux".to_string(),
-            "".to_string(),
+            "foobar".to_owned(),
+            "foofoo".to_owned(),
+            "bazfooqux".to_owned(),
+            "".to_owned(),
         );
 
         let foobar  = Parameter::Positional(1);
@@ -2135,10 +2135,10 @@ mod tests {
         let pat = MockSubstWord("*o");
 
         let fields_args = vec!(
-            "bar".to_string().into(),
-            "".to_string().into(),
-            "qux".to_string().into(),
-            "".to_string().into(),
+            "bar".to_owned().into(),
+            "".to_owned().into(),
+            "qux".to_owned().into(),
+            "".to_owned().into(),
         );
 
         let cfg = WordEvalConfig {
@@ -2149,7 +2149,7 @@ mod tests {
         let mut env = Env::with_config(false, None, Some(args), None, None).unwrap();
 
         let subst: ParamSubst = RemoveLargestPrefix(foobar, None);
-        assert_eq!(subst.eval(&mut env, cfg), Ok("foobar".to_string().into()));
+        assert_eq!(subst.eval(&mut env, cfg), Ok("foobar".to_owned().into()));
 
         let subst: ParamSubst = RemoveLargestPrefix(unset, Some(pat));
         assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
@@ -2181,7 +2181,7 @@ mod tests {
 
         type ParamSubst = ParameterSubstitution<MockWord, MockCmd>;
 
-        let name = "var".to_string();
+        let name = "var".to_owned();
         let var = Parameter::Var(name.clone());
         let mut env = Env::new().unwrap();
 
@@ -2206,7 +2206,7 @@ mod tests {
             let subst: ParamSubst = Error(true, var.clone(), Some(mock));
             subst.eval(&mut env, cfg).unwrap_err();
 
-            env.set_var(name.clone(), "some value".to_string().into());
+            env.set_var(name.clone(), "some value".to_owned().into());
             let subst: ParamSubst = Alternative(true, var.clone(), Some(mock));
             subst.eval(&mut env, cfg).unwrap();
         }

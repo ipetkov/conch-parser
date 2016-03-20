@@ -84,7 +84,7 @@ impl<'a> Env<'a> {
         use std::env;
 
         let name = name.unwrap_or_else(|| env::current_exe().ok().and_then(|path| {
-            path.file_name().and_then(|os_str| os_str.to_str().map(|s| s.to_string()))
+            path.file_name().and_then(|os_str| os_str.to_str().map(|s| s.to_owned()))
         }).unwrap_or_default());
 
         let args = args.map_or(Vec::new(), |args| args.into_iter().map(Rc::new).collect());
@@ -408,11 +408,11 @@ mod tests {
 
     #[test]
     fn test_env_set_get_unset_var() {
-        let name = "var".to_string();
+        let name = "var".to_owned();
         let value = "value";
         let mut env = Env::new().unwrap();
         assert_eq!(env.var(&name), None);
-        env.set_var(name.clone(), Rc::new(value.to_string()));
+        env.set_var(name.clone(), Rc::new(value.to_owned()));
         assert_eq!(&**env.var(&name).unwrap(), value);
         env.unset_var(name.clone());
         assert_eq!(env.var(&name), None);
@@ -598,7 +598,7 @@ mod tests {
 
     #[test]
     fn test_env_run_function_can_be_recursive() {
-        let fn_name_owned = "fn name".to_string();
+        let fn_name_owned = "fn name".to_owned();
         let fn_name = Rc::new(fn_name_owned.clone());
 
         let mut env = Env::new().unwrap();
@@ -679,7 +679,7 @@ mod tests {
         file_path.push("out");
 
         let mut env = Env::new().unwrap();
-        env.set_function(fn_name.to_string(), MockFn::new(|env| {
+        env.set_function(fn_name.to_owned(), MockFn::new(|env| {
             let args = env.args().iter().map(|rc| rc.to_string()).collect::<Vec<_>>();
             let msg = args.join(" ");
             let fd = env.file_desc(STDOUT_FILENO).unwrap().0;

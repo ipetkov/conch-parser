@@ -388,7 +388,7 @@ mod tests {
         use runtime::RuntimeError::Redirection;
 
         let mut env = Env::new().unwrap();
-        let path = "a1e2".to_string();
+        let path = "a1e2".to_owned();
 
         let redirect: Redirect = DupRead(None, word(&path));
         assert_eq!(redirect.eval(&mut env), Err(Redirection(BadFdSrc(path.clone()))));
@@ -402,7 +402,7 @@ mod tests {
         use runtime::RuntimeError::Redirection;
 
         let mut env = Env::new().unwrap();
-        let path = "42".to_string();
+        let path = "42".to_owned();
 
         let redirect: Redirect = DupRead(None, word(&path));
         assert_eq!(redirect.eval(&mut env), Err(Redirection(BadFdSrc(path.clone()))));
@@ -464,7 +464,7 @@ mod tests {
             }
         }
 
-        let owned = DEV_NULL.to_string();
+        let owned = DEV_NULL.to_owned();
         let rc = Rc::new(owned.clone());
 
         let mut env = Env::new().unwrap();
@@ -507,7 +507,7 @@ mod tests {
                 assert_eq!(env.is_interactive(), cfg.split_fields_further);
                 let s = match self.0 {
                     Some(fd) => fd.to_string(),
-                    None => DEV_NULL.to_string(),
+                    None => DEV_NULL.to_owned(),
                 };
 
                 Ok(Fields::Single(Rc::new(s)))

@@ -223,24 +223,24 @@ mod tests {
     #[test]
     fn test_fields_is_null() {
         let empty_strs = vec!(
-            "".to_string().into(),
-            "".to_string().into(),
-            "".to_string().into(),
+            "".to_owned().into(),
+            "".to_owned().into(),
+            "".to_owned().into(),
         );
 
         let mostly_non_empty_strs = vec!(
-            "foo".to_string().into(),
-            "".to_string().into(),
-            "bar".to_string().into(),
+            "foo".to_owned().into(),
+            "".to_owned().into(),
+            "bar".to_owned().into(),
         );
 
         assert_eq!(Fields::Zero.is_null(), true);
-        assert_eq!(Fields::Single("".to_string().into()).is_null(), true);
+        assert_eq!(Fields::Single("".to_owned().into()).is_null(), true);
         assert_eq!(Fields::At(empty_strs.clone()).is_null(), true);
         assert_eq!(Fields::Star(empty_strs.clone()).is_null(), true);
         assert_eq!(Fields::Split(empty_strs.clone()).is_null(), true);
 
-        assert_eq!(Fields::Single("foo".to_string().into()).is_null(), false);
+        assert_eq!(Fields::Single("foo".to_owned().into()).is_null(), false);
         assert_eq!(Fields::At(mostly_non_empty_strs.clone()).is_null(), false);
         assert_eq!(Fields::Star(mostly_non_empty_strs.clone()).is_null(), false);
         assert_eq!(Fields::Split(mostly_non_empty_strs.clone()).is_null(), false);
@@ -249,13 +249,13 @@ mod tests {
     #[test]
     fn test_fields_join() {
         let strs = vec!(
-            "foo".to_string().into(),
-            "".to_string().into(),
-            "bar".to_string().into(),
+            "foo".to_owned().into(),
+            "".to_owned().into(),
+            "bar".to_owned().into(),
         );
 
         assert_eq!(&*Fields::Zero.join(), "");
-        assert_eq!(&*Fields::Single("foo".to_string().into()).join(), "foo");
+        assert_eq!(&*Fields::Single("foo".to_owned().into()).join(), "foo");
         assert_eq!(&*Fields::At(strs.clone()).join(), "foo bar");
         assert_eq!(&*Fields::Star(strs.clone()).join(), "foo bar");
         assert_eq!(&*Fields::Split(strs.clone()).join(), "foo bar");
@@ -264,24 +264,24 @@ mod tests {
     #[test]
     fn test_fields_join_with_ifs() {
         let strs = vec!(
-            "foo".to_string().into(),
-            "".to_string().into(), // Empty strings should not be eliminated
-            "bar".to_string().into(),
+            "foo".to_owned().into(),
+            "".to_owned().into(), // Empty strings should not be eliminated
+            "bar".to_owned().into(),
         );
 
         let mut env = Env::new().unwrap();
 
-        env.set_var(String::from("IFS"), "!".to_string().into());
+        env.set_var(String::from("IFS"), "!".to_owned().into());
         assert_eq!(&*Fields::Zero.join_with_ifs(&env), "");
-        assert_eq!(&*Fields::Single("foo".to_string().into()).join_with_ifs(&env), "foo");
+        assert_eq!(&*Fields::Single("foo".to_owned().into()).join_with_ifs(&env), "foo");
         assert_eq!(&*Fields::At(strs.clone()).join_with_ifs(&env), "foo!!bar");
         assert_eq!(&*Fields::Star(strs.clone()).join_with_ifs(&env), "foo!!bar");
         assert_eq!(&*Fields::Split(strs.clone()).join_with_ifs(&env), "foo!!bar");
 
         // Blank IFS
-        env.set_var(String::from("IFS"), "".to_string().into());
+        env.set_var(String::from("IFS"), "".to_owned().into());
         assert_eq!(&*Fields::Zero.join_with_ifs(&env), "");
-        assert_eq!(&*Fields::Single("foo".to_string().into()).join_with_ifs(&env), "foo");
+        assert_eq!(&*Fields::Single("foo".to_owned().into()).join_with_ifs(&env), "foo");
         assert_eq!(&*Fields::At(strs.clone()).join_with_ifs(&env), "foobar");
         assert_eq!(&*Fields::Star(strs.clone()).join_with_ifs(&env), "foobar");
         assert_eq!(&*Fields::Split(strs.clone()).join_with_ifs(&env), "foobar");
@@ -291,11 +291,11 @@ mod tests {
 
     #[test]
     fn test_fields_from_vec() {
-        let s = Rc::new("foo".to_string());
+        let s = Rc::new("foo".to_owned());
         let strs = vec!(
             s.clone(),
-            "".to_string().into(),
-            "bar".to_string().into(),
+            "".to_owned().into(),
+            "bar".to_owned().into(),
         );
 
         assert_eq!(Fields::Zero, vec!().into());
@@ -305,29 +305,29 @@ mod tests {
 
     #[test]
     fn test_fields_from_rc_string() {
-        let rc = Rc::new("foo".to_string());
+        let rc = Rc::new("foo".to_owned());
         assert_eq!(Fields::Single(rc.clone()), rc.into());
         // Empty string is NOT an empty field
-        let rc = Rc::new("".to_string());
+        let rc = Rc::new("".to_owned());
         assert_eq!(Fields::Single(rc.clone()), rc.into());
     }
 
     #[test]
     fn test_fields_from_string() {
-        let string = "foo".to_string();
+        let string = "foo".to_owned();
         assert_eq!(Fields::Single(Rc::new(string.clone())), string.into());
         // Empty string is NOT an empty field
-        let string = "".to_string();
+        let string = "".to_owned();
         assert_eq!(Fields::Single(Rc::new(string.clone())), string.into());
     }
 
     #[test]
     fn test_fields_into_iter() {
-        let s = Rc::new("foo".to_string());
+        let s = Rc::new("foo".to_owned());
         let strs = vec!(
             s.clone(),
-            "".to_string().into(),
-            "bar".to_string().into(),
+            "".to_owned().into(),
+            "bar".to_owned().into(),
         );
 
         let empty: Vec<Rc<String>> = vec!();
@@ -378,29 +378,29 @@ mod tests {
         }
 
         let mut env = Env::new().unwrap();
-        env.set_var("IFS".to_string(), Rc::new("!".to_string()));
+        env.set_var("IFS".to_owned(), Rc::new("!".to_owned()));
 
         word_eval_impl!(MockWord1, Fields::Zero);
         assert_eq!(*MockWord1.eval_as_assignment(&mut env).unwrap(), "");
 
-        word_eval_impl!(MockWord2, Fields::Single("foo".to_string().into()));
+        word_eval_impl!(MockWord2, Fields::Single("foo".to_owned().into()));
         assert_eq!(*MockWord2.eval_as_assignment(&mut env).unwrap(), "foo");
 
         word_eval_impl!(MockWord3, Fields::At(vec!(
-            "foo".to_string().into(),
-            "bar".to_string().into(),
+            "foo".to_owned().into(),
+            "bar".to_owned().into(),
         )));
         assert_eq!(*MockWord3.eval_as_assignment(&mut env).unwrap(), "foo bar");
 
         word_eval_impl!(MockWord4, Fields::Split(vec!(
-            "foo".to_string().into(),
-            "bar".to_string().into(),
+            "foo".to_owned().into(),
+            "bar".to_owned().into(),
         )));
         assert_eq!(*MockWord4.eval_as_assignment(&mut env).unwrap(), "foo bar");
 
         word_eval_impl!(MockWord5, Fields::Star(vec!(
-            "foo".to_string().into(),
-            "bar".to_string().into(),
+            "foo".to_owned().into(),
+            "bar".to_owned().into(),
         )));
         assert_eq!(*MockWord5.eval_as_assignment(&mut env).unwrap(), "foo!bar");
     }
@@ -418,9 +418,9 @@ mod tests {
                     split_fields_further: false,
                 });
                 Ok(Fields::Split(vec!(
-                    "foo".to_string().into(),
-                    "*?".to_string().into(),
-                    "bar".to_string().into(),
+                    "foo".to_owned().into(),
+                    "*?".to_owned().into(),
+                    "bar".to_owned().into(),
                 )))
             }
         }

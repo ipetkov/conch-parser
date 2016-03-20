@@ -680,13 +680,13 @@ mod tests {
         env.set_file_desc(STDERR_FILENO, Rc::new(dev_null()), Permissions::Write);
 
         run_test!(swallow_errors, test, env, ok_status,
-            RuntimeError::Command(CommandError::NotFound("".to_string())),
-            RuntimeError::Command(CommandError::NotExecutable("".to_string())),
+            RuntimeError::Command(CommandError::NotFound("".to_owned())),
+            RuntimeError::Command(CommandError::NotExecutable("".to_owned())),
             RuntimeError::Redirection(RedirectionError::Ambiguous(vec!())),
-            RuntimeError::Redirection(RedirectionError::BadFdSrc("".to_string())),
+            RuntimeError::Redirection(RedirectionError::BadFdSrc("".to_owned())),
             RuntimeError::Redirection(RedirectionError::BadFdPerms(0, Permissions::Read)),
             RuntimeError::Unimplemented("unimplemented"),
-            RuntimeError::Io(IoError::last_os_error(), "".to_string()),
+            RuntimeError::Io(IoError::last_os_error(), "".to_owned()),
         );
     }
 
@@ -719,7 +719,7 @@ mod tests {
             RuntimeError::Expansion(ExpansionError::DivideByZero),
             RuntimeError::Expansion(ExpansionError::NegativeExponent),
             RuntimeError::Expansion(ExpansionError::BadAssig(Parameter::At)),
-            RuntimeError::Expansion(ExpansionError::EmptyParameter(Parameter::At, "".to_string())),
+            RuntimeError::Expansion(ExpansionError::EmptyParameter(Parameter::At, "".to_owned())),
         );
 
         let result = test(
@@ -755,7 +755,7 @@ mod tests {
     fn test_run_command_and_error_handling() {
         test_error_handling(true,  |cmd, env| {
             let should_not_run = "should not run";
-            env.set_function(should_not_run.to_string(), MockFn::new(|_| {
+            env.set_function(should_not_run.to_owned(), MockFn::new(|_| {
                 panic!("ran command that should not be run")
             }));
 
@@ -768,7 +768,7 @@ mod tests {
     fn test_run_command_or() {
         let mut env = Env::new().unwrap();
         let should_not_run = "should not run";
-        env.set_function(should_not_run.to_string(), MockFn::new(|_| {
+        env.set_function(should_not_run.to_owned(), MockFn::new(|_| {
             panic!("ran command that should not be run")
         }));
 
@@ -786,7 +786,7 @@ mod tests {
     fn test_run_command_function_declaration() {
         let fn_name = "function_name";
         let mut env = Env::new().unwrap();
-        let func = Function(fn_name.to_string(), Rc::new(*false_cmd()));
+        let func = Function(fn_name.to_owned(), Rc::new(*false_cmd()));
         assert_eq!(func.run(&mut env), Ok(EXIT_SUCCESS));
         assert_eq!(cmd!(fn_name).run(&mut env), Ok(ExitStatus::Code(1)));
     }
@@ -954,7 +954,7 @@ mod tests {
 
         let file = file_path.display().to_string();
         let file = TopLevelWord(Single(Simple(Box::new(Literal(file)))));
-        let var_value = TopLevelWord(Single(Simple(Box::new(Literal(value.to_string())))));
+        let var_value = TopLevelWord(Single(Simple(Box::new(Literal(value.to_owned())))));
 
         let mut env = Env::new().unwrap();
 
@@ -1004,7 +1004,7 @@ mod tests {
         let missing = missing_file_path.display().to_string();
         let missing = TopLevelWord(Single(Simple(Box::new(Literal(missing)))));
 
-        let var_value = TopLevelWord(Single(Simple(Box::new(Literal(value.to_string())))));
+        let var_value = TopLevelWord(Single(Simple(Box::new(Literal(value.to_owned())))));
 
 
         let mut env = Env::new().unwrap();
@@ -1152,7 +1152,7 @@ mod tests {
 
         test_error_handling_fatals(false, |cmd, env| {
             let should_not_run = "should not run";
-            env.set_function(should_not_run.to_string(), MockFn::new(|_| {
+            env.set_function(should_not_run.to_owned(), MockFn::new(|_| {
                 panic!("ran command that should not be run")
             }));
 
@@ -1224,7 +1224,7 @@ mod tests {
 
         // Error in guard
         test_error_handling(true, |cmd, env| {
-            env.set_function(should_not_run.to_string(), fn_should_not_run.clone());
+            env.set_function(should_not_run.to_owned(), fn_should_not_run.clone());
             let compound: CompoundCommand = If(
                 vec!(GuardBodyPair { guard: vec!(*cmd), body: vec!(*cmd!(should_not_run)) }),
                 Some(vec!(*exit(42)))
@@ -1234,7 +1234,7 @@ mod tests {
 
         // Error in body of successful guard
         test_error_handling(true, |cmd, env| {
-            env.set_function(should_not_run.to_string(), fn_should_not_run.clone());
+            env.set_function(should_not_run.to_owned(), fn_should_not_run.clone());
             let compound: CompoundCommand = If(
                 vec!(GuardBodyPair { guard: vec!(*true_cmd()), body: vec!(*cmd) }),
                 Some(vec!(*cmd!(should_not_run)))
@@ -1244,7 +1244,7 @@ mod tests {
 
         // Error in body of else part
         test_error_handling(true, |cmd, env| {
-            env.set_function(should_not_run.to_string(), fn_should_not_run.clone());
+            env.set_function(should_not_run.to_owned(), fn_should_not_run.clone());
             let compound: CompoundCommand = If(
                 vec!(GuardBodyPair { guard: vec!(*false_cmd()), body: vec!(*cmd!(should_not_run))}),
                 Some(vec!(*cmd))
@@ -1262,15 +1262,15 @@ mod tests {
 
     #[test]
     fn test_run_command_subshell_child_inherits_var_definitions() {
-        let var_name = "var".to_string();
-        let var_value = "value".to_string();
+        let var_name = "var".to_owned();
+        let var_value = "value".to_owned();
         let fn_check_vars = "fn_check_vars";
 
         let mut env = Env::new().unwrap();
         env.set_var(var_name.clone(), Rc::new(var_value.clone()));
 
         {
-            env.set_function(fn_check_vars.to_string(), MockFn::new(move |env| {
+            env.set_function(fn_check_vars.to_owned(), MockFn::new(move |env| {
                 assert_eq!(&**env.var(&var_name).unwrap(), &var_value);
                 Ok(EXIT_SUCCESS)
             }));
@@ -1280,9 +1280,9 @@ mod tests {
 
     #[test]
     fn test_run_command_subshell_parent_isolated_from_var_changes() {
-        let parent_name = "parent-var".to_string();
-        let parent_value = "parent-value".to_string();
-        let child_name = "child-var".to_string();
+        let parent_name = "parent-var".to_owned();
+        let parent_value = "parent-value".to_owned();
+        let child_name = "child-var".to_owned();
         let child_value = "child-value";
         let fn_check_vars = "fn_check_vars";
 
@@ -1293,7 +1293,7 @@ mod tests {
             let parent_name = parent_name.clone();
             let child_name = child_name.clone();
 
-            env.set_function(fn_check_vars.to_string(), MockFn::new(move |env| {
+            env.set_function(fn_check_vars.to_owned(), MockFn::new(move |env| {
                 assert_eq!(&**env.var(&parent_name).unwrap(), child_value);
                 assert_eq!(&**env.var(&child_name).unwrap(), child_value);
                 Ok(EXIT_SUCCESS)
@@ -1355,12 +1355,12 @@ mod tests {
         assert_eq!(env.run_function(Rc::new(fn_name.to_string()), vec!()), None);
 
         // Redefining function within subshell should revert to original
-        env.set_function(fn_name_parent.to_string(), MockFn::new(move |_| {
+        env.set_function(fn_name_parent.to_owned(), MockFn::new(move |_| {
             Ok(ExitStatus::Code(parent_exit_code))
         }));
 
         let compound: CompoundCommand = Subshell(vec!(
-            Function(fn_name_parent.to_string(), Rc::new(*exit(42))),
+            Function(fn_name_parent.to_owned(), Rc::new(*exit(42))),
             *cmd!(fn_name_parent),
         ));
         assert_eq!(compound.run(&mut env), Ok(ExitStatus::Code(override_exit_code)));
@@ -1422,7 +1422,7 @@ mod tests {
             {
                 let new_writer = new_writer;
                 let change_writer = change_writer;
-                env.set_function(exec.to_string(), MockFn::new(move |mut env| {
+                env.set_function(exec.to_owned(), MockFn::new(move |mut env| {
                     env.set_file_desc(new_fd, new_writer.clone(), Permissions::Write);
                     env.set_file_desc(target_fd, change_writer.clone(), Permissions::Write);
                     Ok(EXIT_SUCCESS)
@@ -1492,7 +1492,7 @@ mod tests {
 
         test_error_handling_fatals(true, |cmd, env| {
             let should_not_run = "should not run";
-            env.set_function(should_not_run.to_string(), MockFn::new(|_| {
+            env.set_function(should_not_run.to_owned(), MockFn::new(|_| {
                 panic!("ran command that should not be run")
             }));
 
