@@ -36,6 +36,7 @@ impl Into<fs::OpenOptions> for Permissions {
 }
 
 impl Permissions {
+    /// Checks if read permissions are granted.
     pub fn readable(&self) -> bool {
         match *self {
             Permissions::Read |
@@ -44,6 +45,7 @@ impl Permissions {
         }
     }
 
+    /// Checks if write permissions are granted.
     pub fn writable(&self) -> bool {
         match *self {
             Permissions::Read => false,
@@ -52,6 +54,7 @@ impl Permissions {
         }
     }
 
+    /// Opens permissions as a file handle.
     pub fn open<P: AsRef<path::Path>>(self, path: P) -> Result<fs::File> {
         let options: fs::OpenOptions = self.into();
         options.open(path)
@@ -73,6 +76,14 @@ impl Eq for FileDesc {}
 impl PartialEq<FileDesc> for FileDesc {
     fn eq(&self, other: &FileDesc) -> bool {
         self.inner() == other.inner()
+    }
+}
+
+impl fmt::Debug for FileDesc {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.debug_tuple("FileDesc")
+            .field(self.inner())
+            .finish()
     }
 }
 
@@ -143,12 +154,6 @@ impl Write for FileDesc {
     }
 }
 
-impl fmt::Debug for FileDesc {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "FileDesc({:?})", self.inner())
-    }
-}
-
 impl Seek for FileDesc {
     fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
         self.inner_mut().seek(pos)
@@ -200,12 +205,6 @@ mod tests {
     use std::thread;
     use std::time::Duration;
     use super::*;
-
-    macro_rules! mktmp {
-        () => {
-            TempDir::new(concat!("test-", module_path!(), "-", line!(), "-", column!())).unwrap()
-        }
-    }
 
     #[test]
     fn test_permissions_readable() {

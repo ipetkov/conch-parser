@@ -141,6 +141,7 @@ impl<'a> Env<'a> {
     }
 }
 
+/// An interface for shell commands to use for querying or updating the environment in which they run.
 pub trait Environment {
     /// Create a new sub-environment using the current environment as its parent.
     ///
