@@ -287,7 +287,7 @@ impl<W: WordEval + 'static> Run for Command<W> {
                 return Err(RuntimeError::Unimplemented("job control is not currently supported"));
             },
 
-            Command::Function(ref name, ref cmd) => {
+            Command::FunctionDef(ref name, ref cmd) => {
                 env.set_function(name.clone(), cmd.clone());
                 EXIT_SUCCESS
             },
@@ -787,7 +787,7 @@ mod tests {
     fn test_run_command_function_declaration() {
         let fn_name = "function_name";
         let mut env = Env::new().unwrap();
-        let func = Function(fn_name.to_owned(), Rc::new(*false_cmd()));
+        let func = FunctionDef(fn_name.to_owned(), Rc::new(*false_cmd()));
         assert_eq!(func.run(&mut env), Ok(EXIT_SUCCESS));
         assert_eq!(cmd!(fn_name).run(&mut env), Ok(ExitStatus::Code(1)));
     }
@@ -1349,7 +1349,7 @@ mod tests {
 
         // Defining a new function within subshell should disappear
         let compound: CompoundCommand = Subshell(vec!(
-            Function(fn_name.to_string(), Rc::new(*exit(42))),
+            FunctionDef(fn_name.to_string(), Rc::new(*exit(42))),
             *cmd!(fn_name),
         ));
         assert_eq!(compound.run(&mut env), Ok(ExitStatus::Code(override_exit_code)));
@@ -1361,7 +1361,7 @@ mod tests {
         }));
 
         let compound: CompoundCommand = Subshell(vec!(
-            Function(fn_name_parent.to_owned(), Rc::new(*exit(42))),
+            FunctionDef(fn_name_parent.to_owned(), Rc::new(*exit(42))),
             *cmd!(fn_name_parent),
         ));
         assert_eq!(compound.run(&mut env), Ok(ExitStatus::Code(override_exit_code)));

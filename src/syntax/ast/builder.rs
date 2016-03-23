@@ -579,13 +579,13 @@ impl Builder for DefaultBuilder {
         Ok(Command::Compound(Box::new(CompoundCommand::Case(fragments.word, arms)), redirects))
     }
 
-    /// Constructs a `Command::Function` node with the provided inputs.
+    /// Constructs a `Command::FunctionDef` node with the provided inputs.
     fn function_declaration(&mut self,
                             name: String,
                             body: Self::Command)
         -> Result<Self::Command>
     {
-        Ok(Command::Function(name, Rc::new(body)))
+        Ok(Command::FunctionDef(name, Rc::new(body)))
     }
 
     /// Ignored by the builder.

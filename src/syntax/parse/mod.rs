@@ -5085,7 +5085,7 @@ pub mod test {
 
     #[test]
     fn test_function_declaration_valid() {
-        let correct = Function(
+        let correct = FunctionDef(
             String::from("foo"),
             Rc::new(Compound(
                 Box::new(Brace(vec!(Simple(Box::new(SimpleCommand {
@@ -5120,7 +5120,7 @@ pub mod test {
 
     #[test]
     fn test_function_declaration_valid_body_need_not_be_a_compound_command() {
-        let correct = Function(
+        let correct = FunctionDef(
             String::from("foo"),
             Rc::new(Simple(Box::new(SimpleCommand {
                 cmd: Some((word("echo"), vec!(word("body")))),
@@ -5152,7 +5152,7 @@ pub mod test {
 
     #[test]
     fn test_function_declaration_parens_can_be_subshell_if_function_keyword_present() {
-        let correct = Function(
+        let correct = FunctionDef(
             String::from("foo"),
             Rc::new(Compound(
                 Box::new(Subshell(vec!(Simple(Box::new(SimpleCommand {
@@ -6036,7 +6036,7 @@ pub mod test {
             "foo(    )           { echo body; }",
         ];
 
-        let correct = Function(String::from("foo"), Rc::new(Compound(Box::new(Brace(vec!(cmd_args_unboxed("echo", &["body"])))), vec!())));
+        let correct = FunctionDef(String::from("foo"), Rc::new(Compound(Box::new(Brace(vec!(cmd_args_unboxed("echo", &["body"])))), vec!())));
 
         for cmd in &commands {
             match make_parser(cmd).command() {
@@ -6302,7 +6302,7 @@ pub mod test {
                 Token::CurlyClose,
             ));
             match p.command() {
-                Ok(Function(..)) => {},
+                Ok(FunctionDef(..)) => {},
                 Ok(result) => panic!("Parsed an unexpected command type:\n{:#?}", result),
                 Err(err) => panic!("Failed to parse command: {}", err),
             }
@@ -6347,7 +6347,7 @@ pub mod test {
             Token::CurlyClose,
         ));
         match p.command() {
-            Ok(Function(..)) => {},
+            Ok(FunctionDef(..)) => {},
             Ok(result) => panic!("Parsed an unexpected command type:\n{:#?}", result),
             Err(err) => panic!("Failed to parse command: {}", err),
         }

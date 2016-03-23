@@ -178,9 +178,9 @@ pub enum Command<W> {
     Job(Box<Command<W>>),
     /// A class of commands where redirection is applied to a command group.
     Compound(Box<CompoundCommand<W, Command<W>>>, Vec<Redirect<W>>),
-    /// A function declaration, associating a name with a group of commands,
+    /// A function definition, associating a name with a group of commands,
     /// e.g. `function foo() { echo foo function; }`.
-    Function(String, Rc<Command<W>>),
+    FunctionDef(String, Rc<Command<W>>),
     /// The simplest possible command: an executable with arguments,
     /// environment variable assignments, and redirections.
     Simple(Box<SimpleCommand<W>>),
