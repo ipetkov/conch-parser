@@ -171,9 +171,9 @@ mod tests {
     use super::RedirectAction::*;
     use syntax::ast::Redirect::*;
 
-    type Redirect<'a> = ::syntax::ast::Redirect<MockWord<'a>>;
+    type Redirect = ::syntax::ast::Redirect<MockWord>;
 
-    fn test_eval_close<'a>(fd: Fd, redirect: Redirect<'a>) {
+    fn test_eval_close(fd: Fd, redirect: Redirect) {
         let mut env = Env::new().unwrap();
         assert!(env.file_desc(fd).is_some());
         let action = redirect.eval(&mut env).unwrap();

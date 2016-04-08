@@ -68,11 +68,17 @@ pub enum ParameterSubstitution<W, C> {
     RemoveLargestPrefix(Parameter, Option<W>),
 }
 
+/// A top-level representation of a shell command. This wrapper unifies the provided
+/// top-level word representation, `ComplexWord`, and the top-level command
+/// representation, `Command`, while allowing them to be generic on their own.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct TopLevelCommand(pub Command<TopLevelWord, TopLevelCommand>);
+
 /// A top-level representation of a shell word. This wrapper unifies the provided
 /// top-level word representation, `ComplexWord`, and the top-level command
 /// representation, `Command`, while allowing them to be generic on their own.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct TopLevelWord(pub ComplexWord<TopLevelWord, Command<TopLevelWord>>);
+pub struct TopLevelWord(pub ComplexWord<TopLevelWord, TopLevelCommand>);
 
 /// Represents whitespace delimited text.
 /// Generic over the top-level representation of a shell word and command.
@@ -157,39 +163,79 @@ pub struct GuardBodyPair<C> {
 }
 
 /// Represents any valid shell command.
-/// Generic over the top-level representation of a shell word.
+/// Generic over the top-level representations of shell words and commands.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Command<W> {
-    /// A compound command which runs the second if the first succeeds,
-    /// e.g. `foo && bar`.
-    And(Box<Command<W>>, Box<Command<W>>),
-    /// A compound command which runs the second if the first fails,
-    /// e.g. `foo || bar`.
-    Or(Box<Command<W>>, Box<Command<W>>),
+pub enum Command<W, C> {
+    /// A command that runs asynchronously, that is, the shell will not wait
+    /// for it to exit before running the next command, e.g. `foo &`.
+    Job(CommandList<W, C>),
+    /// A list of and/or commands, e.g. `foo && bar || baz`.
+    List(CommandList<W, C>),
+}
+
+/// A type alias over an and/or list of conventional shell commands.
+pub type CommandList<W, C> = AndOrList<ListableCommand<PipeableCommand<W, C>>>;
+
+/// A command which conditionally runs based on the exit status of the previous command.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum AndOr<T> {
+    /// A compound command which should run only if the previously run command succeeded.
+    And(T),
+    /// A compound command which should run only if the previously run command failed.
+    Or(T),
+}
+
+/// A nonempty list of `AndOr` commands, e.g. `foo && bar || baz`.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct AndOrList<T> {
+    /// The first command that always runs.
+    pub first: T,
+    /// The remainder of the conditional commands which may or may not run.
+    pub rest: Vec<AndOr<T>>,
+}
+
+/// Commands that can be used within an and/or list.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum ListableCommand<T> {
     /// A chain of concurrent commands where the standard output of the
     /// previous becomes the standard input of the next, e.g.
     /// `[!] foo | bar | baz`.
     ///
     /// The bool indicates if a logical negation of the last command's status
     /// should be returned.
-    Pipe(bool, Vec<Command<W>>),
-    /// A command that runs asynchronously, that is, the shell will not wait
-    /// for it to exit before running the next command, e.g. `foo &`.
-    Job(Box<Command<W>>),
-    /// A class of commands where redirection is applied to a command group.
-    Compound(Box<CompoundCommand<W, Command<W>>>, Vec<Redirect<W>>),
-    /// A function definition, associating a name with a group of commands,
-    /// e.g. `function foo() { echo foo function; }`.
-    FunctionDef(String, Rc<Command<W>>),
+    Pipe(bool, Vec<T>),
+    /// A single command not part of a pipeline.
+    Single(T),
+}
+
+/// Commands that can be used within a pipeline.
+/// Generic over the top-level representations of shell words and commands.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum PipeableCommand<W, C> {
     /// The simplest possible command: an executable with arguments,
     /// environment variable assignments, and redirections.
     Simple(Box<SimpleCommand<W>>),
+    /// A class of commands where redirection is applied to a command group.
+    Compound(Box<CompoundCommand<W, C>>),
+    /// A function definition, associating a name with a group of commands,
+    /// e.g. `function foo() { echo foo function; }`.
+    FunctionDef(String, Rc<CompoundCommand<W, C>>),
 }
 
 /// A class of commands where redirection is applied to a command group.
 /// Generic over the top-level representation of a shell word and command.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum CompoundCommand<W, C> {
+pub struct CompoundCommand<W, C> {
+    /// The specific kind of compound command.
+    pub kind: CompoundCommandKind<W, C>,
+    /// Any redirections to be applied to the entire compound command
+    pub io: Vec<Redirect<W>>,
+}
+
+/// A specific kind of a `CompoundCommand`.
+/// Generic over the top-level representation of a shell word and command.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum CompoundCommandKind<W, C> {
     /// A group of commands that should be executed in the current environment.
     Brace(Vec<C>),
     /// A group of commands that should be executed in a subshell environment.
@@ -304,8 +350,28 @@ pub enum Arithmetic {
     Sequence(Vec<Arithmetic>),
 }
 
+impl ops::Deref for TopLevelCommand {
+    type Target = Command<TopLevelWord, TopLevelCommand>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl ops::DerefMut for TopLevelCommand {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl PartialEq<Command<TopLevelWord, TopLevelCommand>> for TopLevelCommand {
+    fn eq(&self, other: &Command<TopLevelWord, TopLevelCommand>) -> bool {
+        &self.0 == other
+    }
+}
+
 impl ops::Deref for TopLevelWord {
-    type Target = ComplexWord<TopLevelWord, Command<TopLevelWord>>;
+    type Target = ComplexWord<TopLevelWord, TopLevelCommand>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -318,8 +384,8 @@ impl ops::DerefMut for TopLevelWord {
     }
 }
 
-impl ::std::cmp::PartialEq<ComplexWord<TopLevelWord, Command<TopLevelWord>>> for TopLevelWord {
-    fn eq(&self, other: &ComplexWord<TopLevelWord, Command<TopLevelWord>>) -> bool {
+impl PartialEq<ComplexWord<TopLevelWord, TopLevelCommand>> for TopLevelWord {
+    fn eq(&self, other: &ComplexWord<TopLevelWord, TopLevelCommand>) -> bool {
         &self.0 == other
     }
 }

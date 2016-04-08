@@ -160,6 +160,7 @@ impl ::std::convert::From<iter::UnmatchedError> for ParseError {
 }
 
 /// Used to indicate what kind of compound command could be parsed next.
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 enum CompoundCmdKeyword {
     For,
     Case,
@@ -361,7 +362,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             return Ok(None);
         }
 
-        let cmd = try!(self.and_or());
+        let cmd = try!(self.and_or_list());
 
         let sep = eat_maybe!(self, {
             Semi => { builder::SeparatorKind::Semi },
@@ -383,29 +384,37 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     ///
     /// Commands are left associative. For example `foo || bar && baz`
     /// parses to `And(Or(foo, bar), baz)`.
-    pub fn and_or(&mut self) -> Result<B::Command> {
-        let mut cmd = try!(self.pipeline());
+    pub fn and_or_list(&mut self) -> Result<B::CommandList> {
+        let first = try!(self.pipeline());
+        let mut rest = Vec::new();
 
         loop {
             self.skip_whitespace();
-            let kind = eat_maybe!(self, {
-                OrIf  => { builder::AndOrKind::Or  },
-                AndIf => { builder::AndOrKind::And };
+            let is_and = eat_maybe!(self, {
+                AndIf => { true },
+                OrIf  => { false };
                 _ => { break },
             });
 
             let post_sep_comments = self.linebreak();
             let next = try!(self.pipeline());
-            cmd = try!(self.builder.and_or(cmd, kind, post_sep_comments, next));
+
+            let next = if is_and {
+                ast::AndOr::And(next)
+            } else {
+                ast::AndOr::Or(next)
+            };
+
+            rest.push((post_sep_comments, next));
         }
 
-        Ok(cmd)
+        self.builder.and_or_list(first, rest)
     }
 
     /// Parses either a single command or a pipeline of commands.
     ///
     /// For example `[!] foo | bar`.
-    pub fn pipeline(&mut self) -> Result<B::Command> {
+    pub fn pipeline(&mut self) -> Result<B::ListableCommand> {
         self.skip_whitespace();
         let bang = eat_maybe!(self, {
             Bang => { true };
@@ -434,33 +443,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         Ok(try!(self.builder.pipeline(bang, cmds)))
     }
 
-    /// Parses any command which itself is not a pipeline or an AND/OR command.
-    pub fn command(&mut self) -> Result<B::Command> {
+    /// Parses any compound or individual command.
+    pub fn command(&mut self) -> Result<B::PipeableCommand> {
         if let Some(kw) = self.next_compound_command_type() {
-            return self.compound_command_internal(Some(kw))
-        }
-
-        if self.peek_reserved_word(&["function"]).is_some() {
-            return self.function_declaration();
-        }
-
-        let is_fn = {
-            let mut peeked = self.iter.peek_many(3).into_iter();
-            if let Some(&Name(_)) = peeked.next() {
-                let second = peeked.next();
-
-                if let Some(&Whitespace(_)) = second {
-                    Some(&ParenOpen) == peeked.next()
-                } else {
-                    Some(&ParenOpen) == second
-                }
-            } else {
-                false
-            }
-        };
-
-        if is_fn {
-            self.function_declaration()
+            let compound = try!(self.compound_command_internal(Some(kw)));
+            self.builder.compound_command_as_pipeable(compound)
+        } else if let Some(fn_def) = try!(self.maybe_function_declaration()) {
+            Ok(fn_def)
         } else {
             self.simple_command()
         }
@@ -470,7 +459,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     ///
     /// A valid command is expected to have at least an executable name, or a single
     /// variable assignment or redirection. Otherwise an error will be returned.
-    pub fn simple_command(&mut self) -> Result<B::Command> {
+    pub fn simple_command(&mut self) -> Result<B::PipeableCommand> {
         let mut cmd: Option<B::Word> = None;
         let mut args = Vec::new();
         let mut vars = Vec::new();
@@ -968,8 +957,14 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             // create a ones whose type will be Parser<_, &mut &mut B>, ad infinitum, causing rustc
             // to overflow its stack. By erasing the builder's type the sub-parser's type is always
             // fixed and rustc will remain happy :)
-            let b: &mut Builder<Command=B::Command, Word=B::Word, Redirect=B::Redirect>
-                = &mut self.builder;
+            let b: &mut Builder<
+                Command=B::Command,
+                CommandList=B::CommandList,
+                ListableCommand=B::ListableCommand,
+                PipeableCommand=B::PipeableCommand,
+                CompoundCommand=B::CompoundCommand,
+                Word=B::Word,
+                Redirect=B::Redirect> = &mut self.builder;
             let mut parser = Parser::with_token_iter_and_builder(tok_iter, b);
             let mut body = try!(parser.word_interpolated_raw(None, heredoc_start_pos));
 
@@ -1289,8 +1284,14 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         // create a ones whose type will be Parser<_, &mut &mut B>, ad infinitum, causing rustc
         // to overflow its stack. By erasing the builder's type the sub-parser's type is always
         // fixed and rustc will remain happy :)
-        let b: &mut Builder<Command=B::Command, Word=B::Word, Redirect=B::Redirect>
-            = &mut self.builder;
+        let b: &mut Builder<
+            Command=B::Command,
+            CommandList=B::CommandList,
+            ListableCommand=B::ListableCommand,
+            PipeableCommand=B::PipeableCommand,
+            CompoundCommand=B::CompoundCommand,
+            Word=B::Word,
+            Redirect=B::Redirect> = &mut self.builder;
         let mut parser = Parser::with_token_iter_and_builder(tok_iter, b);
 
         let mut cmds = Vec::new();
@@ -1622,13 +1623,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses compound commands like `for`, `case`, `if`, `while`, `until`,
     /// brace groups, or subshells, including any redirection lists to be applied to them.
-    pub fn compound_command(&mut self) -> Result<B::Command> {
+    pub fn compound_command(&mut self) -> Result<B::CompoundCommand> {
         self.compound_command_internal(None)
     }
 
     /// Slightly optimized version of `Parse::compound_command` that will not
     /// check an upcoming reserved word if the caller already knows the answer.
-    fn compound_command_internal(&mut self, kw: Option<CompoundCmdKeyword>) -> Result<B::Command> {
+    fn compound_command_internal(&mut self, kw: Option<CompoundCmdKeyword>) -> Result<B::CompoundCommand> {
         let cmd = match kw.or_else(|| self.next_compound_command_type()) {
             Some(CompoundCmdKeyword::If) => {
                 let fragments = try!(self.if_command());
@@ -1941,12 +1942,49 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         })
     }
 
+    /// Parses a single function declaration if present. If no function is present,
+    /// nothing is consumed from the token stream.
+    pub fn maybe_function_declaration(&mut self) -> Result<Option<B::PipeableCommand>> {
+        if self.peek_reserved_word(&["function"]).is_some() {
+            return self.function_declaration().map(Some);
+        }
+
+        let is_fn = {
+            let mut peeked = self.iter.peek_many(3).into_iter();
+            if let Some(&Name(_)) = peeked.next() {
+                let second = peeked.next();
+
+                if let Some(&Whitespace(_)) = second {
+                    Some(&ParenOpen) == peeked.next()
+                } else {
+                    Some(&ParenOpen) == second
+                }
+            } else {
+                false
+            }
+        };
+
+        if is_fn {
+            self.function_declaration().map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Parses a single function declaration.
     ///
     /// A function declaration must either begin with the `function` reserved word, or
     /// the name of the function must be followed by `()`. Whitespace is allowed between
     /// the name and `(`, and whitespace is allowed between `()`.
-    fn function_declaration(&mut self) -> Result<B::Command> {
+    pub fn function_declaration(&mut self) -> Result<B::PipeableCommand> {
+        let (name, post_name_comments, body) = try!(self.function_declaration_internal());
+        self.builder.function_declaration(name, post_name_comments, body)
+    }
+
+    /// Like `Parser::function_declaration`, but does not pass the result to the builder
+    fn function_declaration_internal(&mut self)
+        -> Result<(String, Vec<builder::Newline>, B::CompoundCommand)>
+    {
         let found_fn = match self.peek_reserved_word(&["function"]) {
             Some(_) => { self.iter.next(); true },
             None => false,
@@ -2003,15 +2041,12 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             }
         };
 
-        let body = match body {
-            Some(subshell) => subshell,
-            None => match try!(self.complete_command()) {
-                Some(c) => c,
-                None => return Err(self.make_unexpected_err()),
-            },
+        let (post_name_comments, body) = match body {
+            Some(subshell) => (Vec::new(), subshell),
+            None => (self.linebreak(), try!(self.compound_command())),
         };
 
-        Ok(try!(self.builder.function_declaration(name, body)))
+        Ok((name, post_name_comments, body))
     }
 
     /// Skips over any encountered whitespace but preserves newlines.
@@ -2568,7 +2603,8 @@ pub mod test {
     use syntax::ast::builder::Newline;
     use syntax::ast::Command::*;
     use syntax::ast::ComplexWord::*;
-    use syntax::ast::CompoundCommand::*;
+    use syntax::ast::CompoundCommandKind::*;
+    use syntax::ast::PipeableCommand::*;
     use syntax::ast::SimpleWord::*;
     use syntax::parse::*;
     use syntax::parse::ParseError::*;
@@ -2629,7 +2665,7 @@ pub mod test {
         TopLevelWord(Single(escaped(s)))
     }
 
-    pub fn word_subst(s: ParameterSubstitution<TopLevelWord, Command<TopLevelWord>>)
+    pub fn word_subst(s: ParameterSubstitution<TopLevelWord, TopLevelCommand>)
         -> TopLevelWord
     {
         TopLevelWord(Single(subst(s)))
@@ -2647,23 +2683,37 @@ pub mod test {
         DefaultParser::new(src.into_iter())
     }
 
-    fn cmd_args_unboxed(cmd: &str, args: &[&str]) -> Command<TopLevelWord> {
+    fn cmd_args_simple(cmd: &str, args: &[&str]) -> Box<SimpleCommand<TopLevelWord>> {
         let cmd = word(cmd);
         let args = args.iter().map(|&a| word(a)).collect();
 
-        Simple(Box::new(SimpleCommand {
+        Box::new(SimpleCommand {
             cmd: Some((cmd, args)),
             vars: vec!(),
             io: vec!(),
+        })
+    }
+
+    fn cmd_simple(cmd: &str) -> Box<SimpleCommand<TopLevelWord>> {
+        cmd_args_simple(cmd, &[])
+    }
+
+    fn cmd_args_unboxed(cmd: &str, args: &[&str]) -> TopLevelCommand {
+        TopLevelCommand(List(CommandList {
+            first: ListableCommand::Single(Simple(cmd_args_simple(cmd, args))),
+            rest: vec!(),
         }))
     }
 
-    fn cmd_unboxed(cmd: &str) -> Command<TopLevelWord> {
+    fn cmd(cmd: &str) -> TopLevelCommand {
         cmd_args_unboxed(cmd, &[])
     }
 
-    fn cmd(cmd: &str) -> Box<Command<TopLevelWord>> {
-        Box::new(cmd_unboxed(cmd))
+    fn cmd_from_simple(cmd: SimpleCommand<TopLevelWord>) -> Box<TopLevelCommand> {
+        Box::new(TopLevelCommand(List(CommandList {
+            first: ListableCommand::Single(Simple(Box::new(cmd))),
+            rest: vec!(),
+        })))
     }
 
     fn src(byte: usize, line: usize, col: usize) -> SourcePos {
@@ -2791,21 +2841,33 @@ pub mod test {
     #[test]
     fn test_and_or_correct_associativity() {
         let mut p = make_parser("foo || bar && baz");
-        let correct = And(Box::new(Or(cmd("foo"), cmd("bar"))), cmd("baz"));
-        assert_eq!(correct, p.and_or().unwrap());
+        let correct = CommandList {
+            first: ListableCommand::Single(Simple(cmd_simple("foo"))),
+            rest: vec!(
+                AndOr::Or(ListableCommand::Single(Simple(cmd_simple("bar")))),
+                AndOr::And(ListableCommand::Single(Simple(cmd_simple("baz")))),
+            ),
+        };
+        assert_eq!(correct, p.and_or_list().unwrap());
     }
 
     #[test]
     fn test_and_or_valid_with_newlines_after_operator() {
         let mut p = make_parser("foo ||\n\n\n\nbar && baz");
-        let correct = And(Box::new(Or(cmd("foo"), cmd("bar"))), cmd("baz"));
-        assert_eq!(correct, p.and_or().unwrap());
+        let correct = CommandList {
+            first: ListableCommand::Single(Simple(cmd_simple("foo"))),
+            rest: vec!(
+                AndOr::Or(ListableCommand::Single(Simple(cmd_simple("bar")))),
+                AndOr::And(ListableCommand::Single(Simple(cmd_simple("baz")))),
+            ),
+        };
+        assert_eq!(correct, p.and_or_list().unwrap());
     }
 
     #[test]
     fn test_and_or_invalid_with_newlines_before_operator() {
         let mut p = make_parser("foo || bar\n\n&& baz");
-        p.and_or().unwrap();     // Successful parse Or(foo, bar)
+        p.and_or_list().unwrap(); // Successful parse Or(foo, bar)
         // Fail to parse "&& baz" which is an error
         assert_eq!(Err(Unexpected(Token::AndIf, src(12, 3, 1))), p.complete_command());
     }
@@ -2813,25 +2875,42 @@ pub mod test {
     #[test]
     fn test_pipeline_valid_bang() {
         let mut p = make_parser("! foo | bar | baz");
-        let correct = Pipe(true, vec!(cmd_unboxed("foo"), cmd_unboxed("bar"), cmd_unboxed("baz")));
-        assert_eq!(correct, p.and_or().unwrap());
+        let correct = CommandList {
+            first: ListableCommand::Pipe(true, vec!(
+                Simple(cmd_simple("foo")),
+                Simple(cmd_simple("bar")),
+                Simple(cmd_simple("baz")),
+            )),
+            rest: vec!(),
+        };
+        assert_eq!(correct, p.and_or_list().unwrap());
     }
 
     #[test]
     fn test_pipeline_valid_bangs_in_and_or() {
         let mut p = make_parser("! foo | bar || ! baz && ! foobar");
-        let correct = And(
-            Box::new(Or(Box::new(Pipe(true, vec!(cmd_unboxed("foo"), cmd_unboxed("bar")))), Box::new(Pipe(true, vec!(cmd_unboxed("baz")))))),
-            Box::new(Pipe(true, vec!(cmd_unboxed("foobar"))))
-        );
-        assert_eq!(correct, p.and_or().unwrap());
+        let correct = CommandList {
+            first: ListableCommand::Pipe(true, vec!(
+                Simple(cmd_simple("foo")),
+                Simple(cmd_simple("bar"))
+            )),
+            rest: vec!(
+                AndOr::Or(ListableCommand::Pipe(true, vec!(
+                    Simple(cmd_simple("baz")),
+                ))),
+                AndOr::And(ListableCommand::Pipe(true, vec!(
+                    Simple(cmd_simple("foobar")),
+                ))),
+            ),
+        };
+        assert_eq!(correct, p.and_or_list().unwrap());
     }
 
     #[test]
     fn test_pipeline_no_bang_single_cmd_optimize_wrapper_out() {
         let mut p = make_parser("foo");
         let parse = p.pipeline().unwrap();
-        if let Pipe(..) = parse {
+        if let ListableCommand::Pipe(..) = parse {
             panic!("Parser::pipeline should not create a wrapper if no ! present and only a single command");
         }
     }
@@ -2863,8 +2942,13 @@ pub mod test {
         let cmd1 = p.complete_command().unwrap().expect("failed to parse first command");
         let cmd2 = p.complete_command().unwrap().expect("failed to parse second command");
 
-        let correct1 = Job(Box::new(And(cmd("foo"), cmd("bar"))));
-        let correct2 = cmd_unboxed("baz");
+        let correct1 = TopLevelCommand(Job(CommandList {
+            first: ListableCommand::Single(Simple(cmd_simple("foo"))),
+            rest: vec!(
+                AndOr::And(ListableCommand::Single(Simple(cmd_simple("bar"))))
+            ),
+        }));
+        let correct2 = cmd("baz");
 
         assert_eq!(correct1, cmd1);
         assert_eq!(correct2, cmd2);
@@ -2877,9 +2961,14 @@ pub mod test {
         let cmd2 = p.complete_command().unwrap().expect("failed to parse second command");
         let cmd3 = p.complete_command().unwrap().expect("failed to parse third command");
 
-        let correct1 = And(cmd("foo"), cmd("bar"));
-        let correct2 = cmd_unboxed("baz");
-        let correct3 = cmd_unboxed("qux");
+        let correct1 = TopLevelCommand(List(CommandList {
+            first: ListableCommand::Single(Simple(cmd_simple("foo"))),
+            rest: vec!(
+                AndOr::And(ListableCommand::Single(Simple(cmd_simple("bar"))))
+            ),
+        }));
+        let correct2 = cmd("baz");
+        let correct3 = cmd("qux");
 
         assert_eq!(correct1, cmd1);
         assert_eq!(correct2, cmd2);
@@ -3597,12 +3686,12 @@ pub mod test {
 
     #[test]
     fn test_parameter_substitution_command_close_paren_need_not_be_followed_by_word_delimeter() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(), io: vec!(),
             cmd: Some((word("foo"), vec!(TopLevelWord(Single(Word::DoubleQuoted(vec!(
-                Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_unboxed("bar")))))
+                Subst(Box::new(ParameterSubstitution::Command(vec!(cmd("bar")))))
             ))))))),
-        })));
+        }));
         assert_eq!(correct, make_parser("foo \"$(bar)\"").complete_command().unwrap());
     }
 
@@ -3897,33 +3986,33 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\n")))
-        })));
+        }));
 
         assert_eq!(correct, make_parser("cat <<eof\nhello\neof\n").complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_eof_after_delimiter_allowed() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\n")))
-        })));
+        }));
 
         assert_eq!(correct, make_parser("cat <<eof\nhello\neof").complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_with_empty_body() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word(""))),
-        })));
+        }));
 
         assert_eq!(correct, make_parser("cat <<eof\neof").complete_command().unwrap());
         assert_eq!(correct, make_parser("cat <<eof\n").complete_command().unwrap());
@@ -3932,11 +4021,11 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_eof_acceptable_as_delimeter() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\n")))
-        })));
+        }));
 
         assert_eq!(correct, make_parser("cat <<eof\nhello\neof").complete_command().unwrap());
     }
@@ -3945,50 +4034,50 @@ pub mod test {
     fn test_heredoc_valid_does_not_lose_tokens_up_to_next_newline() {
         let mut p = make_parser("cat <<eof1; cat 3<<eof2\nhello\neof1\nworld\neof2");
         let cat = Some((word("cat"), vec!()));
-        let first = Simple(Box::new(SimpleCommand {
+        let first = Some(*cmd_from_simple(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(None, word("hello\n")))
         }));
-        let second = Simple(Box::new(SimpleCommand {
+        let second = Some(*cmd_from_simple(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(Some(3), word("world\n")))
         }));
 
-        assert_eq!(Some(first), p.complete_command().unwrap());
-        assert_eq!(Some(second), p.complete_command().unwrap());
+        assert_eq!(first, p.complete_command().unwrap());
+        assert_eq!(second, p.complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_space_before_delimeter_allowed() {
         let mut p = make_parser("cat <<   eof1; cat 3<<- eof2\nhello\neof1\nworld\neof2");
         let cat = Some((word("cat"), vec!()));
-        let first = Simple(Box::new(SimpleCommand {
+        let first = Some(*cmd_from_simple(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(None, word("hello\n")))
         }));
-        let second = Simple(Box::new(SimpleCommand {
+        let second = Some(*cmd_from_simple(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(Some(3), word("world\n")))
         }));
 
-        assert_eq!(Some(first), p.complete_command().unwrap());
-        assert_eq!(Some(second), p.complete_command().unwrap());
+        assert_eq!(first, p.complete_command().unwrap());
+        assert_eq!(second, p.complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_unquoted_delimeter_should_expand_body() {
         let cat = Some((word("cat"), vec!()));
-        let expanded = Some(Simple(Box::new(SimpleCommand {
+        let expanded = Some(*cmd_from_simple(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(
                 Redirect::Heredoc(None, TopLevelWord(Concat(vec!(
                     Word::Simple(Box::new(Param(Parameter::Dollar))),
                     lit(" "),
                     subst(ParameterSubstitution::Len(Parameter::Bang)),
                     lit(" "),
-                    subst(ParameterSubstitution::Command(vec!(cmd_unboxed("foo")))),
+                    subst(ParameterSubstitution::Command(vec!(cmd("foo")))),
                     lit("\n"),
                 )))
             ))
-        })));
-        let literal = Some(Simple(Box::new(SimpleCommand {
+        }));
+        let literal = Some(*cmd_from_simple(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(None, word("$$ ${#!} `foo`\n")))
-        })));
+        }));
 
         assert_eq!(expanded, make_parser("cat <<eof\n$$ ${#!} `foo`\neof").complete_command().unwrap());
         assert_eq!(literal, make_parser("cat <<'eof'\n$$ ${#!} `foo`\neof").complete_command().unwrap());
@@ -4001,169 +4090,169 @@ pub mod test {
     fn test_heredoc_valid_leading_tab_removal_works() {
         let mut p = make_parser("cat <<-eof1; cat 3<<-eof2\n\t\thello\n\teof1\n\t\t \t\nworld\n\t\teof2");
         let cat = Some((word("cat"), vec!()));
-        let first = Simple(Box::new(SimpleCommand {
+        let first = Some(*cmd_from_simple(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(None, word("hello\n")))
         }));
-        let second = Simple(Box::new(SimpleCommand {
+        let second = Some(*cmd_from_simple(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(Some(3), word(" \t\nworld\n")))
         }));
 
-        assert_eq!(Some(first), p.complete_command().unwrap());
-        assert_eq!(Some(second), p.complete_command().unwrap());
+        assert_eq!(first, p.complete_command().unwrap());
+        assert_eq!(second, p.complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_leading_tab_removal_works_if_dash_immediately_after_dless() {
         let mut p = make_parser("cat 3<< -eof\n\t\t \t\nworld\n\t\teof\n\t\t-eof\n-eof");
-        let correct = Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(Some(3), word("\t\t \t\nworld\n\t\teof\n\t\t-eof\n")))
         }));
 
-        assert_eq!(Some(correct), p.complete_command().unwrap());
+        assert_eq!(correct, p.complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_unquoted_backslashes_in_delimeter_disappear() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\n")))
-        })));
+        }));
 
         assert_eq!(correct, make_parser("cat <<e\\ f\\f\nhello\ne ff").complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_balanced_single_quotes_in_delimeter() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\n")))
-        })));
+        }));
 
         assert_eq!(correct, make_parser("cat <<e'o'f\nhello\neof").complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_balanced_double_quotes_in_delimeter() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\n")))
-        })));
+        }));
 
         assert_eq!(correct, make_parser("cat <<e\"\\o${foo}\"f\nhello\ne\\o${foo}f").complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_balanced_backticks_in_delimeter() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\n")))
-        })));
+        }));
 
         assert_eq!(correct, make_parser("cat <<e`\\o\\$\\`\\\\${f}`\nhello\ne`\\o$`\\${f}`").complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_balanced_parens_in_delimeter() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\n")))
-        })));
+        }));
 
         assert_eq!(correct, make_parser("cat <<eof(  )\nhello\neof(  )").complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_cmd_subst_in_delimeter() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\n")))
-        })));
+        }));
 
         assert_eq!(correct, make_parser("cat <<eof$(  )\nhello\neof$(  )").complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_param_subst_in_delimeter() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\n")))
-        })));
+        }));
         assert_eq!(correct, make_parser("cat <<eof${  }\nhello\neof${  }").complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_skip_past_newlines_in_single_quotes() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!(
                 single_quoted("\n"), word("arg")
             ))),
             io: vec!(Redirect::Heredoc(None, word("here\n")))
-        })));
+        }));
         assert_eq!(correct, make_parser("cat <<EOF '\n' arg\nhere\nEOF").complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_skip_past_newlines_in_double_quotes() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!(
                 double_quoted("\n"),
                 word("arg")
             ))),
             io: vec!(Redirect::Heredoc(None, word("here\n")))
-        })));
+        }));
         assert_eq!(correct, make_parser("cat <<EOF \"\n\" arg\nhere\nEOF").complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_skip_past_newlines_in_backticks() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!(
-                word_subst(ParameterSubstitution::Command(vec!(cmd_unboxed("echo")))),
+                word_subst(ParameterSubstitution::Command(vec!(cmd("echo")))),
                 word("arg")
             ))),
             io: vec!(Redirect::Heredoc(None, word("here\n")))
-        })));
+        }));
         assert_eq!(correct, make_parser("cat <<EOF `echo \n` arg\nhere\nEOF").complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_skip_past_newlines_in_parens() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("here\n")))
-        })));
+        }));
         assert_eq!(correct, make_parser("cat <<EOF; (foo\n); arg\nhere\nEOF").complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_skip_past_newlines_in_cmd_subst() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!(
-                word_subst(ParameterSubstitution::Command(vec!(cmd_unboxed("foo")))),
+                word_subst(ParameterSubstitution::Command(vec!(cmd("foo")))),
                 word("arg"),
             ))),
             io: vec!(Redirect::Heredoc(None, word("here\n")))
-        })));
+        }));
         assert_eq!(correct, make_parser("cat <<EOF $(foo\n) arg\nhere\nEOF").complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_skip_past_newlines_in_param_subst() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!(
                 word_subst(ParameterSubstitution::Assign(
@@ -4174,73 +4263,73 @@ pub mod test {
                 word("arg")
             ))),
             io: vec!(Redirect::Heredoc(None, word("here\n")))
-        })));
+        }));
         assert_eq!(correct, make_parser("cat <<EOF ${foo=\n} arg\nhere\nEOF").complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_skip_past_escaped_newlines() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!(word("arg")))),
             io: vec!(Redirect::Heredoc(None, word("here\n")))
-        })));
+        }));
         assert_eq!(correct, make_parser("cat <<EOF \\\n arg\nhere\nEOF").complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_double_quoted_delim_keeps_backslashe_except_after_specials() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("here\n")))
-        })));
+        }));
         assert_eq!(correct, make_parser("cat <<\"\\EOF\\$\\`\\\"\\\\\"\nhere\n\\EOF$`\"\\\n")
                    .complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_unquoting_only_removes_outer_quotes_and_backslashes() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("here\n")))
-        })));
+        }));
         assert_eq!(correct, make_parser("cat <<EOF${ 'asdf'}(\"hello'\"){\\o}\nhere\nEOF${ asdf}(hello'){o}")
                    .complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_delimeter_can_be_followed_by_carriage_return_newline() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!(word("arg")))),
             io: vec!(Redirect::Heredoc(None, word("here\n")))
-        })));
+        }));
         assert_eq!(correct, make_parser("cat <<EOF arg\nhere\nEOF\r\n").complete_command().unwrap());
 
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!(word("arg")))),
             io: vec!(Redirect::Heredoc(None, word("here\r\n")))
-        })));
+        }));
         assert_eq!(correct, make_parser("cat <<EOF arg\nhere\r\nEOF\r\n").complete_command().unwrap());
     }
 
     #[test]
     fn test_heredoc_valid_delimiter_can_start_with() {
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("\thello\n\t\tworld\n")))
-        })));
+        }));
         assert_eq!(correct, make_parser("cat << -EOF\n\thello\n\t\tworld\n-EOF").complete_command().unwrap());
 
-        let correct = Some(Simple(Box::new(SimpleCommand {
+        let correct = Some(*cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\nworld\n")))
-        })));
+        }));
         assert_eq!(correct, make_parser("cat <<--EOF\n\thello\n\t\tworld\n-EOF").complete_command().unwrap());
     }
 
@@ -4307,7 +4396,7 @@ pub mod test {
     #[test]
     fn test_do_group_valid() {
         let mut p = make_parser("do foo\nbar; baz; done");
-        let correct = vec!(cmd_unboxed("foo"), cmd_unboxed("bar"), cmd_unboxed("baz"));
+        let correct = vec!(cmd("foo"), cmd("bar"), cmd("baz"));
         assert_eq!(correct, p.do_group().unwrap());
     }
 
@@ -4399,7 +4488,7 @@ pub mod test {
     #[test]
     fn test_brace_group_valid() {
         let mut p = make_parser("{ foo\nbar; baz; }");
-        let correct = vec!(cmd_unboxed("foo"), cmd_unboxed("bar"), cmd_unboxed("baz"));
+        let correct = vec!(cmd("foo"), cmd("bar"), cmd("baz"));
         assert_eq!(correct, p.brace_group().unwrap());
     }
 
@@ -4467,14 +4556,14 @@ pub mod test {
     #[test]
     fn test_subshell_valid() {
         let mut p = make_parser("( foo\nbar; baz; )");
-        let correct = vec!(cmd_unboxed("foo"), cmd_unboxed("bar"), cmd_unboxed("baz"));
+        let correct = vec!(cmd("foo"), cmd("bar"), cmd("baz"));
         assert_eq!(correct, p.subshell().unwrap());
     }
 
     #[test]
     fn test_subshell_valid_separator_not_needed() {
         let mut p = make_parser("( foo )");
-        let correct = vec!(cmd_unboxed("foo"));
+        let correct = vec!(cmd("foo"));
         assert_eq!(correct, p.subshell().unwrap());
     }
 
@@ -4526,8 +4615,8 @@ pub mod test {
         let mut p = make_parser("while guard1; guard2; do foo\nbar; baz; done");
         let (until, GuardBodyPair { guard, body }) = p.loop_command().unwrap();
 
-        let correct_guard = vec!(cmd_unboxed("guard1"), cmd_unboxed("guard2"));
-        let correct_body = vec!(cmd_unboxed("foo"), cmd_unboxed("bar"), cmd_unboxed("baz"));
+        let correct_guard = vec!(cmd("guard1"), cmd("guard2"));
+        let correct_body = vec!(cmd("foo"), cmd("bar"), cmd("baz"));
 
         assert_eq!(until, builder::LoopKind::While);
         assert_eq!(correct_guard, guard);
@@ -4539,8 +4628,8 @@ pub mod test {
         let mut p = make_parser("until guard1\n guard2\n do foo\nbar; baz; done");
         let (until, GuardBodyPair { guard, body }) = p.loop_command().unwrap();
 
-        let correct_guard = vec!(cmd_unboxed("guard1"), cmd_unboxed("guard2"));
-        let correct_body = vec!(cmd_unboxed("foo"), cmd_unboxed("bar"), cmd_unboxed("baz"));
+        let correct_guard = vec!(cmd("guard1"), cmd("guard2"));
+        let correct_body = vec!(cmd("foo"), cmd("bar"), cmd("baz"));
 
         assert_eq!(until, builder::LoopKind::Until);
         assert_eq!(correct_guard, guard);
@@ -4649,37 +4738,37 @@ pub mod test {
 
     #[test]
     fn test_if_command_valid_with_else() {
-        let guard1 = Simple(Box::new(SimpleCommand {
+        let guard1 = *cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("guard1"), vec!())),
             io: vec!(Redirect::Read(None, word("in"))),
-        }));
+        });
 
-        let guard2 = Simple(Box::new(SimpleCommand {
+        let guard2 = *cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("guard2"), vec!())),
             io: vec!(Redirect::Write(None, word("out"))),
-        }));
+        });
 
-        let guard3 = Simple(Box::new(SimpleCommand {
+        let guard3 = *cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("guard3"), vec!())),
             io: vec!(),
-        }));
+        });
 
-        let body1 = Simple(Box::new(SimpleCommand {
+        let body1 = *cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("body1"), vec!())),
             io: vec!(Redirect::Clobber(None, word("clob"))),
-        }));
+        });
 
-        let body2 = Simple(Box::new(SimpleCommand {
+        let body2 = *cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("body2"), vec!())),
             io: vec!(Redirect::Append(Some(2), word("app"))),
-        }));
+        });
 
-        let els = cmd_unboxed("else");
+        let els = cmd("else");
 
         let correct = builder::IfFragments {
             conditionals: vec!(
@@ -4694,35 +4783,35 @@ pub mod test {
 
     #[test]
     fn test_if_command_valid_without_else() {
-        let guard1 = Simple(Box::new(SimpleCommand {
+        let guard1 = *cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("guard1"), vec!())),
             io: vec!(Redirect::Read(None, word("in"))),
-        }));
+        });
 
-        let guard2 = Simple(Box::new(SimpleCommand {
+        let guard2 = *cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("guard2"), vec!())),
             io: vec!(Redirect::Write(None, word("out"))),
-        }));
+        });
 
-        let guard3 = Simple(Box::new(SimpleCommand {
+        let guard3 = *cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("guard3"), vec!())),
             io: vec!(),
-        }));
+        });
 
-        let body1 = Simple(Box::new(SimpleCommand {
+        let body1 = *cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("body1"), vec!())),
             io: vec!(Redirect::Clobber(None, word("clob"))),
-        }));
+        });
 
-        let body2 = Simple(Box::new(SimpleCommand {
+        let body2 = *cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("body2"), vec!())),
             io: vec!(Redirect::Append(Some(2), word("app"))),
-        }));
+        });
 
         let correct = builder::IfFragments {
             conditionals: vec!(
@@ -4896,10 +4985,10 @@ pub mod test {
             Newline(None),
         )));
 
-        let correct_body = vec!(Simple(Box::new(SimpleCommand {
+        let correct_body = vec!(*cmd_from_simple(SimpleCommand {
             vars: vec!(), io: vec!(),
             cmd: Some((word("echo"), vec!(word_param(Parameter::Var(String::from("var"))))))
-        })));
+        }));
 
         assert_eq!(correct_body, fragments.body);
     }
@@ -4913,10 +5002,10 @@ pub mod test {
         assert_eq!(fragments.words, None);
         assert_eq!(fragments.post_words_comments, None);
 
-        let correct_body = vec!(Simple(Box::new(SimpleCommand {
+        let correct_body = vec!(*cmd_from_simple(SimpleCommand {
             vars: vec!(), io: vec!(),
             cmd: Some((word("echo"), vec!(word_param(Parameter::Var(String::from("var"))))))
-        })));
+        }));
 
         assert_eq!(correct_body, fragments.body);
     }
@@ -5087,14 +5176,10 @@ pub mod test {
     fn test_function_declaration_valid() {
         let correct = FunctionDef(
             String::from("foo"),
-            Rc::new(Compound(
-                Box::new(Brace(vec!(Simple(Box::new(SimpleCommand {
-                    cmd: Some((word("echo"), vec!(word("body")))),
-                    vars: vec!(),
-                    io: vec!(),
-                }))))),
-                vec!()
-            ))
+            Rc::new(CompoundCommand {
+                kind: Brace(vec!(cmd_args_unboxed("echo", &["body"]))),
+                io: vec!(),
+            })
         );
 
         assert_eq!(correct, make_parser("function foo()      { echo body; }").function_declaration().unwrap());
@@ -5120,54 +5205,103 @@ pub mod test {
 
     #[test]
     fn test_function_declaration_valid_body_need_not_be_a_compound_command() {
-        let correct = FunctionDef(
-            String::from("foo"),
-            Rc::new(Simple(Box::new(SimpleCommand {
-                cmd: Some((word("echo"), vec!(word("body")))),
-                vars: vec!(),
-                io: vec!(),
-            })))
+        let src = vec!(
+            ("function foo()      echo body;", src(20, 1, 21)),
+            ("function foo ()     echo body;", src(20, 1, 21)),
+            ("function foo (    ) echo body;", src(20, 1, 21)),
+            ("function foo(    )  echo body;", src(20, 1, 21)),
+            ("function foo        echo body;", src(20, 1, 21)),
+            ("foo()               echo body;", src(20, 1, 21)),
+            ("foo ()              echo body;", src(20, 1, 21)),
+            ("foo (    )          echo body;", src(20, 1, 21)),
+            ("foo(    )           echo body;", src(20, 1, 21)),
+
+            ("function foo()     \necho body;", src(20, 2, 1)),
+            ("function foo ()    \necho body;", src(20, 2, 1)),
+            ("function foo (    )\necho body;", src(20, 2, 1)),
+            ("function foo(    ) \necho body;", src(20, 2, 1)),
+            ("function foo       \necho body;", src(20, 2, 1)),
+            ("foo()              \necho body;", src(20, 2, 1)),
+            ("foo ()             \necho body;", src(20, 2, 1)),
+            ("foo (    )         \necho body;", src(20, 2, 1)),
+            ("foo(    )          \necho body;", src(20, 2, 1)),
         );
 
-        assert_eq!(correct, make_parser("function foo()      echo body;").function_declaration().unwrap());
-        assert_eq!(correct, make_parser("function foo ()     echo body;").function_declaration().unwrap());
-        assert_eq!(correct, make_parser("function foo (    ) echo body;").function_declaration().unwrap());
-        assert_eq!(correct, make_parser("function foo(    )  echo body;").function_declaration().unwrap());
-        assert_eq!(correct, make_parser("function foo        echo body;").function_declaration().unwrap());
-        assert_eq!(correct, make_parser("foo()               echo body;").function_declaration().unwrap());
-        assert_eq!(correct, make_parser("foo ()              echo body;").function_declaration().unwrap());
-        assert_eq!(correct, make_parser("foo (    )          echo body;").function_declaration().unwrap());
-        assert_eq!(correct, make_parser("foo(    )           echo body;").function_declaration().unwrap());
-
-        assert_eq!(correct, make_parser("function foo()     \necho body;").function_declaration().unwrap());
-        assert_eq!(correct, make_parser("function foo ()    \necho body;").function_declaration().unwrap());
-        assert_eq!(correct, make_parser("function foo (    )\necho body;").function_declaration().unwrap());
-        assert_eq!(correct, make_parser("function foo(    ) \necho body;").function_declaration().unwrap());
-        assert_eq!(correct, make_parser("function foo       \necho body;").function_declaration().unwrap());
-        assert_eq!(correct, make_parser("foo()              \necho body;").function_declaration().unwrap());
-        assert_eq!(correct, make_parser("foo ()             \necho body;").function_declaration().unwrap());
-        assert_eq!(correct, make_parser("foo (    )         \necho body;").function_declaration().unwrap());
-        assert_eq!(correct, make_parser("foo(    )          \necho body;").function_declaration().unwrap());
+        for (s, p) in src {
+            let correct = Unexpected(Token::Name(String::from("echo")), p);
+            match make_parser(s).function_declaration() {
+                Ok(w) => panic!("Unexpectedly parsed the source \"{}\" as\n{:?}", s, w),
+                Err(ref err) => if err != &correct {
+                    panic!("Expected the source \"{}\" to return the error `{:?}`, but got `{:?}`",
+                           s, correct, err);
+                },
+            }
+        }
     }
 
     #[test]
     fn test_function_declaration_parens_can_be_subshell_if_function_keyword_present() {
         let correct = FunctionDef(
             String::from("foo"),
-            Rc::new(Compound(
-                Box::new(Subshell(vec!(Simple(Box::new(SimpleCommand {
-                    cmd: Some((word("echo"), vec!(word("subshell")))),
-                    vars: vec!(),
-                    io: vec!(),
-                }))))),
-                vec!()
-            ))
+            Rc::new(CompoundCommand {
+                kind: Subshell(vec!(cmd_args_unboxed("echo", &["subshell"]))),
+                io: vec!(),
+            })
         );
 
         assert_eq!(correct, make_parser("function foo (echo subshell)").function_declaration().unwrap());
         assert_eq!(correct, make_parser("function foo() (echo subshell)").function_declaration().unwrap());
         assert_eq!(correct, make_parser("function foo () (echo subshell)").function_declaration().unwrap());
         assert_eq!(correct, make_parser("function foo\n(echo subshell)").function_declaration().unwrap());
+    }
+
+    #[test]
+    fn test_function_declaration_comments_before_body() {
+        use std::iter::repeat;
+
+        let cases_brace = vec!(
+            "function foo() #comment1\n\n#comment2\n { echo body; }",
+            "function foo () #comment1\n\n#comment2\n { echo body; }",
+            "function foo (  ) #comment1\n\n#comment2\n { echo body; }",
+            "function foo(  ) #comment1\n\n#comment2\n { echo body; }",
+            "function foo #comment1\n\n#comment2\n   { echo body; }",
+            "foo() #comment1\n\n#comment2\n          { echo body; }",
+            "foo () #comment1\n\n#comment2\n         { echo body; }",
+            "foo (  ) #comment1\n\n#comment2\n         { echo body; }",
+            "foo(  ) #comment1\n\n#comment2\n         { echo body; }",
+        );
+
+        let cases_subshell = vec!(
+            "function foo() #comment1\n\n#comment2\n (echo body)",
+            "function foo #comment1\n\n#comment2\n   (echo body)",
+            "foo() #comment1\n\n#comment2\n          (echo body)",
+            "foo () #comment1\n\n#comment2\n         (echo body)",
+        );
+
+        let comments = vec!(
+            Newline(Some(String::from("#comment1"))),
+            Newline(None),
+            Newline(Some(String::from("#comment2"))),
+        );
+
+        let name = String::from("foo");
+        let body = vec!(cmd_args_unboxed("echo", &["body"]));
+        let body_brace = CompoundCommand {
+            kind: Brace(body.clone()),
+            io: vec!(),
+        };
+        let body_subshell = CompoundCommand {
+            kind: Subshell(body),
+            io: vec!(),
+        };
+
+        let iter = cases_brace.into_iter().zip(repeat(body_brace))
+            .chain(cases_subshell.into_iter().zip(repeat(body_subshell)))
+            .map(|(src, body)| (src, (name.clone(), comments.clone(), body)));
+
+        for (src, correct) in iter {
+            assert_eq!(correct, make_parser(src).function_declaration_internal().unwrap());
+        }
     }
 
     #[test]
@@ -5264,6 +5398,7 @@ pub mod test {
             Token::ParenOpen, Token::ParenClose,
             Token::Whitespace(String::from(" ")),
             Token::CurlyOpen,
+            Token::Whitespace(String::from(" ")),
             Token::Literal(String::from("echo")),
             Token::Whitespace(String::from(" ")),
             Token::Literal(String::from("fn body")),
@@ -5282,6 +5417,7 @@ pub mod test {
             Token::ParenOpen, Token::ParenClose,
             Token::Whitespace(String::from(" ")),
             Token::CurlyOpen,
+            Token::Whitespace(String::from(" ")),
             Token::Literal(String::from("echo")),
             Token::Whitespace(String::from(" ")),
             Token::Literal(String::from("fn body")),
@@ -5325,6 +5461,7 @@ pub mod test {
                 Token::ParenOpen, Token::ParenClose,
                 Token::Whitespace(String::from(" ")),
                 Token::CurlyOpen,
+                Token::Whitespace(String::from(" ")),
                 Token::Literal(String::from("echo")),
                 Token::Whitespace(String::from(" ")),
                 Token::Literal(String::from("fn body")),
@@ -5663,7 +5800,10 @@ pub mod test {
 
     #[test]
     fn test_compound_command_delegates_valid_commands_brace() {
-        let correct = Compound(Box::new(Brace(vec!(cmd_unboxed("foo")))), vec!());
+        let correct = CompoundCommand {
+            kind: Brace(vec!(cmd("foo"))),
+            io: vec!(),
+        };
         assert_eq!(correct, make_parser("{ foo; }").compound_command().unwrap());
     }
 
@@ -5674,7 +5814,10 @@ pub mod test {
             "( foo)",
         ];
 
-        let correct = Compound(Box::new(Subshell(vec!(cmd_unboxed("foo")))), vec!());
+        let correct = CompoundCommand {
+            kind: Subshell(vec!(cmd("foo"))),
+            io: vec!(),
+        };
 
         for cmd in &commands {
             match make_parser(cmd).compound_command() {
@@ -5687,52 +5830,58 @@ pub mod test {
 
     #[test]
     fn test_compound_command_delegates_valid_commands_while() {
-        let correct = Compound(
-            Box::new(While(GuardBodyPair {
-                guard: vec!(cmd_unboxed("guard")),
-                body: vec!(cmd_unboxed("foo")),
-            })),
-            vec!()
-        );
+        let correct = CompoundCommand {
+            kind: While(GuardBodyPair {
+                guard: vec!(cmd("guard")),
+                body: vec!(cmd("foo")),
+            }),
+            io: vec!(),
+        };
         assert_eq!(correct, make_parser("while guard; do foo; done").compound_command().unwrap());
     }
 
     #[test]
     fn test_compound_command_delegates_valid_commands_until() {
-        let correct = Compound(
-            Box::new(Until(GuardBodyPair {
-                guard: vec!(cmd_unboxed("guard")),
-                body: vec!(cmd_unboxed("foo")),
-            })),
-            vec!()
-        );
+        let correct = CompoundCommand {
+            kind: Until(GuardBodyPair {
+                guard: vec!(cmd("guard")),
+                body: vec!(cmd("foo")),
+            }),
+            io: vec!(),
+        };
         assert_eq!(correct, make_parser("until guard; do foo; done").compound_command().unwrap());
     }
 
     #[test]
     fn test_compound_command_delegates_valid_commands_for() {
-        let correct = Compound(Box::new(For(String::from("var"), Some(vec!()), vec!(cmd_unboxed("foo")))), vec!());
+        let correct = CompoundCommand {
+            kind: For(String::from("var"), Some(vec!()), vec!(cmd("foo"))),
+            io: vec!(),
+        };
         assert_eq!(correct, make_parser("for var in; do foo; done").compound_command().unwrap());
     }
 
     #[test]
     fn test_compound_command_delegates_valid_commands_if() {
-        let correct = Compound(
-            Box::new(If(
+        let correct = CompoundCommand {
+            kind: If(
                 vec!(GuardBodyPair {
-                    guard: vec!(cmd_unboxed("guard")),
-                    body: vec!(cmd_unboxed("body")),
+                    guard: vec!(cmd("guard")),
+                    body: vec!(cmd("body")),
                 }),
-                None)
+                None
             ),
-            vec!()
-        );
+            io: vec!(),
+        };
         assert_eq!(correct, make_parser("if guard; then body; fi").compound_command().unwrap());
     }
 
     #[test]
     fn test_compound_command_delegates_valid_commands_case() {
-        let correct = Compound(Box::new(Case(word("foo"), vec!())), vec!());
+        let correct = CompoundCommand {
+            kind: Case(word("foo"), vec!()),
+            io: vec!(),
+        };
         assert_eq!(correct, make_parser("case foo in esac").compound_command().unwrap());
     }
 
@@ -5788,13 +5937,12 @@ pub mod test {
 
         for cmd in &cases {
             match make_parser(cmd).compound_command() {
-                Ok(Compound(_, io)) => assert_eq!(io, vec!(
+                Ok(CompoundCommand { io, .. }) => assert_eq!(io, vec!(
                     Redirect::Append(Some(1), word("out")),
                     Redirect::DupRead(None, word("2")),
                     Redirect::DupWrite(Some(2), word("-")),
                 )),
 
-                Ok(result) => panic!("Parsed \"{}\" as an unexpected command type:\n{:#?}", cmd, result),
                 Err(err) => panic!("Failed to parse \"{}\": {}", cmd, err),
             }
         }
@@ -5943,7 +6091,10 @@ pub mod test {
 
     #[test]
     fn test_command_delegates_valid_commands_brace() {
-        let correct = Compound(Box::new(Brace(vec!(cmd_unboxed("foo")))), vec!());
+        let correct = Compound(Box::new(CompoundCommand {
+            kind: Brace(vec!(cmd("foo"))),
+            io: vec!(),
+        }));
         assert_eq!(correct, make_parser("{ foo; }").command().unwrap());
     }
 
@@ -5954,7 +6105,10 @@ pub mod test {
             "( foo)",
         ];
 
-        let correct = Compound(Box::new(Subshell(vec!(cmd_unboxed("foo")))), vec!());
+        let correct = Compound(Box::new(CompoundCommand {
+            kind: Subshell(vec!(cmd("foo"))),
+            io: vec!(),
+        }));
 
         for cmd in &commands {
             match make_parser(cmd).command() {
@@ -5967,58 +6121,64 @@ pub mod test {
 
     #[test]
     fn test_command_delegates_valid_commands_while() {
-        let correct = Compound(
-            Box::new(While(GuardBodyPair {
-                guard: vec!(cmd_unboxed("guard")),
-                body: vec!(cmd_unboxed("foo")),
-            })),
-            vec!()
-        );
+        let correct = Compound(Box::new(CompoundCommand {
+            kind: While(GuardBodyPair {
+                guard: vec!(cmd("guard")),
+                body: vec!(cmd("foo")),
+            }),
+            io: vec!(),
+        }));
         assert_eq!(correct, make_parser("while guard; do foo; done").command().unwrap());
     }
 
     #[test]
     fn test_command_delegates_valid_commands_until() {
-        let correct = Compound(
-            Box::new(Until(GuardBodyPair {
-                guard: vec!(cmd_unboxed("guard")),
-                body: vec!(cmd_unboxed("foo")),
-            })),
-            vec!()
-        );
+        let correct = Compound(Box::new(CompoundCommand {
+            kind: Until(GuardBodyPair {
+                guard: vec!(cmd("guard")),
+                body: vec!(cmd("foo")),
+            }),
+            io: vec!(),
+        }));
         assert_eq!(correct, make_parser("until guard; do foo; done").command().unwrap());
     }
 
     #[test]
     fn test_command_delegates_valid_commands_for() {
-        let correct = Compound(Box::new(For(String::from("var"), Some(vec!()), vec!(cmd_unboxed("foo")))), vec!());
+        let correct = Compound(Box::new(CompoundCommand {
+            kind: For(String::from("var"), Some(vec!()), vec!(cmd("foo"))),
+            io: vec!(),
+        }));
         assert_eq!(correct, make_parser("for var in; do foo; done").command().unwrap());
     }
 
     #[test]
     fn test_command_delegates_valid_commands_if() {
-        let correct = Compound(
-            Box::new(If(
+        let correct = Compound(Box::new(CompoundCommand {
+            kind: If(
                 vec!(GuardBodyPair {
-                    guard: vec!(cmd_unboxed("guard")),
-                    body: vec!(cmd_unboxed("body")),
+                    guard: vec!(cmd("guard")),
+                    body: vec!(cmd("body")),
                 }),
-                None)
+                None
             ),
-            vec!()
-        );
+            io: vec!(),
+        }));
         assert_eq!(correct, make_parser("if guard; then body; fi").command().unwrap());
     }
 
     #[test]
     fn test_command_delegates_valid_commands_case() {
-        let correct = Compound(Box::new(Case(word("foo"), vec!())), vec!());
+        let correct = Compound(Box::new(CompoundCommand {
+            kind: Case(word("foo"), vec!()),
+            io: vec!(),
+        }));
         assert_eq!(correct, make_parser("case foo in esac").command().unwrap());
     }
 
     #[test]
     fn test_command_delegates_valid_simple_commands() {
-        let correct = cmd_args_unboxed("echo", &["foo", "bar"]);
+        let correct = Simple(cmd_args_simple("echo", &["foo", "bar"]));
         assert_eq!(correct, make_parser("echo foo bar").command().unwrap());
     }
 
@@ -6036,7 +6196,10 @@ pub mod test {
             "foo(    )           { echo body; }",
         ];
 
-        let correct = FunctionDef(String::from("foo"), Rc::new(Compound(Box::new(Brace(vec!(cmd_args_unboxed("echo", &["body"])))), vec!())));
+        let correct = FunctionDef(String::from("foo"), Rc::new(CompoundCommand {
+            kind: Brace(vec!(cmd_args_unboxed("echo", &["body"]))),
+            io: vec!(),
+        }));
 
         for cmd in &commands {
             match make_parser(cmd).command() {
@@ -6101,13 +6264,13 @@ pub mod test {
             ));
 
             let cmd = p.command().unwrap();
-            if let Compound(ref loop_cmd, _) = cmd {
-                if let While(..) = **loop_cmd {
+            if let Compound(ref compound_cmd) = cmd {
+                if let While(..) = compound_cmd.kind {
                     continue;
-                } else {
-                    panic!("Parsed an unexpected command:\n{:#?}", cmd)
                 }
             }
+
+            panic!("Parsed an unexpected command:\n{:#?}", cmd)
         }
     }
 
@@ -6130,13 +6293,13 @@ pub mod test {
             ));
 
             let cmd = p.command().unwrap();
-            if let Compound(ref loop_cmd, _) = cmd {
-                if let Until(..) = **loop_cmd {
+            if let Compound(ref compound_cmd) = cmd {
+                if let Until(..) = compound_cmd.kind {
                     continue;
-                } else {
-                    panic!("Parsed an unexpected command:\n{:#?}", cmd)
                 }
             }
+
+            panic!("Parsed an unexpected command:\n{:#?}", cmd)
         }
     }
 
@@ -6178,13 +6341,13 @@ pub mod test {
                             ));
 
                             let cmd = p.command().unwrap();
-                            if let Compound(ref if_cmd, _) = cmd {
-                                if let If(..) = **if_cmd {
+                            if let Compound(ref compound_cmd) = cmd {
+                                if let If(..) = compound_cmd.kind {
                                     continue;
-                                } else {
-                                    panic!("Parsed an unexpected command:\n{:#?}", cmd)
                                 }
                             }
+
+                            panic!("Parsed an unexpected command:\n{:#?}", cmd)
                         }
                     }
                 }
@@ -6226,13 +6389,13 @@ pub mod test {
                 ));
 
                 let cmd = p.command().unwrap();
-                if let Compound(ref for_cmd, _) = cmd {
-                    if let For(..) = **for_cmd {
+                if let Compound(ref compound_cmd) = cmd {
+                    if let For(..) = compound_cmd.kind {
                         continue;
-                    } else {
-                        panic!("Parsed an unexpected command:\n{:#?}", cmd)
                     }
                 }
+
+                panic!("Parsed an unexpected command:\n{:#?}", cmd)
             }
         }
     }
@@ -6270,13 +6433,13 @@ pub mod test {
                     ));
 
                     let cmd = p.command().unwrap();
-                    if let Compound(ref case_cmd, _) = cmd {
-                        if let Case(..) = **case_cmd {
+                    if let Compound(ref compound_cmd) = cmd {
+                        if let Case(..) = compound_cmd.kind {
                             continue;
-                        } else {
-                            panic!("Parsed an unexpected command:\n{:#?}", cmd)
                         }
                     }
+
+                    panic!("Parsed an unexpected command:\n{:#?}", cmd)
                 }
             }
         }
@@ -6295,6 +6458,7 @@ pub mod test {
                 Token::ParenOpen, Token::ParenClose,
                 Token::Whitespace(String::from(" ")),
                 Token::CurlyOpen,
+                Token::Whitespace(String::from(" ")),
                 Token::Literal(String::from("echo")),
                 Token::Whitespace(String::from(" ")),
                 Token::Literal(String::from("fn body")),
@@ -6340,6 +6504,7 @@ pub mod test {
             Token::ParenOpen, Token::ParenClose,
             Token::Whitespace(String::from(" ")),
             Token::CurlyOpen,
+            Token::Whitespace(String::from(" ")),
             Token::Literal(String::from("echo")),
             Token::Whitespace(String::from(" ")),
             Token::Literal(String::from("fn body")),
@@ -6404,7 +6569,7 @@ pub mod test {
     fn test_word_double_quote_valid_recognizes_backticks() {
         let correct = TopLevelWord(Single(Word::DoubleQuoted(vec!(
             Literal(String::from("test asdf ")),
-            Subst(Box::new(ParameterSubstitution::Command(vec!(cmd_unboxed("foo"))))),
+            Subst(Box::new(ParameterSubstitution::Command(vec!(cmd("foo"))))),
         ))));
 
         assert_eq!(Some(correct), make_parser("\"test asdf `foo`\"").word().unwrap());
@@ -6624,13 +6789,13 @@ pub mod test {
 
     #[test]
     fn test_backticked_valid() {
-        let correct = word_subst(ParameterSubstitution::Command(vec!(cmd_unboxed("foo"))));
+        let correct = word_subst(ParameterSubstitution::Command(vec!(cmd("foo"))));
         assert_eq!(correct, make_parser("`foo`").backticked_command_substitution().unwrap());
     }
 
     #[test]
     fn test_backticked_valid_backslashes_removed_if_before_dollar_backslash_and_backtick() {
-        let correct = word_subst(ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
+        let correct = word_subst(ParameterSubstitution::Command(vec!(*cmd_from_simple(SimpleCommand {
             vars: vec!(), io: vec!(),
             cmd: Some((word("foo"), vec!(
                 TopLevelWord(Concat(vec!(
@@ -6639,24 +6804,24 @@ pub mod test {
                     escaped("o"),
                 )))
             ))),
-        })))));
+        }))));
         assert_eq!(correct, make_parser("`foo \\$\\$\\\\\\`\\o`").backticked_command_substitution().unwrap());
     }
 
     #[test]
     fn test_backticked_nested_backticks() {
         let correct = word_subst(ParameterSubstitution::Command(vec!(
-            Simple(Box::new(SimpleCommand {
+            *cmd_from_simple(SimpleCommand {
                 vars: vec!(), io: vec!(),
                 cmd: Some((word("foo"), vec!(
                     word_subst(
-                        ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
+                        ParameterSubstitution::Command(vec!(*cmd_from_simple(SimpleCommand {
                             vars: vec!(), io: vec!(),
                             cmd: Some((word("bar"), vec!(TopLevelWord(Concat(vec!(escaped("$"), escaped("$")))))))
-                        }))))
+                        })))
                     )
                 ))),
-            }))
+            })
         )));
         assert_eq!(correct, make_parser(r#"`foo \`bar \\\\$\\\\$\``"#).backticked_command_substitution().unwrap());
     }
@@ -6664,20 +6829,20 @@ pub mod test {
     #[test]
     fn test_backticked_nested_backticks_x2() {
         let correct = word_subst(ParameterSubstitution::Command(vec!(
-            Simple(Box::new(SimpleCommand {
+            *cmd_from_simple(SimpleCommand {
                 vars: vec!(), io: vec!(),
                 cmd: Some((word("foo"), vec!(word_subst(
-                    ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
+                    ParameterSubstitution::Command(vec!(*cmd_from_simple(SimpleCommand {
                         vars: vec!(), io: vec!(),
                         cmd: Some((word("bar"), vec!(word_subst(
-                            ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
+                            ParameterSubstitution::Command(vec!(*cmd_from_simple(SimpleCommand {
                                 vars: vec!(), io: vec!(),
                                 cmd: Some((word("baz"), vec!(TopLevelWord(Concat(vec!(escaped("$"), escaped("$")))))))
-                            }))))
+                            })))
                         ))))
-                    }))))
+                    })))
                 ))))
-            }))
+            })
         )));
         assert_eq!(correct, make_parser(r#"`foo \`bar \\\`baz \\\\\\\\$\\\\\\\\$ \\\`\``"#).backticked_command_substitution().unwrap());
     }
@@ -6685,25 +6850,25 @@ pub mod test {
     #[test]
     fn test_backticked_nested_backticks_x3() {
         let correct = word_subst(ParameterSubstitution::Command(vec!(
-            Simple(Box::new(SimpleCommand {
+            *cmd_from_simple(SimpleCommand {
                 vars: vec!(), io: vec!(),
                 cmd: Some((word("foo"), vec!(word_subst(
-                    ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
+                    ParameterSubstitution::Command(vec!(*cmd_from_simple(SimpleCommand {
                         vars: vec!(), io: vec!(),
                         cmd: Some((word("bar"), vec!(word_subst(
-                            ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
+                            ParameterSubstitution::Command(vec!(*cmd_from_simple(SimpleCommand {
                                 vars: vec!(), io: vec!(),
                                 cmd: Some((word("baz"), vec!(word_subst(
-                                    ParameterSubstitution::Command(vec!(Simple(Box::new(SimpleCommand {
+                                    ParameterSubstitution::Command(vec!(*cmd_from_simple(SimpleCommand {
                                         vars: vec!(), io: vec!(),
                                         cmd: Some((word("qux"), vec!(TopLevelWord(Concat(vec!(escaped("$"), escaped("$")))))))
-                                    }))))
+                                    })))
                                 )))),
-                            }))))
+                            })))
                         ))))
-                    }))))
+                    })))
                 ))))
-            }))
+            })
         )));
         assert_eq!(correct, make_parser(
             r#"`foo \`bar \\\`baz \\\\\\\`qux \\\\\\\\\\\\\\\\$\\\\\\\\\\\\\\\\$ \\\\\\\` \\\`\``"#
