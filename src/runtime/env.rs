@@ -252,7 +252,7 @@ impl<'a> Environment for Env<'a> {
         }).is_some()
     }
 
-    fn run_function(&mut self, mut fn_name: Rc<String>, mut args: Vec<Rc<String>>)
+    fn run_function(&mut self, fn_name: Rc<String>, mut args: Vec<Rc<String>>)
         -> Option<Result<ExitStatus>>
     {
         use std::mem;
@@ -268,11 +268,9 @@ impl<'a> Environment for Env<'a> {
             None => return None,
         };
 
-        mem::swap(&mut self.shell_name, &mut fn_name);
         mem::swap(&mut self.args, &mut args);
         let ret = func.run(self);
         mem::swap(&mut self.args, &mut args);
-        mem::swap(&mut self.shell_name, &mut fn_name);
         Some(ret)
     }
 
@@ -561,12 +559,12 @@ mod tests {
 
         {
             let args = args.clone();
-            let fn_name = fn_name.clone();
+            let shell_name = shell_name.clone();
             env.set_function(fn_name_owned, MockFn::new(move |env| {
                 assert_eq!(env.args(), &*args);
                 assert_eq!(env.args_len(), args.len());
-                assert_eq!(env.name(), &fn_name);
-                assert_eq!(env.arg(0), Some(&fn_name));
+                assert_eq!(env.name(), &shell_name);
+                assert_eq!(env.arg(0), Some(&shell_name));
 
                 let mut env_args = Vec::with_capacity(args.len());
                 for idx in 0..args.len() {
