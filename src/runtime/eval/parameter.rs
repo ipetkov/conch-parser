@@ -398,27 +398,27 @@ impl Arithmetic {
             Var(ref var) => get_var(env, var),
 
             PostIncr(ref var) => {
-                let val = get_var(env, var);
-                env.set_var(var.clone(), Rc::new((val + 1).to_string()));
-                val
+                let value = get_var(env, var);
+                env.set_var(var.clone(), Rc::new((value + 1).to_string()));
+                value
             },
 
             PostDecr(ref var) => {
-                let val = get_var(env, var);
-                env.set_var(var.clone(), Rc::new((val - 1).to_string()));
-                val
+                let value = get_var(env, var);
+                env.set_var(var.clone(), Rc::new((value - 1).to_string()));
+                value
             },
 
             PreIncr(ref var) => {
-                let val = get_var(env, var) + 1;
-                env.set_var(var.clone(), Rc::new(val.to_string()));
-                val
+                let value = get_var(env, var) + 1;
+                env.set_var(var.clone(), Rc::new(value.to_string()));
+                value
             },
 
             PreDecr(ref var) => {
-                let val = get_var(env, var) - 1;
-                env.set_var(var.clone(), Rc::new(val.to_string()));
-                val
+                let value = get_var(env, var) - 1;
+                env.set_var(var.clone(), Rc::new(value.to_string()));
+                value
             },
 
             UnaryPlus(ref expr)  => try!(expr.eval(env)).abs(),
@@ -490,10 +490,10 @@ impl Arithmetic {
                 try!(els.eval(env))
             },
 
-            Assign(ref var, ref val) => {
-                let val = try!(val.eval(env));
-                env.set_var(var.clone(), Rc::new(val.to_string()));
-                val
+            Assign(ref var, ref value) => {
+                let value = try!(value.eval(env));
+                env.set_var(var.clone(), Rc::new(value.to_string()));
+                value
             },
 
             Sequence(ref exprs) => {
@@ -510,6 +510,7 @@ impl Arithmetic {
 }
 
 #[cfg(test)]
+#[cfg_attr(feature = "clippy", allow(similar_names))]
 mod tests {
     use glob;
     use runtime::{Env, Environment, ExitStatus, EXIT_SUCCESS, EXIT_ERROR, ExpansionError,
