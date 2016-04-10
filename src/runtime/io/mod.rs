@@ -171,9 +171,8 @@ pub struct Pipe {
 
 impl Pipe {
     /// Creates and returns a new pipe pair.
-    #[cfg_attr(unix, doc = "
-    On Unix systems, both file descriptors of the pipe will have
-    their CLOEXEC flags set, however, note that the setting of the flags is nonatomic.")]
+    /// On Unix systems, both file descriptors of the pipe will have their CLOEXEC flags set,
+    /// however, note that the setting of the flags is nonatomic on BSD systems.
     pub fn new() -> Result<Pipe> {
         let (reader, writer) = try!(os::pipe());
         Ok(Pipe {

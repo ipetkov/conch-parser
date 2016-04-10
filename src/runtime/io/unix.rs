@@ -199,13 +199,33 @@ unsafe fn dup_fd_cloexec(fd: RawFd) -> Result<RawIo> {
 
 /// Creates and returns a `(reader, writer)` pipe pair.
 ///
-/// The CLOEXEC flag will be set on both file descriptors, however,
-/// setting these flags is nonatomic.
+/// The CLOEXEC flag will be set on both file descriptors on creation.
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "emscripten"))]
 pub fn pipe() -> Result<(RawIo, RawIo)> {
-    use libc::pipe;
     unsafe {
         let mut fds = [0; 2];
-        try!(cvt_r(|| { pipe(fds.as_mut_ptr()) }));
+        try!(cvt_r(|| {
+            libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC)
+        }));
+
+        let reader = RawIo::new(fds[0]);
+        let writer = RawIo::new(fds[1]);
+
+        Ok((reader, writer))
+    }
+}
+
+/// Creates and returns a `(reader, writer)` pipe pair.
+///
+/// The CLOEXEC flag will be set on both file descriptors, however,
+/// on some UNIX systems (like BSD), setting these flags is nonatomic.
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "emscripten")))]
+pub fn pipe() -> Result<(RawIo, RawIo)> {
+    unsafe {
+        let mut fds = [0; 2];
+        try!(cvt_r(|| {
+            libc::pipe(fds.as_mut_ptr())
+        }));
         let reader = RawIo::new(fds[0]);
         let writer = RawIo::new(fds[1]);
 
