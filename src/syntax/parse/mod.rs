@@ -1737,7 +1737,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 _ => unreachable!(),
             };
 
-            return Ok(builder::IfFragments { conditionals: conditionals, else_part: els })
+            return Ok(builder::IfFragments { conditionals: conditionals, else_branch: els })
         }
     }
 
@@ -4775,7 +4775,7 @@ pub mod test {
                 GuardBodyPair { guard: vec!(guard1, guard2), body: vec!(body1) },
                 GuardBodyPair { guard: vec!(guard3), body: vec!(body2) },
             ),
-            else_part: Some(vec!(els)),
+            else_branch: Some(vec!(els)),
         };
         let mut p = make_parser("if guard1 <in; >out guard2; then body1 >|clob\n elif guard3; then body2 2>>app; else else; fi");
         assert_eq!(correct, p.if_command().unwrap());
@@ -4818,7 +4818,7 @@ pub mod test {
                 GuardBodyPair { guard: vec!(guard1, guard2), body: vec!(body1) },
                 GuardBodyPair { guard: vec!(guard3), body: vec!(body2) },
             ),
-            else_part: None,
+            else_branch: None,
         };
         let mut p = make_parser("if guard1 <in; >out guard2; then body1 >|clob\n elif guard3; then body2 2>>app; fi");
         assert_eq!(correct, p.if_command().unwrap());
@@ -5855,7 +5855,11 @@ pub mod test {
     #[test]
     fn test_compound_command_delegates_valid_commands_for() {
         let correct = CompoundCommand {
-            kind: For(String::from("var"), Some(vec!()), vec!(cmd("foo"))),
+            kind: For {
+                var: String::from("var"),
+                words: Some(vec!()),
+                body: vec!(cmd("foo")),
+            },
             io: vec!(),
         };
         assert_eq!(correct, make_parser("for var in; do foo; done").compound_command().unwrap());
@@ -5864,13 +5868,13 @@ pub mod test {
     #[test]
     fn test_compound_command_delegates_valid_commands_if() {
         let correct = CompoundCommand {
-            kind: If(
-                vec!(GuardBodyPair {
+            kind: If {
+                conditionals: vec!(GuardBodyPair {
                     guard: vec!(cmd("guard")),
                     body: vec!(cmd("body")),
                 }),
-                None
-            ),
+                else_branch: None,
+            },
             io: vec!(),
         };
         assert_eq!(correct, make_parser("if guard; then body; fi").compound_command().unwrap());
@@ -5879,7 +5883,10 @@ pub mod test {
     #[test]
     fn test_compound_command_delegates_valid_commands_case() {
         let correct = CompoundCommand {
-            kind: Case(word("foo"), vec!()),
+            kind: Case {
+                word: word("foo"),
+                arms: vec!(),
+            },
             io: vec!(),
         };
         assert_eq!(correct, make_parser("case foo in esac").compound_command().unwrap());
@@ -6146,7 +6153,11 @@ pub mod test {
     #[test]
     fn test_command_delegates_valid_commands_for() {
         let correct = Compound(Box::new(CompoundCommand {
-            kind: For(String::from("var"), Some(vec!()), vec!(cmd("foo"))),
+            kind: For {
+                var: String::from("var"),
+                words: Some(vec!()),
+                body: vec!(cmd("foo")),
+            },
             io: vec!(),
         }));
         assert_eq!(correct, make_parser("for var in; do foo; done").command().unwrap());
@@ -6155,13 +6166,13 @@ pub mod test {
     #[test]
     fn test_command_delegates_valid_commands_if() {
         let correct = Compound(Box::new(CompoundCommand {
-            kind: If(
-                vec!(GuardBodyPair {
+            kind: If {
+                conditionals: vec!(GuardBodyPair {
                     guard: vec!(cmd("guard")),
                     body: vec!(cmd("body")),
                 }),
-                None
-            ),
+                else_branch: None,
+            },
             io: vec!(),
         }));
         assert_eq!(correct, make_parser("if guard; then body; fi").command().unwrap());
@@ -6170,7 +6181,10 @@ pub mod test {
     #[test]
     fn test_command_delegates_valid_commands_case() {
         let correct = Compound(Box::new(CompoundCommand {
-            kind: Case(word("foo"), vec!()),
+            kind: Case {
+                word: word("foo"),
+                arms: vec!(),
+            },
             io: vec!(),
         }));
         assert_eq!(correct, make_parser("case foo in esac").command().unwrap());
@@ -6342,7 +6356,7 @@ pub mod test {
 
                             let cmd = p.command().unwrap();
                             if let Compound(ref compound_cmd) = cmd {
-                                if let If(..) = compound_cmd.kind {
+                                if let If { .. } = compound_cmd.kind {
                                     continue;
                                 }
                             }
@@ -6390,7 +6404,7 @@ pub mod test {
 
                 let cmd = p.command().unwrap();
                 if let Compound(ref compound_cmd) = cmd {
-                    if let For(..) = compound_cmd.kind {
+                    if let For { .. } = compound_cmd.kind {
                         continue;
                     }
                 }
@@ -6434,7 +6448,7 @@ pub mod test {
 
                     let cmd = p.command().unwrap();
                     if let Compound(ref compound_cmd) = cmd {
-                        if let Case(..) = compound_cmd.kind {
+                        if let Case { .. } = compound_cmd.kind {
                             continue;
                         }
                     }

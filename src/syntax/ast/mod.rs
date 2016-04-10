@@ -162,6 +162,15 @@ pub struct GuardBodyPair<C> {
     pub body: Vec<C>,
 }
 
+/// A grouping of patterns and body commands.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct PatternBodyPair<W, C> {
+    /// Pattern alternatives to match against.
+    pub patterns: Vec<W>,
+    /// The body commands to execute if the pattern matches.
+    pub body: Vec<C>,
+}
+
 /// Represents any valid shell command.
 /// Generic over the top-level representations of shell words and commands.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -246,20 +255,31 @@ pub enum CompoundCommandKind<W, C> {
     Until(GuardBodyPair<C>),
     /// A conditional command that runs the respective command branch when a
     /// certain of the first condition that exits successfully.
-    ///
-    /// Variant structure: `If( conditional+, else_branch )`.
-    If(Vec<GuardBodyPair<C>>, Option<Vec<C>>),
+    If {
+        /// A list of conditional branch-body pairs.
+        conditionals: Vec<GuardBodyPair<C>>,
+        /// An else part to run if no other conditional was taken.
+        else_branch: Option<Vec<C>>,
+    },
     /// A command that binds a variable to a number of provided words and runs
     /// its body once for each binding.
-    ///
-    /// Variant structure: `For(var_name, words, body)`.
-    For(String, Option<Vec<W>>, Vec<C>),
+    For {
+        /// The variable to bind to each of the specified words.
+        var: String,
+        /// The words to bind to the specified variable one by one.
+        words: Option<Vec<W>>,
+        /// The body to run with the variable binding.
+        body: Vec<C>,
+    },
     /// A command that behaves much like a `match` statment in Rust, running
     /// a branch of commands if a specified word matches another literal or
     /// glob pattern.
-    ///
-    /// Variant structure: `Case( to_match, (pattern_alternative+, commands*)* )`
-    Case(W, Vec<(Vec<W>, Vec<C>)>),
+    Case {
+        /// The word on which to check for pattern matches.
+        word: W,
+        /// The arms to match against.
+        arms: Vec<PatternBodyPair<W, C>>,
+    },
 }
 
 /// The simplest possible command: an executable with arguments,

@@ -47,7 +47,7 @@ pub struct IfFragments<C> {
     /// A list of conditionals branches.
     pub conditionals: Vec<GuardBodyPair<C>>,
     /// The `else` branch, if any,
-    pub else_part: Option<Vec<C>>,
+    pub else_branch: Option<Vec<C>>,
 }
 
 /// Parsed fragments relating to a shell `for` command.
@@ -545,21 +545,24 @@ impl Builder for DefaultBuilder {
                   mut redirects: Vec<Self::Redirect>)
         -> Result<Self::CompoundCommand>
     {
-        let IfFragments { mut conditionals, mut else_part } = fragments;
+        let IfFragments { mut conditionals, mut else_branch } = fragments;
 
         for guard_body_pair in &mut conditionals {
             guard_body_pair.guard.shrink_to_fit();
             guard_body_pair.body.shrink_to_fit();
         }
 
-        for els in &mut else_part {
+        if let Some(ref mut els) = else_branch {
             els.shrink_to_fit();
         }
 
         redirects.shrink_to_fit();
 
         Ok(CompoundCommand {
-            kind: CompoundCommandKind::If(conditionals, else_part),
+            kind: CompoundCommandKind::If {
+                conditionals: conditionals,
+                else_branch: else_branch,
+            },
             io: redirects,
         })
     }
@@ -578,7 +581,11 @@ impl Builder for DefaultBuilder {
         fragments.body.shrink_to_fit();
         redirects.shrink_to_fit();
         Ok(CompoundCommand {
-            kind: CompoundCommandKind::For(fragments.var, fragments.words, fragments.body),
+            kind: CompoundCommandKind::For {
+                var: fragments.var,
+                words: fragments.words,
+                body: fragments.body,
+            },
             io: redirects
         })
     }
@@ -589,16 +596,25 @@ impl Builder for DefaultBuilder {
                     mut redirects: Vec<Self::Redirect>)
         -> Result<Self::CompoundCommand>
     {
+        use syntax::ast::PatternBodyPair;
+
         let arms = fragments.arms.into_iter().map(|(pat_fragment, mut body)| {
             let mut patterns = pat_fragment.pattern_alternatives;
             patterns.shrink_to_fit();
             body.shrink_to_fit();
-            (patterns, body)
+
+            PatternBodyPair {
+                patterns: patterns,
+                body: body,
+            }
         }).collect();
 
         redirects.shrink_to_fit();
         Ok(CompoundCommand {
-            kind: CompoundCommandKind::Case(fragments.word, arms),
+            kind: CompoundCommandKind::Case {
+                word: fragments.word,
+                arms: arms,
+            },
             io: redirects,
         })
     }

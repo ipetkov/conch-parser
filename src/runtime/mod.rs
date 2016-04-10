@@ -370,7 +370,7 @@ impl<W: WordEval, C: Run> Run for CompoundCommandKind<W, C> {
                 exit
             },
 
-            If(ref conditionals, ref els) => if conditionals.is_empty() {
+            If { ref conditionals, ref else_branch } => if conditionals.is_empty() {
                 // An `If` AST node without any branches (conditional guards)
                 // isn't really a valid instantiation, but we'll just
                 // pretend it was an unsuccessful command (which it sort of is).
@@ -388,7 +388,7 @@ impl<W: WordEval, C: Run> Run for CompoundCommandKind<W, C> {
 
                 let exit = match exit {
                     Some(e) => e,
-                    None => try!(els.as_ref().map_or(Ok(EXIT_SUCCESS), |els| run(els, env))),
+                    None => try!(else_branch.as_ref().map_or(Ok(EXIT_SUCCESS), |els| run(els, env))),
                 };
                 env.set_last_status(exit);
                 exit
@@ -411,9 +411,9 @@ impl<W: WordEval, C: Run> Run for CompoundCommandKind<W, C> {
 
             // bash and zsh appear to break loops if a "fatal" error occurs,
             // so we'll emulate the same behavior in case it is expected
-            For(ref var, ref in_words, ref body) => {
+            For { ref var, ref words, ref body } => {
                 let mut exit = EXIT_SUCCESS;
-                let values = match *in_words {
+                let values = match *words {
                     Some(ref words) => {
                         let mut values = Vec::with_capacity(words.len());
                         for w in words {
@@ -431,7 +431,7 @@ impl<W: WordEval, C: Run> Run for CompoundCommandKind<W, C> {
                 exit
             },
 
-            Case(ref word, ref arms) => {
+            Case { ref word, ref arms } => {
                 let match_opts = glob::MatchOptions {
                     case_sensitive: true,
                     require_literal_separator: false,
@@ -445,10 +445,10 @@ impl<W: WordEval, C: Run> Run for CompoundCommandKind<W, C> {
 
                 // If no arm was taken we still consider the command a success
                 let mut exit = EXIT_SUCCESS;
-                'case: for &(ref pats, ref body) in arms.iter() {
-                    for pat in pats {
+                'case: for pattern_body_pair in arms {
+                    for pat in &pattern_body_pair.patterns {
                         if try!(pat.eval_as_pattern(env)).matches_with(&word, &match_opts) {
-                            exit = try!(run(body, env));
+                            exit = try!(run(&pattern_body_pair.body, env));
                             break 'case;
                         }
                     }
@@ -977,13 +977,13 @@ mod tests {
         // Swallow errors because underlying command body will swallow errors
         test_error_handling(true, |cmd, env| {
             let pipeable: PipeableCommand = Compound(Box::new(CompoundCommand {
-                kind: If(
-                    vec!(GuardBodyPair {
+                kind: If {
+                    conditionals: vec!(GuardBodyPair {
                         guard: vec!(true_cmd()),
                         body: vec!(cmd_from_simple(cmd)),
                     }),
-                    None
-                ),
+                    else_branch: None,
+                },
                 io: vec!()
             }));
             pipeable.run(env)
@@ -998,13 +998,13 @@ mod tests {
 
         // Swallow errors because underlying command body will swallow errors
         test_error_handling(true, |cmd, env| {
-            let compound: CompoundCommandKind = If(
-                vec!(GuardBodyPair {
+            let compound: CompoundCommandKind = If {
+                conditionals: vec!(GuardBodyPair {
                     guard: vec!(true_cmd()),
                     body: vec!(cmd_from_simple(cmd)),
                 }),
-                None
-            );
+                else_branch: None,
+            };
             compound.run(env)
         }, None);
     }
@@ -1414,28 +1414,38 @@ mod tests {
             panic!("ran command that should not be run")
         }));
 
-        let body_with_true_guard = vec!(
+        let conditionals_with_true_guard = vec!(
             GuardBodyPair { guard: vec!(false_cmd()), body: vec!(cmd_should_not_run.clone()) },
             GuardBodyPair { guard: vec!(false_cmd()), body: vec!(cmd_should_not_run.clone()) },
             GuardBodyPair { guard: vec!(true_cmd()), body: vec!(cmd_exit.clone()) },
             GuardBodyPair { guard: vec!(cmd_should_not_run.clone()), body: vec!(cmd_should_not_run.clone()) },
         );
 
-        let body_without_true_guard = vec!(
+        let conditionals_without_true_guard = vec!(
             GuardBodyPair { guard: vec!(false_cmd()), body: vec!(cmd_should_not_run.clone()) },
             GuardBodyPair { guard: vec!(false_cmd()), body: vec!(cmd_should_not_run.clone()) },
         );
 
-        let compound: CompoundCommandKind =
-            If(body_with_true_guard.clone(), Some(vec!(cmd_should_not_run.clone())));
+        let compound: CompoundCommandKind = If {
+            conditionals: conditionals_with_true_guard.clone(),
+            else_branch: Some(vec!(cmd_should_not_run.clone())),
+        };
         assert_eq!(compound.run(&mut env), Ok(EXIT));
-        let compound: CompoundCommandKind =
-            If(body_without_true_guard.clone(), Some(vec!(cmd_exit.clone())));
+        let compound: CompoundCommandKind = If {
+            conditionals: conditionals_without_true_guard.clone(),
+            else_branch: Some(vec!(cmd_exit.clone())),
+        };
         assert_eq!(compound.run(&mut env), Ok(EXIT));
 
-        let compound: CompoundCommandKind = If(body_with_true_guard.clone(), None);
+        let compound: CompoundCommandKind = If {
+            conditionals: conditionals_with_true_guard.clone(),
+            else_branch: None,
+        };
         assert_eq!(compound.run(&mut env), Ok(EXIT));
-        let compound: CompoundCommandKind = If(body_without_true_guard.clone(), None);
+        let compound: CompoundCommandKind = If {
+            conditionals: conditionals_without_true_guard.clone(),
+            else_branch: None,
+        };
         assert_eq!(compound.run(&mut env), Ok(EXIT_SUCCESS));
     }
 
@@ -1443,11 +1453,17 @@ mod tests {
     fn test_run_compound_command_kind_if_malformed() {
         let mut env = Env::new().unwrap();
 
-        let compound: CompoundCommandKind = If(vec!(), Some(vec!(true_cmd())));
+        let compound: CompoundCommandKind = If {
+            conditionals: vec!(),
+            else_branch: Some(vec!(true_cmd())),
+        };
         assert_eq!(compound.run(&mut env), Ok(EXIT_ERROR));
         assert_eq!(env.last_status().success(), false);
 
-        let compound: CompoundCommandKind = If(vec!(), None);
+        let compound: CompoundCommandKind = If {
+            conditionals: vec!(),
+            else_branch: None,
+        };
         assert_eq!(compound.run(&mut env), Ok(EXIT_ERROR));
         assert_eq!(env.last_status().success(), false);
     }
@@ -1464,39 +1480,39 @@ mod tests {
         // Error in guard
         test_error_handling(true, |cmd, env| {
             env.set_function(should_not_run.to_owned(), fn_should_not_run.clone());
-            let compound: CompoundCommandKind = If(
-                vec!(GuardBodyPair {
+            let compound: CompoundCommandKind = If {
+                conditionals: vec!(GuardBodyPair {
                     guard: vec!(cmd_from_simple(cmd)),
                     body: vec!(cmd!(should_not_run))
                 }),
-                Some(vec!(exit(42)))
-            );
+                else_branch: Some(vec!(exit(42))),
+            };
             compound.run(env)
         }, Some(ExitStatus::Code(42)));
 
         // Error in body of successful guard
         test_error_handling(true, |cmd, env| {
             env.set_function(should_not_run.to_owned(), fn_should_not_run.clone());
-            let compound: CompoundCommandKind = If(
-                vec!(GuardBodyPair {
+            let compound: CompoundCommandKind = If {
+                conditionals: vec!(GuardBodyPair {
                     guard: vec!(true_cmd()),
                     body: vec!(cmd_from_simple(cmd))
                 }),
-                Some(vec!(cmd!(should_not_run)))
-            );
+                else_branch: Some(vec!(cmd!(should_not_run))),
+            };
             compound.run(env)
         }, None);
 
         // Error in body of else part
         test_error_handling(true, |cmd, env| {
             env.set_function(should_not_run.to_owned(), fn_should_not_run.clone());
-            let compound: CompoundCommandKind = If(
-                vec!(GuardBodyPair {
+            let compound: CompoundCommandKind = If {
+                conditionals: vec!(GuardBodyPair {
                     guard: vec!(false_cmd()),
                     body: vec!(cmd!(should_not_run))
                 }),
-                Some(vec!(cmd_from_simple(cmd)))
-            );
+                else_branch: Some(vec!(cmd_from_simple(cmd))),
+            };
             compound.run(env)
         }, None);
     }
