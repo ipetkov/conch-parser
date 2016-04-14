@@ -3,11 +3,12 @@
 use glob;
 use libc;
 
+use runtime::{Environment, ExpansionError, ExitStatus, EXIT_ERROR, Result, Run, RuntimeError};
+use runtime::eval::{Fields, TildeExpansion, WordEval, WordEvalConfig};
+use std::io;
 use std::rc::Rc;
 use std::result;
 use syntax::ast::{Arithmetic, Parameter, ParameterSubstitution};
-use runtime::{Environment, ExpansionError, ExitStatus, EXIT_ERROR, Result, Run};
-use runtime::eval::{Fields, TildeExpansion, WordEval, WordEvalConfig};
 
 const EXIT_SIGNAL_OFFSET: u32 = 128;
 const IFS_DEFAULT: &'static str = " \t\n";
@@ -135,7 +136,9 @@ impl<W: WordEval, C: Run> ParameterSubstitution<W, C> {
         }
 
         let ret = match *self {
-            Command(_) => unimplemented!(),
+            Command(ref body) => {
+                try!(run_cmd_subst(body, env).map_err(|e| RuntimeError::Io(e, None))).into()
+            },
 
             // We won't do field splitting here because any field expansions
             // should be done on the result we are about to return, and not the
@@ -286,6 +289,57 @@ impl<W: WordEval, C: Run> ParameterSubstitution<W, C> {
             field => field,
         })
     }
+}
+
+/// Runs a collection of `Run`able commands as a command substitution.
+/// The output of the commands will be captured, and trailing newlines trimmed.
+fn run_cmd_subst<I>(body: I, env: &Environment) -> io::Result<String>
+    where I: IntoIterator, I::Item: Run
+{
+    use runtime::{run_as_subshell, STDOUT_FILENO};
+    use runtime::io::{Permissions, Pipe};
+    use std::thread;
+
+    let Pipe { reader: mut cmd_output, writer: cmd_stdout_fd } = try!(Pipe::new());
+
+    let child_thread = try!(thread::Builder::new().spawn(move || {
+        let mut buf = Vec::new();
+        try!(io::copy(&mut cmd_output, &mut buf));
+        Ok(buf)
+    }));
+
+    {
+        let mut env = env.sub_env();
+        let cmd_stdout_fd = Rc::new(cmd_stdout_fd);
+        env.set_file_desc(STDOUT_FILENO, cmd_stdout_fd.clone(), Permissions::Write);
+        let _ = run_as_subshell(body, &*env);
+
+        // Make sure that we drop env, and thus the writer end of the pipe here,
+        // otherwise we could deadlock while waiting on a read on the pipe.
+        drop(env);
+        let cmd_stdout_fd = try!(Rc::try_unwrap(cmd_stdout_fd).map_err(|_| {
+            io::Error::new(io::ErrorKind::WouldBlock, "writer end of pipe to command substitution \
+                           was not closed, and would have caused a deadlock")
+        }));
+        drop(cmd_stdout_fd);
+    }
+
+    let mut buf = match child_thread.join() {
+        Ok(Ok(buf)) => buf,
+        Ok(Err(e)) => return Err(e),
+        Err(_) => return Err(
+            io::Error::new(io::ErrorKind::Other, "thread capturing command output panicked")
+        ),
+    };
+
+    // Trim the trailing newlines as per POSIX spec
+    while Some(&b'\n') == buf.last() {
+        buf.pop();
+    }
+
+    String::from_utf8(buf).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidData, "command substitution output is not valid UTF-8")
+    })
 }
 
 /// Splits a vector of fields further based on the contents of the `IFS`
@@ -517,7 +571,8 @@ mod tests {
                   Result, Run, RuntimeError};
     use runtime::eval::{Fields, TildeExpansion, WordEval, WordEvalConfig};
     use std::rc::Rc;
-    use syntax::ast::{Arithmetic, Parameter, ParameterSubstitution};
+    use syntax::ast::{Arithmetic, Parameter, ParameterSubstitution, TopLevelWord};
+    use syntax::parse::test::cmd_args;
 
     #[derive(Copy, Clone, Debug)]
     struct MockCmd;
@@ -927,6 +982,39 @@ mod tests {
 
         assert_eq!(&**env.var("x").unwrap(), "6");
         assert_eq!(&**env.var("y").unwrap(), "9");
+    }
+
+    #[test]
+    fn test_eval_parameter_substitution_command() {
+        use syntax::ast::ParameterSubstitution::Command;
+
+        let cfg = WordEvalConfig {
+            tilde_expansion: TildeExpansion::All,
+            split_fields_further: false,
+        };
+
+        let mut env = Env::new().unwrap();
+        let cmd_subst: ParameterSubstitution<TopLevelWord, _>
+            = Command(vec!(cmd_args("echo", &["hello\n\n\n ~ * world\n\n\n\n"])));
+        assert_eq!(cmd_subst.eval(&mut env, cfg), Ok("hello\n\n\n ~ * world".to_owned().into()));
+
+        let cfg = WordEvalConfig {
+            tilde_expansion: TildeExpansion::All,
+            split_fields_further: true,
+        };
+        assert_eq!(cmd_subst.eval(&mut env, cfg), Ok(Fields::Split(vec!(
+            "hello".to_owned().into(),
+            "~".to_owned().into(),
+            "*".to_owned().into(),
+            "world".to_owned().into(),
+        ))));
+
+        env.set_var("IFS".to_owned(), "o".to_owned().into());
+        assert_eq!(cmd_subst.eval(&mut env, cfg), Ok(Fields::Split(vec!(
+            "hell".to_owned().into(),
+            "\n\n\n ~ * w".to_owned().into(),
+            "rld".to_owned().into(),
+        ))));
     }
 
     #[test]
@@ -1669,7 +1757,6 @@ mod tests {
             split_fields_further: true,
         };
 
-        // FIXME: test Command
         let subst: ParamSubst = Default(false, var1.clone(), None);
         assert_eq!(subst.eval(&mut env, cfg), Ok(fields_foo_bar.clone()));
         let subst: ParamSubst = Default(false, var2.clone(), None);
@@ -1717,7 +1804,6 @@ mod tests {
             split_fields_further: false,
         };
 
-        // FIXME: test Command
         let val1 = Fields::Single(val1.clone());
         let val2 = Fields::Zero;
 
@@ -1824,7 +1910,6 @@ mod tests {
             split_fields_further: true,
         };
 
-        // FIXME: test Command
         let subst: ParamSubst = Len(var_missing.clone());
         assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Single("".to_owned().into())));
 
@@ -1902,7 +1987,6 @@ mod tests {
             split_fields_further: false,
         };
 
-        // FIXME: test Command
         let subst: ParamSubst = Len(var_missing.clone());
         assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Single("0".to_owned().into())));
 

@@ -43,7 +43,7 @@ impl<W: WordEval> Redirect<W> {
             let path = try!(eval_path(path, env));
             options.open(&**path)
                 .map(|file| RedirectAction::Open(fd, Rc::new(file.into()), permissions))
-                .map_err(|io| RuntimeError::Io(io, rc_to_owned(path)))
+                .map_err(|io| RuntimeError::Io(io, Some(rc_to_owned(path))))
         };
 
         let open_path = |path, env, fd, permissions: Permissions|

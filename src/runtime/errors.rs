@@ -113,8 +113,9 @@ impl Display for CommandError {
 /// An error which may arise while executing commands.
 #[derive(Debug)]
 pub enum RuntimeError {
-    /// Any I/O error returned by the OS during execution and the file that caused the error.
-    Io(IoError, String),
+    /// Any I/O error returned by the OS during execution and the
+    /// file that caused the error if applicable.
+    Io(IoError, Option<String>),
     /// Any error that occured during a parameter expansion.
     Expansion(ExpansionError),
     /// Any error that occured during a redirection.
@@ -183,12 +184,13 @@ impl Error for RuntimeError {
 impl Display for RuntimeError {
     fn fmt(&self, fmt: &mut Formatter) -> Result {
         match *self {
-            RuntimeError::Expansion(ref e)    => e.fmt(fmt),
-            RuntimeError::Redirection(ref e)  => e.fmt(fmt),
-            RuntimeError::Command(ref e)      => e.fmt(fmt),
-            RuntimeError::Custom(ref e)       => e.fmt(fmt),
-            RuntimeError::Io(ref e, ref path) => write!(fmt, "{}: {}", e, path),
+            RuntimeError::Expansion(ref e)    => write!(fmt, "{}", e),
+            RuntimeError::Redirection(ref e)  => write!(fmt, "{}", e),
+            RuntimeError::Command(ref e)      => write!(fmt, "{}", e),
+            RuntimeError::Custom(ref e)       => write!(fmt, "{}", e),
             RuntimeError::Unimplemented(e)    => write!(fmt, "{}", e),
+            RuntimeError::Io(ref e, None)     => write!(fmt, "{}", e),
+            RuntimeError::Io(ref e, Some(ref path)) => write!(fmt, "{}: {}", e, path),
         }
     }
 }

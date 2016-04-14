@@ -2698,7 +2698,7 @@ pub mod test {
         cmd_args_simple(cmd, &[])
     }
 
-    fn cmd_args_unboxed(cmd: &str, args: &[&str]) -> TopLevelCommand {
+    pub fn cmd_args(cmd: &str, args: &[&str]) -> TopLevelCommand {
         TopLevelCommand(List(CommandList {
             first: ListableCommand::Single(Simple(cmd_args_simple(cmd, args))),
             rest: vec!(),
@@ -2706,14 +2706,14 @@ pub mod test {
     }
 
     fn cmd(cmd: &str) -> TopLevelCommand {
-        cmd_args_unboxed(cmd, &[])
+        cmd_args(cmd, &[])
     }
 
-    fn cmd_from_simple(cmd: SimpleCommand<TopLevelWord>) -> Box<TopLevelCommand> {
-        Box::new(TopLevelCommand(List(CommandList {
+    fn cmd_from_simple(cmd: SimpleCommand<TopLevelWord>) -> TopLevelCommand {
+        TopLevelCommand(List(CommandList {
             first: ListableCommand::Single(Simple(Box::new(cmd))),
             rest: vec!(),
-        })))
+        }))
     }
 
     fn src(byte: usize, line: usize, col: usize) -> SourcePos {
@@ -3029,8 +3029,8 @@ pub mod test {
     #[test]
     fn test_parameter_command_substitution() {
         let correct = word_subst(ParameterSubstitution::Command(vec!(
-            cmd_args_unboxed("echo", &["hello"]),
-            cmd_args_unboxed("echo", &["world"]),
+            cmd_args("echo", &["hello"]),
+            cmd_args("echo", &["world"]),
         )));
 
         assert_eq!(correct, make_parser("$(echo hello; echo world)").parameter().unwrap());
@@ -3064,7 +3064,7 @@ pub mod test {
             ParameterSubstitution::Len(Parameter::Var(String::from("foo"))),
             ParameterSubstitution::Len(Parameter::Positional(3)),
             ParameterSubstitution::Len(Parameter::Positional(1000)),
-            ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["foo"]))),
+            ParameterSubstitution::Command(vec!(cmd_args("echo", &["foo"]))),
         );
 
         let mut p = make_parser("${#@}${#*}${##}${#?}${#-}${#$}${#!}${#foo}${#3}${#1000}$(echo foo)");
@@ -3686,7 +3686,7 @@ pub mod test {
 
     #[test]
     fn test_parameter_substitution_command_close_paren_need_not_be_followed_by_word_delimeter() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(), io: vec!(),
             cmd: Some((word("foo"), vec!(TopLevelWord(Single(Word::DoubleQuoted(vec!(
                 Subst(Box::new(ParameterSubstitution::Command(vec!(cmd("bar")))))
@@ -3810,8 +3810,8 @@ pub mod test {
             TopLevelWord(Concat(vec!(
                 lit("123"),
                 Word::Simple(Box::new(Param(Parameter::Dollar))),
-                subst(ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["2"])))),
-                subst(ParameterSubstitution::Command(vec!(cmd_args_unboxed("echo", &["bar"])))),
+                subst(ParameterSubstitution::Command(vec!(cmd_args("echo", &["2"])))),
+                subst(ParameterSubstitution::Command(vec!(cmd_args("echo", &["bar"])))),
             ))),
         );
         assert_eq!(Some(Ok(correct)), p.redirect().unwrap());
@@ -3986,7 +3986,7 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\n")))
@@ -3997,7 +3997,7 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_eof_after_delimiter_allowed() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\n")))
@@ -4008,7 +4008,7 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_with_empty_body() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word(""))),
@@ -4021,7 +4021,7 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_eof_acceptable_as_delimeter() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\n")))
@@ -4034,10 +4034,10 @@ pub mod test {
     fn test_heredoc_valid_does_not_lose_tokens_up_to_next_newline() {
         let mut p = make_parser("cat <<eof1; cat 3<<eof2\nhello\neof1\nworld\neof2");
         let cat = Some((word("cat"), vec!()));
-        let first = Some(*cmd_from_simple(SimpleCommand {
+        let first = Some(cmd_from_simple(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(None, word("hello\n")))
         }));
-        let second = Some(*cmd_from_simple(SimpleCommand {
+        let second = Some(cmd_from_simple(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(Some(3), word("world\n")))
         }));
 
@@ -4049,10 +4049,10 @@ pub mod test {
     fn test_heredoc_valid_space_before_delimeter_allowed() {
         let mut p = make_parser("cat <<   eof1; cat 3<<- eof2\nhello\neof1\nworld\neof2");
         let cat = Some((word("cat"), vec!()));
-        let first = Some(*cmd_from_simple(SimpleCommand {
+        let first = Some(cmd_from_simple(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(None, word("hello\n")))
         }));
-        let second = Some(*cmd_from_simple(SimpleCommand {
+        let second = Some(cmd_from_simple(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(Some(3), word("world\n")))
         }));
 
@@ -4063,7 +4063,7 @@ pub mod test {
     #[test]
     fn test_heredoc_valid_unquoted_delimeter_should_expand_body() {
         let cat = Some((word("cat"), vec!()));
-        let expanded = Some(*cmd_from_simple(SimpleCommand {
+        let expanded = Some(cmd_from_simple(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(
                 Redirect::Heredoc(None, TopLevelWord(Concat(vec!(
                     Word::Simple(Box::new(Param(Parameter::Dollar))),
@@ -4075,7 +4075,7 @@ pub mod test {
                 )))
             ))
         }));
-        let literal = Some(*cmd_from_simple(SimpleCommand {
+        let literal = Some(cmd_from_simple(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(None, word("$$ ${#!} `foo`\n")))
         }));
 
@@ -4090,10 +4090,10 @@ pub mod test {
     fn test_heredoc_valid_leading_tab_removal_works() {
         let mut p = make_parser("cat <<-eof1; cat 3<<-eof2\n\t\thello\n\teof1\n\t\t \t\nworld\n\t\teof2");
         let cat = Some((word("cat"), vec!()));
-        let first = Some(*cmd_from_simple(SimpleCommand {
+        let first = Some(cmd_from_simple(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(None, word("hello\n")))
         }));
-        let second = Some(*cmd_from_simple(SimpleCommand {
+        let second = Some(cmd_from_simple(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(Redirect::Heredoc(Some(3), word(" \t\nworld\n")))
         }));
 
@@ -4104,7 +4104,7 @@ pub mod test {
     #[test]
     fn test_heredoc_valid_leading_tab_removal_works_if_dash_immediately_after_dless() {
         let mut p = make_parser("cat 3<< -eof\n\t\t \t\nworld\n\t\teof\n\t\t-eof\n-eof");
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(Some(3), word("\t\t \t\nworld\n\t\teof\n\t\t-eof\n")))
@@ -4115,7 +4115,7 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_unquoted_backslashes_in_delimeter_disappear() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\n")))
@@ -4126,7 +4126,7 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_balanced_single_quotes_in_delimeter() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\n")))
@@ -4137,7 +4137,7 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_balanced_double_quotes_in_delimeter() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\n")))
@@ -4148,7 +4148,7 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_balanced_backticks_in_delimeter() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\n")))
@@ -4159,7 +4159,7 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_balanced_parens_in_delimeter() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\n")))
@@ -4170,7 +4170,7 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_cmd_subst_in_delimeter() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\n")))
@@ -4181,7 +4181,7 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_param_subst_in_delimeter() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\n")))
@@ -4191,7 +4191,7 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_skip_past_newlines_in_single_quotes() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!(
                 single_quoted("\n"), word("arg")
@@ -4203,7 +4203,7 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_skip_past_newlines_in_double_quotes() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!(
                 double_quoted("\n"),
@@ -4216,7 +4216,7 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_skip_past_newlines_in_backticks() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!(
                 word_subst(ParameterSubstitution::Command(vec!(cmd("echo")))),
@@ -4229,7 +4229,7 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_skip_past_newlines_in_parens() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("here\n")))
@@ -4239,7 +4239,7 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_skip_past_newlines_in_cmd_subst() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!(
                 word_subst(ParameterSubstitution::Command(vec!(cmd("foo")))),
@@ -4252,7 +4252,7 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_skip_past_newlines_in_param_subst() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!(
                 word_subst(ParameterSubstitution::Assign(
@@ -4269,7 +4269,7 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_skip_past_escaped_newlines() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!(word("arg")))),
             io: vec!(Redirect::Heredoc(None, word("here\n")))
@@ -4279,7 +4279,7 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_double_quoted_delim_keeps_backslashe_except_after_specials() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("here\n")))
@@ -4290,7 +4290,7 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_unquoting_only_removes_outer_quotes_and_backslashes() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("here\n")))
@@ -4301,14 +4301,14 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_delimeter_can_be_followed_by_carriage_return_newline() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!(word("arg")))),
             io: vec!(Redirect::Heredoc(None, word("here\n")))
         }));
         assert_eq!(correct, make_parser("cat <<EOF arg\nhere\nEOF\r\n").complete_command().unwrap());
 
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!(word("arg")))),
             io: vec!(Redirect::Heredoc(None, word("here\r\n")))
@@ -4318,14 +4318,14 @@ pub mod test {
 
     #[test]
     fn test_heredoc_valid_delimiter_can_start_with() {
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("\thello\n\t\tworld\n")))
         }));
         assert_eq!(correct, make_parser("cat << -EOF\n\thello\n\t\tworld\n-EOF").complete_command().unwrap());
 
-        let correct = Some(*cmd_from_simple(SimpleCommand {
+        let correct = Some(cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("cat"), vec!())),
             io: vec!(Redirect::Heredoc(None, word("hello\nworld\n")))
@@ -4409,7 +4409,7 @@ pub mod test {
     #[test]
     fn test_do_group_valid_keyword_delimited_by_separator() {
         let mut p = make_parser("do foo done; done");
-        let correct = vec!(cmd_args_unboxed("foo", &["done"]));
+        let correct = vec!(cmd_args("foo", &["done"]));
         assert_eq!(correct, p.do_group().unwrap());
     }
 
@@ -4516,7 +4516,7 @@ pub mod test {
     #[test]
     fn test_brace_group_valid_keyword_delimited_by_separator() {
         let mut p = make_parser("{ foo }; }");
-        let correct = vec!(cmd_args_unboxed("foo", &["}"]));
+        let correct = vec!(cmd_args("foo", &["}"]));
         assert_eq!(correct, p.brace_group().unwrap());
     }
 
@@ -4738,31 +4738,31 @@ pub mod test {
 
     #[test]
     fn test_if_command_valid_with_else() {
-        let guard1 = *cmd_from_simple(SimpleCommand {
+        let guard1 = cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("guard1"), vec!())),
             io: vec!(Redirect::Read(None, word("in"))),
         });
 
-        let guard2 = *cmd_from_simple(SimpleCommand {
+        let guard2 = cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("guard2"), vec!())),
             io: vec!(Redirect::Write(None, word("out"))),
         });
 
-        let guard3 = *cmd_from_simple(SimpleCommand {
+        let guard3 = cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("guard3"), vec!())),
             io: vec!(),
         });
 
-        let body1 = *cmd_from_simple(SimpleCommand {
+        let body1 = cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("body1"), vec!())),
             io: vec!(Redirect::Clobber(None, word("clob"))),
         });
 
-        let body2 = *cmd_from_simple(SimpleCommand {
+        let body2 = cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("body2"), vec!())),
             io: vec!(Redirect::Append(Some(2), word("app"))),
@@ -4783,31 +4783,31 @@ pub mod test {
 
     #[test]
     fn test_if_command_valid_without_else() {
-        let guard1 = *cmd_from_simple(SimpleCommand {
+        let guard1 = cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("guard1"), vec!())),
             io: vec!(Redirect::Read(None, word("in"))),
         });
 
-        let guard2 = *cmd_from_simple(SimpleCommand {
+        let guard2 = cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("guard2"), vec!())),
             io: vec!(Redirect::Write(None, word("out"))),
         });
 
-        let guard3 = *cmd_from_simple(SimpleCommand {
+        let guard3 = cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("guard3"), vec!())),
             io: vec!(),
         });
 
-        let body1 = *cmd_from_simple(SimpleCommand {
+        let body1 = cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("body1"), vec!())),
             io: vec!(Redirect::Clobber(None, word("clob"))),
         });
 
-        let body2 = *cmd_from_simple(SimpleCommand {
+        let body2 = cmd_from_simple(SimpleCommand {
             vars: vec!(),
             cmd: Some((word("body2"), vec!())),
             io: vec!(Redirect::Append(Some(2), word("app"))),
@@ -4964,7 +4964,7 @@ pub mod test {
         assert_eq!(p.word().unwrap().unwrap(), word("}"));
         assert_eq!(p.word().unwrap().unwrap(), word("{"));
 
-        let correct = Some(cmd_args_unboxed("echo", &["{}", "}", "{"]));
+        let correct = Some(cmd_args("echo", &["{}", "}", "{"]));
         assert_eq!(correct, make_parser(source).complete_command().unwrap());
     }
 
@@ -4985,7 +4985,7 @@ pub mod test {
             Newline(None),
         )));
 
-        let correct_body = vec!(*cmd_from_simple(SimpleCommand {
+        let correct_body = vec!(cmd_from_simple(SimpleCommand {
             vars: vec!(), io: vec!(),
             cmd: Some((word("echo"), vec!(word_param(Parameter::Var(String::from("var"))))))
         }));
@@ -5002,7 +5002,7 @@ pub mod test {
         assert_eq!(fragments.words, None);
         assert_eq!(fragments.post_words_comments, None);
 
-        let correct_body = vec!(*cmd_from_simple(SimpleCommand {
+        let correct_body = vec!(cmd_from_simple(SimpleCommand {
             vars: vec!(), io: vec!(),
             cmd: Some((word("echo"), vec!(word_param(Parameter::Var(String::from("var"))))))
         }));
@@ -5177,7 +5177,7 @@ pub mod test {
         let correct = FunctionDef(
             String::from("foo"),
             Rc::new(CompoundCommand {
-                kind: Brace(vec!(cmd_args_unboxed("echo", &["body"]))),
+                kind: Brace(vec!(cmd_args("echo", &["body"]))),
                 io: vec!(),
             })
         );
@@ -5244,7 +5244,7 @@ pub mod test {
         let correct = FunctionDef(
             String::from("foo"),
             Rc::new(CompoundCommand {
-                kind: Subshell(vec!(cmd_args_unboxed("echo", &["subshell"]))),
+                kind: Subshell(vec!(cmd_args("echo", &["subshell"]))),
                 io: vec!(),
             })
         );
@@ -5285,7 +5285,7 @@ pub mod test {
         );
 
         let name = String::from("foo");
-        let body = vec!(cmd_args_unboxed("echo", &["body"]));
+        let body = vec!(cmd_args("echo", &["body"]));
         let body_brace = CompoundCommand {
             kind: Brace(body.clone()),
             io: vec!(),
@@ -5484,7 +5484,7 @@ pub mod test {
                         pattern_alternatives: vec!(word("hello"), word("goodbye")),
                         post_pattern_comments: vec!(),
                     },
-                    vec!(cmd_args_unboxed("echo", &["greeting"])),
+                    vec!(cmd_args("echo", &["greeting"])),
                 ),
                 (
                     builder::CasePatternFragments {
@@ -5492,7 +5492,7 @@ pub mod test {
                         pattern_alternatives: vec!(word("world")),
                         post_pattern_comments: vec!(),
                     },
-                    vec!(cmd_args_unboxed("echo", &["noun"])),
+                    vec!(cmd_args("echo", &["noun"])),
                 ),
             ),
             post_arms_comments: vec!(),
@@ -5538,7 +5538,7 @@ pub mod test {
                             Newline(Some(String::from("#post_pat_1b"))),
                         ),
                     },
-                    vec!(cmd_args_unboxed("echo", &["greeting"])),
+                    vec!(cmd_args("echo", &["greeting"])),
                 ),
                 (
                     builder::CasePatternFragments {
@@ -5554,7 +5554,7 @@ pub mod test {
                             Newline(Some(String::from("#post_pat_2b"))),
                         ),
                     },
-                    vec!(cmd_args_unboxed("echo", &["noun"])),
+                    vec!(cmd_args("echo", &["noun"])),
                 ),
             ),
             post_arms_comments: vec!(
@@ -6211,7 +6211,7 @@ pub mod test {
         ];
 
         let correct = FunctionDef(String::from("foo"), Rc::new(CompoundCommand {
-            kind: Brace(vec!(cmd_args_unboxed("echo", &["body"]))),
+            kind: Brace(vec!(cmd_args("echo", &["body"]))),
             io: vec!(),
         }));
 
@@ -6809,7 +6809,7 @@ pub mod test {
 
     #[test]
     fn test_backticked_valid_backslashes_removed_if_before_dollar_backslash_and_backtick() {
-        let correct = word_subst(ParameterSubstitution::Command(vec!(*cmd_from_simple(SimpleCommand {
+        let correct = word_subst(ParameterSubstitution::Command(vec!(cmd_from_simple(SimpleCommand {
             vars: vec!(), io: vec!(),
             cmd: Some((word("foo"), vec!(
                 TopLevelWord(Concat(vec!(
@@ -6825,11 +6825,11 @@ pub mod test {
     #[test]
     fn test_backticked_nested_backticks() {
         let correct = word_subst(ParameterSubstitution::Command(vec!(
-            *cmd_from_simple(SimpleCommand {
+            cmd_from_simple(SimpleCommand {
                 vars: vec!(), io: vec!(),
                 cmd: Some((word("foo"), vec!(
                     word_subst(
-                        ParameterSubstitution::Command(vec!(*cmd_from_simple(SimpleCommand {
+                        ParameterSubstitution::Command(vec!(cmd_from_simple(SimpleCommand {
                             vars: vec!(), io: vec!(),
                             cmd: Some((word("bar"), vec!(TopLevelWord(Concat(vec!(escaped("$"), escaped("$")))))))
                         })))
@@ -6843,13 +6843,13 @@ pub mod test {
     #[test]
     fn test_backticked_nested_backticks_x2() {
         let correct = word_subst(ParameterSubstitution::Command(vec!(
-            *cmd_from_simple(SimpleCommand {
+            cmd_from_simple(SimpleCommand {
                 vars: vec!(), io: vec!(),
                 cmd: Some((word("foo"), vec!(word_subst(
-                    ParameterSubstitution::Command(vec!(*cmd_from_simple(SimpleCommand {
+                    ParameterSubstitution::Command(vec!(cmd_from_simple(SimpleCommand {
                         vars: vec!(), io: vec!(),
                         cmd: Some((word("bar"), vec!(word_subst(
-                            ParameterSubstitution::Command(vec!(*cmd_from_simple(SimpleCommand {
+                            ParameterSubstitution::Command(vec!(cmd_from_simple(SimpleCommand {
                                 vars: vec!(), io: vec!(),
                                 cmd: Some((word("baz"), vec!(TopLevelWord(Concat(vec!(escaped("$"), escaped("$")))))))
                             })))
@@ -6864,16 +6864,16 @@ pub mod test {
     #[test]
     fn test_backticked_nested_backticks_x3() {
         let correct = word_subst(ParameterSubstitution::Command(vec!(
-            *cmd_from_simple(SimpleCommand {
+            cmd_from_simple(SimpleCommand {
                 vars: vec!(), io: vec!(),
                 cmd: Some((word("foo"), vec!(word_subst(
-                    ParameterSubstitution::Command(vec!(*cmd_from_simple(SimpleCommand {
+                    ParameterSubstitution::Command(vec!(cmd_from_simple(SimpleCommand {
                         vars: vec!(), io: vec!(),
                         cmd: Some((word("bar"), vec!(word_subst(
-                            ParameterSubstitution::Command(vec!(*cmd_from_simple(SimpleCommand {
+                            ParameterSubstitution::Command(vec!(cmd_from_simple(SimpleCommand {
                                 vars: vec!(), io: vec!(),
                                 cmd: Some((word("baz"), vec!(word_subst(
-                                    ParameterSubstitution::Command(vec!(*cmd_from_simple(SimpleCommand {
+                                    ParameterSubstitution::Command(vec!(cmd_from_simple(SimpleCommand {
                                         vars: vec!(), io: vec!(),
                                         cmd: Some((word("qux"), vec!(TopLevelWord(Concat(vec!(escaped("$"), escaped("$")))))))
                                     })))

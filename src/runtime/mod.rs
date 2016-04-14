@@ -220,7 +220,7 @@ impl<W: WordEval> Run for SimpleCommand<W> {
         let get_redirect = |handle: Option<Rc<FileDesc>>, fd_debug| -> Result<Stdio> {
             let unwrap_fdes = |fdes: Rc<FileDesc>| Rc::try_unwrap(fdes)
                 .or_else(|rc| rc.duplicate())
-                .map_err(|io| RuntimeError::Io(io, format!("file descriptor {}", fd_debug)));
+                .map_err(|io| RuntimeError::Io(io, Some(format!("file descriptor {}", fd_debug))));
 
             handle.map_or_else(|| Ok(Stdio::null()),
                                |fdes| unwrap_fdes(fdes).map(|fdes| fdes.into()))
@@ -252,7 +252,7 @@ impl<W: WordEval> Run for SimpleCommand<W> {
                 } else if is_enoexec(&e) {
                     (EXIT_CMD_NOT_EXECUTABLE, CommandError::NotExecutable(cmd_name).into())
                 } else {
-                    (EXIT_ERROR, RuntimeError::Io(e, cmd_name))
+                    (EXIT_ERROR, RuntimeError::Io(e, Some(cmd_name)))
                 };
                 env.set_last_status(exit);
                 Err(err)
@@ -396,18 +396,7 @@ impl<W: WordEval, C: Run> Run for CompoundCommandKind<W, C> {
 
             // Subshells should swallow (but report) errors since they are considered a separate shell.
             // Thus, errors that occur within here should NOT be propagated upward.
-            Subshell(ref body) => {
-                let env = &mut *env.sub_env();
-                match run(body, env) {
-                    Ok(exit) => exit,
-                    Err(err) => {
-                        env.report_error(&err);
-                        let exit = env.last_status();
-                        debug_assert_eq!(exit.success(), false);
-                        exit
-                    },
-                }
-            }
+            Subshell(ref body) => run_as_subshell(body, env),
 
             // bash and zsh appear to break loops if a "fatal" error occurs,
             // so we'll emulate the same behavior in case it is expected
@@ -461,6 +450,19 @@ impl<W: WordEval, C: Run> Run for CompoundCommandKind<W, C> {
         env.set_last_status(exit);
         Ok(exit)
     }
+}
+
+/// Runs a collection of commands as if they were in a subshell environment.
+fn run_as_subshell<I>(iter: I, env: &Environment) -> ExitStatus
+    where I: IntoIterator, I::Item: Run
+{
+    let env = &mut *env.sub_env();
+    run(iter, env).unwrap_or_else(|err| {
+        env.report_error(&err);
+        let exit = env.last_status();
+        debug_assert_eq!(exit.success(), false);
+        exit
+    })
 }
 
 /// A function for running any iterable collection of items which implement `Run`.
@@ -752,7 +754,7 @@ mod tests {
             RuntimeError::Redirection(RedirectionError::BadFdSrc("".to_owned())),
             RuntimeError::Redirection(RedirectionError::BadFdPerms(0, Permissions::Read)),
             RuntimeError::Unimplemented("unimplemented"),
-            RuntimeError::Io(IoError::last_os_error(), "".to_owned()),
+            RuntimeError::Io(IoError::last_os_error(), None),
         );
     }
 
@@ -803,7 +805,7 @@ mod tests {
     }
 
     /// For exhaustively testing against handling of different error types
-    fn test_error_handling<F>(swallow_errors: bool, test: F, ok_status: Option<ExitStatus>)
+    pub fn test_error_handling<F>(swallow_errors: bool, test: F, ok_status: Option<ExitStatus>)
         where F: Fn(SimpleCommand<MockWord>, &mut Environment) -> Result<ExitStatus>
     {
         test_error_handling_non_fatals(swallow_errors, &test, ok_status);
