@@ -16,10 +16,51 @@ use runtime::{ExitStatus, Fd, Result, Run};
 use runtime::io::{dup_stdio, FileDesc, Permissions};
 use void::Void;
 
+/// A struct for configuring a new `Env` instance.
+///
+/// It implements `Default` so it is possible to selectively override
+/// certain attributes while retaining the rest of the default values.
+///
+/// ```
+/// # use shell_lang::runtime::{Env, EnvConfig, Environment};
+/// let cfg = EnvConfig {
+///     name: Some("my_shell".to_owned()),
+///     .. Default::default()
+/// };
+///
+/// let env = Env::with_config(cfg).unwrap();
+/// assert_eq!(**env.name(), "my_shell");
+/// ```
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct EnvConfig {
+    /// Specify if the environment is running in interactive mode.
+    pub interactive: bool,
+    /// The name of the shell/script executing.
+    pub name: Option<String>,
+    /// The current arguments of the shell/script/function.
+    pub args: Option<Vec<String>>,
+    /// Environment variables to be inherited by all processes.
+    pub env: Option<Vec<(String, String)>>,
+    /// A mapping of file descriptors to their OS handles.
+    pub fds: Option<Vec<(Fd, Rc<FileDesc>, Permissions)>>,
+}
+
+impl Default for EnvConfig {
+    fn default() -> Self {
+        EnvConfig {
+            interactive: false,
+            name: None,
+            args: None,
+            env: None,
+            fds: None,
+        }
+    }
+}
+
 /// A shell environment containing any relevant variable, file descriptor, and other information.
 #[derive(Clone)]
 pub struct Env<'a> {
-    /// The current name of the shell/script/function executing.
+    /// The current name of the shell/script executing.
     shell_name: Rc<String>,
     /// The current arguments of the shell/script/function.
     args: Vec<Rc<String>>,
@@ -141,10 +182,10 @@ impl<'a> Env<'a> {
     /// Creates a new default environment.
     /// See the docs for `Env::with_config` for more information.
     pub fn new() -> IoResult<Self> {
-        Self::with_config(false, None, None, None, None)
+        Self::with_config(Default::default())
     }
 
-    /// Creates an environment using provided overrides, or data from the
+    /// Creates an environment using provided config overrides, or data from the
     /// current process if the respective override is not provided.
     ///
     /// Unless otherwise specified, the environment's name will become
@@ -165,26 +206,21 @@ impl<'a> Env<'a> {
     ///
     /// Note: Any data taken from the current process (e.g. environment
     /// variables) which is not valid Unicode will be ignored.
-    pub fn with_config(interactive: bool,
-                       name: Option<String>,
-                       args: Option<Vec<String>>,
-                       env: Option<Vec<(String, String)>>,
-                       fds: Option<Vec<(Fd, Rc<FileDesc>, Permissions)>>) -> IoResult<Self>
-    {
+    pub fn with_config(cfg: EnvConfig) -> IoResult<Self> {
         use std::env;
 
-        let name = name.unwrap_or_else(|| env::current_exe().ok().and_then(|path| {
+        let name = cfg.name.unwrap_or_else(|| env::current_exe().ok().and_then(|path| {
             path.file_name().and_then(|os_str| os_str.to_str().map(|s| s.to_owned()))
         }).unwrap_or_default());
 
-        let args = args.map_or(Vec::new(), |args| args.into_iter().map(Rc::new).collect());
+        let args = cfg.args.map_or(Vec::new(), |args| args.into_iter().map(Rc::new).collect());
 
-        let vars = env.map_or_else(
+        let vars = cfg.env.map_or_else(
             || env::vars().map(|(k, v)| (k, Some((Rc::new(v), true)))).collect(),
             |pairs| pairs.into_iter().map(|(k,v)| (k, Some((Rc::new(v), true)))).collect()
         );
 
-        let fds = match fds {
+        let fds = match cfg.fds {
             Some(fds) => fds.into_iter().map(|(fd, fdes, perm)| (fd, Some((fdes, perm)))).collect(),
             None => {
                 let (stdin, stdout, stderr) = try!(dup_stdio());
@@ -205,7 +241,7 @@ impl<'a> Env<'a> {
             fds: fds,
             last_status: EXIT_SUCCESS,
             parent_env: None,
-            interactive: interactive,
+            interactive: cfg.interactive,
         })
     }
 
@@ -481,7 +517,10 @@ mod tests {
     #[test]
     fn test_env_name() {
         let name = "shell";
-        let env = Env::with_config(false, Some(String::from(name)), None, None, None).unwrap();
+        let env = Env::with_config(EnvConfig {
+            name: Some(String::from(name)),
+            .. Default::default()
+        }).unwrap();
         assert_eq!(&**env.name(), name);
         assert_eq!(&**env.arg(0).unwrap(), name);
     }
@@ -489,7 +528,10 @@ mod tests {
     #[test]
     fn test_env_name_should_be_same_in_child_environment() {
         let name = "shell";
-        let env = Env::with_config(false, Some(String::from(name)), None, None, None).unwrap();
+        let env = Env::with_config(EnvConfig {
+            name: Some(String::from(name)),
+            .. Default::default()
+        }).unwrap();
         let child = env.sub_env();
         assert_eq!(&**child.name(), name);
         assert_eq!(&**child.arg(0).unwrap(), name);
@@ -637,7 +679,11 @@ mod tests {
             String::from("parent arg3"),
         );
 
-        let mut env = Env::with_config(false, Some(shell_name_owned), Some(parent_args.clone()), None, None).unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            name: Some(shell_name_owned),
+            args: Some(parent_args.clone()),
+            .. Default::default()
+        }).unwrap();
 
         let fn_name_owned = String::from("fn name");
         let fn_name = Rc::new(fn_name_owned.clone());
@@ -819,7 +865,11 @@ mod tests {
         };
 
         let owned_vars = env_vars.iter().map(|&(k, v)| (String::from(k), String::from(v))).collect();
-        let env = Env::with_config(false, None, None, Some(owned_vars), None).unwrap();
+        let env = Env::with_config(EnvConfig {
+            env: Some(owned_vars),
+            .. Default::default()
+        }).unwrap();
+
         let mut vars: Vec<_> = (&*env.env()).into();
         vars.sort();
         assert_eq!(vars, env_vars);

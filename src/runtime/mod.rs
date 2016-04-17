@@ -1026,7 +1026,10 @@ mod tests {
     #[test]
     fn test_run_compound_command_local_redirections_applied_correctly_with_no_prev_redirections() {
         // Make sure the environment has NO open file descriptors
-        let mut env = Env::with_config(false, None, None, None, Some(vec!())).unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            fds: Some(vec!()),
+            .. Default::default()
+        }).unwrap();
         let tempdir = mktmp!();
 
         let mut file_path = PathBuf::new();
@@ -1080,10 +1083,13 @@ mod tests {
         let file_out = Permissions::Write.open(&file_path_out).unwrap();
         let file_err = Permissions::Write.open(&file_path_err).unwrap();
 
-        let mut env = Env::with_config(false, None, None, None, Some(vec!(
-            (STDOUT_FILENO, Rc::new(FileDesc::from(file_out)), Permissions::Write),
-            (STDERR_FILENO, Rc::new(FileDesc::from(file_err)), Permissions::Write),
-        ))).unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            fds: Some(vec!(
+                (STDOUT_FILENO, Rc::new(FileDesc::from(file_out)), Permissions::Write),
+                (STDERR_FILENO, Rc::new(FileDesc::from(file_err)), Permissions::Write),
+            )),
+            .. Default::default()
+        }).unwrap();
 
         let (cmd_body, cmd_redirects) = (
             Brace(vec!(
@@ -1148,9 +1154,12 @@ mod tests {
 
         let file_default = Permissions::Write.open(&file_path_default).unwrap();
 
-        let mut env = Env::with_config(false, None, None, None, Some(vec!(
-            (STDOUT_FILENO, Rc::new(FileDesc::from(file_default)), Permissions::Write),
-        ))).unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            fds: Some(vec!(
+                (STDOUT_FILENO, Rc::new(FileDesc::from(file_default)), Permissions::Write),
+            )),
+            .. Default::default()
+        }).unwrap();
 
         let compound = CompoundCommand {
             kind: Brace(vec!(cmd!("echo", "out"))),
@@ -1296,9 +1305,12 @@ mod tests {
 
         let file_default = Permissions::Write.open(&file_path_default).unwrap();
 
-        let mut env = Env::with_config(false, None, None, None, Some(vec!(
-            (FD_EXEC_CLOSE, Rc::new(FileDesc::from(file_default)), Permissions::Write),
-        ))).unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            fds: Some(vec!(
+                (FD_EXEC_CLOSE, Rc::new(FileDesc::from(file_default)), Permissions::Write),
+            )),
+            .. Default::default()
+        }).unwrap();
 
         // Mock a function which will change some file descriptors via `exec` utility
         {
@@ -1358,9 +1370,12 @@ mod tests {
 
         let file = Permissions::Write.open(&file_path).unwrap();
 
-        let mut env = Env::with_config(false, None, None, None, Some(vec!(
-            (STDOUT_FILENO, Rc::new(file.into()), Permissions::Write)
-        ))).unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            fds: Some(vec!(
+                (STDOUT_FILENO, Rc::new(file.into()), Permissions::Write)
+            )),
+            .. Default::default()
+        }).unwrap();
 
         let cmd: CompoundCommandKind = Brace(vec!(
             cmd!("echo", "foo"),

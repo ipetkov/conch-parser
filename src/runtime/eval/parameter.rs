@@ -567,7 +567,7 @@ impl Arithmetic {
 #[cfg_attr(feature = "clippy", allow(similar_names))]
 mod tests {
     use glob;
-    use runtime::{Env, Environment, ExitStatus, EXIT_SUCCESS, EXIT_ERROR, ExpansionError,
+    use runtime::{Env, EnvConfig, Environment, ExitStatus, EXIT_SUCCESS, EXIT_ERROR, ExpansionError,
                   Result, Run, RuntimeError};
     use runtime::eval::{Fields, TildeExpansion, WordEval, WordEvalConfig};
     use std::rc::Rc;
@@ -619,7 +619,11 @@ mod tests {
         );
 
         let env_args = args.iter().map(|rc| (**rc).clone()).collect();
-        let mut env = Env::with_config(false, None, Some(env_args), None, None).unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            args: Some(env_args),
+            .. Default::default()
+        }).unwrap();
+
         env.set_var("var1".to_owned(), var1.clone());
         env.set_var("var2".to_owned(), var2.clone());
         env.set_var("var3".to_owned(), var3.clone());
@@ -657,7 +661,10 @@ mod tests {
 
     #[test]
     fn test_eval_parameter_with_unset_vars() {
-        let env = Env::with_config(false, None, Some(vec!()), None, None).unwrap();
+        let env = Env::with_config(EnvConfig {
+            args: Some(vec!()),
+            .. Default::default()
+        }).unwrap();
 
         assert_eq!(Parameter::At.eval(false, &env), Some(Fields::Zero));
         assert_eq!(Parameter::Star.eval(false, &env), Some(Fields::Zero));
@@ -687,7 +694,11 @@ mod tests {
         );
 
         let env_args = args.iter().map(|rc| (**rc).clone()).collect();
-        let mut env = Env::with_config(false, None, Some(env_args), None, None).unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            args: Some(env_args),
+            .. Default::default()
+        }).unwrap();
+
         env.set_var("var1".to_owned(), val1.clone());
         env.set_var("var2".to_owned(), val2.clone());
 
@@ -730,7 +741,11 @@ mod tests {
         );
 
         let env_args = args.iter().map(|rc| (**rc).clone()).collect();
-        let mut env = Env::with_config(false, None, Some(env_args), None, None).unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            args: Some(env_args),
+            .. Default::default()
+        }).unwrap();
+
         env.set_var("IFS".to_owned(), "0 ".to_owned().into());
 
         env.set_var("var1".to_owned(), val1.clone());
@@ -818,7 +833,11 @@ mod tests {
         );
 
         let env_args = args.iter().map(|rc| (**rc).clone()).collect();
-        let mut env = Env::with_config(false, None, Some(env_args), None, None).unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            args: Some(env_args),
+            .. Default::default()
+        }).unwrap();
+
         env.set_var("IFS".to_owned(), "".to_owned().into());
         env.set_var("var1".to_owned(), val1.clone());
         env.set_var("var2".to_owned(), val2.clone());
@@ -1024,11 +1043,16 @@ mod tests {
         let name  = "shell name".to_owned();
         let var   = "var".to_owned();
         let value = "foo bar".to_owned();
-        let mut env = Env::with_config(false, Some(name.clone()), Some(vec!(
-            "one".to_owned(),
-            "two".to_owned(),
-            "three".to_owned(),
-        )), None, None).unwrap();
+
+        let mut env = Env::with_config(EnvConfig {
+            name: Some(name.clone()),
+            args: Some(vec!(
+                "one".to_owned(),
+                "two".to_owned(),
+                "three".to_owned(),
+            )),
+            .. Default::default()
+        }).unwrap();
 
         env.set_var(var.clone(), Rc::new(value.clone()));
 
@@ -1170,7 +1194,10 @@ mod tests {
             );
 
             let args_value = args.iter().cloned().map(Rc::new).collect::<Vec<_>>();
-            let mut env = Env::with_config(false, None, Some(args), None, None).unwrap();
+            let mut env = Env::with_config(EnvConfig {
+                args: Some(args),
+                .. ::std::default::Default::default()
+            }).unwrap();
 
             let subst: ParamSubst = Default(true, Parameter::At, Some(default));
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
@@ -1193,11 +1220,14 @@ mod tests {
 
         // Args all null
         {
-            let mut env = Env::with_config(false, None, Some(vec!(
-                "".to_owned(),
-                "".to_owned(),
-                "".to_owned(),
-            )), None, None).unwrap();
+            let mut env = Env::with_config(EnvConfig {
+                args: Some(vec!(
+                    "".to_owned(),
+                    "".to_owned(),
+                    "".to_owned(),
+                )),
+                .. ::std::default::Default::default()
+            }).unwrap();
 
             let subst: ParamSubst = Default(true, Parameter::At, Some(default));
             assert_eq!(subst.eval(&mut env, cfg), Ok(default_value.clone()));
@@ -1466,7 +1496,10 @@ mod tests {
             );
 
             let args_value = args.iter().cloned().map(Rc::new).collect::<Vec<_>>();
-            let mut env = Env::with_config(false, None, Some(args), None, None).unwrap();
+            let mut env = Env::with_config(EnvConfig {
+                args: Some(args),
+                .. Default::default()
+            }).unwrap();
 
             let subst: ParamSubst = Error(true, Parameter::At, Some(err_msg));
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::At(args_value.clone())));
@@ -1489,11 +1522,14 @@ mod tests {
 
         // Args all null
         {
-            let mut env = Env::with_config(false, None, Some(vec!(
-                "".to_owned(),
-                "".to_owned(),
-                "".to_owned(),
-            )), None, None).unwrap();
+            let mut env = Env::with_config(EnvConfig {
+                args: Some(vec!(
+                    "".to_owned(),
+                    "".to_owned(),
+                    "".to_owned(),
+                )),
+                .. Default::default()
+            }).unwrap();
 
             env.set_last_status(EXIT_SUCCESS);
             let subst: ParamSubst = Error(true, Parameter::At, Some(err_msg));
@@ -1644,7 +1680,10 @@ mod tests {
                 "".to_owned(),
             );
 
-            let mut env = Env::with_config(false, None, Some(args), None, None).unwrap();
+            let mut env = Env::with_config(EnvConfig {
+                args: Some(args),
+                .. Default::default()
+            }).unwrap();
 
             let subst: ParamSubst = Alternative(true, Parameter::At, Some(alternative));
             assert_eq!(subst.eval(&mut env, cfg), Ok(alt_value.clone()));
@@ -1667,11 +1706,14 @@ mod tests {
 
         // Args all null
         {
-            let mut env = Env::with_config(false, None, Some(vec!(
-                "".to_owned(),
-                "".to_owned(),
-                "".to_owned(),
-            )), None, None).unwrap();
+            let mut env = Env::with_config(EnvConfig {
+                args: Some(vec!(
+                    "".to_owned(),
+                    "".to_owned(),
+                    "".to_owned(),
+                )),
+                .. Default::default()
+            }).unwrap();
 
             let subst: ParamSubst = Alternative(true, Parameter::At, Some(alternative));
             assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
@@ -1741,7 +1783,10 @@ mod tests {
 
         let var_null = var2.clone();
 
-        let mut env = Env::with_config(false, None, Some(args.clone()), None, None).unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            args: Some(args.clone()),
+            .. ::std::default::Default::default()
+        }).unwrap();
         env.set_var("var1".to_owned(), val1.clone());
         env.set_var("var2".to_owned(), val2.clone());
 
@@ -1880,7 +1925,10 @@ mod tests {
         let var_null = var3.clone();
         let var_missing = Parameter::Var("missing".to_owned());
 
-        let mut env = Env::with_config(false, None, Some(args.clone()), None, None).unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            args: Some(args.clone()),
+            .. ::std::default::Default::default()
+        }).unwrap();
         env.set_var("IFS".to_owned(), Rc::new("0 ".to_owned()));
 
         env.set_var("var1".to_owned(), val1.clone());
@@ -2088,7 +2136,10 @@ mod tests {
             split_fields_further: false,
         };
 
-        let mut env = Env::with_config(false, None, Some(args), None, None).unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            args: Some(args),
+            .. Default::default()
+        }).unwrap();
 
         let subst: ParamSubst = RemoveSmallestSuffix(foobar, None);
         assert_eq!(subst.eval(&mut env, cfg), Ok("foobar".to_owned().into()));
@@ -2135,7 +2186,10 @@ mod tests {
             split_fields_further: false,
         };
 
-        let mut env = Env::with_config(false, None, Some(args), None, None).unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            args: Some(args),
+            .. Default::default()
+        }).unwrap();
 
         let subst: ParamSubst = RemoveLargestSuffix(foobar, None);
         assert_eq!(subst.eval(&mut env, cfg), Ok("foobar".to_owned().into()));
@@ -2183,7 +2237,10 @@ mod tests {
             split_fields_further: false,
         };
 
-        let mut env = Env::with_config(false, None, Some(args), None, None).unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            args: Some(args),
+            .. Default::default()
+        }).unwrap();
 
         let subst: ParamSubst = RemoveSmallestPrefix(foobar, None);
         assert_eq!(subst.eval(&mut env, cfg), Ok("foobar".to_owned().into()));
@@ -2231,7 +2288,10 @@ mod tests {
             split_fields_further: false,
         };
 
-        let mut env = Env::with_config(false, None, Some(args), None, None).unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            args: Some(args),
+            .. Default::default()
+        }).unwrap();
 
         let subst: ParamSubst = RemoveLargestPrefix(foobar, None);
         assert_eq!(subst.eval(&mut env, cfg), Ok("foobar".to_owned().into()));

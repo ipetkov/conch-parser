@@ -160,7 +160,7 @@ fn rc_to_owned<T: Clone>(rc: Rc<T>) -> T {
 mod tests {
     extern crate tempdir;
 
-    use runtime::{Env, Environment, Fd, STDIN_FILENO, STDOUT_FILENO};
+    use runtime::{Env, EnvConfig, Environment, Fd, STDIN_FILENO, STDOUT_FILENO};
     use runtime::io::{FileDesc, Permissions};
     use runtime::tests::{MockWord, word};
     use self::tempdir::TempDir;
@@ -527,7 +527,11 @@ mod tests {
         );
 
         for interactive in vec!(true, false) {
-            let mut env = Env::with_config(interactive, None, None, None, None).unwrap();
+            let mut env = Env::with_config(EnvConfig {
+                interactive: interactive,
+                .. ::std::default::Default::default()
+            }).unwrap();
+
             for redirect in cases.clone() {
                 redirect.eval(&mut env).unwrap();
             }

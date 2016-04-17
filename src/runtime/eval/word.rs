@@ -164,7 +164,7 @@ impl WordEval for TopLevelWord {
 
 #[cfg(test)]
 mod tests {
-    use runtime::{Env, Environment, Result, RuntimeError};
+    use runtime::{Env, EnvConfig, Environment, Result, RuntimeError};
     use runtime::ExpansionError::DivideByZero;
     use runtime::eval::{Fields, TildeExpansion, WordEval, WordEvalConfig};
     use std::rc::Rc;
@@ -448,11 +448,14 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::with_config(false, None, Some(vec!(
-            "one".to_owned(),
-            "two".to_owned(),
-            "three".to_owned(),
-        )), None, None).unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            args: Some(vec!(
+                "one".to_owned(),
+                "two".to_owned(),
+                "three".to_owned(),
+            )),
+            .. Default::default()
+        }).unwrap();
 
         let word: Word = DoubleQuoted(vec!(
             Literal("foo".to_owned()),
@@ -495,11 +498,14 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::with_config(false, None, Some(vec!(
-            "one".to_owned(),
-            "two".to_owned(),
-            "three".to_owned(),
-        )), None, None).unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            args: Some(vec!(
+                "one".to_owned(),
+                "two".to_owned(),
+                "three".to_owned(),
+            )),
+            .. Default::default()
+        }).unwrap();
 
         let word: Word = DoubleQuoted(vec!(
             Literal("foo".to_owned()),
@@ -706,11 +712,14 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::with_config(false, None, Some(vec!(
-            "one".to_owned(),
-            "two".to_owned(),
-            "three four".to_owned(),
-        )), None, None).unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            args: Some(vec!(
+                "one".to_owned(),
+                "two".to_owned(),
+                "three four".to_owned(),
+            )),
+            .. Default::default()
+        }).unwrap();
 
         let complex: ComplexWord = Concat(vec!(Simple(Box::new(Param(Parameter::At)))));
         assert_eq!(complex.eval_with_config(&mut env, cfg), Ok(Fields::Split(vec!(
@@ -728,11 +737,14 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::with_config(false, None, Some(vec!(
-            "one".to_owned(),
-            "two".to_owned(),
-            "three four".to_owned(),
-        )), None, None).unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            args: Some(vec!(
+                "one".to_owned(),
+                "two".to_owned(),
+                "three four".to_owned(),
+            )),
+            .. Default::default()
+        }).unwrap();
 
         let complex: ComplexWord = Concat(vec!(
             lit("foo"),
