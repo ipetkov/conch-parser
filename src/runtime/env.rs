@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::convert::From;
+use std::fmt;
 use std::error;
 use std::io::{Result as IoResult, Write};
 use std::iter::{IntoIterator, Iterator};
@@ -16,7 +17,7 @@ use runtime::io::{dup_stdio, FileDesc, Permissions};
 use void::Void;
 
 /// A shell environment containing any relevant variable, file descriptor, and other information.
-#[allow(missing_debug_implementations)]
+#[derive(Clone)]
 pub struct Env<'a> {
     /// The current name of the shell/script/function executing.
     shell_name: Rc<String>,
@@ -45,6 +46,95 @@ pub struct Env<'a> {
     parent_env: Option<&'a Env<'a>>,
     /// If the shell is running in interactive mode
     interactive: bool,
+}
+
+impl<'a> fmt::Debug for Env<'a> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        use std::collections::HashSet;
+
+        let get_fns = || {
+            let mut included = HashSet::new();
+            let mut names = Vec::new();
+            let _: Option<Void> = self.walk_parent_chain(|cur| {
+                for (name, is_set) in &cur.functions {
+                    let name = &**name;
+                    if included.contains(name) {
+                        continue;
+                    }
+
+                    included.insert(name);
+
+                    // Ignore unset functions
+                    if is_set.is_some() {
+                        names.push(name);
+                    }
+                }
+
+                Ok(None) // walk the entire chain
+            });
+
+            names.join(", ")
+        };
+
+        // Returns (env_vars, vars)
+        let get_vars = || {
+            let mut included = HashSet::new();
+            let mut env_vars = Vec::new();
+            let mut vars = Vec::new();
+
+            let _: Option<Void> = self.walk_parent_chain(|cur| {
+                for (name, value) in &cur.vars {
+                    let name = &**name;
+                    if included.contains(name) {
+                        continue;
+                    }
+
+                    included.insert(name);
+
+                    match *value {
+                        Some((ref val, true)) => env_vars.push((name, &***val)),
+                        Some((ref val, false)) => vars.push((name, &***val)),
+                        None => {}, // Ignore unset variables
+                    }
+                }
+
+                Ok(None) // walk the entire chain
+            });
+
+            let join = |vec: Vec<(&str, &str)>| {
+                vec.into_iter()
+                    .map(|(key, val)| format!("{}={}", key, val))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+
+            (join(env_vars), join(vars))
+        };
+
+        let args = self.args.iter()
+            .map(|rc| &***rc)
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let (env_vars, vars) = get_vars();
+
+        let interactive = if self.interactive {
+            "true"
+        } else {
+            "false"
+        };
+
+        fmt.debug_struct("Env")
+            .field("shell_name", &self.shell_name)
+            .field("args", &args)
+            .field("functions", &get_fns())
+            .field("env_vars", &env_vars)
+            .field("vars", &vars)
+            .field("fds", &format!("{:?}", self.fds))
+            .field("last_status", &format!("{:?}", self.last_status))
+            .field("interactive", &interactive)
+            .finish()
+    }
 }
 
 impl<'a> Env<'a> {
@@ -124,8 +214,8 @@ impl<'a> Env<'a> {
     /// If the closure evaluates a `Ok(Some(x))` value, then `Some(x)` is returned.
     /// If the closure evaluates a `Err(_)` value, then `None` is returned.
     /// If the closure evaluates a `Ok(None)` value, then the traversal continues.
-    fn walk_parent_chain<'b, T, F>(&'b self, mut cond: F) -> Option<T>
-        where F: FnMut(&'b Self) -> result::Result<Option<T>, ()>
+    fn walk_parent_chain<T, F>(&'a self, mut cond: F) -> Option<T>
+        where F: FnMut(&'a Self) -> result::Result<Option<T>, ()>
     {
         let mut cur = self;
         loop {
