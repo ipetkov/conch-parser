@@ -91,89 +91,88 @@ pub struct Env<'a> {
 
 impl<'a> fmt::Debug for Env<'a> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        use std::collections::HashSet;
+        use std::collections::{BTreeMap, HashSet};
+        #[cfg(windows)] use std::os::windows::io::RawHandle;
 
-        let get_fns = || {
-            let mut included = HashSet::new();
-            let mut names = Vec::new();
-            let _: Option<Void> = self.walk_parent_chain(|cur| {
-                for (name, is_set) in &cur.functions {
-                    let name = &**name;
-                    if included.contains(name) {
-                        continue;
-                    }
+        #[derive(Debug)]
+        struct FileDescDebug {
+            #[cfg(unix)]
+            os_handle: ::libc::c_int,
+            #[cfg(windows)]
+            os_handle: RawHandle,
+            permissions: Permissions,
+        }
 
-                    included.insert(name);
+        #[cfg(unix)]
+        fn get_os_handle(fdes: &FileDesc) -> ::libc::c_int {
+            use std::os::unix::io::AsRawFd;
+            fdes.as_raw_fd()
+        }
 
-                    // Ignore unset functions
-                    if is_set.is_some() {
-                        names.push(name);
-                    }
-                }
+        #[cfg(windows)]
+        fn get_os_handle(fdes: &FileDesc) -> RawHandle {
+            use std::os::windows::io::AsRawHandle;
+            fdes.as_raw_handle()
+        }
 
-                Ok(None) // walk the entire chain
-            });
+        fn sort_set<T>(set: HashSet<T>) -> Vec<T>
+            where T: Ord + ::std::hash::Hash
+        {
+            use std::iter::FromIterator;
 
-            names.join(", ")
-        };
+            let mut vec = Vec::from_iter(set);
+            vec.sort();
+            vec
+        }
 
-        // Returns (env_vars, vars)
-        let get_vars = || {
-            let mut included = HashSet::new();
-            let mut env_vars = Vec::new();
-            let mut vars = Vec::new();
-
-            let _: Option<Void> = self.walk_parent_chain(|cur| {
-                for (name, value) in &cur.vars {
-                    let name = &**name;
-                    if included.contains(name) {
-                        continue;
-                    }
-
-                    included.insert(name);
-
-                    match *value {
-                        Some((ref val, true)) => env_vars.push((name, &***val)),
-                        Some((ref val, false)) => vars.push((name, &***val)),
-                        None => {}, // Ignore unset variables
-                    }
-                }
-
-                Ok(None) // walk the entire chain
-            });
-
-            let join = |vec: Vec<(&str, &str)>| {
-                vec.into_iter()
-                    .map(|(key, val)| format!("{}={}", key, val))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+        let functions_len = self.functions.len();
+        let mut functions = HashSet::with_capacity(functions_len);
+        let mut unset_functions = HashSet::with_capacity(functions_len);
+        for (name, is_set) in &self.functions {
+            match *is_set {
+                Some(_) => functions.insert(name),
+                None => unset_functions.insert(name),
             };
+        }
 
-            (join(env_vars), join(vars))
-        };
+        let mut unset_vars = HashSet::with_capacity(self.vars.len());
+        let mut vars = BTreeMap::new();
+        let mut env_vars = BTreeMap::new();
+        for (name, is_set) in &self.vars {
+            match *is_set {
+                Some((ref val, true)) => { env_vars.insert(name, val); },
+                Some((ref val, false)) => { vars.insert(name, val); },
+                None => { unset_vars.insert(name); },
+            }
+        }
 
-        let args = self.args.iter()
-            .map(|rc| &***rc)
-            .collect::<Vec<_>>()
-            .join(" ");
-
-        let (env_vars, vars) = get_vars();
-
-        let interactive = if self.interactive {
-            "true"
-        } else {
-            "false"
-        };
+        let mut closed_fds = HashSet::with_capacity(self.fds.len());
+        let mut fds = BTreeMap::new();
+        for (fd, is_set) in &self.fds {
+            match *is_set {
+                Some((ref fdesc, perms)) => {
+                    fds.insert(fd, FileDescDebug {
+                        os_handle: get_os_handle(fdesc),
+                        permissions: perms,
+                    });
+                },
+                None => { closed_fds.insert(fd); },
+            }
+        }
 
         fmt.debug_struct("Env")
+            .field("interactive", &self.interactive)
             .field("shell_name", &self.shell_name)
-            .field("args", &args)
-            .field("functions", &get_fns())
+            .field("args", &self.args)
+            .field("functions", &sort_set(functions))
+            .field("unset_functions", &sort_set(unset_functions))
             .field("env_vars", &env_vars)
             .field("vars", &vars)
-            .field("fds", &format!("{:?}", self.fds))
-            .field("last_status", &format!("{:?}", self.last_status))
-            .field("interactive", &interactive)
+            .field("unset_vars", &sort_set(unset_vars))
+            .field("fds", &fds)
+            .field("closed_fds", &sort_set(closed_fds))
+            .field("last_status", &self.last_status)
+            .field("parent_env", &self.parent_env)
             .finish()
     }
 }
