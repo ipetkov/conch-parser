@@ -282,24 +282,26 @@ mod tests {
         file_path.push(tempdir.path());
         file_path.push("test_open_readwrite");
 
-        let mut file1 = Permissions::ReadWrite.open(&file_path).unwrap();
-        let mut file2 = Permissions::ReadWrite.open(&file_path).unwrap();
+        {
+            let mut file1 = Permissions::ReadWrite.open(&file_path).unwrap();
+            let mut file2 = Permissions::ReadWrite.open(&file_path).unwrap();
 
-        file1.write_all(msg1.as_bytes()).unwrap();
-        file1.sync_data().unwrap();
-        thread::sleep(Duration::from_millis(100));
+            file1.write_all(msg1.as_bytes()).unwrap();
+            file1.sync_data().unwrap();
+            thread::sleep(Duration::from_millis(100));
 
-        let mut read = String::new();
-        file2.read_to_string(&mut read).unwrap();
-        assert_eq!(msg1, read);
+            let mut read = String::new();
+            file2.read_to_string(&mut read).unwrap();
+            assert_eq!(msg1, read);
 
-        file2.write_all(msg2.as_bytes()).unwrap();
-        file2.sync_data().unwrap();
-        thread::sleep(Duration::from_millis(100));
+            file2.write_all(msg2.as_bytes()).unwrap();
+            file2.sync_data().unwrap();
+            thread::sleep(Duration::from_millis(100));
 
-        let mut read = String::new();
-        file1.read_to_string(&mut read).unwrap();
-        assert_eq!(msg2, read);
+            let mut read = String::new();
+            file1.read_to_string(&mut read).unwrap();
+            assert_eq!(msg2, read);
+        }
 
         tempdir.close().unwrap();
     }

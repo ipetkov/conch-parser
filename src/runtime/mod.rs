@@ -1,6 +1,7 @@
 //! This module defines a runtime environment capable of executing parsed shell commands.
 
 use glob;
+#[cfg(unix)]
 use libc;
 
 use std::collections::HashMap;

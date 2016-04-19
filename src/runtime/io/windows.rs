@@ -211,10 +211,7 @@ pub fn pipe() -> Result<(RawIo, RawIo)> {
     unsafe {
         let mut reader = winapi::INVALID_HANDLE_VALUE;
         let mut writer = winapi::INVALID_HANDLE_VALUE;
-        try!(cvt(kernel32::CreatePipe(&mut reader as winapi::PHANDLE,
-                                      &mut writer as winapi::PHANDLE,
-                                      ptr::null_mut(),
-                                      0)));
+        try!(cvt(kernel32::CreatePipe(&mut reader, &mut writer, ptr::null_mut(), 0)));
 
         Ok((RawIo::new(reader), RawIo::new(writer)))
     }
