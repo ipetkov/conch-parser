@@ -18,7 +18,7 @@ impl Parameter {
     /// optionally splitting fields.
     ///
     /// A `None` value indicates that the parameter is unset.
-    pub fn eval(&self, split_fields_further: bool, env: &Environment) -> Option<Fields> {
+    pub fn eval<E: Environment>(&self, split_fields_further: bool, env: &E) -> Option<Fields> {
         let get_args = || {
             let args = env.args();
             if args.is_empty() {
@@ -57,13 +57,17 @@ impl Parameter {
     }
 }
 
-impl<W: WordEval, C: Run> ParameterSubstitution<W, C> {
+impl<W, C> ParameterSubstitution<W, C> {
     /// Evaluates a parameter subsitution in the context of some environment,
     /// optionally splitting fields.
     ///
     /// Note: even if the caller specifies no splitting should be done,
     /// multiple fields can occur if `$@` or `$*` is evaluated.
-    pub fn eval(&self, env: &mut Environment, cfg: WordEvalConfig) -> Result<Fields> {
+    pub fn eval<E>(&self, env: &mut E, cfg: WordEvalConfig) -> Result<Fields>
+        where E: Environment,
+              W: WordEval<E>,
+              C: Run<E>,
+    {
         self.eval_inner(env, cfg.tilde_expansion).map(|f| {
             if cfg.split_fields_further {
                 split_fields(f, env)
@@ -74,16 +78,21 @@ impl<W: WordEval, C: Run> ParameterSubstitution<W, C> {
     }
 
     /// Evaluates a paarameter substitution without splitting fields further.
-    fn eval_inner(&self, env: &mut Environment, tilde_expansion: TildeExpansion) -> Result<Fields> {
+    fn eval_inner<E>(&self, env: &mut E, tilde_expansion: TildeExpansion) -> Result<Fields>
+        where E: Environment,
+              W: WordEval<E>,
+              C: Run<E>,
+    {
         use syntax::ast::ParameterSubstitution::*;
 
         const EMPTY_FIELD: Fields = Fields::Zero;
 
-        fn remove_pattern<W, F>(param: &Parameter,
-                             pat: &Option<W>,
-                             env: &mut Environment,
-                             remove: F) -> Result<Option<Fields>>
-            where W: WordEval,
+        fn remove_pattern<E, W, F>(param: &Parameter,
+                                   pat: &Option<W>,
+                                   env: &mut E,
+                                   remove: F) -> Result<Option<Fields>>
+            where E: Environment,
+                  W: WordEval<E>,
                   F: Fn(Rc<String>, &glob::Pattern) -> Rc<String>
         {
             let map = |v: Vec<Rc<String>>, p| v.into_iter().map(|f| remove(f, &p)).collect();
@@ -293,8 +302,10 @@ impl<W: WordEval, C: Run> ParameterSubstitution<W, C> {
 
 /// Runs a collection of `Run`able commands as a command substitution.
 /// The output of the commands will be captured, and trailing newlines trimmed.
-fn run_cmd_subst<I>(body: I, env: &Environment) -> io::Result<String>
-    where I: IntoIterator, I::Item: Run
+fn run_cmd_subst<I, E>(body: I, env: &E) -> io::Result<String>
+    where I: IntoIterator,
+          I::Item: Run<E>,
+          E: Environment,
 {
     use runtime::{run_as_subshell, STDOUT_FILENO};
     use runtime::io::{Permissions, Pipe};
@@ -312,7 +323,7 @@ fn run_cmd_subst<I>(body: I, env: &Environment) -> io::Result<String>
         let mut env = env.sub_env();
         let cmd_stdout_fd = Rc::new(cmd_stdout_fd);
         env.set_file_desc(STDOUT_FILENO, cmd_stdout_fd.clone(), Permissions::Write);
-        let _ = run_as_subshell(body, &*env);
+        let _ = run_as_subshell(body, &env);
 
         // Make sure that we drop env, and thus the writer end of the pipe here,
         // otherwise we could deadlock while waiting on a read on the pipe.
@@ -345,7 +356,7 @@ fn run_cmd_subst<I>(body: I, env: &Environment) -> io::Result<String>
 /// Splits a vector of fields further based on the contents of the `IFS`
 /// variable (i.e. as long as it is non-empty). Any empty fields, original
 /// or otherwise created will be discarded.
-fn split_fields(fields: Fields, env: &Environment) -> Fields {
+fn split_fields<E: Environment>(fields: Fields, env: &E) -> Fields {
     match fields {
         Fields::Zero      => Fields::Zero,
         Fields::Single(f) => split_fields_internal(vec!(f), env).into(),
@@ -356,7 +367,7 @@ fn split_fields(fields: Fields, env: &Environment) -> Fields {
 }
 
 /// Actual implementation of `split_fields`.
-fn split_fields_internal(words: Vec<Rc<String>>, env: &Environment) -> Vec<Rc<String>> {
+fn split_fields_internal<E: Environment>(words: Vec<Rc<String>>, env: &E) -> Vec<Rc<String>> {
     // If IFS is set but null, there is nothing left to split
     let ifs = env.var("IFS").map_or(IFS_DEFAULT, |s| &s);
     if ifs.is_empty() {
@@ -442,10 +453,10 @@ impl Arithmetic {
     /// A mutable reference to the environment is needed since an arithmetic
     /// expression could mutate environment variables.
     #[cfg_attr(feature = "clippy", allow(if_not_else))]
-    pub fn eval(&self, env: &mut Environment) -> result::Result<isize, ExpansionError> {
+    pub fn eval<E: Environment>(&self, env: &mut E) -> result::Result<isize, ExpansionError> {
         use syntax::ast::Arithmetic::*;
 
-        let get_var = |env: &Environment, var| env.var(var).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let get_var = |env: &E, var| env.var(var).and_then(|s| s.parse().ok()).unwrap_or(0);
 
         let ret = match *self {
             Literal(lit) => lit,
@@ -576,8 +587,8 @@ mod tests {
 
     #[derive(Copy, Clone, Debug)]
     struct MockCmd;
-    impl Run for MockCmd {
-        fn run(&self, _: &mut Environment) -> Result<ExitStatus> {
+    impl<E: Environment> Run<E> for MockCmd {
+        fn run(&self, _: &mut E) -> Result<ExitStatus> {
             Ok(EXIT_SUCCESS)
         }
     }
@@ -585,8 +596,8 @@ mod tests {
     #[derive(Copy, Clone, Debug)]
     struct MockSubstWord(&'static str);
 
-    impl WordEval for MockSubstWord {
-        fn eval_with_config(&self, _: &mut Environment, cfg: WordEvalConfig) -> Result<Fields>
+    impl<E: Environment> WordEval<E> for MockSubstWord {
+        fn eval_with_config(&self, _: &mut E, cfg: WordEvalConfig) -> Result<Fields>
         {
             // Patterns and other words part of substitutions should never be split
             // while the substitution is evaluating them. Any splitting should be done
@@ -595,7 +606,7 @@ mod tests {
             Ok(self.0.to_owned().into())
         }
 
-        fn eval_as_pattern(&self, _: &mut Environment) -> Result<glob::Pattern> {
+        fn eval_as_pattern(&self, _: &mut E) -> Result<glob::Pattern> {
             Ok(glob::Pattern::new(self.0).unwrap())
         }
     }
@@ -1333,28 +1344,28 @@ mod tests {
         {
             let mut env = env.sub_env();
             let subst: ParamSubst = Assign(true, Parameter::Var(var_unset.clone()), Some(assig));
-            assert_eq!(subst.eval(&mut *env, cfg), Ok(assig_value.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(assig_value.clone()));
             assert_eq!(env.var(&var_unset), Some(&assig_var_value));
         }
 
         {
             let mut env = env.sub_env();
             let subst: ParamSubst = Assign(true, Parameter::Var(var_unset.clone()), None);
-            assert_eq!(subst.eval(&mut *env, cfg), Ok(Fields::Zero));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
             assert_eq!(env.var(&var_unset), Some(&null));
         }
 
         {
             let mut env = env.sub_env();
             let subst: ParamSubst = Assign(false, Parameter::Var(var_unset.clone()), Some(assig));
-            assert_eq!(subst.eval(&mut *env, cfg), Ok(assig_value.clone()));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(assig_value.clone()));
             assert_eq!(env.var(&var_unset), Some(&assig_var_value));
         }
 
         {
             let mut env = env.sub_env();
             let subst: ParamSubst = Assign(false, Parameter::Var(var_unset.clone()), None);
-            assert_eq!(subst.eval(&mut *env, cfg), Ok(Fields::Zero));
+            assert_eq!(subst.eval(&mut env, cfg), Ok(Fields::Zero));
             assert_eq!(env.var(&var_unset), Some(&null));
         }
 
@@ -2315,8 +2326,8 @@ mod tests {
         #[derive(Copy, Clone, Debug)]
         struct MockWord(TildeExpansion);
 
-        impl WordEval for MockWord {
-            fn eval_with_config(&self, _: &mut Environment, cfg: WordEvalConfig) -> Result<Fields>
+        impl<E: Environment> WordEval<E> for MockWord {
+            fn eval_with_config(&self, _: &mut E, cfg: WordEvalConfig) -> Result<Fields>
             {
                 assert_eq!(self.0, cfg.tilde_expansion);
                 assert_eq!(cfg.split_fields_further, false);
@@ -2326,8 +2337,8 @@ mod tests {
 
         type ParamSubst = ParameterSubstitution<MockWord, MockCmd>;
 
-        let name = "var".to_owned();
-        let var = Parameter::Var(name.clone());
+        let name = "var";
+        let var = Parameter::Var(name.to_owned());
         let mut env = Env::new().unwrap();
 
         let cases = vec!(TildeExpansion::None, TildeExpansion::First, TildeExpansion::All);
@@ -2339,19 +2350,19 @@ mod tests {
 
             let mock = MockWord(tilde_expansion);
 
-            env.unset_var(name.clone());
+            env.unset_var(name);
             let subst: ParamSubst = Default(true, var.clone(), Some(mock));
             subst.eval(&mut env, cfg).unwrap();
 
-            env.unset_var(name.clone());
+            env.unset_var(name);
             let subst: ParamSubst = Assign(true, var.clone(), Some(mock));
             subst.eval(&mut env, cfg).unwrap();
 
-            env.unset_var(name.clone());
+            env.unset_var(name);
             let subst: ParamSubst = Error(true, var.clone(), Some(mock));
             subst.eval(&mut env, cfg).unwrap_err();
 
-            env.set_var(name.clone(), "some value".to_owned().into());
+            env.set_var(name.to_owned(), "some value".to_owned().into());
             let subst: ParamSubst = Alternative(true, var.clone(), Some(mock));
             subst.eval(&mut env, cfg).unwrap();
         }

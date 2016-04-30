@@ -7,8 +7,12 @@ use std::iter::{IntoIterator, Iterator};
 use std::rc::Rc;
 use syntax::ast::{ComplexWord, SimpleWord, TopLevelWord, Word};
 
-impl<W: WordEval, C: Run> WordEval for SimpleWord<W, C> {
-    fn eval_with_config(&self, env: &mut Environment, cfg: WordEvalConfig) -> Result<Fields> {
+impl<E, W, C> WordEval<E> for SimpleWord<W, C>
+    where E: Environment,
+          W: WordEval<E>,
+          C: Run<E>,
+{
+    fn eval_with_config(&self, env: &mut E, cfg: WordEvalConfig) -> Result<Fields> {
         let ret = match *self {
             SimpleWord::Literal(ref s) |
             SimpleWord::Escaped(ref s) => Fields::Single(Rc::new(s.clone())),
@@ -38,8 +42,12 @@ impl<W: WordEval, C: Run> WordEval for SimpleWord<W, C> {
     }
 }
 
-impl<W: WordEval, C: Run> WordEval for Word<W, C> {
-    fn eval_with_config(&self, env: &mut Environment, cfg: WordEvalConfig) -> Result<Fields> {
+impl<'a, E, W, C> WordEval<E> for Word<W, C>
+    where E: Environment,
+          W: WordEval<E>,
+          C: Run<E>,
+{
+    fn eval_with_config(&self, env: &mut E, cfg: WordEvalConfig) -> Result<Fields> {
         let ret = match *self {
             Word::Simple(ref s) => try!(s.eval_with_config(env, cfg)),
             Word::SingleQuoted(ref s) => Fields::Single(Rc::new(s.clone())),
@@ -116,8 +124,12 @@ impl<W: WordEval, C: Run> WordEval for Word<W, C> {
     }
 }
 
-impl<W: WordEval, C: Run> WordEval for ComplexWord<W, C> {
-    fn eval_with_config(&self, env: &mut Environment, cfg: WordEvalConfig) -> Result<Fields> {
+impl<'a, E, W, C> WordEval<E> for ComplexWord<W, C>
+    where E: Environment,
+          W: WordEval<E>,
+          C: Run<E>,
+{
+    fn eval_with_config(&self, env: &mut E, cfg: WordEvalConfig) -> Result<Fields> {
         let ret = match *self {
             ComplexWord::Single(ref w) => try!(w.eval_with_config(env, cfg)),
 
@@ -156,8 +168,8 @@ impl<W: WordEval, C: Run> WordEval for ComplexWord<W, C> {
     }
 }
 
-impl WordEval for TopLevelWord {
-    fn eval_with_config(&self, env: &mut Environment, cfg: WordEvalConfig) -> Result<Fields> {
+impl<E: Environment> WordEval<E> for TopLevelWord {
+    fn eval_with_config(&self, env: &mut E, cfg: WordEvalConfig) -> Result<Fields> {
         self.0.eval_with_config(env, cfg)
     }
 }
@@ -181,8 +193,8 @@ mod tests {
 
     #[derive(Copy, Clone, Debug)]
     struct MockCmd;
-    impl ::runtime::Run for MockCmd {
-        fn run(&self, _: &mut Environment) -> Result<::runtime::ExitStatus> {
+    impl<E: Environment> ::runtime::Run<E> for MockCmd {
+        fn run(&self, _: &mut E) -> Result<::runtime::ExitStatus> {
             Ok(::runtime::EXIT_SUCCESS)
         }
     }
@@ -525,7 +537,7 @@ mod tests {
         let correct = Fields::Single("fooonetwothreebar".to_owned().into());
         assert_eq!(word.eval_with_config(&mut env, cfg), Ok(correct));
 
-        env.unset_var("IFS".to_owned());
+        env.unset_var("IFS");
         let correct = Fields::Single("fooone two threebar".to_owned().into());
         assert_eq!(word.eval_with_config(&mut env, cfg), Ok(correct));
     }

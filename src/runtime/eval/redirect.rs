@@ -21,7 +21,7 @@ pub enum RedirectAction {
 
 impl RedirectAction {
     /// Applies changes to a given environment.
-    pub fn apply(self, env: &mut Environment) {
+    pub fn apply<E: Environment>(self, env: &mut E) {
         match self {
             RedirectAction::Close(fd) => env.close_file_desc(fd),
             RedirectAction::Open(fd, file_desc, perms) => env.set_file_desc(fd, file_desc, perms),
@@ -29,14 +29,17 @@ impl RedirectAction {
     }
 }
 
-impl<W: WordEval> Redirect<W> {
+impl<W> Redirect<W> {
     /// Evaluates a redirection path and opens the appropriate redirect.
     ///
     /// Newly opened/closed/duplicated file descriptors are NOT updated
     /// in the environment, and thus it is up to the caller to update the
     /// environment as appropriate.
     // FIXME: on unix set file permission bits based on umask
-    pub fn eval(&self, env: &mut Environment) -> Result<RedirectAction> {
+    pub fn eval<E>(&self, env: &mut E) -> Result<RedirectAction>
+        where E: Environment,
+              W: WordEval<E>,
+    {
         let open_path_with_options = |path, env, fd, options: OpenOptions, permissions|
             -> Result<RedirectAction>
         {
@@ -84,7 +87,10 @@ impl<W: WordEval> Redirect<W> {
 /// Evaluates a path in a given environment. Tilde expansion will be done,
 /// and words will be split if running in interactive mode. If the evaluation
 /// results in more than one path, an error will be returned.
-fn eval_path(path: &WordEval, env: &mut Environment) -> Result<Rc<String>> {
+fn eval_path<E, W: ?Sized>(path: &W, env: &mut E) -> Result<Rc<String>>
+    where E: Environment,
+          W: WordEval<E>,
+{
     let cfg = WordEvalConfig {
         tilde_expansion: TildeExpansion::First,
         split_fields_further: env.is_interactive(),
@@ -114,8 +120,9 @@ fn eval_path(path: &WordEval, env: &mut Environment) -> Result<Rc<String>> {
 ///
 /// On success the duplicated descritor is returned. It is up to the caller to
 /// actually store the duplicate in the environment.
-fn dup_fd(dst_fd: Fd, src_fd: &WordEval, readable: bool, env: &mut Environment)
-    -> Result<RedirectAction>
+fn dup_fd<E, W: ?Sized>(dst_fd: Fd, src_fd: &W, readable: bool, env: &mut E) -> Result<RedirectAction>
+    where E: Environment,
+          W: WordEval<E>,
 {
     let src_fd = try!(eval_path(src_fd, env));
 
@@ -458,8 +465,8 @@ mod tests {
         type Redirect = ::syntax::ast::Redirect<MockWord>;
 
         struct MockWord(Fields);
-        impl WordEval for MockWord {
-            fn eval_with_config(&self, _: &mut Environment, _: WordEvalConfig) -> Result<Fields> {
+        impl<E: Environment> WordEval<E> for MockWord {
+            fn eval_with_config(&self, _: &mut E, _: WordEvalConfig) -> Result<Fields> {
                 Ok(self.0.clone())
             }
         }
@@ -502,8 +509,8 @@ mod tests {
 
         #[derive(Copy, Clone)]
         struct MockWord(Option<u16>);
-        impl WordEval for MockWord {
-            fn eval_with_config(&self, env: &mut Environment, cfg: WordEvalConfig) -> Result<Fields> {
+        impl<E: Environment> WordEval<E> for MockWord {
+            fn eval_with_config(&self, env: &mut E, cfg: WordEvalConfig) -> Result<Fields> {
                 assert_eq!(env.is_interactive(), cfg.split_fields_further);
                 let s = match self.0 {
                     Some(fd) => fd.to_string(),

@@ -2,19 +2,16 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::convert::From;
 use std::fmt;
 use std::error;
 use std::io::{Result as IoResult, Write};
 use std::iter::{IntoIterator, Iterator};
 use std::rc::Rc;
-use std::result;
 
 use runtime::{EXIT_SUCCESS, STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO};
 use runtime::{ExitStatus, Fd, Result, Run};
 use runtime::io::{dup_stdio, FileDesc, Permissions};
-use void::Void;
 
 /// A struct for configuring a new `Env` instance.
 ///
@@ -61,37 +58,28 @@ impl Default for EnvConfig {
 #[derive(Clone)]
 pub struct Env<'a> {
     /// The current name of the shell/script executing.
-    shell_name: Rc<String>,
+    shell_name: Cow<'a, Rc<String>>,
     /// The current arguments of the shell/script/function.
-    args: Vec<Rc<String>>,
+    args: Cow<'a, [Rc<String>]>,
     /// A mapping of all defined function names and executable bodies.
-    /// The function bodies are stored as `Option`s to properly distinguish functions
-    /// that were explicitly unset and functions that are simply defined in a parent
-    /// environment.
-    functions: HashMap<String, Option<Rc<Run>>>,
+    functions: Cow<'a, HashMap<String, Rc<Run<Env<'a>>>>>,
     /// A mapping of variable names to their values.
     ///
-    /// The values are stored as `Option`s to properly distinguish variables that were
-    /// explicitly unset and variables that are simply defined in a parent environment.
     /// The tupled boolean indicates if a variable should be exported to other commands.
-    vars: HashMap<String, Option<(Rc<String>, bool)>>,
+    vars: Cow<'a, HashMap<String, (Rc<String>, bool)>>,
     /// A mapping of file descriptors and their OS handles.
     ///
-    /// The values are stored as `Option`s to properly distinguish descriptors that
-    /// were explicitly closed and descriptors that may have been opened in a parent
     /// environment. The tupled value also holds the permissions of the descriptor.
-    fds: HashMap<Fd, Option<(Rc<FileDesc>, Permissions)>>,
+    fds: Cow<'a, HashMap<Fd, (Rc<FileDesc>, Permissions)>>,
     /// The exit status of the last command that was executed.
     last_status: ExitStatus,
-    /// A parent environment for looking up previously set values.
-    parent_env: Option<&'a Env<'a>>,
     /// If the shell is running in interactive mode
     interactive: bool,
 }
 
 impl<'a> fmt::Debug for Env<'a> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        use std::collections::{BTreeMap, HashSet};
+        use std::collections::{BTreeMap, BTreeSet};
         #[cfg(windows)] use std::os::windows::io::RawHandle;
 
         #[derive(Debug)]
@@ -115,64 +103,35 @@ impl<'a> fmt::Debug for Env<'a> {
             fdes.as_raw_handle()
         }
 
-        fn sort_set<T>(set: HashSet<T>) -> Vec<T>
-            where T: Ord + ::std::hash::Hash
-        {
-            use std::iter::FromIterator;
+        let functions: BTreeSet<_> = self.functions.keys().collect();
 
-            let mut vec = Vec::from_iter(set);
-            vec.sort();
-            vec
-        }
-
-        let functions_len = self.functions.len();
-        let mut functions = HashSet::with_capacity(functions_len);
-        let mut unset_functions = HashSet::with_capacity(functions_len);
-        for (name, is_set) in &self.functions {
-            match *is_set {
-                Some(_) => functions.insert(name),
-                None => unset_functions.insert(name),
+        let mut vars = BTreeMap::new();
+        let mut env_vars = BTreeMap::new();
+        for (name, &(ref val, is_env)) in &*self.vars {
+            if is_env {
+                env_vars.insert(name, val);
+            } else {
+                vars.insert(name, val);
             };
         }
 
-        let mut unset_vars = HashSet::with_capacity(self.vars.len());
-        let mut vars = BTreeMap::new();
-        let mut env_vars = BTreeMap::new();
-        for (name, is_set) in &self.vars {
-            match *is_set {
-                Some((ref val, true)) => { env_vars.insert(name, val); },
-                Some((ref val, false)) => { vars.insert(name, val); },
-                None => { unset_vars.insert(name); },
-            }
-        }
-
-        let mut closed_fds = HashSet::with_capacity(self.fds.len());
         let mut fds = BTreeMap::new();
-        for (fd, is_set) in &self.fds {
-            match *is_set {
-                Some((ref fdesc, perms)) => {
-                    fds.insert(fd, FileDescDebug {
-                        os_handle: get_os_handle(fdesc),
-                        permissions: perms,
-                    });
-                },
-                None => { closed_fds.insert(fd); },
-            }
+        for (fd, &(ref fdesc, perms)) in &*self.fds {
+            fds.insert(fd, FileDescDebug {
+                os_handle: get_os_handle(fdesc),
+                permissions: perms,
+            });
         }
 
         fmt.debug_struct("Env")
             .field("interactive", &self.interactive)
             .field("shell_name", &self.shell_name)
             .field("args", &self.args)
-            .field("functions", &sort_set(functions))
-            .field("unset_functions", &sort_set(unset_functions))
+            .field("functions", &functions)
             .field("env_vars", &env_vars)
             .field("vars", &vars)
-            .field("unset_vars", &sort_set(unset_vars))
             .field("fds", &fds)
-            .field("closed_fds", &sort_set(closed_fds))
             .field("last_status", &self.last_status)
-            .field("parent_env", &self.parent_env)
             .finish()
     }
 }
@@ -215,64 +174,40 @@ impl<'a> Env<'a> {
         let args = cfg.args.map_or(Vec::new(), |args| args.into_iter().map(Rc::new).collect());
 
         let vars = cfg.env.map_or_else(
-            || env::vars().map(|(k, v)| (k, Some((Rc::new(v), true)))).collect(),
-            |pairs| pairs.into_iter().map(|(k,v)| (k, Some((Rc::new(v), true)))).collect()
+            || env::vars().map(|(k, v)| (k, (Rc::new(v), true))).collect(),
+            |pairs| pairs.into_iter().map(|(k,v)| (k, (Rc::new(v), true))).collect()
         );
 
         let fds = match cfg.fds {
-            Some(fds) => fds.into_iter().map(|(fd, fdes, perm)| (fd, Some((fdes, perm)))).collect(),
+            Some(fds) => fds.into_iter().map(|(fd, fdes, perm)| (fd, (fdes, perm))).collect(),
             None => {
                 let (stdin, stdout, stderr) = try!(dup_stdio());
 
                 let mut fds = HashMap::with_capacity(3);
-                fds.insert(STDIN_FILENO,  Some((Rc::new(stdin),  Permissions::Read)));
-                fds.insert(STDOUT_FILENO, Some((Rc::new(stdout), Permissions::Write)));
-                fds.insert(STDERR_FILENO, Some((Rc::new(stderr), Permissions::Write)));
+                fds.insert(STDIN_FILENO,  (Rc::new(stdin),  Permissions::Read));
+                fds.insert(STDOUT_FILENO, (Rc::new(stdout), Permissions::Write));
+                fds.insert(STDERR_FILENO, (Rc::new(stderr), Permissions::Write));
                 fds
             },
         };
 
         Ok(Env {
-            shell_name: Rc::new(String::from(name)),
-            args: args,
-            functions: HashMap::new(),
-            vars: vars,
-            fds: fds,
+            shell_name: Cow::Owned(Rc::new(String::from(name))),
+            args: Cow::Owned(args),
+            functions: Cow::Owned(HashMap::new()),
+            vars: Cow::Owned(vars),
+            fds: Cow::Owned(fds),
             last_status: EXIT_SUCCESS,
-            parent_env: None,
             interactive: cfg.interactive,
         })
-    }
-
-    /// Walks `self` and its entire chain of parent environments and evaluates a closure on each.
-    ///
-    /// If the closure evaluates a `Ok(Some(x))` value, then `Some(x)` is returned.
-    /// If the closure evaluates a `Err(_)` value, then `None` is returned.
-    /// If the closure evaluates a `Ok(None)` value, then the traversal continues.
-    fn walk_parent_chain<T, F>(&'a self, mut cond: F) -> Option<T>
-        where F: FnMut(&'a Self) -> result::Result<Option<T>, ()>
-    {
-        let mut cur = self;
-        loop {
-            match cond(cur) {
-                Err(()) => return None,
-                Ok(Some(res)) => return Some(res),
-                Ok(None) => match cur.parent_env {
-                    Some(ref parent) => cur = *parent,
-                    None => return None,
-                },
-            }
-        }
     }
 }
 
 /// An interface for shell commands to use for querying or updating the environment in which they run.
 pub trait Environment {
-    /// Create a new sub-environment using the current environment as its parent.
-    ///
-    /// Any changes which mutate the sub environment will only be reflected there,
-    /// but any information not present in the sub-env will be looked up in the parent.
-    fn sub_env<'a>(&'a self) -> Box<Environment + 'a>;
+    /// Create a new sub-environment, which starts out idential to its parent,
+    /// but any changes on the new environment must not be reflected on the parent.
+    fn sub_env(&self) -> Self;
     /// Get the name of the shell or the current function that is executing.
     fn name(&self) -> &Rc<String>;
     /// Get the value of some variable. The values of both shell-only
@@ -281,13 +216,13 @@ pub trait Environment {
     /// Set the value of some variable (including environment variables).
     fn set_var(&mut self, name: String, val: Rc<String>);
     /// Unset the value of some variable (including environment variables).
-    fn unset_var(&mut self, name: String);
+    fn unset_var(&mut self, name: &str);
     /// Indicates if a function is currently defined with a given name.
     fn has_function(&mut self, fn_name: &str) -> bool;
     /// Attempt to execute a function with a set of arguments if it has been defined.
-    fn run_function(&mut self, fn_name: Rc<String>, args: Vec<Rc<String>>) -> Option<Result<ExitStatus>>;
+    fn run_function(&mut self, fn_name: &str, args: Vec<Rc<String>>) -> Option<Result<ExitStatus>>;
     /// Define a function with some `Run`able body.
-    fn set_function(&mut self, name: String, func: Rc<Run>);
+    fn set_function(&mut self, name: String, func: Rc<Run<Self>>);
     /// Get the exit status of the previous command.
     fn last_status(&self) -> ExitStatus;
     /// Set the exit status of the previously run command.
@@ -327,18 +262,8 @@ pub trait Environment {
 }
 
 impl<'a> Environment for Env<'a> {
-    fn sub_env<'b>(&'b self) -> Box<Environment + 'b> {
-        Box::new(Env {
-            shell_name: self.shell_name.clone(),
-            args: self.args.clone(),
-
-            functions: HashMap::new(),
-            vars: HashMap::new(),
-            fds: HashMap::new(),
-            last_status: self.last_status,
-            parent_env: Some(self),
-            interactive: self.interactive,
-        })
+    fn sub_env(&self) -> Self {
+        self.clone()
     }
 
     fn name(&self) -> &Rc<String> {
@@ -346,61 +271,43 @@ impl<'a> Environment for Env<'a> {
     }
 
     fn var(&self, name: &str) -> Option<&Rc<String>> {
-        self.walk_parent_chain(|cur| match cur.vars.get(name) {
-            Some(&Some((ref s, _))) => Ok(Some(s)), // found the var
-            Some(&None) => Err(()), // var was unset, break the walk
-            None => Ok(None), // neither set nor unset, keep walking
-        })
+        self.vars.get(name).map(|&(ref rc, _)| rc)
     }
 
     fn set_var(&mut self, name: String, val: Rc<String>) {
-        match self.vars.entry(name) {
-            Entry::Vacant(entry) => {
-                entry.insert(Some((val, false)));
-            },
-            Entry::Occupied(mut entry) => {
-                let exported = entry.get().as_ref().map_or(false, |&(_, e)| e);
-                entry.insert(Some((val, exported)));
-            },
+        if self.var(&name) != Some(&val) {
+            self.vars.to_mut().insert(name, (val, false));
         }
     }
 
-    fn unset_var(&mut self, name: String) {
-        self.vars.insert(name, None);
+    fn unset_var(&mut self, name: &str) {
+        if self.vars.contains_key(name) {
+            self.vars.to_mut().remove(name);
+        }
     }
 
     fn has_function(&mut self, fn_name: &str) -> bool {
-        self.walk_parent_chain(|cur| match cur.functions.get(fn_name) {
-            Some(&Some(_)) => Ok(Some(())), // found the fn
-            Some(&None) => Err(()), // fn was unset, break the walk
-            None => Ok(None), // neither set nor unset, keep walking
-        }).is_some()
+        self.functions.contains_key(fn_name)
     }
 
-    fn run_function(&mut self, fn_name: Rc<String>, mut args: Vec<Rc<String>>)
+    fn run_function(&mut self, fn_name: &str, args: Vec<Rc<String>>)
         -> Option<Result<ExitStatus>>
     {
         use std::mem;
 
-        let func = self.walk_parent_chain(|cur| match cur.functions.get(&*fn_name) {
-            Some(&Some(ref body)) => Ok(Some(body.clone())), // found the fn
-            Some(&None) => Err(()), // fn was unset, break the walk
-            None => Ok(None), // neither set nor unset, keep walking
-        });
-
-        let func = match func {
-            Some(f) => f,
-            None => return None,
-        };
-
-        mem::swap(&mut self.args, &mut args);
-        let ret = func.run(self);
-        mem::swap(&mut self.args, &mut args);
-        Some(ret)
+        let mut args = Cow::Owned(args);
+        self.functions.get(fn_name)
+            .cloned() // Clone the Rc to release the borrow of `self`
+            .map(|func| {
+                mem::swap(&mut self.args, &mut args);
+                let ret = func.run(self);
+                mem::swap(&mut self.args, &mut args);
+                ret
+            })
     }
 
-    fn set_function(&mut self, name: String, func: Rc<Run>) {
-        self.functions.insert(name, Some(func));
+    fn set_function(&mut self, name: String, func: Rc<Run<Self>>) {
+        self.functions.to_mut().insert(name, func);
     }
 
     fn last_status(&self) -> ExitStatus {
@@ -428,47 +335,31 @@ impl<'a> Environment for Env<'a> {
     }
 
     fn env(&self) -> Cow<[(&str, &str)]> {
-        let mut env = HashMap::new();
-        self.walk_parent_chain(|cur| -> result::Result<Option<Void>, ()> {
-            for (k,v) in cur.vars.iter().map(|(k,v)| (&**k, v)) {
-                // Since we are traversing the parent chain "backwards" we
-                // must be careful not to overwrite any variable with a
-                // "previous" value from a parent environment.
-                if !env.contains_key(k) { env.insert(k, v); }
-            }
-            Ok(None) // Force the traversal to walk the entire chain
-        });
+        let ret: Vec<_> = self.vars.iter()
+            .filter_map(|(k, &(ref v, exported))| if exported {
+                Some((&**k, &***v))
+            } else {
+                None
+            })
+            .collect();
 
-        let ret: Vec<_> = env.into_iter().filter_map(|(k, v)| match *v {
-            Some((ref v, true)) => Some((k, &***v)),
-            Some((_, false)) => None,
-            None => None,
-        }).collect();
         Cow::Owned(ret)
     }
 
     fn file_desc(&self, fd: Fd) -> Option<(&Rc<FileDesc>, Permissions)> {
-        self.walk_parent_chain(|cur| match cur.fds.get(&fd) {
-            Some(&Some((ref fdes, perm))) => Ok(Some((fdes, perm))), // found an open fd
-            Some(&None) => Err(()), // fd already closed, break the walk
-            None => Ok(None), // neither closed nor open, keep walking
-        })
+        self.fds.get(&fd).map(|&(ref rc, perms)| (rc, perms))
     }
 
     fn set_file_desc(&mut self, fd: Fd, fdes: Rc<FileDesc>, perms: Permissions) {
-        self.fds.insert(fd, Some((fdes, perms)));
+        if Some((&fdes, perms)) != self.file_desc(fd) {
+            self.fds.to_mut().insert(fd, (fdes, perms));
+        }
     }
 
     fn close_file_desc(&mut self, fd: Fd) {
-        match self.parent_env {
-            // If we have a parent environment the specified fd could
-            // have been opened there, so to avoid clobbering it,
-            // we'll just ensure the current env treats this fd as closed.
-            Some(_) => self.fds.insert(fd, None),
-            // Otherwise if we are a root env we are the only possible
-            // source of the fd so we can actually remove it from the container.
-            None => self.fds.remove(&fd),
-        };
+        if let Some(_) = self.file_desc(fd) {
+            self.fds.to_mut().remove(&fd);
+        }
     }
 
     fn is_interactive(&self) -> bool {
@@ -483,7 +374,7 @@ mod tests {
     use runtime::{EXIT_ERROR, EXIT_SUCCESS, STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO};
     use runtime::{ExitStatus, ExpansionError, Result, Run, RuntimeError};
     use runtime::io::{Permissions, Pipe};
-    use runtime::tests::{file_desc, word};
+    use runtime::tests::{dev_null, word};
     use runtime::tests::MockFn;
 
     use self::tempdir::TempDir;
@@ -496,22 +387,28 @@ mod tests {
     use super::*;
     use syntax::ast::{Redirect, SimpleCommand};
 
-    struct MockFnRecursive<F: Fn(&mut Environment) -> Result<ExitStatus>> {
+    struct MockFnRecursive<F> {
         callback: F,
     }
 
-    impl<F: Fn(&mut Environment) -> Result<ExitStatus>> MockFnRecursive<F> {
-        fn new(f: F) -> Rc<Self> {
+    impl<F> MockFnRecursive<F>
+    {
+        fn new<E>(f: F) -> Rc<Self>
+            where E: Environment,
+                  F: Fn(&mut E) -> Result<ExitStatus>,
+        {
             Rc::new(MockFnRecursive { callback: f })
         }
     }
 
-    impl<F: Fn(&mut Environment) -> Result<ExitStatus>> Run for MockFnRecursive<F> {
-        fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
+    impl<'a, E, F> Run<E> for MockFnRecursive<F>
+        where E: Environment,
+              F: Fn(&mut E) -> Result<ExitStatus>,
+    {
+        fn run(&self, env: &mut E) -> Result<ExitStatus> {
             (self.callback)(env)
         }
     }
-
 
     #[test]
     fn test_env_name() {
@@ -538,13 +435,13 @@ mod tests {
 
     #[test]
     fn test_env_set_get_unset_var() {
-        let name = "var".to_owned();
+        let name = "var";
         let value = "value";
         let mut env = Env::new().unwrap();
         assert_eq!(env.var(&name), None);
-        env.set_var(name.clone(), Rc::new(value.to_owned()));
+        env.set_var(name.to_owned(), Rc::new(value.to_owned()));
         assert_eq!(&**env.var(&name).unwrap(), value);
-        env.unset_var(name.clone());
+        env.unset_var(name);
         assert_eq!(env.var(&name), None);
     }
 
@@ -620,52 +517,47 @@ mod tests {
 
     #[test]
     fn test_env_set_and_run_function() {
-        let fn_name_owned = String::from("foo");
-        let fn_name = Rc::new(fn_name_owned.clone());
+        let fn_name = "foo";
 
         let exit = EXIT_ERROR;
         let mut env = Env::new().unwrap();
-        assert_eq!(env.has_function(&*fn_name), false);
-        assert!(env.run_function(fn_name.clone(), vec!()).is_none());
+        assert_eq!(env.has_function(&fn_name), false);
+        assert!(env.run_function(&fn_name, vec!()).is_none());
 
-        env.set_function(fn_name_owned, MockFn::new(move |_| Ok(exit)));
-        assert_eq!(env.has_function(&*fn_name), true);
-        assert_eq!(env.run_function(fn_name, vec!()), Some(Ok(exit)));
+        env.set_function(fn_name.to_owned().into(), MockFn::new(move |_| Ok(exit)));
+        assert_eq!(env.has_function(&fn_name), true);
+        assert_eq!(env.run_function(&fn_name, vec!()), Some(Ok(exit)));
     }
 
     #[test]
     fn test_env_set_function_in_parent_visible_in_child() {
-        let fn_name_owned = String::from("foo");
-        let fn_name = Rc::new(fn_name_owned.clone());
-
+        let fn_name = "foo";
         let exit = EXIT_ERROR;
         let mut parent = Env::new().unwrap();
-        parent.set_function(fn_name_owned, MockFn::new(move |_| Ok(exit)));
+        parent.set_function(fn_name.to_owned(), MockFn::new(move |_| Ok(exit)));
 
         {
             let mut child = parent.sub_env();
-            assert_eq!(child.has_function(&*fn_name), true);
-            assert_eq!(child.run_function(fn_name, vec!()), Some(Ok(exit)));
+            assert_eq!(child.has_function(&fn_name), true);
+            assert_eq!(child.run_function(&fn_name, vec!()), Some(Ok(exit)));
         }
     }
 
     #[test]
     fn test_env_set_function_in_child_should_not_affect_parent() {
-        let fn_name_owned = String::from("foo");
-        let fn_name = Rc::new(fn_name_owned.clone());
-
+        let fn_name = "foo";
         let exit = EXIT_ERROR;
         let mut parent = Env::new().unwrap();
 
         {
             let mut child = parent.sub_env();
-            child.set_function(fn_name_owned, MockFn::new(move |_| Ok(exit)));
-            assert_eq!(child.has_function(&*fn_name), true);
-            assert_eq!(child.run_function(fn_name.clone(), vec!()), Some(Ok(exit)));
+            child.set_function(fn_name.to_owned(), MockFn::new(move |_| Ok(exit)));
+            assert_eq!(child.has_function(&fn_name), true);
+            assert_eq!(child.run_function(&fn_name.clone(), vec!()), Some(Ok(exit)));
         }
 
-        assert_eq!(parent.has_function(&*fn_name), false);
-        assert!(parent.run_function(fn_name, vec!()).is_none());
+        assert_eq!(parent.has_function(&fn_name), false);
+        assert!(parent.run_function(&fn_name, vec!()).is_none());
     }
 
     #[test]
@@ -684,8 +576,7 @@ mod tests {
             .. Default::default()
         }).unwrap();
 
-        let fn_name_owned = String::from("fn name");
-        let fn_name = Rc::new(fn_name_owned.clone());
+        let fn_name = "fn name";
         let args = vec!(
             Rc::new(String::from("child arg1")),
             Rc::new(String::from("child arg2")),
@@ -695,7 +586,7 @@ mod tests {
         {
             let args = args.clone();
             let shell_name = shell_name.clone();
-            env.set_function(fn_name_owned, MockFn::new(move |env| {
+            env.set_function(fn_name.to_owned(), MockFn::new::<Env>(move |env| {
                 assert_eq!(env.args(), &*args);
                 assert_eq!(env.args_len(), args.len());
                 assert_eq!(env.name(), &shell_name);
@@ -713,7 +604,7 @@ mod tests {
             }));
         }
 
-        env.run_function(fn_name, args.clone());
+        env.run_function(&fn_name, args.clone());
 
         let parent_args: Vec<Rc<String>> = parent_args.into_iter().map(Rc::new).collect();
         assert_eq!(env.args(), &*parent_args);
@@ -732,16 +623,13 @@ mod tests {
 
     #[test]
     fn test_env_run_function_can_be_recursive() {
-        let fn_name_owned = "fn name".to_owned();
-        let fn_name = Rc::new(fn_name_owned.clone());
-
+        let fn_name = "fn name";
         let mut env = Env::new().unwrap();
         {
-            let fn_name = fn_name.clone();
             let num_calls = 3usize;
             let depth = ::std::cell::Cell::new(num_calls);
 
-            env.set_function(fn_name_owned, MockFnRecursive::new(move |env| {
+            env.set_function(fn_name.to_owned(), MockFnRecursive::new::<Env>(move |env| {
                 let num_calls = depth.get().saturating_sub(1);
                 env.set_var(format!("var{}", num_calls), Rc::new(num_calls.to_string()));
 
@@ -749,7 +637,7 @@ mod tests {
                     Ok(EXIT_SUCCESS)
                 } else {
                     depth.set(num_calls);
-                    env.run_function(fn_name.clone(), vec!()).unwrap()
+                    env.run_function(&fn_name, vec!()).unwrap()
                 }
             }));
         }
@@ -758,7 +646,7 @@ mod tests {
         assert_eq!(env.var("var1"), None);
         assert_eq!(env.var("var2"), None);
 
-        assert!(env.run_function(fn_name.clone(), vec!()).unwrap().unwrap().success());
+        assert!(env.run_function(&fn_name, vec!()).unwrap().unwrap().success());
 
         assert_eq!(&**env.var("var0").unwrap(), "0");
         assert_eq!(&**env.var("var1").unwrap(), "1");
@@ -767,16 +655,13 @@ mod tests {
 
     #[test]
     fn test_env_run_function_nested_calls_do_not_destroy_upper_args() {
-        let fn_name_owned = String::from("fn name");
-        let fn_name = Rc::new(fn_name_owned.clone());
-
+        let fn_name = "fn name";
         let mut env = Env::new().unwrap();
         {
-            let fn_name = fn_name.clone();
             let num_calls = 3usize;
             let depth = ::std::cell::Cell::new(num_calls);
 
-            env.set_function(fn_name_owned, MockFnRecursive::new(move |env| {
+            env.set_function(fn_name.to_owned(), MockFnRecursive::new::<Env>(move |env| {
                 let num_calls = depth.get().saturating_sub(1);
 
                 if num_calls == 0 {
@@ -789,14 +674,14 @@ mod tests {
                     next_args.reverse();
                     next_args.push(Rc::new(format!("arg{}", num_calls)));
 
-                    let ret = env.run_function(fn_name.clone(), next_args).unwrap();
+                    let ret = env.run_function(&fn_name, next_args).unwrap();
                     assert_eq!(&*cur_args, &*env.args());
                     ret
                 }
             }));
         }
 
-        assert!(env.run_function(fn_name.clone(), vec!(
+        assert!(env.run_function(&fn_name, vec!(
             Rc::new(String::from("first")),
             Rc::new(String::from("second")),
             Rc::new(String::from("third")),
@@ -813,7 +698,7 @@ mod tests {
         file_path.push("out");
 
         let mut env = Env::new().unwrap();
-        env.set_function(fn_name.to_owned(), MockFn::new(|env| {
+        env.set_function(fn_name.to_owned(), MockFn::new::<Env>(|env| {
             let args = env.args().iter().map(|rc| rc.to_string()).collect::<Vec<_>>();
             let msg = args.join(" ");
             let fd = env.file_desc(STDOUT_FILENO).unwrap().0;
@@ -882,7 +767,7 @@ mod tests {
     fn test_env_set_get_and_close_file_desc() {
         let fd = STDIN_FILENO;
         let perms = Permissions::ReadWrite;
-        let file_desc = Rc::new(file_desc());
+        let file_desc = Rc::new(dev_null());
 
         let mut env = Env::new().unwrap();
         env.close_file_desc(fd);
@@ -901,7 +786,7 @@ mod tests {
     fn test_env_set_file_desc_in_parent_visible_in_child() {
         let fd = STDIN_FILENO;
         let perms = Permissions::ReadWrite;
-        let file_desc = Rc::new(file_desc());
+        let file_desc = Rc::new(dev_null());
 
         let mut env = Env::new().unwrap();
         env.set_file_desc(fd, file_desc.clone(), perms);
@@ -920,7 +805,7 @@ mod tests {
         assert!(parent.file_desc(fd).is_none());
         {
             let perms = Permissions::ReadWrite;
-            let file_desc = Rc::new(file_desc());
+            let file_desc = Rc::new(dev_null());
             let mut child = parent.sub_env();
             child.set_file_desc(fd, file_desc.clone(), perms);
             let (got_file_desc, got_perms) = child.file_desc(fd).unwrap();
@@ -934,7 +819,7 @@ mod tests {
     fn test_env_close_file_desc_in_child_should_not_affect_parent() {
         let fd = STDIN_FILENO;
         let perms = Permissions::ReadWrite;
-        let file_desc = Rc::new(file_desc());
+        let file_desc = Rc::new(dev_null());
 
         let mut parent = Env::new().unwrap();
         parent.set_file_desc(fd, file_desc.clone(), perms);

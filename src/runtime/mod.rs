@@ -126,17 +126,25 @@ impl From<process::ExitStatus> for ExitStatus {
 }
 
 /// An interface for anything that can be executed within an `Environment`.
-pub trait Run {
+pub trait Run<E: Environment> {
     /// Executes `self` in the provided environment.
-    fn run(&self, env: &mut Environment) -> Result<ExitStatus>;
+    fn run(&self, env: &mut E) -> Result<ExitStatus>;
 }
 
-impl<'a, T: Run + ?Sized> Run for &'a T {
-    fn run(&self, env: &mut Environment) -> Result<ExitStatus> { (**self).run(env) }
+impl<'a, E, T: ?Sized> Run<E> for &'a T
+    where E: Environment,
+          T: Run<E>,
+{
+    fn run(&self, env: &mut E) -> Result<ExitStatus> {
+        (**self).run(env)
+    }
 }
 
-impl<W: WordEval> Run for SimpleCommand<W> {
-    fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
+impl<'a, E, W> Run<E> for SimpleCommand<W>
+    where E: Environment,
+          W: WordEval<E>,
+{
+    fn run(&self, env: &mut E) -> Result<ExitStatus> {
         #[cfg(unix)]
         fn is_enoexec(err: &IoError) -> bool { Some(libc::ENOEXEC) == err.raw_os_error() }
 
@@ -185,7 +193,7 @@ impl<W: WordEval> Run for SimpleCommand<W> {
         // treat functions with first priority, so we will follow this precendent.
         if env.has_function(&cmd_name) {
             return run_with_local_redirections(env, &self.io, |env| {
-                match env.run_function(cmd_name.clone(), cmd_args, ) {
+                match env.run_function(&cmd_name, cmd_args) {
                     Some(ret) => ret,
                     None => {
                         env.set_last_status(EXIT_CMD_NOT_FOUND);
@@ -268,14 +276,18 @@ impl<W: WordEval> Run for SimpleCommand<W> {
     }
 }
 
-impl Run for TopLevelCommand {
-    fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
+impl<'a, E: Environment> Run<E> for TopLevelCommand {
+    fn run(&self, env: &mut E) -> Result<ExitStatus> {
         self.0.run(env)
     }
 }
 
-impl<W: WordEval + 'static, C: Run + 'static> Run for Command<W, C> {
-    fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
+impl<'a, E, W, C> Run<E> for Command<W, C>
+    where E: Environment,
+          W: WordEval<E> + 'static,
+          C: Run<E> + 'static,
+{
+    fn run(&self, env: &mut E) -> Result<ExitStatus> {
         match *self {
             Command::Job(_) => {
                 // FIXME: eventual job control would be nice
@@ -288,8 +300,8 @@ impl<W: WordEval + 'static, C: Run + 'static> Run for Command<W, C> {
     }
 }
 
-impl<C: Run> Run for AndOrList<C> {
-    fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
+impl<'a, E: Environment, C: Run<E>> Run<E> for AndOrList<C> {
+    fn run(&self, env: &mut E) -> Result<ExitStatus> {
         let mut result = self.first.run(env);
 
         for cmd in &self.rest {
@@ -306,8 +318,11 @@ impl<C: Run> Run for AndOrList<C> {
     }
 }
 
-impl<C: Run> Run for ListableCommand<C> {
-    fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
+impl<'a, E, C> Run<E> for ListableCommand<C>
+    where E: Environment,
+          C: Run<E>
+{
+    fn run(&self, env: &mut E) -> Result<ExitStatus> {
         match *self {
             ListableCommand::Pipe(invert, ref cmds) => unimplemented!(), // FIXME
             ListableCommand::Single(ref cmd) => cmd.run(env),
@@ -315,8 +330,12 @@ impl<C: Run> Run for ListableCommand<C> {
     }
 }
 
-impl<W: WordEval + 'static, C: Run + 'static> Run for PipeableCommand<W, C> {
-    fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
+impl<'a, E, W, C> Run<E> for PipeableCommand<W, C>
+    where E: Environment,
+          W: WordEval<E> + 'static,
+          C: Run<E> + 'static,
+{
+    fn run(&self, env: &mut E) -> Result<ExitStatus> {
         match *self {
             PipeableCommand::Simple(ref cmd) => cmd.run(env),
             PipeableCommand::Compound(ref cmd) => cmd.run(env),
@@ -331,14 +350,22 @@ impl<W: WordEval + 'static, C: Run + 'static> Run for PipeableCommand<W, C> {
     }
 }
 
-impl<W: WordEval, C: Run> Run for CompoundCommand<W, C> {
-    fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
+impl<'a, E, W, C> Run<E> for CompoundCommand<W, C>
+    where E: Environment,
+          W: WordEval<E>,
+          C: Run<E>,
+{
+    fn run(&self, env: &mut E) -> Result<ExitStatus> {
         run_with_local_redirections(env, &self.io, |env| self.kind.run(env))
     }
 }
 
-impl<W: WordEval, C: Run> Run for CompoundCommandKind<W, C> {
-    fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
+impl<E, W, C> Run<E> for CompoundCommandKind<W, C>
+    where E: Environment,
+          W: WordEval<E>,
+          C: Run<E>,
+{
+    fn run(&self, env: &mut E) -> Result<ExitStatus> {
         use syntax::ast::CompoundCommandKind::*;
 
         let exit = match *self {
@@ -454,10 +481,12 @@ impl<W: WordEval, C: Run> Run for CompoundCommandKind<W, C> {
 }
 
 /// Runs a collection of commands as if they were in a subshell environment.
-fn run_as_subshell<I>(iter: I, env: &Environment) -> ExitStatus
-    where I: IntoIterator, I::Item: Run
+fn run_as_subshell<I, E>(iter: I, env: &E) -> ExitStatus
+    where I: IntoIterator,
+          I::Item: Run<E>,
+          E: Environment,
 {
-    let env = &mut *env.sub_env();
+    let env = &mut env.sub_env();
     run(iter, env).unwrap_or_else(|err| {
         env.report_error(&err);
         let exit = env.last_status();
@@ -468,8 +497,10 @@ fn run_as_subshell<I>(iter: I, env: &Environment) -> ExitStatus
 
 /// A function for running any iterable collection of items which implement `Run`.
 /// This is useful for lazily streaming commands to run.
-pub fn run<I>(iter: I, env: &mut Environment) -> Result<ExitStatus>
-    where I: IntoIterator, I::Item: Run
+pub fn run<I, E>(iter: I, env: &mut E) -> Result<ExitStatus>
+    where I: IntoIterator,
+          I::Item: Run<E>,
+          E: Environment,
 {
     let mut exit = EXIT_SUCCESS;
     for c in iter {
@@ -481,11 +512,12 @@ pub fn run<I>(iter: I, env: &mut Environment) -> Result<ExitStatus>
 
 /// Adds a number of local redirects to the specified environment, runs the provided closure,
 /// then removes the local redirects and restores the previous file descriptors before returning.
-pub fn run_with_local_redirections<'a, I, F, W, T>(env: &mut Environment, redirects: I, closure: F)
+pub fn run_with_local_redirections<'a, I, F, E, W, T>(env: &mut E, redirects: I, closure: F)
     -> Result<T>
     where I: IntoIterator<Item = &'a Redirect<W>>,
-          F: FnOnce(&mut Environment) -> Result<T>,
-          W: 'a + WordEval,
+          F: FnOnce(&mut E) -> Result<T>,
+          E: Environment,
+          W: WordEval<E> + 'a,
 {
     use runtime::eval::RedirectAction::*;
 
@@ -603,18 +635,24 @@ mod tests {
     #[cfg(windows)]
     pub const DEV_NULL: &'static str = "NUL";
 
-    pub struct MockFn<F: FnMut(&mut Environment) -> Result<ExitStatus>> {
+    pub struct MockFn<F> {
         callback: RefCell<F>,
     }
 
-    impl<F: FnMut(&mut Environment) -> Result<ExitStatus>> MockFn<F> {
-        pub fn new(f: F) -> Rc<Self> {
+    impl<F> MockFn<F> {
+        pub fn new<E>(f: F) -> Rc<Self>
+            where E: Environment,
+                  F: FnMut(&mut E) -> Result<ExitStatus>
+        {
             Rc::new(MockFn { callback: RefCell::new(f) })
         }
     }
 
-    impl<F: FnMut(&mut Environment) -> Result<ExitStatus>> Run for MockFn<F> {
-        fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
+    impl<E, F> Run<E> for MockFn<F>
+        where E: Environment,
+              F: FnMut(&mut E) -> Result<ExitStatus>
+    {
+        fn run(&self, env: &mut E) -> Result<ExitStatus> {
             (&mut *self.callback.borrow_mut())(env)
         }
     }
@@ -625,8 +663,8 @@ mod tests {
         Error(Rc<Fn() -> RuntimeError + 'static>),
     }
 
-    impl WordEval for MockWord {
-        fn eval_with_config(&self, env: &mut Environment, _: WordEvalConfig) -> Result<Fields> {
+    impl<E: Environment> WordEval<E> for MockWord {
+        fn eval_with_config(&self, env: &mut E, _: WordEvalConfig) -> Result<Fields> {
             match *self {
                 MockWord::Regular(ref rc) => Ok(rc.clone().into()),
                 MockWord::Error(ref e) => {
@@ -636,7 +674,7 @@ mod tests {
             }
         }
 
-        fn eval_as_pattern(&self, env: &mut Environment) -> Result<glob::Pattern> {
+        fn eval_as_pattern(&self, env: &mut E) -> Result<glob::Pattern> {
             match *self {
                 MockWord::Regular(ref rc) => Ok(glob::Pattern::new(rc).unwrap()),
                 MockWord::Error(ref e) => {
@@ -665,8 +703,8 @@ mod tests {
         }
     }
 
-    impl Run for Command {
-        fn run(&self, env: &mut Environment) -> Result<ExitStatus> {
+    impl<E: Environment> Run<E> for Command {
+        fn run(&self, env: &mut E) -> Result<ExitStatus> {
             self.0.run(env)
         }
     }
@@ -675,12 +713,8 @@ mod tests {
         MockWord::Regular(Rc::new(s.to_string()))
     }
 
-    fn dev_null() -> FileDesc {
+    pub fn dev_null() -> FileDesc {
         OpenOptions::new().read(true).write(true).open(DEV_NULL).unwrap().into()
-    }
-
-    pub fn file_desc() -> FileDesc {
-        dev_null()
     }
 
     macro_rules! cmd_simple {
@@ -727,7 +761,7 @@ mod tests {
         ($swallow_errors:expr, $test:expr, $env:expr, $ok_status:expr, $($case:expr),+,) => {
             $({
                 // Use a sub-env for each test case to offer a "clean slate"
-                let result = $test(cmd_simple!(move || $case), &mut *$env.sub_env());
+                let result = $test(cmd_simple!(move || $case), $env.sub_env());
                 if $swallow_errors {
                     assert_eq!(result, Ok($ok_status.clone().unwrap_or(EXIT_ERROR_MOCK)));
                 } else {
@@ -740,7 +774,7 @@ mod tests {
     fn test_error_handling_non_fatals<F>(swallow_errors: bool,
                                          test: F,
                                          ok_status: Option<ExitStatus>)
-        where F: Fn(SimpleCommand<MockWord>, &mut Environment) -> Result<ExitStatus>
+        where for<'a> F: Fn(SimpleCommand<MockWord>, Env<'a>) -> Result<ExitStatus>
     {
         // We'll be printing a lot of errors, so we'll suppress actually printing
         // to avoid polluting the output of the test runner.
@@ -762,7 +796,7 @@ mod tests {
     fn test_error_handling_fatals<F>(swallow_fatals: bool,
                                      test: F,
                                      ok_status: Option<ExitStatus>)
-        where F: Fn(SimpleCommand<MockWord>, &mut Environment) -> Result<ExitStatus>
+        where for<'a> F: Fn(SimpleCommand<MockWord>, Env<'a>) -> Result<ExitStatus>
     {
         use std::error::Error;
         use std::fmt;
@@ -793,7 +827,7 @@ mod tests {
 
         let custom_err_result = test(
             cmd_simple!(move || { RuntimeError::Custom(Box::new(MockErr(42))) }),
-            &mut *env.sub_env()
+            env.sub_env()
         );
 
         if swallow_fatals {
@@ -807,7 +841,7 @@ mod tests {
 
     /// For exhaustively testing against handling of different error types
     pub fn test_error_handling<F>(swallow_errors: bool, test: F, ok_status: Option<ExitStatus>)
-        where F: Fn(SimpleCommand<MockWord>, &mut Environment) -> Result<ExitStatus>
+        where for<'a> F: Fn(SimpleCommand<MockWord>, Env<'a>) -> Result<ExitStatus>
     {
         test_error_handling_non_fatals(swallow_errors, &test, ok_status);
         test_error_handling_fatals(false, test, ok_status);
@@ -816,12 +850,12 @@ mod tests {
     #[test]
     fn test_run_command_error_handling() {
         // FIXME: test Job when implemented
-        test_error_handling(false, |cmd, env| {
+        test_error_handling(false, |cmd, mut env| {
             let command: ::syntax::ast::Command<MockWord, Command> = List(CommandList {
                 first: Single(Simple(Box::new(cmd))),
                 rest: vec!(),
             });
-            command.run(env)
+            command.run(&mut env)
         }, None);
     }
 
@@ -890,15 +924,15 @@ mod tests {
 
         let should_not_run = "should not run";
 
-        test_error_handling(false,  |cmd, env| {
+        test_error_handling(false, |cmd, mut env| {
             let list = AndOrList {
                 first: cmd,
                 rest: vec!(),
             };
-            list.run(env)
+            list.run(&mut env)
         }, None);
 
-        test_error_handling(true,  |cmd, env| {
+        test_error_handling(true,  |cmd, mut env| {
             env.set_function(should_not_run.to_owned(), MockFn::new(|_| {
                 panic!("ran command that should not be run")
             }));
@@ -910,10 +944,10 @@ mod tests {
                     Or(exit(42)),
                 ),
             };
-            list.run(env)
+            list.run(&mut env)
         }, Some(ExitStatus::Code(42)));
 
-        test_error_handling(true,  |cmd, env| {
+        test_error_handling(true,  |cmd, mut env| {
             env.set_function(should_not_run.to_owned(), MockFn::new(|_| {
                 panic!("ran command that should not be run")
             }));
@@ -926,10 +960,10 @@ mod tests {
                     Or(exit(42)),
                 ),
             };
-            list.run(env)
+            list.run(&mut env)
         }, Some(ExitStatus::Code(42)));
 
-        test_error_handling(false,  |cmd, env| {
+        test_error_handling(false,  |cmd, mut env| {
             env.set_function(should_not_run.to_owned(), MockFn::new(|_| {
                 panic!("ran command that should not be run")
             }));
@@ -940,10 +974,10 @@ mod tests {
                     Or(cmd_from_simple(cmd)),
                 ),
             };
-            list.run(env)
+            list.run(&mut env)
         }, Some(ExitStatus::Code(42)));
 
-        test_error_handling(false,  |cmd, env| {
+        test_error_handling(false,  |cmd, mut env| {
             env.set_function(should_not_run.to_owned(), MockFn::new(|_| {
                 panic!("ran command that should not be run")
             }));
@@ -954,17 +988,17 @@ mod tests {
                     And(cmd_from_simple(cmd)),
                 ),
             };
-            list.run(env)
+            list.run(&mut env)
         }, None);
     }
 
     #[test]
     fn test_run_listable_command_error_handling() {
         // FIXME: test Pipe when implemented
-        test_error_handling(false, |cmd, env| {
+        test_error_handling(false, |cmd, mut env| {
             let listable: ::syntax::ast::ListableCommand<PipeableCommand>
                 = Single(Simple(Box::new(cmd)));
-            listable.run(env)
+            listable.run(&mut env)
         }, None);
     }
 
@@ -972,13 +1006,13 @@ mod tests {
     fn test_run_pipeable_command_error_handling() {
         use syntax::ast::GuardBodyPair;
 
-        test_error_handling(false, |cmd, env| {
+        test_error_handling(false, |cmd, mut env| {
             let pipeable: PipeableCommand = Simple(Box::new(cmd));
-            pipeable.run(env)
+            pipeable.run(&mut env)
         }, None);
 
         // Swallow errors because underlying command body will swallow errors
-        test_error_handling(true, |cmd, env| {
+        test_error_handling(true, |cmd, mut env| {
             let pipeable: PipeableCommand = Compound(Box::new(CompoundCommand {
                 kind: If {
                     conditionals: vec!(GuardBodyPair {
@@ -989,7 +1023,7 @@ mod tests {
                 },
                 io: vec!()
             }));
-            pipeable.run(env)
+            pipeable.run(&mut env)
         }, None);
 
         // NB FunctionDef never returns any errors, untestable at the moment
@@ -1000,7 +1034,7 @@ mod tests {
         use syntax::ast::GuardBodyPair;
 
         // Swallow errors because underlying command body will swallow errors
-        test_error_handling(true, |cmd, env| {
+        test_error_handling(true, |cmd, mut env| {
             let compound: CompoundCommandKind = If {
                 conditionals: vec!(GuardBodyPair {
                     guard: vec!(true_cmd()),
@@ -1008,7 +1042,7 @@ mod tests {
                 }),
                 else_branch: None,
             };
-            compound.run(env)
+            compound.run(&mut env)
         }, None);
     }
 
@@ -1318,7 +1352,7 @@ mod tests {
             let file_exec_open_path = file_exec_open_path.clone();
             let file_exec_change_path = file_exec_change_path.clone();
 
-            env.set_function(fn_name.clone(), MockFn::new(move |mut env| {
+            env.set_function(fn_name.clone(), MockFn::new::<Env>(move |mut env| {
                 let file_exec_open = FileDesc::from(Permissions::Write.open(&file_exec_open_path).unwrap());
                 let file_exec_change = FileDesc::from(Permissions::Write.open(&file_exec_change_path).unwrap());
 
@@ -1395,17 +1429,17 @@ mod tests {
 
     #[test]
     fn test_run_command_compound_kind_brace_error_handling() {
-        test_error_handling(true, |cmd, env| {
+        test_error_handling(true, |cmd, mut env| {
             let compound: CompoundCommandKind = Brace(vec!(cmd_from_simple(cmd), exit(42)));
-            compound.run(env)
+            compound.run(&mut env)
         }, Some(ExitStatus::Code(42)));
 
-        test_error_handling(true, |cmd, env| {
+        test_error_handling(true, |cmd, mut env| {
             let compound: CompoundCommandKind = Brace(vec!(true_cmd(), cmd_from_simple(cmd)));
-            compound.run(env)
+            compound.run(&mut env)
         }, None);
 
-        test_error_handling_fatals(false, |cmd, env| {
+        test_error_handling_fatals(false, |cmd, mut env| {
             let should_not_run = "should not run";
             env.set_function(should_not_run.to_owned(), MockFn::new(|_| {
                 panic!("ran command that should not be run")
@@ -1414,7 +1448,7 @@ mod tests {
             let compound: CompoundCommandKind = Brace(vec!(
                 cmd_from_simple(cmd), cmd!(should_not_run)
             ));
-            compound.run(env)
+            compound.run(&mut env)
         }, None);
     }
 
@@ -1491,13 +1525,17 @@ mod tests {
         use syntax::ast::GuardBodyPair;
 
         let should_not_run = "foo_fn_should_not_run";
-        let fn_should_not_run = MockFn::new(|_| {
-            panic!("ran command that should not be run")
-        });
+        macro_rules! fn_should_not_run {
+            () => {
+                MockFn::new(|_| {
+                    panic!("ran command that should not be run")
+                })
+            };
+        }
 
         // Error in guard
-        test_error_handling(true, |cmd, env| {
-            env.set_function(should_not_run.to_owned(), fn_should_not_run.clone());
+        test_error_handling(true, |cmd, mut env| {
+            env.set_function(should_not_run.to_owned(), fn_should_not_run!());
             let compound: CompoundCommandKind = If {
                 conditionals: vec!(GuardBodyPair {
                     guard: vec!(cmd_from_simple(cmd)),
@@ -1505,12 +1543,12 @@ mod tests {
                 }),
                 else_branch: Some(vec!(exit(42))),
             };
-            compound.run(env)
+            compound.run(&mut env)
         }, Some(ExitStatus::Code(42)));
 
         // Error in body of successful guard
-        test_error_handling(true, |cmd, env| {
-            env.set_function(should_not_run.to_owned(), fn_should_not_run.clone());
+        test_error_handling(true, |cmd, mut env| {
+            env.set_function(should_not_run.to_owned(), fn_should_not_run!());
             let compound: CompoundCommandKind = If {
                 conditionals: vec!(GuardBodyPair {
                     guard: vec!(true_cmd()),
@@ -1518,12 +1556,12 @@ mod tests {
                 }),
                 else_branch: Some(vec!(cmd!(should_not_run))),
             };
-            compound.run(env)
+            compound.run(&mut env)
         }, None);
 
         // Error in body of else part
-        test_error_handling(true, |cmd, env| {
-            env.set_function(should_not_run.to_owned(), fn_should_not_run.clone());
+        test_error_handling(true, |cmd, mut env| {
+            env.set_function(should_not_run.to_owned(), fn_should_not_run!());
             let compound: CompoundCommandKind = If {
                 conditionals: vec!(GuardBodyPair {
                     guard: vec!(false_cmd()),
@@ -1531,7 +1569,7 @@ mod tests {
                 }),
                 else_branch: Some(vec!(cmd_from_simple(cmd))),
             };
-            compound.run(env)
+            compound.run(&mut env)
         }, None);
     }
 
@@ -1551,12 +1589,10 @@ mod tests {
         let mut env = Env::new().unwrap();
         env.set_var(var_name.clone(), Rc::new(var_value.clone()));
 
-        {
-            env.set_function(fn_check_vars.to_owned(), MockFn::new(move |env| {
-                assert_eq!(&**env.var(&var_name).unwrap(), &var_value);
-                Ok(EXIT_SUCCESS)
-            }));
-        }
+        env.set_function(fn_check_vars.to_owned(), MockFn::new::<Env>(move |env| {
+            assert_eq!(&**env.var(&var_name).unwrap(), &var_value);
+            Ok(EXIT_SUCCESS)
+        }));
         assert_eq!(cmd!(fn_check_vars).run(&mut env), Ok(EXIT_SUCCESS));
     }
 
@@ -1575,7 +1611,7 @@ mod tests {
             let parent_name = parent_name.clone();
             let child_name = child_name.clone();
 
-            env.set_function(fn_check_vars.to_owned(), MockFn::new(move |env| {
+            env.set_function(fn_check_vars.to_owned(), MockFn::new::<Env>(move |env| {
                 assert_eq!(&**env.var(&parent_name).unwrap(), child_value);
                 assert_eq!(&**env.var(&child_name).unwrap(), child_value);
                 Ok(EXIT_SUCCESS)
@@ -1609,11 +1645,9 @@ mod tests {
         let mut env = Env::new().unwrap();
 
         // Subshells should inherit function definitions
-        {
-            env.set_function(String::from(fn_name_default), MockFn::new(move |_| {
-                Ok(ExitStatus::Code(default_exit_code))
-            }));
-        }
+        env.set_function(String::from(fn_name_default), MockFn::new(move |_| {
+            Ok(ExitStatus::Code(default_exit_code))
+        }));
         let compound: CompoundCommandKind = Subshell(vec!(cmd!(fn_name_default)));
         assert_eq!(compound.run(&mut env), Ok(ExitStatus::Code(default_exit_code)));
     }
@@ -1640,10 +1674,10 @@ mod tests {
             cmd!(fn_name),
         ));
         assert_eq!(compound.run(&mut env), Ok(ExitStatus::Code(override_exit_code)));
-        assert_eq!(env.run_function(Rc::new(fn_name.to_string()), vec!()), None);
+        assert_eq!(env.run_function(&fn_name, vec!()), None);
 
         // Redefining function within subshell should revert to original
-        env.set_function(fn_name_parent.to_owned(), MockFn::new(move |_| {
+        env.set_function(fn_name_parent.to_owned(), MockFn::new::<Env>(move |_| {
             Ok(ExitStatus::Code(parent_exit_code))
         }));
 
@@ -1716,7 +1750,7 @@ mod tests {
             {
                 let new_writer = new_writer;
                 let change_writer = change_writer;
-                env.set_function(exec.to_owned(), MockFn::new(move |mut env| {
+                env.set_function(exec.to_owned(), MockFn::new::<Env>(move |mut env| {
                     env.set_file_desc(new_fd, new_writer.clone(), Permissions::Write);
                     env.set_file_desc(target_fd, change_writer.clone(), Permissions::Write);
                     Ok(EXIT_SUCCESS)
@@ -1766,25 +1800,25 @@ mod tests {
 
     #[test]
     fn test_run_compound_command_kind_subshell_error_handling() {
-        test_error_handling_non_fatals(true, |cmd, env| {
+        test_error_handling_non_fatals(true, |cmd, mut env| {
             let compound: CompoundCommandKind = Subshell(vec!(cmd_from_simple(cmd), exit(42)));
-            compound.run(env)
+            compound.run(&mut env)
         }, Some(ExitStatus::Code(42)));
-        test_error_handling_fatals(true, |cmd, env| {
+        test_error_handling_fatals(true, |cmd, mut env| {
             let compound: CompoundCommandKind = Subshell(vec!(cmd_from_simple(cmd), exit(42)));
-            compound.run(env)
+            compound.run(&mut env)
         }, None);
 
-        test_error_handling_non_fatals(true, |cmd, env| {
+        test_error_handling_non_fatals(true, |cmd, mut env| {
             let compound: CompoundCommandKind = Subshell(vec!(true_cmd(), cmd_from_simple(cmd)));
-            compound.run(env)
+            compound.run(&mut env)
         }, None);
-        test_error_handling_fatals(true, |cmd, env| {
+        test_error_handling_fatals(true, |cmd, mut env| {
             let compound: CompoundCommandKind = Subshell(vec!(true_cmd(), cmd_from_simple(cmd)));
-            compound.run(env)
+            compound.run(&mut env)
         }, None);
 
-        test_error_handling_fatals(true, |cmd, env| {
+        test_error_handling_fatals(true, |cmd, mut env| {
             let should_not_run = "should not run";
             env.set_function(should_not_run.to_owned(), MockFn::new(|_| {
                 panic!("ran command that should not be run")
@@ -1792,7 +1826,7 @@ mod tests {
 
             let cmd = cmd_from_simple(cmd);
             let compound: CompoundCommandKind = Subshell(vec!(cmd, cmd!(should_not_run)));
-            compound.run(env)
+            compound.run(&mut env)
         }, None);
     }
 }
