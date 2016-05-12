@@ -1576,6 +1576,73 @@ mod tests {
     }
 
     #[test]
+    fn test_run_command_compound_kind_for() {
+        let fn_body = "fn_body";
+        let var = "var";
+        let result_var = "result_var";
+
+        let mut env = Env::with_config(EnvConfig {
+            args: Some(vec!("arg1".to_owned(), "arg2".to_owned())),
+            .. Default::default()
+        }).unwrap();
+
+        env.set_function(fn_body.to_owned(), MockFn::new::<Env>(move |mut env| {
+            let mut result = (**env.var(result_var).unwrap()).clone();
+            result.push_str(&**env.var(var).unwrap());
+            env.set_var(result_var.to_owned(), result.into());
+            Ok(ExitStatus::Code(42))
+        }));
+
+        let compound: CompoundCommandKind = For {
+            var: var.to_owned(),
+            words: Some(vec!(word("foo"), word("bar"))),
+            body: vec!(cmd!(fn_body)),
+        };
+
+        env.set_var(result_var.to_owned(), "".to_owned().into());
+        assert_eq!(compound.run(&mut env), Ok(ExitStatus::Code(42)));
+        assert_eq!(**env.var(result_var).unwrap(), "foobar");
+        // Bash appears to retain the last value of the bound variable
+        assert_eq!(**env.var(var).unwrap(), "bar");
+
+        let compound: CompoundCommandKind = For {
+            var: var.to_owned(),
+            words: None,
+            body: vec!(cmd!(fn_body)),
+        };
+
+        env.set_var(result_var.to_owned(), "".to_owned().into());
+        assert_eq!(compound.run(&mut env), Ok(ExitStatus::Code(42)));
+        assert_eq!(**env.var(result_var).unwrap(), "arg1arg2");
+        // Bash appears to retain the last value of the bound variable
+        assert_eq!(**env.var(var).unwrap(), "arg2");
+    }
+
+    #[test]
+    fn test_run_command_compound_kind_for_error_handling() {
+        test_error_handling(false, |cmd, mut env| {
+            let compound: CompoundCommandKind = For {
+                var: "var".to_owned(),
+                words: Some(vec!(MockWord::Error(Rc::new(move || {
+                    let mut env = Env::new().unwrap(); // Env not important here
+                    cmd.run(&mut env).unwrap_err()
+                })))),
+                body: vec!(),
+            };
+            compound.run(&mut env)
+        }, None);
+
+        test_error_handling(true, |cmd, mut env| {
+            let compound: CompoundCommandKind = For {
+                var: "var".to_owned(),
+                words: Some(vec!(word("foo"))),
+                body: vec!(cmd_from_simple(cmd)),
+            };
+            compound.run(&mut env)
+        }, None);
+    }
+
+    #[test]
     fn test_run_compound_command_kind_if() {
         use syntax::ast::GuardBodyPair;
 
