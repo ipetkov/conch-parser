@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::convert::{From, Into};
 use std::fmt;
-use std::io::{Error as IoError, ErrorKind as IoErrorKind, Write};
+use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 use std::iter::{IntoIterator, Iterator};
 use std::process::{self, Stdio};
 use std::rc::Rc;

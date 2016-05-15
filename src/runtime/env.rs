@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::convert::From;
 use std::fmt;
 use std::error;
-use std::io::{Result as IoResult, Write};
+use std::io::Result as IoResult;
 use std::iter::{IntoIterator, Iterator};
 use std::rc::Rc;
 
@@ -604,7 +604,7 @@ mod tests {
             }));
         }
 
-        env.run_function(&fn_name, args.clone());
+        env.run_function(fn_name, args.clone());
 
         let parent_args: Vec<Rc<String>> = parent_args.into_iter().map(Rc::new).collect();
         assert_eq!(env.args(), &*parent_args);
@@ -637,7 +637,7 @@ mod tests {
                     Ok(EXIT_SUCCESS)
                 } else {
                     depth.set(num_calls);
-                    env.run_function(&fn_name, vec!()).unwrap()
+                    env.run_function(fn_name, vec!()).unwrap()
                 }
             }));
         }
@@ -674,7 +674,7 @@ mod tests {
                     next_args.reverse();
                     next_args.push(Rc::new(format!("arg{}", num_calls)));
 
-                    let ret = env.run_function(&fn_name, next_args).unwrap();
+                    let ret = env.run_function(fn_name, next_args).unwrap();
                     assert_eq!(&*cur_args, &*env.args());
                     ret
                 }

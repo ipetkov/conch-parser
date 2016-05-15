@@ -2,7 +2,6 @@ use std::convert::From;
 use std::error::Error;
 use std::fmt::{Display, Formatter, Result};
 use std::io::Error as IoError;
-use std::io::Write;
 use super::Fd;
 use syntax::ast::Parameter;
 use runtime::io::Permissions;

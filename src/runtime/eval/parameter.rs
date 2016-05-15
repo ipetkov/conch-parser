@@ -369,7 +369,7 @@ fn split_fields<E: Environment>(fields: Fields, env: &E) -> Fields {
 /// Actual implementation of `split_fields`.
 fn split_fields_internal<E: Environment>(words: Vec<Rc<String>>, env: &E) -> Vec<Rc<String>> {
     // If IFS is set but null, there is nothing left to split
-    let ifs = env.var("IFS").map_or(IFS_DEFAULT, |s| &s);
+    let ifs = env.var("IFS").map_or(IFS_DEFAULT, |s| s);
     if ifs.is_empty() {
         return words;
     }
