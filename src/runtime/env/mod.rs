@@ -13,6 +13,10 @@ use runtime::{EXIT_SUCCESS, STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO};
 use runtime::{ExitStatus, Fd, Result, Run};
 use runtime::io::{dup_stdio, FileDesc, Permissions};
 
+mod last_status_env;
+
+pub use self::last_status_env::*;
+
 /// A struct for configuring a new `Env` instance.
 ///
 /// It implements `Default` so it is possible to selectively override
@@ -477,14 +481,6 @@ mod tests {
 
         assert_eq!(&**parent.var(parent_name).unwrap(), parent_value);
         assert_eq!(parent.var(child_name), None);
-    }
-
-    #[test]
-    fn test_env_set_and_get_last_status() {
-        let exit = ExitStatus::Signal(9);
-        let mut env = Env::new().unwrap();
-        env.set_last_status(exit);
-        assert_eq!(env.last_status(), exit);
     }
 
     #[test]

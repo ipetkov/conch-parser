@@ -20,10 +20,11 @@ use runtime::eval::{Fields, TildeExpansion, WordEval, WordEvalConfig};
 use runtime::io::{FileDesc, Permissions};
 
 mod errors;
-mod env;
 
+pub mod env;
 pub mod eval;
 pub mod io;
+// FIXME: do not re-export this module
 pub use self::env::*;
 pub use self::errors::*;
 
