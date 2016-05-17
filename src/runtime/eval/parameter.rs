@@ -3,7 +3,8 @@
 use glob;
 use libc;
 
-use runtime::{Environment, ExpansionError, ExitStatus, EXIT_ERROR, Result, Run, RuntimeError};
+use runtime::{ExpansionError, ExitStatus, EXIT_ERROR, Result, Run, RuntimeError};
+use runtime::env::Environment;
 use runtime::eval::{Fields, TildeExpansion, WordEval, WordEvalConfig};
 use std::io;
 use std::rc::Rc;
@@ -578,8 +579,8 @@ impl Arithmetic {
 #[cfg_attr(feature = "clippy", allow(similar_names))]
 mod tests {
     use glob;
-    use runtime::{Env, EnvConfig, Environment, ExitStatus, EXIT_SUCCESS, EXIT_ERROR, ExpansionError,
-                  Result, Run, RuntimeError};
+    use runtime::{ExitStatus, EXIT_SUCCESS, EXIT_ERROR, ExpansionError, Result, Run, RuntimeError};
+    use runtime::env::{Env, EnvConfig, Environment};
     use runtime::eval::{Fields, TildeExpansion, WordEval, WordEvalConfig};
     use std::rc::Rc;
     use syntax::ast::{Arithmetic, Parameter, ParameterSubstitution, TopLevelWord};

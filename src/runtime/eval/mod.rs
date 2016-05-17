@@ -6,7 +6,8 @@ mod redirect;
 mod word;
 
 use glob;
-use runtime::{Environment, Result};
+use runtime::Result;
+use runtime::env::Environment;
 use std::rc::Rc;
 use std::vec;
 
@@ -216,7 +217,8 @@ pub trait WordEval<E: Environment> {
 
 #[cfg(test)]
 mod tests {
-    use runtime::{Env, Environment, Result};
+    use runtime::Result;
+    use runtime::env::{Env, Environment};
     use std::rc::Rc;
     use super::*;
 

@@ -1,6 +1,7 @@
 //! A module which defines evaluating any kind of word.
 
-use runtime::{Environment, Result, Run};
+use runtime::{Result, Run};
+use runtime::env::Environment;
 use runtime::eval::{Fields, TildeExpansion, WordEval, WordEvalConfig};
 use std::convert::{From, Into};
 use std::iter::{IntoIterator, Iterator};
@@ -176,7 +177,8 @@ impl<E: Environment> WordEval<E> for TopLevelWord {
 
 #[cfg(test)]
 mod tests {
-    use runtime::{Env, EnvConfig, Environment, Result, RuntimeError};
+    use runtime::{Result, RuntimeError};
+    use runtime::env::{Env, EnvConfig, Environment};
     use runtime::ExpansionError::DivideByZero;
     use runtime::eval::{Fields, TildeExpansion, WordEval, WordEvalConfig};
     use std::rc::Rc;

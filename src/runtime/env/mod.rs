@@ -23,7 +23,7 @@ pub use self::last_status_env::*;
 /// certain attributes while retaining the rest of the default values.
 ///
 /// ```
-/// # use shell_lang::runtime::{Env, EnvConfig, Environment};
+/// # use shell_lang::runtime::env::{Env, EnvConfig, Environment};
 /// let cfg = EnvConfig {
 ///     name: Some("my_shell".to_owned()),
 ///     .. Default::default()

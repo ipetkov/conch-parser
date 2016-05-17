@@ -3,8 +3,9 @@
 use std::fs::OpenOptions;
 use std::rc::Rc;
 use syntax::ast::Redirect;
-use runtime::{Fd, Environment, RedirectionError, Result, RuntimeError};
+use runtime::{Fd, RedirectionError, Result, RuntimeError};
 use runtime::{EXIT_ERROR, STDIN_FILENO, STDOUT_FILENO};
+use runtime::env::Environment;
 use runtime::eval::{Fields, TildeExpansion, WordEval, WordEvalConfig};
 use runtime::io::{FileDesc, Permissions};
 
@@ -167,7 +168,8 @@ fn rc_to_owned<T: Clone>(rc: Rc<T>) -> T {
 mod tests {
     extern crate tempdir;
 
-    use runtime::{Env, EnvConfig, Environment, Fd, STDIN_FILENO, STDOUT_FILENO};
+    use runtime::{Fd, STDIN_FILENO, STDOUT_FILENO};
+    use runtime::env::{Env, EnvConfig, Environment};
     use runtime::io::{FileDesc, Permissions};
     use runtime::tests::{MockWord, word};
     use self::tempdir::TempDir;

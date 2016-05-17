@@ -4,6 +4,7 @@ use glob;
 #[cfg(unix)]
 use libc;
 
+use self::env::{Env, EnvConfig, Environment};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::convert::{From, Into};
@@ -24,8 +25,6 @@ mod errors;
 pub mod env;
 pub mod eval;
 pub mod io;
-// FIXME: do not re-export this module
-pub use self::env::*;
 pub use self::errors::*;
 
 /// Exit code for commands that exited successfully.
@@ -611,6 +610,8 @@ mod tests {
     use std::path::PathBuf;
     use std::rc::Rc;
     use std::thread;
+
+    use super::env::{Env, EnvConfig, Environment};
     use super::eval::{Fields, WordEval, WordEvalConfig};
     use super::io::{FileDesc, Permissions};
     use super::*;
