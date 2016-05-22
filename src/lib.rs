@@ -3,7 +3,7 @@
 #![cfg_attr(feature = "clippy", feature(plugin))]
 #![cfg_attr(feature = "clippy", plugin(clippy))]
 
-#![cfg_attr(feature = "clippy", deny(print_stdout))]
+#![cfg_attr(all(not(test), feature = "clippy"), deny(print_stdout))]
 #![cfg_attr(feature = "clippy", deny(wrong_self_convention))]
 
 #![deny(missing_copy_implementations)]

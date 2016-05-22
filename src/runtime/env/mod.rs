@@ -14,8 +14,12 @@ use runtime::{ExitStatus, Fd, Result, Run};
 use runtime::io::{dup_stdio, FileDesc, Permissions};
 
 mod last_status_env;
+mod string_wrapper;
+mod var_env;
 
 pub use self::last_status_env::*;
+pub use self::string_wrapper::*;
+pub use self::var_env::*;
 
 /// A struct for configuring a new `Env` instance.
 ///
@@ -369,6 +373,39 @@ impl<'a> Environment for Env<'a> {
     fn is_interactive(&self) -> bool {
         self.interactive
     }
+}
+
+/// An interface for all environments that can produce another environment,
+/// identical to itself, but any changes applied to the sub environment will
+/// not be reflected on the parent.
+///
+/// It is strongly encouraged for implementors to utilize `Cow` (Clone On Write
+/// smart pointers) or other mechanisms to ensure creating and mutating sub
+/// environments is as cheap as possible.
+pub trait SubEnvironment<'a> {
+    /// Create a new sub-environment, which starts out idential to its parent,
+    /// but any changes on the new environment must not be reflected on the parent.
+    fn sub_env(&'a self) -> Self;
+}
+
+/// Makes a shallow copy of the data held by a `Cow`.
+///
+/// Reborrows the data if it is already owned.
+///
+/// # Examples
+///
+/// ```
+/// use std::borrow::Cow;
+///
+/// let cow: Cow<[_]> = Cow::Owned(vec![1, 2, 3]);
+///
+/// match cow.shallow_copy() {
+///     Cow::Owned(_) => panic!("needless clone!"),
+///     Cow::Borrowed(vec) => assert_eq!(vec, &[1, 2, 3]),
+/// }
+/// ```
+pub fn shallow_copy<'a, B: ?Sized>(data: &'a Cow<'a, B>) -> Cow<'a, B> where B: ToOwned {
+    Cow::Borrowed(&**data)
 }
 
 #[cfg(test)]

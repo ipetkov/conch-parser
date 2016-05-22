@@ -4,7 +4,7 @@ use glob;
 #[cfg(unix)]
 use libc;
 
-use self::env::{Env, EnvConfig, Environment};
+use self::env::Environment;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::convert::{From, Into};

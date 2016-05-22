@@ -1,4 +1,5 @@
 use runtime::{ExitStatus, EXIT_SUCCESS};
+use runtime::env::SubEnvironment;
 
 /// An interface for setting and getting the
 /// exit status of the last command to run.
@@ -54,6 +55,12 @@ impl LastStatusEnvironment for LastStatusEnv {
 impl Default for LastStatusEnv {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<'a> SubEnvironment<'a> for LastStatusEnv {
+    fn sub_env(&'a self) -> Self {
+        *self
     }
 }
 
