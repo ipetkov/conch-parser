@@ -13,10 +13,12 @@ use runtime::{EXIT_SUCCESS, STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO};
 use runtime::{ExitStatus, Fd, Result, Run};
 use runtime::io::{dup_stdio, FileDesc, Permissions};
 
+mod args_env;
 mod last_status_env;
 mod string_wrapper;
 mod var_env;
 
+pub use self::args_env::*;
 pub use self::last_status_env::*;
 pub use self::string_wrapper::*;
 pub use self::var_env::*;
