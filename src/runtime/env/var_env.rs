@@ -14,7 +14,6 @@ pub trait VariableEnvironment<T: ?Sized> {
     // FIXME: might be able to make name also T and not need an owned String
     fn set_var(&mut self, name: String, val: T);
     /// Unset the value of some variable (including environment variables).
-    fn unset_var(&mut self, name: &str);
     /// Get all current pairs of environment variables and their values.
     fn env_vars(&self) -> Cow<[(&str, &T)]>;
 }
@@ -30,12 +29,22 @@ impl<'a, T, E: ?Sized> VariableEnvironment<T> for &'a mut E
         (**self).set_var(name, val);
     }
 
-    fn unset_var(&mut self, name: &str) {
-        (**self).unset_var(name);
-    }
-
     fn env_vars(&self) -> Cow<[(&str, &T)]> {
         (**self).env_vars()
+    }
+}
+
+/// An interface for unsetting shell and envrironment variables.
+pub trait UnsetVariableEnvironment<T: ?Sized> {
+    /// Unset the value of some variable (including environment variables).
+    fn unset_var(&mut self, name: &str);
+}
+
+impl<'a, T, E: ?Sized> UnsetVariableEnvironment<T> for &'a mut E
+    where E: UnsetVariableEnvironment<T>
+{
+    fn unset_var(&mut self, name: &str) {
+        (**self).unset_var(name);
     }
 }
 
@@ -105,12 +114,6 @@ impl<'a, T> VariableEnvironment<T> for VarEnv<'a, T> where T: Clone + Eq {
         }
     }
 
-    fn unset_var(&mut self, name: &str) {
-        if self.vars.contains_key(name) {
-            self.vars.to_mut().remove(name);
-        }
-    }
-
     fn env_vars(&self) -> Cow<[(&str, &T)]> {
         let ret: Vec<_> = self.vars.iter()
             .filter_map(|(k, &(ref v, exported))| if exported {
@@ -121,6 +124,14 @@ impl<'a, T> VariableEnvironment<T> for VarEnv<'a, T> where T: Clone + Eq {
             .collect();
 
         Cow::Owned(ret)
+    }
+}
+
+impl<'a, T> UnsetVariableEnvironment<T> for VarEnv<'a, T> where T: Clone + Eq {
+    fn unset_var(&mut self, name: &str) {
+        if self.vars.contains_key(name) {
+            self.vars.to_mut().remove(name);
+        }
     }
 }
 
