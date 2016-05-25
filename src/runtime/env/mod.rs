@@ -14,11 +14,13 @@ use runtime::{ExitStatus, Fd, Result, Run};
 use runtime::io::{dup_stdio, FileDesc, Permissions};
 
 mod args_env;
+mod fn_env;
 mod last_status_env;
 mod string_wrapper;
 mod var_env;
 
 pub use self::args_env::*;
+pub use self::fn_env::*;
 pub use self::last_status_env::*;
 pub use self::string_wrapper::*;
 pub use self::var_env::*;
@@ -398,10 +400,11 @@ pub trait SubEnvironment<'a> {
 ///
 /// ```
 /// use std::borrow::Cow;
+/// # use shell_lang::runtime::env::shallow_copy;
 ///
 /// let cow: Cow<[_]> = Cow::Owned(vec![1, 2, 3]);
 ///
-/// match cow.shallow_copy() {
+/// match shallow_copy(&cow) {
 ///     Cow::Owned(_) => panic!("needless clone!"),
 ///     Cow::Borrowed(vec) => assert_eq!(vec, &[1, 2, 3]),
 /// }
