@@ -14,12 +14,14 @@ use runtime::{ExitStatus, Fd, Result, Run};
 use runtime::io::{dup_stdio, FileDesc, Permissions};
 
 mod args_env;
+mod fd_env;
 mod fn_env;
 mod last_status_env;
 mod string_wrapper;
 mod var_env;
 
 pub use self::args_env::*;
+pub use self::fd_env::*;
 pub use self::fn_env::*;
 pub use self::last_status_env::*;
 pub use self::string_wrapper::*;
