@@ -146,6 +146,11 @@ mod tests {
         let env = ArgsEnv::with_name(name.to_owned());
         assert_eq!(env.name(), name);
         assert_eq!(env.arg(0).unwrap(), name);
+
+        // Name should not change in sub environments
+        let env = env.sub_env();
+        assert_eq!(env.name(), name);
+        assert_eq!(env.arg(0).unwrap(), name);
     }
 
     #[test]

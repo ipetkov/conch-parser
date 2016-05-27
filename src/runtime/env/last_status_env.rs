@@ -66,8 +66,9 @@ impl<'a> SubEnvironment<'a> for LastStatusEnv {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use runtime::ExitStatus;
+    use runtime::env::SubEnvironment;
+    use super::*;
 
     #[test]
     fn test_env_set_and_get_last_status() {
@@ -75,5 +76,25 @@ mod tests {
         let mut env = LastStatusEnv::new();
         env.set_last_status(exit);
         assert_eq!(env.last_status(), exit);
+    }
+
+    #[test]
+    fn test_set_last_status_in_child_env_should_not_affect_parent() {
+        let parent_exit = ExitStatus::Signal(9);
+        let mut parent = LastStatusEnv::new();
+        parent.set_last_status(parent_exit);
+
+        {
+            let child_exit = ExitStatus::Code(42);
+            let mut child = parent.sub_env();
+            assert_eq!(child.last_status(), parent_exit);
+
+            child.set_last_status(child_exit);
+            assert_eq!(child.last_status(), child_exit);
+
+            assert_eq!(parent.last_status(), parent_exit);
+        }
+
+        assert_eq!(parent.last_status(), parent_exit);
     }
 }

@@ -132,7 +132,7 @@ impl<'a, T: Clone + Borrow<FileDesc>> FileDescEnvironment<T> for FileDescEnv<'a,
 
 #[cfg(test)]
 mod tests {
-    use runtime::{STDERR_FILENO, STDIN_FILENO};
+    use runtime::{STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO};
     use runtime::env::SubEnvironment;
     use runtime::io::{Permissions, Pipe};
     use runtime::tests::dev_null;
@@ -226,5 +226,40 @@ mod tests {
         reader.read_to_string(&mut msg).unwrap();
         guard.join().unwrap();
         assert_eq!(msg, format!("{}\n", MSG));
+    }
+
+    #[test]
+    fn test_set_and_closefile_desc_in_child_env_should_not_affect_parent() {
+        let fd = STDIN_FILENO;
+        let fd_open_in_child = STDOUT_FILENO;
+        let fd_close_in_child = STDERR_FILENO;
+
+        let perms = Permissions::Write;
+        let fdes = Rc::new(dev_null());
+        let fdes_close_in_child = Rc::new(dev_null());
+
+        let mut parent = FileDescEnv::with_fds(vec!(
+            (fd, fdes.clone(), perms),
+            (fd_close_in_child, fdes_close_in_child.clone(), perms),
+        ));
+
+        assert_eq!(parent.file_desc(fd_open_in_child), None);
+
+        {
+            let child_perms = Permissions::Read;
+            let fdes_open_in_child = Rc::new(dev_null());
+            let mut child = parent.sub_env();
+            child.set_file_desc(fd, fdes_open_in_child.clone(), child_perms);
+            child.set_file_desc(fd_open_in_child, fdes_open_in_child.clone(), child_perms);
+            child.close_file_desc(fd_close_in_child);
+
+            assert_eq!(child.file_desc(fd), Some((&fdes_open_in_child, child_perms)));
+            assert_eq!(child.file_desc(fd_open_in_child), Some((&fdes_open_in_child, child_perms)));
+            assert_eq!(child.file_desc(fd_close_in_child), None);
+        }
+
+        assert_eq!(parent.file_desc(fd), Some((&fdes, perms)));
+        assert_eq!(parent.file_desc(fd_close_in_child), Some((&fdes_close_in_child, perms)));
+        assert_eq!(parent.file_desc(fd_open_in_child), None);
     }
 }

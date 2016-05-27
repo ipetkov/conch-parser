@@ -201,13 +201,57 @@ mod tests {
     }
 
     #[test]
-    fn test_env_vars_remain_exported_even_after_update() {
-        let env_name = "env_name1";
-        let env_val_old = "old value".to_owned();
-        let env_val_new = "new value".to_owned();
+    fn test_set_var_in_child_env_should_not_affect_parent() {
+        let parent_name = "parent-var";
+        let parent_value = "parent-value";
+        let child_name = "child-var";
+        let child_value = "child-value";
 
-        let mut env = VarEnv::with_env_vars(vec!((env_name.to_owned(), env_val_old)));
-        env.set_var(env_name.to_owned(), env_val_new.clone());
-        assert_eq!(env.env_vars(), vec!((env_name, &env_val_new)));
+        let mut parent = VarEnv::new();
+        parent.set_var(parent_name.to_owned(), parent_value);
+
+        {
+            let mut child = parent.sub_env();
+            assert_eq!(child.var(parent_name), Some(&parent_value));
+
+            child.set_var(parent_name.to_owned(), child_value);
+            child.set_var(child_name.to_owned(), child_value);
+            assert_eq!(child.var(parent_name), Some(&child_value));
+            assert_eq!(child.var(child_name), Some(&child_value));
+
+            assert_eq!(parent.var(parent_name), Some(&parent_value));
+            assert_eq!(parent.var(child_name), None);
+        }
+
+        assert_eq!(parent.var(parent_name), Some(&parent_value));
+        assert_eq!(parent.var(child_name), None);
+    }
+
+    #[test]
+    fn test_get_env_vars_visible_in_parent_and_child() {
+        use std::collections::HashSet;
+        use std::iter::FromIterator;
+
+        let name1 = "var1";
+        let value1 = "value1".to_owned();
+        let name2 = "var2";
+        let value2 = "value2".to_owned();
+
+        let env = VarEnv::with_env_vars(vec!(
+            (name1.to_owned(), value1.clone()),
+            (name2.to_owned(), value2.clone()),
+        ));
+
+        let env_vars = HashSet::from_iter(vec!(
+            (name1, &value1),
+            (name2, &value2),
+        ));
+
+        let vars: HashSet<(&str, &String)> = HashSet::from_iter(env.env_vars().into_owned());
+        assert_eq!(vars, env_vars);
+
+        let child = env.sub_env();
+        let vars: HashSet<(&str, &String)> = HashSet::from_iter(child.env_vars().into_owned());
+        assert_eq!(vars, env_vars);
     }
 }
