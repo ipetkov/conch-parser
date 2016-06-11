@@ -1,8 +1,12 @@
-use runtime::env::{SubEnvironment, shallow_copy};
+use runtime::env::SubEnvironment;
+use runtime::ref_counted::RefCounted;
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use syntax::ast::TopLevelCommand;
 
 /// An interface for setting and getting shell functions.
 pub trait FunctionEnvironment<K, F> {
@@ -47,51 +51,18 @@ impl<'a, K, F, E: ?Sized> UnsetFunctionEnvironment<K, F> for &'a mut E
     }
 }
 
-/// An `Environment` module for setting and getting shell functions.
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct FnEnv<'a, K, F>
-    where K: 'a + Clone + Hash + Eq,
-          F: 'a + Clone,
-{
-    /// A mapping of function names to their definitions.
-    functions: Cow<'a, HashMap<K, F>>,
+/// A mapping of function names to their definitions.
+type Inner<K, F> = HashMap<K, F>;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct FnEnvImpl<U> {
+    functions: U,
 }
 
-impl<'a, K, F> FnEnv<'a, K, F>
-    where K: 'a + Clone + Hash + Eq,
-          F: 'a + Clone
-{
-    /// Constructs a new `FnEnv` with no defined functions.
-    pub fn new() -> Self {
-        FnEnv {
-            functions: Cow::Owned(HashMap::new()),
-        }
-    }
-}
-
-impl<'a, K, F> Default for FnEnv<'a, K, F>
-    where K: 'a + Clone + Hash + Eq,
-          F: 'a + Clone,
-{
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<'a, K, F> SubEnvironment<'a> for FnEnv<'a, K, F>
-    where K: 'a + Clone + Hash + Eq,
-          F: 'a + Clone,
-{
-    fn sub_env(&'a self) -> Self {
-        FnEnv {
-            functions: shallow_copy(&self.functions),
-        }
-    }
-}
-
-impl<'a, K, F> FunctionEnvironment<K, F> for FnEnv<'a, K, F>
-    where K: 'a + Clone + Hash + Eq,
-          F: 'a + Clone,
+impl<K, F, U> FunctionEnvironment<K, F> for FnEnvImpl<U>
+    where K: 'static + Clone + Hash + Eq,
+          F: Clone,
+          U: RefCounted<Inner<K, F>>,
 {
     fn function(&self, name: &K) -> Option<&F> {
         self.functions.get(name)
@@ -99,25 +70,153 @@ impl<'a, K, F> FunctionEnvironment<K, F> for FnEnv<'a, K, F>
 
     fn set_function(&mut self, name: K, func: F) {
         // FIXME: after specialization lands, don't insert if F: Eq and old == new
-        self.functions.to_mut().insert(name, func);
+        self.functions.make_mut().insert(name, func);
     }
 }
 
-impl<'a, K, F> UnsetFunctionEnvironment<K, F> for FnEnv<'a, K, F>
-    where K: 'a + Clone + Hash + Eq,
-          F: 'a + Clone,
+impl<K, F, U> UnsetFunctionEnvironment<K, F> for FnEnvImpl<U>
+    where K: 'static + Clone + Hash + Eq,
+          F: Clone,
+          U: RefCounted<Inner<K, F>>,
 {
     fn unset_function(&mut self, name: &K) {
         if self.has_function(name) {
-            self.functions.to_mut().remove(name);
+            self.functions.make_mut().remove(name);
         }
     }
+}
+
+/// An `Environment` module for setting and getting shell functions.
+///
+/// Uses `Rc` internally. For a possible `Send` and `Sync` implementation,
+/// see `AtomicFnEnv`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FnEnv<K = Rc<String>, F = Rc<TopLevelCommand>>(FnEnvImpl<Rc<Inner<K, F>>>)
+    where K: Clone + Hash + Eq,
+          F: Clone;
+
+/// An `Environment` module for setting and getting shell functions.
+///
+/// Uses `Arc` internally. If `Send` and `Sync` is not required of the implementation,
+/// see `FnEnv` as a cheaper alternative.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AtomicFnEnv<K = Arc<String>, F = Arc<TopLevelCommand>>(FnEnvImpl<Arc<Inner<K, F>>>)
+    where K: Clone + Hash + Eq,
+          F: Clone;
+
+macro_rules! impl_methods {
+    ($_Self:expr) => {
+        /// Constructs a new `FnEnv` with no defined functions.
+        pub fn new() -> Self {
+            $_Self(FnEnvImpl {
+                functions: HashMap::new().into(),
+            })
+        }
+    }
+}
+
+impl<K, F> FnEnv<K, F>
+    where K: Clone + Hash + Eq,
+          F: Clone
+{
+    impl_methods!(FnEnv);
+}
+
+impl<K, F> AtomicFnEnv<K, F>
+    where K: Clone + Hash + Eq,
+          F: Clone
+{
+    impl_methods!(AtomicFnEnv);
+}
+
+impl<K, F> Default for FnEnv<K, F>
+    where K: Clone + Hash + Eq,
+          F: Clone,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K, F> Default for AtomicFnEnv<K, F>
+    where K: Clone + Hash + Eq,
+          F: Clone,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K, F> SubEnvironment for FnEnv<K, F>
+    where K: Clone + Hash + Eq,
+          F: Clone,
+{
+    fn sub_env(&self) -> Self {
+        self.clone()
+    }
+}
+
+impl<K, F> SubEnvironment for AtomicFnEnv<K, F>
+    where K: Clone + Hash + Eq,
+          F: Clone,
+{
+    fn sub_env(&self) -> Self {
+        self.clone()
+    }
+}
+
+macro_rules! impl_function_environment_trait {
+    () => {
+        fn function(&self, name: &K) -> Option<&F> {
+            self.0.function(name)
+        }
+
+        fn set_function(&mut self, name: K, func: F) {
+            self.0.set_function(name, func)
+        }
+    }
+}
+
+macro_rules! impl_unset_function_environment_trait {
+    () => {
+        fn unset_function(&mut self, name: &K) {
+            self.0.unset_function(name)
+        }
+    }
+}
+
+impl<K, F> FunctionEnvironment<K, F> for FnEnv<K, F>
+    where K: 'static + Clone + Hash + Eq,
+          F: Clone,
+{
+    impl_function_environment_trait!();
+}
+
+impl<K, F> UnsetFunctionEnvironment<K, F> for FnEnv<K, F>
+    where K: 'static + Clone + Hash + Eq,
+          F: Clone,
+{
+    impl_unset_function_environment_trait!();
+}
+
+impl<K, F> FunctionEnvironment<K, F> for AtomicFnEnv<K, F>
+    where K: 'static + Clone + Hash + Eq,
+          F: Clone,
+{
+    impl_function_environment_trait!();
+}
+
+impl<K, F> UnsetFunctionEnvironment<K, F> for AtomicFnEnv<K, F>
+    where K: 'static + Clone + Hash + Eq,
+          F: Clone,
+{
+    impl_unset_function_environment_trait!();
 }
 
 #[cfg(test)]
 mod tests {
     use runtime::env::SubEnvironment;
-    use std::borrow::Cow;
+    use runtime::ref_counted::RefCounted;
     use super::*;
 
     #[test]
@@ -143,7 +242,7 @@ mod tests {
         let mut env = env.sub_env();
 
         env.unset_function(&not_set);
-        if let Cow::Owned(_) = env.functions {
+        if let Some(_) = env.0.functions.get_mut() {
             panic!("needles clone!");
         }
     }

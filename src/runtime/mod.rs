@@ -21,11 +21,13 @@ use runtime::eval::{Fields, TildeExpansion, WordEval, WordEvalConfig};
 use runtime::io::{FileDesc, Permissions};
 
 mod errors;
+mod ref_counted;
 
 pub mod env;
 pub mod eval;
 pub mod io;
 pub use self::errors::*;
+pub use self::ref_counted::*;
 
 /// Exit code for commands that exited successfully.
 pub const EXIT_SUCCESS:            ExitStatus = ExitStatus::Code(0);

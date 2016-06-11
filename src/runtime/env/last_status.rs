@@ -58,8 +58,8 @@ impl Default for LastStatusEnv {
     }
 }
 
-impl<'a> SubEnvironment<'a> for LastStatusEnv {
-    fn sub_env(&'a self) -> Self {
+impl SubEnvironment for LastStatusEnv {
+    fn sub_env(&self) -> Self {
         *self
     }
 }

@@ -385,13 +385,18 @@ impl<'a> Environment for Env<'a> {
 /// identical to itself, but any changes applied to the sub environment will
 /// not be reflected on the parent.
 ///
-/// It is strongly encouraged for implementors to utilize `Cow` (Clone On Write
-/// smart pointers) or other mechanisms to ensure creating and mutating sub
+/// Although this trait is very similar to the `Clone` trait, it is beneficial
+/// for subenvironments to be created as cheaply as possible (in the event that
+/// no changes are made to the subenvironment, there is no need for a deep clone),
+/// without relying on default `Clone` implementations or semantics.
+///
+/// It is strongly encouraged for implementors to utilize clone-on-write smart
+/// pointers or other mechanisms (e.g. `Rc`) to ensure creating and mutating sub
 /// environments is as cheap as possible.
-pub trait SubEnvironment<'a> {
+pub trait SubEnvironment: Sized {
     /// Create a new sub-environment, which starts out idential to its parent,
     /// but any changes on the new environment must not be reflected on the parent.
-    fn sub_env(&'a self) -> Self;
+    fn sub_env(&self) -> Self;
 }
 
 /// Makes a shallow copy of the data held by a `Cow`.
