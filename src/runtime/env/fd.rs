@@ -11,25 +11,27 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 /// An interface for setting and getting shell file descriptors.
-pub trait FileDescEnvironment<T> {
+pub trait FileDescEnvironment {
+    /// A file handle (or wrapper) to associate with shell file descriptors.
+    type FileHandle;
     /// Get the permissions and a handle associated with an opened file descriptor.
-    fn file_desc(&self, fd: Fd) -> Option<(&T, Permissions)>;
+    fn file_desc(&self, fd: Fd) -> Option<(&Self::FileHandle, Permissions)>;
     /// Associate a file descriptor with a given handle and permissions.
-    fn set_file_desc(&mut self, fd: Fd, fdes: T, perms: Permissions);
+    fn set_file_desc(&mut self, fd: Fd, fdes: Self::FileHandle, perms: Permissions);
     /// Treat the specified file descriptor as closed for the current environment.
     fn close_file_desc(&mut self, fd: Fd);
     /// Reports any `Error` as appropriate, e.g. print to stderr.
     fn report_error(&mut self, err: &Error);
 }
 
-impl<'a, T, E: ?Sized> FileDescEnvironment<T> for &'a mut E
-    where E: FileDescEnvironment<T>
-{
-    fn file_desc(&self, fd: Fd) -> Option<(&T, Permissions)> {
+impl<'a, T: ?Sized + FileDescEnvironment> FileDescEnvironment for &'a mut T {
+    type FileHandle = T::FileHandle;
+
+    fn file_desc(&self, fd: Fd) -> Option<(&Self::FileHandle, Permissions)> {
         (**self).file_desc(fd)
     }
 
-    fn set_file_desc(&mut self, fd: Fd, fdes: T, perms: Permissions) {
+    fn set_file_desc(&mut self, fd: Fd, fdes: Self::FileHandle, perms: Permissions) {
         (**self).set_file_desc(fd, fdes, perms)
     }
 
@@ -42,162 +44,118 @@ impl<'a, T, E: ?Sized> FileDescEnvironment<T> for &'a mut E
     }
 }
 
-/// A mapping of file descritpors to their handles and permissions.
-type Inner<T> = HashMap<Fd, (T, Permissions)>;
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct FileDescEnvImpl<U> {
-    fds: U,
-}
-
-impl<T, U> FileDescEnvironment<T> for FileDescEnvImpl<U>
-    where T: Clone + Borrow<FileDesc>,
-          U: RefCounted<Inner<T>>,
-{
-    fn file_desc(&self, fd: Fd) -> Option<(&T, Permissions)> {
-        self.fds.get(&fd).map(|&(ref fdes, perms)| (fdes, perms))
-    }
-
-    fn set_file_desc(&mut self, fd: Fd, fdes: T, perms: Permissions) {
-        let needs_insert = {
-            let existing = self.fds.get(&fd).map(|&(ref fdes, perms)| (fdes.borrow(), perms));
-            existing != Some((fdes.borrow(), perms))
-        };
-
-        if needs_insert {
-            self.fds.make_mut().insert(fd, (fdes, perms));
-        }
-    }
-
-    fn close_file_desc(&mut self, fd: Fd) {
-        if self.fds.contains_key(&fd) {
-            self.fds.make_mut().remove(&fd);
-        }
-    }
-
-    fn report_error(&mut self, err: &Error) {
-        // We *could* duplicate the handle here and ensure that we are the only
-        // owners of that *copy*, but it won't make much difference. On Unix
-        // sytems file descriptor duplication is effectively just an alias, and
-        // we really *do* want to write into whatever stderr is. Plus our error
-        // description should safely fall well within the system's size for atomic
-        // writes so we (hopefully) shouldn't observe any interleaving of data.
-        //
-        // Tl;dr: duplicating the handle won't offer us any extra safety, so we
-        // can avoid the overhead.
-        self.file_desc(STDERR_FILENO).map(|(fd, _)| unsafe {
-            let mut writer = fd.borrow().unsafe_write();
-            let _ = writeln!(&mut writer, "{}", err);
-        });
-    }
-}
-
-/// An `Environment` module for setting and getting shell file descriptors.
-///
-/// Uses `Rc` internally. For a possible `Send` and `Sync` implementation,
-/// see `AtomicFileDescEnv`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FileDescEnv<T: Clone = Rc<FileDesc>>(FileDescEnvImpl<Rc<Inner<T>>>);
-
-/// An `Environment` module for setting and getting shell file descriptors.
-///
-/// Uses `Arc` internally. If `Send` and `Sync` is not required of the implementation,
-/// see `FileDescEnv` as a cheaper alternative.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AtomicFileDescEnv<T: Clone = Arc<FileDesc>>(FileDescEnvImpl<Arc<Inner<T>>>);
-
-macro_rules! impl_methods {
-    ($_Self:expr) => {
-        /// Constructs a new environment with no open file descriptors.
-        pub fn new() -> Self {
-            $_Self(FileDescEnvImpl {
-                fds: HashMap::new().into(),
-            })
+macro_rules! impl_env {
+    ($(#[$attr:meta])* pub struct $Env:ident, $Rc:ident) => {
+        $(#[$attr])*
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        pub struct $Env<T: Clone = $Rc<FileDesc>> {
+            fds: $Rc<HashMap<Fd, (T, Permissions)>>,
         }
 
-        /// Constructs a new environment and initializes it with duplicated
-        /// stdio file descriptors or handles of the current process.
-        pub fn with_process_fds() -> Result<Self> where T: From<FileDesc> {
-            let (stdin, stdout, stderr) = try!(dup_stdio());
-            Ok(Self::with_fds(vec!(
-                (STDIN_FILENO,  stdin.into(),  Permissions::Read),
-                (STDOUT_FILENO, stdout.into(), Permissions::Write),
-                (STDERR_FILENO, stderr.into(), Permissions::Write),
-            )))
+        impl<T: Clone> $Env<T> {
+            /// Constructs a new environment with no open file descriptors.
+            pub fn new() -> Self {
+                $Env {
+                    fds: HashMap::new().into(),
+                }
+            }
+
+            /// Constructs a new environment and initializes it with duplicated
+            /// stdio file descriptors or handles of the current process.
+            pub fn with_process_fds() -> Result<Self> where T: From<FileDesc> {
+                let (stdin, stdout, stderr) = try!(dup_stdio());
+                Ok(Self::with_fds(vec!(
+                    (STDIN_FILENO,  stdin.into(),  Permissions::Read),
+                    (STDOUT_FILENO, stdout.into(), Permissions::Write),
+                    (STDERR_FILENO, stderr.into(), Permissions::Write),
+                )))
+            }
+
+            /// Constructs a new environment with a provided collection of provided
+            /// file descriptors in the form `(shell_fd, handle, permissions)`.
+            pub fn with_fds<I: IntoIterator<Item = (Fd, T, Permissions)>>(iter: I) -> Self {
+                $Env {
+                    fds: iter.into_iter()
+                        .map(|(fd, fdes, perms)| (fd, (fdes, perms)))
+                        .collect::<HashMap<_, _>>()
+                        .into(),
+                }
+            }
         }
 
-        /// Constructs a new environment with a provided collection of provided
-        /// file descriptors in the form `(shell_fd, handle, permissions)`.
-        pub fn with_fds<I: IntoIterator<Item = (Fd, T, Permissions)>>(iter: I) -> Self {
-            $_Self(FileDescEnvImpl {
-                fds: iter.into_iter()
-                    .map(|(fd, fdes, perms)| (fd, (fdes, perms)))
-                    .collect::<HashMap<_, _>>()
-                    .into(),
-            })
-        }
-    }
-}
-
-impl<T: Clone + Borrow<FileDesc>> FileDescEnv<T> {
-    impl_methods!(FileDescEnv);
-}
-
-impl<T: Clone + Borrow<FileDesc>> AtomicFileDescEnv<T> {
-    impl_methods!(AtomicFileDescEnv);
-}
-
-impl<T: Clone> Default for FileDescEnv<T> {
-    fn default() -> Self {
-        FileDescEnv(Default::default())
-    }
-}
-
-impl<T: Clone> Default for AtomicFileDescEnv<T> {
-    fn default() -> Self {
-        AtomicFileDescEnv(Default::default())
-    }
-}
-
-impl<T: Clone> SubEnvironment for FileDescEnv<T> {
-    fn sub_env(&self) -> Self {
-        self.clone()
-    }
-}
-
-impl<T: Clone> SubEnvironment for AtomicFileDescEnv<T> {
-    fn sub_env(&self) -> Self {
-        self.clone()
-    }
-}
-
-macro_rules! impl_file_desc_environment_trait {
-    () => {
-        fn file_desc(&self, fd: Fd) -> Option<(&T, Permissions)> {
-            self.0.file_desc(fd)
+        impl<T: Clone> Default for $Env<T> {
+            fn default() -> Self {
+                Self::new()
+            }
         }
 
-        fn set_file_desc(&mut self, fd: Fd, fdes: T, perms: Permissions) {
-            self.0.set_file_desc(fd, fdes, perms)
+
+        impl<T: Clone> SubEnvironment for $Env<T> {
+            fn sub_env(&self) -> Self {
+                self.clone()
+            }
         }
 
-        fn close_file_desc(&mut self, fd: Fd) {
-            self.0.close_file_desc(fd)
-        }
+        impl<T: Clone + Borrow<FileDesc>> FileDescEnvironment for $Env<T> {
+            type FileHandle = T;
 
-        fn report_error(&mut self, err: &Error) {
-            self.0.report_error(err);
+            fn file_desc(&self, fd: Fd) -> Option<(&Self::FileHandle, Permissions)> {
+                self.fds.get(&fd).map(|&(ref fdes, perms)| (fdes, perms))
+            }
+
+            fn set_file_desc(&mut self, fd: Fd, fdes: Self::FileHandle, perms: Permissions) {
+                let needs_insert = {
+                    let existing = self.fds.get(&fd).map(|&(ref fdes, perms)| (fdes.borrow(), perms));
+                    existing != Some((fdes.borrow(), perms))
+                };
+
+                if needs_insert {
+                    self.fds.make_mut().insert(fd, (fdes, perms));
+                }
+            }
+
+            fn close_file_desc(&mut self, fd: Fd) {
+                if self.fds.contains_key(&fd) {
+                    self.fds.make_mut().remove(&fd);
+                }
+            }
+
+            fn report_error(&mut self, err: &Error) {
+                // We *could* duplicate the handle here and ensure that we are the only
+                // owners of that *copy*, but it won't make much difference. On Unix
+                // sytems file descriptor duplication is effectively just an alias, and
+                // we really *do* want to write into whatever stderr is. Plus our error
+                // description should safely fall well within the system's size for atomic
+                // writes so we (hopefully) shouldn't observe any interleaving of data.
+                //
+                // Tl;dr: duplicating the handle won't offer us any extra safety, so we
+                // can avoid the overhead.
+                self.file_desc(STDERR_FILENO).map(|(fd, _)| unsafe {
+                    let mut writer = fd.borrow().unsafe_write();
+                    let _ = writeln!(&mut writer, "{}", err);
+                });
+            }
         }
     };
 }
 
-impl<T: Clone + Borrow<FileDesc>> FileDescEnvironment<T> for FileDescEnv<T> {
-    impl_file_desc_environment_trait!();
-}
+impl_env!(
+    /// An `Environment` module for setting and getting shell file descriptors.
+    ///
+    /// Uses `Rc` internally. For a possible `Send` and `Sync` implementation,
+    /// see `AtomicFileDescEnv`.
+    pub struct FileDescEnv,
+    Rc
+);
 
-impl<T: Clone + Borrow<FileDesc>> FileDescEnvironment<T> for AtomicFileDescEnv<T> {
-    impl_file_desc_environment_trait!();
-}
+impl_env!(
+    /// An `Environment` module for setting and getting shell file descriptors.
+    ///
+    /// Uses `Arc` internally. If `Send` and `Sync` is not required of the implementation,
+    /// see `FileDescEnv` as a cheaper alternative.
+    pub struct AtomicFileDescEnv,
+    Arc
+);
 
 #[cfg(test)]
 mod tests {
@@ -241,13 +199,13 @@ mod tests {
 
         let mut env = env.sub_env();
         env.set_file_desc(fd, file_desc.clone(), perms);
-        if let Some(_) = env.0.fds.get_mut() {
+        if let Some(_) = env.fds.get_mut() {
             panic!("needles clone!");
         }
 
         assert_eq!(env.file_desc(fd_not_set), None);
         env.close_file_desc(fd_not_set);
-        if let Some(_) = env.0.fds.get_mut() {
+        if let Some(_) = env.fds.get_mut() {
             panic!("needles clone!");
         }
     }

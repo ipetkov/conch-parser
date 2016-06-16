@@ -7,216 +7,157 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 /// An interface for setting and getting shell and environment variables.
-pub trait VariableEnvironment<T: ?Sized> {
+pub trait VariableEnvironment {
+    /// The type of variables this environment holds.
+    type Var;
     /// Get the value of some variable. The values of both shell-only
     /// and environment variables will be looked up and returned.
-    fn var(&self, name: &str) -> Option<&T>;
+    fn var(&self, name: &str) -> Option<&Self::Var>;
     /// Set the value of some variable, maintaining its status as an
     /// environment variable if previously set as such.
-    fn set_var(&mut self, name: String, val: T);
+    fn set_var(&mut self, name: String, val: Self::Var);
     /// Unset the value of some variable (including environment variables).
     /// Get all current pairs of environment variables and their values.
-    fn env_vars(&self) -> Cow<[(&str, &T)]>;
+    fn env_vars(&self) -> Cow<[(&str, &Self::Var)]>;
 }
 
-impl<'a, T, E: ?Sized> VariableEnvironment<T> for &'a mut E
-    where E: VariableEnvironment<T>
-{
-    fn var(&self, name: &str) -> Option<&T> {
+impl<'a, T: ?Sized + VariableEnvironment> VariableEnvironment for &'a mut T {
+    type Var = T::Var;
+
+    fn var(&self, name: &str) -> Option<&Self::Var> {
         (**self).var(name)
     }
 
-    fn set_var(&mut self, name: String, val: T) {
+    fn set_var(&mut self, name: String, val: Self::Var) {
         (**self).set_var(name, val);
     }
 
-    fn env_vars(&self) -> Cow<[(&str, &T)]> {
+    fn env_vars(&self) -> Cow<[(&str, &Self::Var)]> {
         (**self).env_vars()
     }
 }
 
 /// An interface for unsetting shell and envrironment variables.
-pub trait UnsetVariableEnvironment<T: ?Sized> {
+pub trait UnsetVariableEnvironment {
     /// Unset the value of some variable (including environment variables).
     fn unset_var(&mut self, name: &str);
 }
 
-impl<'a, T, E: ?Sized> UnsetVariableEnvironment<T> for &'a mut E
-    where E: UnsetVariableEnvironment<T>
-{
+impl<'a, T: ?Sized + UnsetVariableEnvironment> UnsetVariableEnvironment for &'a mut T {
     fn unset_var(&mut self, name: &str) {
         (**self).unset_var(name);
     }
 }
 
-/// A mapping of variable names to their values.
-///
-/// The tupled boolean indicates if a variable should be exported to other commands.
-type Inner<T> = HashMap<String, (T, bool)>;
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct VarEnvImpl<U> {
-    vars: U,
-}
-
-impl<T, U> VariableEnvironment<T> for VarEnvImpl<U>
-    where T: Clone + Eq, // FIXME: might not need to be clone?
-          U: RefCounted<Inner<T>>,
-{
-    fn var(&self, name: &str) -> Option<&T> {
-        self.vars.get(name).map(|&(ref val, _)| val)
-    }
-
-    fn set_var(&mut self, name: String, val: T) {
-        let (needs_insert, exported) = match self.vars.get(&name) {
-            Some(&(ref existing_val, exported)) => (&val != existing_val, exported),
-            None => (true, false),
-        };
-
-        if needs_insert {
-            self.vars.make_mut().insert(name, (val, exported));
-        }
-    }
-
-    fn env_vars(&self) -> Cow<[(&str, &T)]> {
-        let ret: Vec<_> = self.vars.iter()
-            .filter_map(|(k, &(ref v, exported))| if exported {
-                Some((&**k, v))
-            } else {
-                None
-            })
-            .collect();
-
-        Cow::Owned(ret)
-    }
-}
-
-impl<T, U> UnsetVariableEnvironment<T> for VarEnvImpl<U>
-    where T: Clone + Eq,
-          U: RefCounted<Inner<T>>,
-{
-    fn unset_var(&mut self, name: &str) {
-        if self.vars.contains_key(name) {
-            self.vars.make_mut().remove(name);
-        }
-    }
-}
-
-/// An `Environment` module for setting and getting shell variables.
-///
-/// Uses `Rc` internally. For a possible `Send` and `Sync` implementation,
-/// see `AtomicVarEnv`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VarEnv<T: Clone = Rc<String>>(VarEnvImpl<Rc<Inner<T>>>);
-
-/// An `Environment` module for setting and getting shell variables.
-///
-/// Uses `Arc` internally. If `Send` and `Sync` is not required of the implementation,
-/// see `VarEnv` as a cheaper alternative.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AtomicVarEnv<T: Clone = Arc<String>>(VarEnvImpl<Arc<Inner<T>>>);
-
-macro_rules! impl_methods {
-    ($_Self:expr) => {
-        /// Constructs a new environment with no environment variables.
-        pub fn new() -> Self {
-            $_Self(VarEnvImpl {
-                vars: HashMap::new().into(),
-            })
+macro_rules! impl_env {
+    ($(#[$attr:meta])* pub struct $Env:ident, $Rc:ident) => {
+        $(#[$attr])*
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        pub struct $Env<T: Clone = $Rc<String>> {
+            /// A mapping of variable names to their values.
+            ///
+            /// The tupled boolean indicates if a variable should be exported to other commands.
+            vars: $Rc<HashMap<String, (T, bool)>>,
         }
 
-        /// Constructs a new environment and initializes it with the environment
-        /// variables of the current process.
-        pub fn with_process_env_vars() -> Self where T: From<String> {
-            Self::with_env_vars(::std::env::vars().into_iter()
-                                .map(|(k, v)| (k.into(), v.into())))
+        impl<T: Clone> $Env<T> {
+            /// Constructs a new environment with no environment variables.
+            pub fn new() -> Self {
+                $Env {
+                    vars: HashMap::new().into(),
+                }
+            }
+
+            /// Constructs a new environment and initializes it with the environment
+            /// variables of the current process.
+            pub fn with_process_env_vars() -> Self where T: From<String> {
+                Self::with_env_vars(::std::env::vars().into_iter()
+                                    .map(|(k, v)| (k.into(), v.into())))
+            }
+
+            /// Constructs a new environment with a provided collection of `(key, value)`
+            /// environment variable pairs. These variables (if any) will be inherited by
+            /// all commands.
+            pub fn with_env_vars<I: IntoIterator<Item = (String, T)>>(iter: I) -> Self {
+                $Env {
+                    vars: iter.into_iter()
+                        .map(|(k, v)| (k, (v, true)))
+                        .collect::<HashMap<_, _>>()
+                        .into(),
+                }
+            }
         }
 
-        /// Constructs a new environment with a provided collection of `(key, value)`
-        /// environment variable pairs. These variables (if any) will be inherited by
-        /// all commands.
-        pub fn with_env_vars<I: IntoIterator<Item = (String, T)>>(iter: I) -> Self {
-            $_Self(VarEnvImpl {
-                vars: iter.into_iter()
-                    .map(|(k, v)| (k, (v, true)))
-                    .collect::<HashMap<_, _>>()
-                    .into(),
-            })
-        }
-    }
-}
+        impl<T: Clone + Eq> VariableEnvironment for $Env<T> {
+            type Var = T;
 
-impl<T: Clone> VarEnv<T> {
-    impl_methods!(VarEnv);
-}
+            fn var(&self, name: &str) -> Option<&Self::Var> {
+                self.vars.get(name).map(|&(ref val, _)| val)
+            }
 
-impl<T: Clone> AtomicVarEnv<T> {
-    impl_methods!(AtomicVarEnv);
-}
+            fn set_var(&mut self, name: String, val: Self::Var) {
+                let (needs_insert, exported) = match self.vars.get(&name) {
+                    Some(&(ref existing_val, exported)) => (&val != existing_val, exported),
+                    None => (true, false),
+                };
 
-impl<T: Clone> Default for VarEnv<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+                if needs_insert {
+                    self.vars.make_mut().insert(name, (val, exported));
+                }
+            }
 
-impl<T: Clone> Default for AtomicVarEnv<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+            fn env_vars(&self) -> Cow<[(&str, &Self::Var)]> {
+                let ret: Vec<_> = self.vars.iter()
+                    .filter_map(|(k, &(ref v, exported))| if exported {
+                        Some((&**k, v))
+                    } else {
+                        None
+                    })
+                .collect();
 
-impl<T: Clone> SubEnvironment for VarEnv<T> {
-    fn sub_env(&self) -> Self {
-        self.clone()
-    }
-}
-
-impl<T: Clone> SubEnvironment for AtomicVarEnv<T> {
-    fn sub_env(&self) -> Self {
-        self.clone()
-    }
-}
-
-macro_rules! impl_variable_environment_trait {
-    () => {
-        fn var(&self, name: &str) -> Option<&T> {
-            self.0.var(name)
+                Cow::Owned(ret)
+            }
         }
 
-        fn set_var(&mut self, name: String, val: T) {
-            self.0.set_var(name, val)
+        impl<T: Clone> UnsetVariableEnvironment for $Env<T> {
+            fn unset_var(&mut self, name: &str) {
+                if self.vars.contains_key(name) {
+                    self.vars.make_mut().remove(name);
+                }
+            }
         }
 
-        fn env_vars(&self) -> Cow<[(&str, &T)]> {
-            self.0.env_vars()
+        impl<T: Clone> Default for $Env<T> {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        impl<T: Clone> SubEnvironment for $Env<T> {
+            fn sub_env(&self) -> Self {
+                self.clone()
+            }
         }
     };
 }
 
-macro_rules! impl_unset_variable_environment_trait {
-    () => {
-        fn unset_var(&mut self, name: &str) {
-            self.0.unset_var(name)
-        }
-    }
-}
+impl_env!(
+    /// An `Environment` module for setting and getting shell variables.
+    ///
+    /// Uses `Rc` internally. For a possible `Send` and `Sync` implementation,
+    /// see `AtomicVarEnv`.
+    pub struct VarEnv,
+    Rc
+);
 
-impl<T: Clone + Eq> VariableEnvironment<T> for VarEnv<T> {
-    impl_variable_environment_trait!();
-}
-
-impl<T: Clone + Eq> UnsetVariableEnvironment<T> for VarEnv<T> {
-    impl_unset_variable_environment_trait!();
-}
-
-impl<T: Clone + Eq> VariableEnvironment<T> for AtomicVarEnv<T> {
-    impl_variable_environment_trait!();
-}
-
-impl<T: Clone + Eq> UnsetVariableEnvironment<T> for AtomicVarEnv<T> {
-    impl_unset_variable_environment_trait!();
-}
+impl_env!(
+    /// An `Environment` module for setting and getting shell variables.
+    ///
+    /// Uses `Arc` internally. If `Send` and `Sync` is not required of the implementation,
+    /// see `VarEnv` as a cheaper alternative.
+    pub struct AtomicVarEnv,
+    Arc
+);
 
 #[cfg(test)]
 mod tests {
@@ -246,12 +187,12 @@ mod tests {
 
         let mut env = env.sub_env();
         env.set_var(name.to_owned(), value.to_owned());
-        if let Some(_) = env.0.vars.get_mut() {
+        if let Some(_) = env.vars.get_mut() {
             panic!("needles clone!");
         }
 
         env.unset_var(not_set);
-        if let Some(_) = env.0.vars.get_mut() {
+        if let Some(_) = env.vars.get_mut() {
             panic!("needles clone!");
         }
     }
