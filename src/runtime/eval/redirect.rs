@@ -1,28 +1,27 @@
 //! A module which defines evaluating any kind of redirection.
 
 use std::fs::OpenOptions;
-use std::rc::Rc;
 use syntax::ast::Redirect;
 use runtime::{Fd, RedirectionError, Result, RuntimeError};
-use runtime::{EXIT_ERROR, STDIN_FILENO, STDOUT_FILENO};
-use runtime::env::Environment;
+use runtime::{STDIN_FILENO, STDOUT_FILENO};
+use runtime::env::{FileDescEnvironment, IsInteractiveEnvironment, StringWrapper, SubEnvironment};
 use runtime::eval::{Fields, TildeExpansion, WordEval, WordEvalConfig};
 use runtime::io::{FileDesc, Permissions};
 
 /// Indicates what changes should be made to the environment as a result
 /// of a successful `Redirect` evaluation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RedirectAction {
+pub enum RedirectAction<T> {
     /// Indicates that a descriptor should be closed.
     Close(Fd),
     /// Indicates that a descriptor should be opened with
     /// a given file handle and permissions.
-    Open(Fd, Rc<FileDesc>, Permissions)
+    Open(Fd, T, Permissions)
 }
 
-impl RedirectAction {
+impl<T> RedirectAction<T> {
     /// Applies changes to a given environment.
-    pub fn apply<E: Environment>(self, env: &mut E) {
+    pub fn apply<E: ?Sized + FileDescEnvironment<FileHandle = T>>(self, env: &mut E) {
         match self {
             RedirectAction::Close(fd) => env.close_file_desc(fd),
             RedirectAction::Open(fd, file_desc, perms) => env.set_file_desc(fd, file_desc, perms),
@@ -37,21 +36,24 @@ impl<W> Redirect<W> {
     /// in the environment, and thus it is up to the caller to update the
     /// environment as appropriate.
     // FIXME: on unix set file permission bits based on umask
-    pub fn eval<E>(&self, env: &mut E) -> Result<RedirectAction>
-        where E: Environment,
-              W: WordEval<E>,
+    pub fn eval<T, E>(&self, env: &mut E) -> Result<RedirectAction<E::FileHandle>>
+        where T: StringWrapper,
+              E: FileDescEnvironment + IsInteractiveEnvironment + SubEnvironment,
+              E::FileHandle: Clone + From<FileDesc>,
+              W: WordEval<T, E>,
     {
         let open_path_with_options = |path, env, fd, options: OpenOptions, permissions|
-            -> Result<RedirectAction>
+            -> Result<RedirectAction<E::FileHandle>>
         {
-            let path = try!(eval_path(path, env));
-            options.open(&**path)
-                .map(|file| RedirectAction::Open(fd, Rc::new(file.into()), permissions))
-                .map_err(|io| RuntimeError::Io(io, Some(rc_to_owned(path))))
+            let path: T = try!(eval_path(path, env));
+            options.open(path.as_str())
+                .map(FileDesc::from)
+                .map(|fdesc| RedirectAction::Open(fd, fdesc.into(), permissions))
+                .map_err(|io| RuntimeError::Io(io, Some(path.into_owned())))
         };
 
         let open_path = |path, env, fd, permissions: Permissions|
-            -> Result<RedirectAction>
+            -> Result<RedirectAction<E::FileHandle>>
         {
             open_path_with_options(path, env, fd, permissions.into(), permissions)
         };
@@ -88,9 +90,10 @@ impl<W> Redirect<W> {
 /// Evaluates a path in a given environment. Tilde expansion will be done,
 /// and words will be split if running in interactive mode. If the evaluation
 /// results in more than one path, an error will be returned.
-fn eval_path<E, W: ?Sized>(path: &W, env: &mut E) -> Result<Rc<String>>
-    where E: Environment,
-          W: WordEval<E>,
+fn eval_path<T, E, W: ?Sized>(path: &W, env: &mut E) -> Result<T>
+    where T: StringWrapper,
+          E: IsInteractiveEnvironment + SubEnvironment,
+          W: WordEval<T, E>,
 {
     let cfg = WordEvalConfig {
         tilde_expansion: TildeExpansion::First,
@@ -104,14 +107,10 @@ fn eval_path<E, W: ?Sized>(path: &W, env: &mut E) -> Result<Rc<String>>
         Fields::Split(mut v) => if v.len() == 1 {
             Ok(v.pop().unwrap())
         } else {
-            env.set_last_status(EXIT_ERROR);
-            let v = v.into_iter().map(rc_to_owned).collect();
+            let v = v.into_iter().map(StringWrapper::into_owned).collect();
             Err(RedirectionError::Ambiguous(v).into())
         },
-        Fields::Zero => {
-            env.set_last_status(EXIT_ERROR);
-            Err(RedirectionError::Ambiguous(Vec::new()).into())
-        },
+        Fields::Zero => Err(RedirectionError::Ambiguous(Vec::new()).into()),
     }
 }
 
@@ -121,47 +120,38 @@ fn eval_path<E, W: ?Sized>(path: &W, env: &mut E) -> Result<Rc<String>>
 ///
 /// On success the duplicated descritor is returned. It is up to the caller to
 /// actually store the duplicate in the environment.
-fn dup_fd<E, W: ?Sized>(dst_fd: Fd, src_fd: &W, readable: bool, env: &mut E) -> Result<RedirectAction>
-    where E: Environment,
-          W: WordEval<E>,
+fn dup_fd<T, E, W: ?Sized>(dst_fd: Fd, src_fd: &W, readable: bool, env: &mut E)
+    -> Result<RedirectAction<E::FileHandle>>
+    where T: StringWrapper,
+          E: FileDescEnvironment + IsInteractiveEnvironment + SubEnvironment,
+          E::FileHandle: Clone,
+          W: WordEval<T, E>,
 {
     let src_fd = try!(eval_path(src_fd, env));
+    let src_fd = src_fd.as_str();
 
-    if *src_fd == "-" {
+    if src_fd == "-" {
         return Ok(RedirectAction::Close(dst_fd));
     }
 
-    let src_fdes = match Fd::from_str_radix(&src_fd, 10) {
-        Ok(fd) => match env.file_desc(fd) {
-            Some((fdes, perms)) => {
-                if (readable && perms.readable()) || (!readable && perms.writable()) {
-                    Ok(fdes.clone())
-                } else {
-                    Err(RedirectionError::BadFdPerms(fd, perms).into())
-                }
-            },
+    let fd_handle_perms = Fd::from_str_radix(src_fd, 10)
+        .ok()
+        .and_then(|fd| env.file_desc(fd).map(|(fdes, perms)| (fd, fdes, perms)));
 
-            None => Err(RedirectionError::BadFdSrc(rc_to_owned(src_fd)).into()),
+    let src_fdes = match fd_handle_perms {
+        Some((fd, fdes, perms)) => {
+            if (readable && perms.readable()) || (!readable && perms.writable()) {
+                fdes.clone()
+            } else {
+                return Err(RedirectionError::BadFdPerms(fd, perms).into());
+            }
         },
 
-        Err(_) => Err(RedirectionError::BadFdSrc(rc_to_owned(src_fd)).into()),
-    };
-
-    let src_fdes = match src_fdes {
-        Ok(fd) => fd,
-        Err(e) => {
-            env.set_last_status(EXIT_ERROR);
-            return Err(e);
-        },
+        None => return Err(RedirectionError::BadFdSrc(src_fd.to_owned()).into()),
     };
 
     let perms = if readable { Permissions::Read } else { Permissions::Write };
     Ok(RedirectAction::Open(dst_fd, src_fdes, perms))
-}
-
-/// Attempts to unwrap an Rc<T>, cloning the inner value if the unwrap fails.
-fn rc_to_owned<T: Clone>(rc: Rc<T>) -> T {
-    Rc::try_unwrap(rc).unwrap_or_else(|rc| (*rc).clone())
 }
 
 #[cfg(test)]
@@ -169,7 +159,8 @@ mod tests {
     extern crate tempdir;
 
     use runtime::{Fd, STDIN_FILENO, STDOUT_FILENO};
-    use runtime::env::{Env, EnvConfig, Environment};
+    use runtime::env::{DefaultEnvConfig, Env, EnvConfig, FileDescEnv, FileDescEnvironment,
+                       IsInteractiveEnvironment};
     use runtime::io::{FileDesc, Permissions};
     use runtime::tests::{MockWord, word};
     use self::tempdir::TempDir;
@@ -183,7 +174,11 @@ mod tests {
     type Redirect = ::syntax::ast::Redirect<MockWord>;
 
     fn test_eval_close(fd: Fd, redirect: Redirect) {
-        let mut env = Env::new().unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            file_desc_env: FileDescEnv::with_process_fds().unwrap(),
+            .. DefaultEnvConfig::<String>::default()
+        });
+
         assert!(env.file_desc(fd).is_some());
         let action = redirect.eval(&mut env).unwrap();
         assert_eq!(action, Close(fd));
@@ -200,7 +195,12 @@ mod tests {
     {
         for (fd, redirect) in cases {
             before();
-            let mut env = Env::new().unwrap();
+
+            let mut env = Env::with_config(EnvConfig {
+                file_desc_env: FileDescEnv::with_process_fds().unwrap(),
+                .. DefaultEnvConfig::<String>::default()
+            });
+
             let action = redirect.eval(&mut env).unwrap();
             if let Open(ref result_fd, _, permissions) = action {
                 assert_eq!(permissions, correct_permissions);
@@ -396,7 +396,10 @@ mod tests {
         use runtime::RedirectionError::BadFdSrc;
         use runtime::RuntimeError::Redirection;
 
-        let mut env = Env::new().unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            file_desc_env: FileDescEnv::with_process_fds().unwrap(),
+            .. DefaultEnvConfig::<String>::default()
+        });
         let path = "a1e2".to_owned();
 
         let redirect: Redirect = DupRead(None, word(&path));
@@ -410,7 +413,10 @@ mod tests {
         use runtime::RedirectionError::BadFdSrc;
         use runtime::RuntimeError::Redirection;
 
-        let mut env = Env::new().unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            file_desc_env: FileDescEnv::with_process_fds().unwrap(),
+            .. DefaultEnvConfig::<String>::default()
+        });
         let path = "42".to_owned();
 
         let redirect: Redirect = DupRead(None, word(&path));
@@ -424,7 +430,10 @@ mod tests {
         use runtime::RedirectionError::BadFdPerms;
         use runtime::RuntimeError::Redirection;
 
-        let mut env = Env::new().unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            file_desc_env: FileDescEnv::with_process_fds().unwrap(),
+            .. DefaultEnvConfig::<String>::default()
+        });
 
         let fd = STDOUT_FILENO;
         let redirect: Redirect = DupRead(None, word(&fd.to_string()));
@@ -437,7 +446,10 @@ mod tests {
 
     #[test]
     fn test_eval_dup() {
-        let mut env = Env::new().unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            file_desc_env: FileDescEnv::with_process_fds().unwrap(),
+            .. DefaultEnvConfig::<String>::default()
+        });
 
         let cases: Vec<(Fd, Fd, Redirect)> = vec!(
             (STDIN_FILENO, 5, DupRead(Some(5), word(&STDIN_FILENO.to_string()))),
@@ -466,37 +478,38 @@ mod tests {
 
         type Redirect = ::syntax::ast::Redirect<MockWord>;
 
-        struct MockWord(Fields);
-        impl<E: Environment> WordEval<E> for MockWord {
-            fn eval_with_config(&self, _: &mut E, _: WordEvalConfig) -> Result<Fields> {
+        struct MockWord(Fields<String>);
+        impl<E: ?Sized> WordEval<String, E> for MockWord {
+            fn eval_with_config(&self, _: &mut E, _: WordEvalConfig) -> Result<Fields<String>> {
                 Ok(self.0.clone())
             }
         }
 
-        let owned = DEV_NULL.to_owned();
-        let rc = Rc::new(owned.clone());
+        let dev_null = DEV_NULL.to_owned();
 
-        let mut env = Env::new().unwrap();
+        let mut env = Env::with_config(EnvConfig {
+            file_desc_env: FileDescEnv::with_process_fds().unwrap(),
+            .. DefaultEnvConfig::<String>::default()
+        });
 
         // If there is a single field it is not considered an error
-        let redirect: Redirect = Read(None, MockWord(Single(rc.clone())));
+        let redirect: Redirect = Read(None, MockWord(Single(dev_null.clone())));
         redirect.eval(&mut env).unwrap();
-        let redirect: Redirect = Read(None, MockWord(Star(vec!(rc.clone()))));
+        let redirect: Redirect = Read(None, MockWord(Star(vec!(dev_null.clone()))));
         redirect.eval(&mut env).unwrap();
-        let redirect: Redirect = Read(None, MockWord(At(vec!(rc.clone()))));
+        let redirect: Redirect = Read(None, MockWord(At(vec!(dev_null.clone()))));
         redirect.eval(&mut env).unwrap();
-        let redirect: Redirect = Read(None, MockWord(Split(vec!(rc.clone()))));
+        let redirect: Redirect = Read(None, MockWord(Split(vec!(dev_null.clone()))));
         redirect.eval(&mut env).unwrap();
 
         // Multiple fields, however, are an error
-        let vec_rc = vec!(rc.clone(), rc.clone());
-        let vec_owned = vec!(owned.clone(), owned.clone());
-        let redirect: Redirect = Read(None, MockWord(Star(vec_rc.clone())));
-        assert_eq!(redirect.eval(&mut env), Err(Redirection(Ambiguous(vec_owned.clone()))));
-        let redirect: Redirect = Read(None, MockWord(At(vec_rc.clone())));
-        assert_eq!(redirect.eval(&mut env), Err(Redirection(Ambiguous(vec_owned.clone()))));
-        let redirect: Redirect = Read(None, MockWord(Split(vec_rc.clone())));
-        assert_eq!(redirect.eval(&mut env), Err(Redirection(Ambiguous(vec_owned.clone()))));
+        let vec = vec!(dev_null.clone(), dev_null.clone());
+        let redirect: Redirect = Read(None, MockWord(Star(vec.clone())));
+        assert_eq!(redirect.eval(&mut env), Err(Redirection(Ambiguous(vec.clone()))));
+        let redirect: Redirect = Read(None, MockWord(At(vec.clone())));
+        assert_eq!(redirect.eval(&mut env), Err(Redirection(Ambiguous(vec.clone()))));
+        let redirect: Redirect = Read(None, MockWord(Split(vec.clone())));
+        assert_eq!(redirect.eval(&mut env), Err(Redirection(Ambiguous(vec.clone()))));
         let redirect: Redirect = Read(None, MockWord(Zero));
         assert_eq!(redirect.eval(&mut env), Err(Redirection(Ambiguous(vec!()))));
     }
@@ -511,15 +524,15 @@ mod tests {
 
         #[derive(Copy, Clone)]
         struct MockWord(Option<u16>);
-        impl<E: Environment> WordEval<E> for MockWord {
-            fn eval_with_config(&self, env: &mut E, cfg: WordEvalConfig) -> Result<Fields> {
+        impl<E: ?Sized + IsInteractiveEnvironment> WordEval<String, E> for MockWord {
+            fn eval_with_config(&self, env: &mut E, cfg: WordEvalConfig) -> Result<Fields<String>> {
                 assert_eq!(env.is_interactive(), cfg.split_fields_further);
                 let s = match self.0 {
                     Some(fd) => fd.to_string(),
                     None => DEV_NULL.to_owned(),
                 };
 
-                Ok(Fields::Single(Rc::new(s)))
+                Ok(Fields::Single(s))
             }
         }
 
@@ -538,8 +551,9 @@ mod tests {
         for interactive in vec!(true, false) {
             let mut env = Env::with_config(EnvConfig {
                 interactive: interactive,
-                .. ::std::default::Default::default()
-            }).unwrap();
+                file_desc_env: FileDescEnv::with_process_fds().unwrap(),
+                .. DefaultEnvConfig::<String>::default()
+            });
 
             for redirect in cases.clone() {
                 redirect.eval(&mut env).unwrap();

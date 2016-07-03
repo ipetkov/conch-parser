@@ -196,7 +196,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Iterator for Parser<I, B> {
 /// which will receive data from the parser and assemble an AST. This
 /// library provides both a default `Token` lexer, as well as an AST `Builder`.
 ///
-/// ```no_run
+/// ```
 /// use shell_lang::syntax::ast::builder::{Builder, DefaultBuilder};
 /// use shell_lang::syntax::lexer::Lexer;
 /// use shell_lang::syntax::parse::Parser;
@@ -210,7 +210,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Iterator for Parser<I, B> {
 /// If you want to use a parser with the default AST builder implementation
 /// you can also use the `DefaultParser` type alias for a simpler setup.
 ///
-/// ```no_run
+/// ```
 /// use shell_lang::syntax::lexer::Lexer;
 /// use shell_lang::syntax::parse::DefaultParser;
 ///
@@ -2683,7 +2683,7 @@ pub mod test {
         DefaultParser::new(src.into_iter())
     }
 
-    fn cmd_args_simple(cmd: &str, args: &[&str]) -> Box<SimpleCommand<TopLevelWord>> {
+    pub fn cmd_args_simple(cmd: &str, args: &[&str]) -> Box<SimpleCommand<TopLevelWord>> {
         let cmd = word(cmd);
         let args = args.iter().map(|&a| word(a)).collect();
 

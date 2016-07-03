@@ -59,13 +59,13 @@ impl<'a, T: ?Sized + SetArgumentsEnvironment> SetArgumentsEnvironment for &'a mu
 macro_rules! impl_env {
     ($(#[$attr:meta])* pub struct $Env:ident, $Rc:ident) => {
         $(#[$attr])*
-        #[derive(Clone, Debug, PartialEq, Eq)]
-        pub struct $Env<T: Clone = $Rc<String>> {
+        #[derive(Debug, PartialEq, Eq)]
+        pub struct $Env<T = $Rc<String>> {
             name: $Rc<T>,
             args: $Rc<Vec<T>>,
         }
 
-        impl<T: Clone> $Env<T> {
+        impl<T> $Env<T> {
             /// Constructs a new environment and initializes it with the name of the
             /// current process as the shell name, and no arguments.
             pub fn new() -> Self where T: From<String> {
@@ -95,13 +95,22 @@ macro_rules! impl_env {
             }
         }
 
-        impl<T: Clone + From<String>> Default for $Env<T> {
+        impl<T: From<String>> Default for $Env<T> {
             fn default() -> Self {
                 Self::new()
             }
         }
 
-        impl<T: Clone> SubEnvironment for $Env<T> {
+        impl<T> Clone for $Env<T> {
+            fn clone(&self) -> Self {
+                $Env {
+                    name: self.name.clone(),
+                    args: self.args.clone(),
+                }
+            }
+        }
+
+        impl<T> SubEnvironment for $Env<T> {
             fn sub_env(&self) -> Self {
                 self.clone()
             }
@@ -132,7 +141,7 @@ macro_rules! impl_env {
             }
         }
 
-        impl<T: Clone> SetArgumentsEnvironment for $Env<T>
+        impl<T> SetArgumentsEnvironment for $Env<T>
         {
             type Args = $Rc<Vec<T>>;
 

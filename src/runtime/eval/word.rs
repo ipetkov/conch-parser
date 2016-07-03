@@ -1,31 +1,39 @@
 //! A module which defines evaluating any kind of word.
 
 use runtime::{Result, Run};
-use runtime::env::Environment;
+use runtime::env::{ArgumentsEnvironment, FileDescEnvironment, FunctionEnvironment,
+                   FunctionExecutorEnvironment, IsInteractiveEnvironment, LastStatusEnvironment,
+                   StringWrapper, SubEnvironment, VariableEnvironment};
 use runtime::eval::{Fields, TildeExpansion, WordEval, WordEvalConfig};
+use runtime::io::FileDescWrapper;
 use std::convert::{From, Into};
 use std::iter::{IntoIterator, Iterator};
-use std::rc::Rc;
 use syntax::ast::{ComplexWord, SimpleWord, TopLevelWord, Word};
 
-impl<E, W, C> WordEval<E> for SimpleWord<W, C>
-    where E: Environment,
-          W: WordEval<E>,
+impl<T, E: ?Sized, W, C> WordEval<T, E> for SimpleWord<W, C>
+    where T: StringWrapper,
+          E: ArgumentsEnvironment<Arg = T>
+              + FileDescEnvironment
+              + LastStatusEnvironment
+              + SubEnvironment
+              + VariableEnvironment<Var = T>,
+          E::FileHandle: FileDescWrapper,
+          W: WordEval<T, E>,
           C: Run<E>,
 {
-    fn eval_with_config(&self, env: &mut E, cfg: WordEvalConfig) -> Result<Fields> {
+    fn eval_with_config(&self, env: &mut E, cfg: WordEvalConfig) -> Result<Fields<T>> {
         let ret = match *self {
             SimpleWord::Literal(ref s) |
-            SimpleWord::Escaped(ref s) => Fields::Single(Rc::new(s.clone())),
+            SimpleWord::Escaped(ref s) => Fields::Single(s.clone().into()),
 
-            SimpleWord::Star        => Fields::Single(Rc::new(String::from("*"))),
-            SimpleWord::Question    => Fields::Single(Rc::new(String::from("?"))),
-            SimpleWord::SquareOpen  => Fields::Single(Rc::new(String::from("["))),
-            SimpleWord::SquareClose => Fields::Single(Rc::new(String::from("]"))),
-            SimpleWord::Colon       => Fields::Single(Rc::new(String::from(":"))),
+            SimpleWord::Star        => Fields::Single(String::from("*").into()),
+            SimpleWord::Question    => Fields::Single(String::from("?").into()),
+            SimpleWord::SquareOpen  => Fields::Single(String::from("[").into()),
+            SimpleWord::SquareClose => Fields::Single(String::from("]").into()),
+            SimpleWord::Colon       => Fields::Single(String::from(":").into()),
 
             SimpleWord::Tilde => match cfg.tilde_expansion {
-                TildeExpansion::None => Fields::Single(Rc::new(String::from("~"))),
+                TildeExpansion::None => Fields::Single(String::from("~").into()),
                 TildeExpansion::All |
                 TildeExpansion::First => {
                     // Note: even though we are expanding the equivalent of `$HOME`, a tilde
@@ -43,15 +51,21 @@ impl<E, W, C> WordEval<E> for SimpleWord<W, C>
     }
 }
 
-impl<'a, E, W, C> WordEval<E> for Word<W, C>
-    where E: Environment,
-          W: WordEval<E>,
+impl<T, E: ?Sized, W, C> WordEval<T, E> for Word<W, C>
+    where T: StringWrapper,
+          E: ArgumentsEnvironment<Arg = T>
+              + FileDescEnvironment
+              + LastStatusEnvironment
+              + SubEnvironment
+              + VariableEnvironment<Var = T>,
+          E::FileHandle: FileDescWrapper,
+          W: WordEval<T, E>,
           C: Run<E>,
 {
-    fn eval_with_config(&self, env: &mut E, cfg: WordEvalConfig) -> Result<Fields> {
+    fn eval_with_config(&self, env: &mut E, cfg: WordEvalConfig) -> Result<Fields<T>> {
         let ret = match *self {
             Word::Simple(ref s) => try!(s.eval_with_config(env, cfg)),
-            Word::SingleQuoted(ref s) => Fields::Single(Rc::new(s.clone())),
+            Word::SingleQuoted(ref s) => Fields::Single(s.clone().into()),
             Word::DoubleQuoted(ref v) => {
                 // Make sure we are NOT doing any tilde expanions for further field splitting
                 let cfg = WordEvalConfig {
@@ -63,10 +77,10 @@ impl<'a, E, W, C> WordEval<E> for Word<W, C>
                 let mut cur_field: Option<String> = None;
 
                 macro_rules! append_to_cur_field {
-                    ($rc:expr) => {
+                    ($wrapper:expr) => {
                         match cur_field {
-                            Some(ref mut cur_field) => cur_field.push_str(&$rc),
-                            None => cur_field = Some(Rc::try_unwrap($rc).unwrap_or_else(|rc| (&*rc).clone())),
+                            Some(ref mut cur_field) => cur_field.push_str($wrapper.as_str()),
+                            None => cur_field = Some($wrapper.into_owned()),
                         }
                     }
                 };
@@ -88,7 +102,7 @@ impl<'a, E, W, C> WordEval<E> for Word<W, C>
                                     append_to_cur_field!(first);
                                 }
 
-                                cur_field.take().map(|s| fields.push(Rc::new(s)));
+                                cur_field.take().map(|s| fields.push(s.into()));
 
                                 let mut last = None;
                                 for next in iter {
@@ -116,7 +130,7 @@ impl<'a, E, W, C> WordEval<E> for Word<W, C>
                     }
                 }
 
-                cur_field.map(|s| fields.push(Rc::new(s)));
+                cur_field.map(|s| fields.push(s.into()));
                 fields.into()
             }
         };
@@ -125,12 +139,18 @@ impl<'a, E, W, C> WordEval<E> for Word<W, C>
     }
 }
 
-impl<'a, E, W, C> WordEval<E> for ComplexWord<W, C>
-    where E: Environment,
-          W: WordEval<E>,
+impl<T, E: ?Sized, W, C> WordEval<T, E> for ComplexWord<W, C>
+    where T: StringWrapper,
+          E: ArgumentsEnvironment<Arg = T>
+              + FileDescEnvironment
+              + LastStatusEnvironment
+              + SubEnvironment
+              + VariableEnvironment<Var = T>,
+          E::FileHandle: FileDescWrapper,
+          W: WordEval<T, E>,
           C: Run<E>,
 {
-    fn eval_with_config(&self, env: &mut E, cfg: WordEvalConfig) -> Result<Fields> {
+    fn eval_with_config(&self, env: &mut E, cfg: WordEvalConfig) -> Result<Fields<T>> {
         let ret = match *self {
             ComplexWord::Single(ref w) => try!(w.eval_with_config(env, cfg)),
 
@@ -140,18 +160,14 @@ impl<'a, E, W, C> WordEval<E> for ComplexWord<W, C>
                     split_fields_further: cfg.split_fields_further,
                 };
 
-                let mut fields: Vec<Rc<String>> = Vec::new();
+                let mut fields: Vec<T> = Vec::new();
                 for w in v.iter() {
                     let mut iter = try!(w.eval_with_config(env, cfg)).into_iter();
                     match (fields.pop(), iter.next()) {
                        (Some(last), Some(next)) => {
-                           let mut new = Rc::try_unwrap(last).unwrap_or_else(|rc| {
-                               let mut new = String::with_capacity(rc.len() + next.len());
-                               new.push_str(&rc);
-                               new
-                           });
-                           new.push_str(&next);
-                           fields.push(Rc::new(new));
+                           let mut new = last.into_owned();
+                           new.push_str(next.as_str());
+                           fields.push(new.into());
                        },
                        (Some(last), None) => fields.push(last),
                        (None, Some(next)) => fields.push(next),
@@ -169,8 +185,20 @@ impl<'a, E, W, C> WordEval<E> for ComplexWord<W, C>
     }
 }
 
-impl<E: Environment> WordEval<E> for TopLevelWord {
-    fn eval_with_config(&self, env: &mut E, cfg: WordEvalConfig) -> Result<Fields> {
+impl<T, E: ?Sized> WordEval<T, E> for TopLevelWord
+    where T: StringWrapper,
+          E: ArgumentsEnvironment<Arg = T>
+              + FileDescEnvironment
+              + FunctionEnvironment<Name = T>
+              + FunctionExecutorEnvironment
+              + IsInteractiveEnvironment
+              + LastStatusEnvironment
+              + SubEnvironment
+              + VariableEnvironment<Var = T>,
+          E::FileHandle: FileDescWrapper,
+          E::Fn: From<::std::rc::Rc<::runtime::Run<E>>>,
+{
+    fn eval_with_config(&self, env: &mut E, cfg: WordEvalConfig) -> Result<Fields<T>> {
         self.0.eval_with_config(env, cfg)
     }
 }
@@ -178,10 +206,9 @@ impl<E: Environment> WordEval<E> for TopLevelWord {
 #[cfg(test)]
 mod tests {
     use runtime::{Result, RuntimeError};
-    use runtime::env::{Env, EnvConfig, Environment};
+    use runtime::env::{ArgsEnv, DefaultEnv, Env, EnvConfig, VariableEnvironment};
     use runtime::ExpansionError::DivideByZero;
     use runtime::eval::{Fields, TildeExpansion, WordEval, WordEvalConfig};
-    use std::rc::Rc;
     use syntax::ast::{Parameter, ParameterSubstitution, TopLevelWord};
     use syntax::ast::ComplexWord::*;
     use syntax::ast::SimpleWord::*;
@@ -195,7 +222,7 @@ mod tests {
 
     #[derive(Copy, Clone, Debug)]
     struct MockCmd;
-    impl<E: Environment> ::runtime::Run<E> for MockCmd {
+    impl<E: ?Sized> ::runtime::Run<E> for MockCmd {
         fn run(&self, _: &mut E) -> Result<::runtime::ExitStatus> {
             Ok(::runtime::EXIT_SUCCESS)
         }
@@ -209,10 +236,10 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::new().unwrap();
+        let mut env = DefaultEnv::<String>::new();
         let value = "foobar".to_owned();
         let simple: SimpleWord = Literal(value.clone());
-        assert_eq!(simple.eval_with_config(&mut env, cfg), Ok(Fields::Single(value.into())));
+        assert_eq!(simple.eval_with_config(&mut env, cfg), Ok(Fields::Single(value)));
     }
 
     #[test]
@@ -223,10 +250,10 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::new().unwrap();
+        let mut env = Env::new();
         let value = "&& $@".to_owned();
         let simple: SimpleWord = Literal(value.clone());
-        assert_eq!(simple.eval_with_config(&mut env, cfg), Ok(Fields::Single(value.into())));
+        assert_eq!(simple.eval_with_config(&mut env, cfg), Ok(Fields::Single(value)));
     }
 
     #[test]
@@ -245,10 +272,10 @@ mod tests {
             (Colon,       ":"),
         );
 
-        let mut env = Env::new().unwrap();
+        let mut env = Env::new();
 
         for (word, correct) in cases {
-            let correct = Ok(Fields::Single(correct.to_owned().into()));
+            let correct = Ok(Fields::Single(correct.to_owned()));
             assert_eq!(word.eval_with_config(&mut env, cfg), correct);
         }
     }
@@ -260,8 +287,8 @@ mod tests {
             split_fields_further: true,
         };
 
-        let home_value = Rc::new("foo bar".to_owned());
-        let mut env = Env::new().unwrap();
+        let home_value = "foo bar".to_owned();
+        let mut env = Env::new();
         env.set_var("HOME".to_owned(), home_value.clone());
 
         let word: Word = Simple(Box::new(Tilde));
@@ -278,14 +305,14 @@ mod tests {
         };
 
         let var_name = "var".to_owned();
-        let var_value = Rc::new("foo".to_owned());
+        let var_value = "foo".to_owned();
 
-        let mut env = Env::new().unwrap();
+        let mut env = Env::new();
         env.set_var(var_name.clone(), var_value.clone());
 
         let simple: ParamSubst =
             Subst(Box::new(ParameterSubstitution::Len(Parameter::Var(var_name))));
-        let correct = Fields::Single("3".to_owned().into());
+        let correct = Fields::Single("3".to_owned());
         assert_eq!(simple.eval_with_config(&mut env, cfg), Ok(correct));
     }
 
@@ -300,9 +327,9 @@ mod tests {
         };
 
         let var_name = "var".to_owned();
-        let var_value = Rc::new("foo".to_owned());
+        let var_value = "foo".to_owned();
 
-        let mut env = Env::new().unwrap();
+        let mut env = Env::new();
         env.set_var(var_name.clone(), var_value.clone());
 
         let simple: ParamSubst = Subst(Box::new(ParameterSubstitution::Arith(Some(Arithmetic::Div(
@@ -322,9 +349,9 @@ mod tests {
         };
 
         let var_name = "var".to_owned();
-        let var_value = Rc::new("~/foo".to_owned());
+        let var_value = "~/foo".to_owned();
 
-        let mut env = Env::new().unwrap();
+        let mut env = Env::new();
         env.set_var(var_name.clone(), var_value.clone());
 
         let simple: SimpleWord = Param(Parameter::Var(var_name));
@@ -339,7 +366,7 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::new().unwrap();
+        let mut env = DefaultEnv::<String>::new();
         let simple: SimpleWord = Param(Parameter::Var("var".to_owned()));
         assert_eq!(simple.eval_with_config(&mut env, cfg), Ok(Fields::Zero));
     }
@@ -352,13 +379,13 @@ mod tests {
         };
 
         let var_name = "var".to_owned();
-        let var_value = Rc::new("~ foo".to_owned());
+        let var_value = "~ foo".to_owned();
 
-        let mut env = Env::new().unwrap();
+        let mut env = Env::new();
         env.set_var(var_name.clone(), var_value);
 
         let simple: SimpleWord = Param(Parameter::Var(var_name));
-        let correct = Fields::Split(vec!("~".to_owned().into(), "foo".to_owned().into()));
+        let correct = Fields::Split(vec!("~".to_owned(), "foo".to_owned()));
         assert_eq!(simple.eval_with_config(&mut env, cfg), Ok(correct));
     }
 
@@ -371,10 +398,10 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::new().unwrap();
+        let mut env = Env::new();
         let value = "foo".to_owned();
         let word: Word = lit(&value);
-        assert_eq!(word.eval_with_config(&mut env, cfg), Ok(Fields::Single(value.into())));
+        assert_eq!(word.eval_with_config(&mut env, cfg), Ok(Fields::Single(value)));
 
         let word: Word = Simple(Box::new(Subst(Box::new(ParameterSubstitution::Arith(Some(
             Arithmetic::Div(
@@ -392,10 +419,10 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::new().unwrap();
+        let mut env = Env::new();
         let value = "~/hello world\nfoo\tbar *".to_owned();
         let word: Word = SingleQuoted(value.clone());
-        assert_eq!(word.eval_with_config(&mut env, cfg), Ok(Fields::Single(value.into())));
+        assert_eq!(word.eval_with_config(&mut env, cfg), Ok(Fields::Single(value)));
     }
 
     #[test]
@@ -407,15 +434,15 @@ mod tests {
         };
 
         let var = "var".to_owned();
-        let mut env = Env::new().unwrap();
-        env.set_var(var.clone(), "hello world".to_owned().into());
+        let mut env = Env::new();
+        env.set_var(var.clone(), "hello world".to_owned());
 
         let word: Word = DoubleQuoted(vec!(
             Literal("foo".to_owned()),
             Param(Parameter::Var(var)),
             Literal("bar".to_owned()),
         ));
-        let correct = Fields::Single("foohello worldbar".to_owned().into());
+        let correct = Fields::Single("foohello worldbar".to_owned());
         assert_eq!(word.eval_with_config(&mut env, cfg), Ok(correct));
     }
 
@@ -427,17 +454,17 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::new().unwrap();
+        let mut env = Env::new();
         let word: Word = DoubleQuoted(vec!(Tilde));
-        let correct = Fields::Single("~".to_owned().into());
+        let correct = Fields::Single("~".to_owned());
         assert_eq!(word.eval_with_config(&mut env, cfg), Ok(correct));
 
         let word: Word = DoubleQuoted(vec!(Tilde, Literal("root".to_owned())));
-        let correct = Fields::Single("~root".to_owned().into());
+        let correct = Fields::Single("~root".to_owned());
         assert_eq!(word.eval_with_config(&mut env, cfg), Ok(correct));
 
         let word: Word = DoubleQuoted(vec!(Tilde, Literal("/root".to_owned())));
-        let correct = Fields::Single("~/root".to_owned().into());
+        let correct = Fields::Single("~/root".to_owned());
         assert_eq!(word.eval_with_config(&mut env, cfg), Ok(correct));
     }
 
@@ -449,7 +476,7 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::new().unwrap();
+        let mut env = DefaultEnv::<String>::new();
         let word: Word = DoubleQuoted(vec!(Param(Parameter::Star)));
         assert_eq!(word.eval_with_config(&mut env, cfg), Ok(Fields::Zero));
     }
@@ -463,13 +490,13 @@ mod tests {
         };
 
         let mut env = Env::with_config(EnvConfig {
-            args: Some(vec!(
+            args_env: ArgsEnv::with_name_and_args("shell".to_owned(), vec!(
                 "one".to_owned(),
                 "two".to_owned(),
                 "three".to_owned(),
             )),
             .. Default::default()
-        }).unwrap();
+        });
 
         let word: Word = DoubleQuoted(vec!(
             Literal("foo".to_owned()),
@@ -478,9 +505,9 @@ mod tests {
         ));
 
         assert_eq!(word.eval_with_config(&mut env, cfg), Ok(Fields::Split(vec!(
-            "fooone".to_owned().into(),
-            "two".to_owned().into(),
-            "threebar".to_owned().into(),
+            "fooone".to_owned(),
+            "two".to_owned(),
+            "threebar".to_owned(),
         ))));
     }
 
@@ -492,7 +519,7 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::new().unwrap();
+        let mut env = Env::new();
         let word: Word = DoubleQuoted(vec!(Param(Parameter::At)));
         assert_eq!(word.eval_with_config(&mut env, cfg), Ok(Fields::Zero));
 
@@ -501,11 +528,13 @@ mod tests {
             Param(Parameter::At),
             Literal("bar".to_owned()),
         ));
-        assert_eq!(word.eval_with_config(&mut env, cfg), Ok("foobar".to_owned().into()));
+        assert_eq!(word.eval_with_config(&mut env, cfg), Ok(Fields::Single("foobar".to_owned())));
     }
 
     #[test]
     fn test_word_double_quoted_param_star_expands_but_joined_by_ifs() {
+        use runtime::env::UnsetVariableEnvironment;
+
         // Should have no effect
         let cfg = WordEvalConfig {
             tilde_expansion: TildeExpansion::All,
@@ -513,13 +542,13 @@ mod tests {
         };
 
         let mut env = Env::with_config(EnvConfig {
-            args: Some(vec!(
+            args_env: ArgsEnv::with_name_and_args("shell".to_owned(), vec!(
                 "one".to_owned(),
                 "two".to_owned(),
                 "three".to_owned(),
             )),
             .. Default::default()
-        }).unwrap();
+        });
 
         let word: Word = DoubleQuoted(vec!(
             Literal("foo".to_owned()),
@@ -528,19 +557,19 @@ mod tests {
         ));
 
         // IFS initialized by environment for us
-        let correct = Fields::Single("fooone two threebar".to_owned().into());
+        let correct = Fields::Single("fooone two threebar".to_owned());
         assert_eq!(word.eval_with_config(&mut env, cfg), Ok(correct));
 
-        env.set_var("IFS".to_owned(), Rc::new("!".to_owned()));
-        let correct = Fields::Single("fooone!two!threebar".to_owned().into());
+        env.set_var("IFS".to_owned(), "!".to_owned());
+        let correct = Fields::Single("fooone!two!threebar".to_owned());
         assert_eq!(word.eval_with_config(&mut env, cfg), Ok(correct));
 
-        env.set_var("IFS".to_owned(), "".to_owned().into());
-        let correct = Fields::Single("fooonetwothreebar".to_owned().into());
+        env.set_var("IFS".to_owned(), "".to_owned());
+        let correct = Fields::Single("fooonetwothreebar".to_owned());
         assert_eq!(word.eval_with_config(&mut env, cfg), Ok(correct));
 
         env.unset_var("IFS");
-        let correct = Fields::Single("fooone two threebar".to_owned().into());
+        let correct = Fields::Single("fooone two threebar".to_owned());
         assert_eq!(word.eval_with_config(&mut env, cfg), Ok(correct));
     }
 
@@ -552,7 +581,7 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::new().unwrap();
+        let mut env = DefaultEnv::<String>::new();
         let word: Word = DoubleQuoted(vec!(Param(Parameter::At)));
         assert_eq!(word.eval_with_config(&mut env, cfg), Ok(Fields::Zero));
     }
@@ -565,19 +594,19 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::new().unwrap();
-        env.set_var("var".to_owned(), Rc::new("foo bar".to_owned()));
+        let mut env = Env::new();
+        env.set_var("var".to_owned(), "foo bar".to_owned());
 
         let var = Parameter::Var("var".to_owned());
 
         let word: Word = DoubleQuoted(vec!(Param(var.clone())));
-        let correct = Fields::Single("foo bar".to_owned().into());
+        let correct = Fields::Single("foo bar".to_owned());
         assert_eq!(word.eval_with_config(&mut env, cfg), Ok(correct));
 
         let word: Word = DoubleQuoted(vec!(
             Subst(Box::new(ParameterSubstitution::Default(false, var, None)))
         ));
-        let correct = Fields::Single("foo bar".to_owned().into());
+        let correct = Fields::Single("foo bar".to_owned());
         assert_eq!(word.eval_with_config(&mut env, cfg), Ok(correct));
     }
 
@@ -590,10 +619,10 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::new().unwrap();
+        let mut env = Env::new();
         let value = "foo".to_owned();
         let complex: ComplexWord = Single(Simple(Box::new(Literal(value.clone()))));
-        assert_eq!(complex.eval_with_config(&mut env, cfg), Ok(Fields::Single(value.into())));
+        assert_eq!(complex.eval_with_config(&mut env, cfg), Ok(Fields::Single(value)));
 
         let complex: ComplexWord = Single(Simple(Box::new(Subst(Box::new(ParameterSubstitution::Arith(
             Some(Arithmetic::Div(
@@ -613,10 +642,10 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::new().unwrap();
+        let mut env = Env::new();
         let value = "foo".to_owned();
         let complex: ComplexWord = Single(Simple(Box::new(Literal(value.clone()))));
-        assert_eq!(complex.eval_with_config(&mut env, cfg), Ok(Fields::Single(value.into())));
+        assert_eq!(complex.eval_with_config(&mut env, cfg), Ok(Fields::Single(value)));
 
         let complex: ComplexWord = Concat(vec!(
             Simple(Box::new(Subst(Box::new(ParameterSubstitution::Arith(
@@ -636,11 +665,11 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::new().unwrap();
-        env.set_var("var".to_owned(), "foobar".to_owned().into());
+        let mut env = Env::new();
+        env.set_var("var".to_owned(), "foobar".to_owned());
 
         let complex: ComplexWord = Concat(vec!(lit("hello")));
-        let correct = Fields::Single("hello".to_owned().into());
+        let correct = Fields::Single("hello".to_owned());
         assert_eq!(complex.eval_with_config(&mut env, cfg), Ok(correct));
 
         let complex: ComplexWord = Concat(vec!(
@@ -648,7 +677,7 @@ mod tests {
             Simple(Box::new(Param(Parameter::Var("var".to_owned())))),
             lit("world"),
         ));
-        let correct = Fields::Single("hellofoobarworld".to_owned().into());
+        let correct = Fields::Single("hellofoobarworld".to_owned());
         assert_eq!(complex.eval_with_config(&mut env, cfg), Ok(correct));
     }
 
@@ -659,8 +688,8 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::new().unwrap();
-        env.set_var("var".to_owned(), "foo bar baz".to_owned().into());
+        let mut env = Env::new();
+        env.set_var("var".to_owned(), "foo bar baz".to_owned());
 
         let complex: ComplexWord = Concat(vec!(
             lit("hello"),
@@ -669,9 +698,9 @@ mod tests {
         ));
 
         assert_eq!(complex.eval_with_config(&mut env, cfg), Ok(Fields::Split(vec!(
-            "hellofoo".to_owned().into(),
-            "bar".to_owned().into(),
-            "bazworld".to_owned().into(),
+            "hellofoo".to_owned(),
+            "bar".to_owned(),
+            "bazworld".to_owned(),
         ))));
     }
 
@@ -682,20 +711,20 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::new().unwrap();
+        let mut env = Env::new();
         let complex: ComplexWord = Concat(vec!(
             lit("foo"),
             Simple(Box::new(Tilde)),
             lit("bar"),
         ));
-        let correct = Fields::Single("foo~bar".to_owned().into());
+        let correct = Fields::Single("foo~bar".to_owned());
         assert_eq!(complex.eval_with_config(&mut env, cfg), Ok(correct));
 
         let complex: ComplexWord = Concat(vec!(
             lit("foo"),
             Simple(Box::new(Tilde)),
         ));
-        let correct = Fields::Single("foo~".to_owned().into());
+        let correct = Fields::Single("foo~".to_owned());
         assert_eq!(complex.eval_with_config(&mut env, cfg), Ok(correct));
     }
 
@@ -706,7 +735,7 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::new().unwrap();
+        let mut env = DefaultEnv::<String>::new();
         let complex: ComplexWord = Concat(vec!());
         assert_eq!(complex.eval_with_config(&mut env, cfg), Ok(Fields::Zero));
 
@@ -727,20 +756,20 @@ mod tests {
         };
 
         let mut env = Env::with_config(EnvConfig {
-            args: Some(vec!(
+            args_env: ArgsEnv::with_name_and_args("shell".to_owned(), vec!(
                 "one".to_owned(),
                 "two".to_owned(),
                 "three four".to_owned(),
             )),
             .. Default::default()
-        }).unwrap();
+        });
 
         let complex: ComplexWord = Concat(vec!(Simple(Box::new(Param(Parameter::At)))));
         assert_eq!(complex.eval_with_config(&mut env, cfg), Ok(Fields::Split(vec!(
-            "one".to_owned().into(),
-            "two".to_owned().into(),
-            "three".to_owned().into(),
-            "four".to_owned().into(),
+            "one".to_owned(),
+            "two".to_owned(),
+            "three".to_owned(),
+            "four".to_owned(),
         ))));
     }
 
@@ -752,13 +781,13 @@ mod tests {
         };
 
         let mut env = Env::with_config(EnvConfig {
-            args: Some(vec!(
+            args_env: ArgsEnv::with_name_and_args("shell".to_owned(), vec!(
                 "one".to_owned(),
                 "two".to_owned(),
                 "three four".to_owned(),
             )),
             .. Default::default()
-        }).unwrap();
+        });
 
         let complex: ComplexWord = Concat(vec!(
             lit("foo"),
@@ -766,10 +795,10 @@ mod tests {
             lit("bar"),
         ));
         assert_eq!(complex.eval_with_config(&mut env, cfg), Ok(Fields::Split(vec!(
-            "fooone".to_owned().into(),
-            "two".to_owned().into(),
-            "three".to_owned().into(),
-            "fourbar".to_owned().into(),
+            "fooone".to_owned(),
+            "two".to_owned(),
+            "three".to_owned(),
+            "fourbar".to_owned(),
         ))));
     }
 
@@ -780,14 +809,14 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::new().unwrap();
+        let mut env = Env::new();
         let complex: ComplexWord = Concat(vec!(
             lit("foo"),
             Simple(Box::new(Param(Parameter::At))),
             lit("bar"),
         ));
 
-        let correct = Fields::Single("foobar".to_owned().into());
+        let correct = Fields::Single("foobar".to_owned());
         assert_eq!(complex.eval_with_config(&mut env, cfg), Ok(correct));
     }
 
@@ -798,7 +827,7 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::new().unwrap();
+        let mut env = Env::new();
         let complex: ComplexWord = Concat(vec!(
             lit("foo"),
             Simple(Box::new(Colon)),
@@ -806,7 +835,7 @@ mod tests {
             lit("bar"),
         ));
 
-        let correct = Fields::Single("foo:~bar".to_owned().into());
+        let correct = Fields::Single("foo:~bar".to_owned());
         assert_eq!(complex.eval_with_config(&mut env, cfg), Ok(correct));
     }
 
@@ -819,10 +848,10 @@ mod tests {
             split_fields_further: true,
         };
 
-        let mut env = Env::new().unwrap();
+        let mut env = Env::new();
         let value = "foo".to_owned();
         let top_level_word = TopLevelWord(Single(Simple(Box::new(Literal(value.clone())))));
-        assert_eq!(top_level_word.eval_with_config(&mut env, cfg), Ok(Fields::Single(value.into())));
+        assert_eq!(top_level_word.eval_with_config(&mut env, cfg), Ok(Fields::Single(value)));
 
         let top_level_word = TopLevelWord(Single(Simple(Box::new(Subst(Box::new(
             ParameterSubstitution::Arith(Some(Arithmetic::Div(

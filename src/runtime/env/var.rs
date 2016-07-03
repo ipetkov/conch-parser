@@ -52,15 +52,15 @@ impl<'a, T: ?Sized + UnsetVariableEnvironment> UnsetVariableEnvironment for &'a 
 macro_rules! impl_env {
     ($(#[$attr:meta])* pub struct $Env:ident, $Rc:ident) => {
         $(#[$attr])*
-        #[derive(Clone, Debug, PartialEq, Eq)]
-        pub struct $Env<T: Clone = $Rc<String>> {
+        #[derive(Debug, PartialEq, Eq)]
+        pub struct $Env<T = $Rc<String>> {
             /// A mapping of variable names to their values.
             ///
             /// The tupled boolean indicates if a variable should be exported to other commands.
             vars: $Rc<HashMap<String, (T, bool)>>,
         }
 
-        impl<T: Clone> $Env<T> {
+        impl<T> $Env<T> {
             /// Constructs a new environment with no environment variables.
             pub fn new() -> Self {
                 $Env {
@@ -127,13 +127,21 @@ macro_rules! impl_env {
             }
         }
 
-        impl<T: Clone> Default for $Env<T> {
+        impl<T> Default for $Env<T> {
             fn default() -> Self {
                 Self::new()
             }
         }
 
-        impl<T: Clone> SubEnvironment for $Env<T> {
+        impl<T> Clone for $Env<T> {
+            fn clone(&self) -> Self {
+                $Env {
+                    vars: self.vars.clone(),
+                }
+            }
+        }
+
+        impl<T> SubEnvironment for $Env<T> {
             fn sub_env(&self) -> Self {
                 self.clone()
             }

@@ -47,12 +47,12 @@ impl<'a, T: ?Sized + FileDescEnvironment> FileDescEnvironment for &'a mut T {
 macro_rules! impl_env {
     ($(#[$attr:meta])* pub struct $Env:ident, $Rc:ident) => {
         $(#[$attr])*
-        #[derive(Clone, Debug, PartialEq, Eq)]
-        pub struct $Env<T: Clone = $Rc<FileDesc>> {
+        #[derive(Debug, PartialEq, Eq)]
+        pub struct $Env<T = $Rc<FileDesc>> {
             fds: $Rc<HashMap<Fd, (T, Permissions)>>,
         }
 
-        impl<T: Clone> $Env<T> {
+        impl<T> $Env<T> {
             /// Constructs a new environment with no open file descriptors.
             pub fn new() -> Self {
                 $Env {
@@ -83,14 +83,21 @@ macro_rules! impl_env {
             }
         }
 
-        impl<T: Clone> Default for $Env<T> {
+        impl<T> Default for $Env<T> {
             fn default() -> Self {
                 Self::new()
             }
         }
 
+        impl<T> Clone for $Env<T> {
+            fn clone(&self) -> Self {
+                $Env {
+                    fds: self.fds.clone(),
+                }
+            }
+        }
 
-        impl<T: Clone> SubEnvironment for $Env<T> {
+        impl<T> SubEnvironment for $Env<T> {
             fn sub_env(&self) -> Self {
                 self.clone()
             }

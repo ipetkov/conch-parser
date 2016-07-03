@@ -6,8 +6,6 @@ use std::hash::Hash;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use syntax::ast::TopLevelCommand;
-
 /// An interface for setting and getting shell functions.
 pub trait FunctionEnvironment {
     /// The name to be associated with a function.
@@ -58,10 +56,8 @@ impl<'a, T: ?Sized + UnsetFunctionEnvironment> UnsetFunctionEnvironment for &'a 
 macro_rules! impl_env {
     ($(#[$attr:meta])* pub struct $Env:ident, $Rc:ident) => {
         $(#[$attr])*
-        #[derive(Clone, Debug, PartialEq, Eq)]
-        pub struct $Env<N = $Rc<String>, F = $Rc<TopLevelCommand>>
-            where N: Hash + Eq,
-        {
+        #[derive(Debug, PartialEq, Eq)]
+        pub struct $Env<N: Hash + Eq, F> {
             functions: $Rc<HashMap<N, F>>,
         }
 
@@ -72,6 +68,11 @@ macro_rules! impl_env {
                     functions: HashMap::new().into(),
                 }
             }
+
+            #[doc(hidden)]
+            pub fn fn_names(&self) -> ::std::collections::hash_map::Keys<N, F> {
+                self.functions.keys()
+            }
         }
 
         impl<N: Hash + Eq, F> Default for $Env<N, F> {
@@ -80,7 +81,15 @@ macro_rules! impl_env {
             }
         }
 
-        impl<N: Hash + Eq + Clone, F: Clone> SubEnvironment for $Env<N, F> {
+        impl<N: Hash + Eq, F> Clone for $Env<N, F> {
+            fn clone(&self) -> Self {
+                $Env {
+                    functions: self.functions.clone(),
+                }
+            }
+        }
+
+        impl<N: Hash + Eq, F> SubEnvironment for $Env<N, F> {
             fn sub_env(&self) -> Self {
                 self.clone()
             }

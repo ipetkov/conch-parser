@@ -1,5 +1,6 @@
 //! Defines interfaces and methods for doing OS agnostic file IO operations.
 
+mod file_desc_wrapper;
 #[cfg(unix)]
 #[path = "unix.rs"] mod os;
 #[cfg(windows)]
@@ -11,6 +12,8 @@ use std::fs;
 use std::io::{Read, Result, Seek, SeekFrom, Write};
 use std::path;
 use std::process::Stdio;
+
+pub use self::file_desc_wrapper::*;
 
 /// An indicator of the read/write permissions of an OS file primitive.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
