@@ -3,6 +3,7 @@ use runtime::ref_counted::RefCounted;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::fmt;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -52,7 +53,7 @@ impl<'a, T: ?Sized + UnsetVariableEnvironment> UnsetVariableEnvironment for &'a 
 macro_rules! impl_env {
     ($(#[$attr:meta])* pub struct $Env:ident, $Rc:ident) => {
         $(#[$attr])*
-        #[derive(Debug, PartialEq, Eq)]
+        #[derive(PartialEq, Eq)]
         pub struct $Env<T = $Rc<String>> {
             /// A mapping of variable names to their values.
             ///
@@ -124,6 +125,28 @@ macro_rules! impl_env {
                 if self.vars.contains_key(name) {
                     self.vars.make_mut().remove(name);
                 }
+            }
+        }
+
+        impl<T: fmt::Debug> fmt::Debug for $Env<T> {
+            fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+                use std::collections::BTreeMap;
+
+                let mut vars = BTreeMap::new();
+                let mut env_vars = BTreeMap::new();
+
+                for (name, &(ref val, is_env)) in &*self.vars {
+                    if is_env {
+                        env_vars.insert(name, val);
+                    } else {
+                        vars.insert(name, val);
+                    }
+                }
+
+                fmt.debug_struct(stringify!($Env))
+                    .field("env_vars", &env_vars)
+                    .field("vars", &vars)
+                    .finish()
             }
         }
 
