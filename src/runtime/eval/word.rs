@@ -1,8 +1,8 @@
 //! A module which defines evaluating any kind of word.
 
 use runtime::{Result, Run};
-use runtime::env::{ArgumentsEnvironment, FileDescEnvironment, FunctionEnvironment,
-                   FunctionExecutorEnvironment, IsInteractiveEnvironment, LastStatusEnvironment,
+use runtime::env::{ArgumentsEnvironment, FileDescEnvironment, FunctionExecutorEnvironment,
+                   IsInteractiveEnvironment, LastStatusEnvironment,
                    StringWrapper, SubEnvironment, VariableEnvironment};
 use runtime::eval::{Fields, TildeExpansion, WordEval, WordEvalConfig};
 use runtime::io::FileDescWrapper;
@@ -189,8 +189,7 @@ impl<T, E: ?Sized> WordEval<T, E> for TopLevelWord
     where T: StringWrapper,
           E: ArgumentsEnvironment<Arg = T>
               + FileDescEnvironment
-              + FunctionEnvironment<Name = T>
-              + FunctionExecutorEnvironment
+              + FunctionExecutorEnvironment<Name = T>
               + IsInteractiveEnvironment
               + LastStatusEnvironment
               + SubEnvironment

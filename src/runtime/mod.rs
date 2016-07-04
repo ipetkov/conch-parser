@@ -2,9 +2,9 @@
 
 use glob;
 
-use self::env::{ArgumentsEnvironment, FileDescEnvironment, FunctionEnvironment,
-                FunctionExecutorEnvironment, IsInteractiveEnvironment, LastStatusEnvironment,
-                StringWrapper, SubEnvironment, VariableEnvironment};
+use self::env::{ArgumentsEnvironment, FileDescEnvironment, FunctionExecutorEnvironment,
+                IsInteractiveEnvironment, LastStatusEnvironment, StringWrapper, SubEnvironment,
+                VariableEnvironment};
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -165,8 +165,7 @@ impl<T, E: ?Sized> Run<E> for TopLevelCommand
     where T: StringWrapper,
           E: ArgumentsEnvironment<Arg = T>
             + FileDescEnvironment
-            + FunctionEnvironment<Name = T>
-            + FunctionExecutorEnvironment
+            + FunctionExecutorEnvironment<Name = T>
             + IsInteractiveEnvironment
             + LastStatusEnvironment
             + SubEnvironment
@@ -183,8 +182,7 @@ impl<T, E: ?Sized, W, C> Run<E> for Command<W, C>
     where T: StringWrapper,
           E: ArgumentsEnvironment<Arg = T>
             + FileDescEnvironment
-            + FunctionEnvironment<Name = T>
-            + FunctionExecutorEnvironment
+            + FunctionExecutorEnvironment<Name = T>
             + IsInteractiveEnvironment
             + LastStatusEnvironment
             + SubEnvironment
@@ -243,8 +241,7 @@ impl<T, E: ?Sized, W, C> Run<E> for PipeableCommand<W, C>
     where T: StringWrapper,
           E: ArgumentsEnvironment<Arg = T>
             + FileDescEnvironment
-            + FunctionEnvironment<Name = T>
-            + FunctionExecutorEnvironment
+            + FunctionExecutorEnvironment<Name = T>
             + IsInteractiveEnvironment
             + LastStatusEnvironment
             + SubEnvironment
@@ -564,8 +561,6 @@ mod tests {
     type CompoundCommandKind = ::syntax::ast::CompoundCommandKind<MockWord, Command>;
     type PipeableCommand     = ::syntax::ast::PipeableCommand<MockWord, Command>;
 
-    const EXIT_ERROR_MOCK: ExitStatus = ExitStatus::Code(::std::i32::MAX);
-
     #[cfg(unix)]
     pub const DEV_NULL: &'static str = "/dev/null";
 
@@ -693,7 +688,13 @@ mod tests {
                 // Use a sub-env for each test case to offer a "clean slate"
                 let result = $test(cmd_simple!(move || $case), $env.sub_env());
                 if $swallow_errors {
-                    assert_eq!(result, Ok($ok_status.clone().unwrap_or(EXIT_ERROR_MOCK)));
+                    match ($ok_status.clone(), result) {
+                        (Some(status), result) => assert_eq!(Ok(status), result),
+                        (None, Ok(status)) => {
+                            assert!(!status.success(), "{:#?} was unexpectedly successful", status)
+                        },
+                        (None, err) => panic!("Unexpected err result: {:#?}", err),
+                    }
                 } else {
                     assert_eq!(result, Err($case));
                 }
@@ -761,7 +762,13 @@ mod tests {
         );
 
         if swallow_fatals {
-            assert_eq!(custom_err_result, Ok(ok_status.clone().unwrap_or(EXIT_ERROR_MOCK)));
+            match (ok_status.clone(), custom_err_result) {
+                (Some(status), result) => assert_eq!(Ok(status), result),
+                (None, Ok(status)) => {
+                    assert!(!status.success(), "{:#?} was unexpectedly successful", status)
+                },
+                (None, err) => panic!("Unexpected err result: {:#?}", err),
+            }
         } else if let RuntimeError::Custom(err) = custom_err_result.unwrap_err() {
             assert_eq!(*err.downcast::<MockErr>().unwrap(), MockErr(42));
         } else {
@@ -848,7 +855,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_run_and_or_list_error_handling() {
         use syntax::ast::AndOr::*;
         use syntax::ast::AndOrList;
@@ -934,7 +940,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_run_pipeable_command_error_handling() {
         use syntax::ast::GuardBodyPair;
 
@@ -962,7 +967,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_run_compound_command_error_handling() {
         use syntax::ast::GuardBodyPair;
 
@@ -1361,7 +1365,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_run_command_compound_kind_brace_error_handling() {
         test_error_handling(true, |cmd, mut env| {
             let compound: CompoundCommandKind = Brace(vec!(cmd_from_simple(cmd), exit(42)));
@@ -1456,7 +1459,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_run_command_compound_kind_loop_error_handling() {
         use syntax::ast::GuardBodyPair;
 
@@ -1557,7 +1559,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_run_command_compound_kind_for_error_handling() {
         test_error_handling(false, |cmd, mut env| {
             let compound: CompoundCommandKind = For {
@@ -1650,7 +1651,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_run_compound_command_kind_if_error_handling() {
         use syntax::ast::GuardBodyPair;
 
@@ -1931,7 +1931,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_run_compound_command_kind_subshell_error_handling() {
         test_error_handling_non_fatals(true, |cmd, mut env| {
             let compound: CompoundCommandKind = Subshell(vec!(cmd_from_simple(cmd), exit(42)));
