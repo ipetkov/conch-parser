@@ -1,6 +1,7 @@
 //! A module for evaluating arbitrary shell components such as words,
 //! parameter subsitutions, redirections, and others.
 
+mod arith;
 mod parameter;
 mod redirect;
 mod word;

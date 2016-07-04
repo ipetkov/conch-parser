@@ -762,7 +762,7 @@ mod tests {
         );
 
         if swallow_fatals {
-            match (ok_status.clone(), custom_err_result) {
+            match (ok_status, custom_err_result) {
                 (Some(status), result) => assert_eq!(Ok(status), result),
                 (None, Ok(status)) => {
                     assert!(!status.success(), "{:#?} was unexpectedly successful", status)
