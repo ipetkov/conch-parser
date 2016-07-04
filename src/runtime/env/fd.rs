@@ -6,6 +6,7 @@ use runtime::ref_counted::RefCounted;
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::error::Error;
+use std::fmt;
 use std::io::Result;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -47,7 +48,7 @@ impl<'a, T: ?Sized + FileDescEnvironment> FileDescEnvironment for &'a mut T {
 macro_rules! impl_env {
     ($(#[$attr:meta])* pub struct $Env:ident, $Rc:ident) => {
         $(#[$attr])*
-        #[derive(Debug, PartialEq, Eq)]
+        #[derive(PartialEq, Eq)]
         pub struct $Env<T = $Rc<FileDesc>> {
             fds: $Rc<HashMap<Fd, (T, Permissions)>>,
         }
@@ -80,6 +81,30 @@ macro_rules! impl_env {
                         .collect::<HashMap<_, _>>()
                         .into(),
                 }
+            }
+        }
+
+        impl<T: fmt::Debug> fmt::Debug for $Env<T> {
+            fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+                use std::collections::BTreeMap;
+
+                #[derive(Debug)]
+                struct FileDescDebug<T> {
+                    permissions: Permissions,
+                    os_handle: T,
+                }
+
+                let mut fds = BTreeMap::new();
+                for (fd, &(ref fdesc, perms)) in &*self.fds {
+                    fds.insert(fd, FileDescDebug {
+                        os_handle: fdesc,
+                        permissions: perms,
+                    });
+                }
+
+                fmt.debug_struct(stringify!($Env))
+                    .field("fds", &fds)
+                    .finish()
             }
         }
 
