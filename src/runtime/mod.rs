@@ -1166,14 +1166,17 @@ mod tests {
         use syntax::ast::Word::Simple;
 
         let var = "var";
-        let value = "foobar";
         let tempdir = mktmp!();
 
-        let mut file_path = PathBuf::new();
-        file_path.push(tempdir.path());
+        let mut value = PathBuf::from(tempdir.path());
+        value.push(String::from("foobar"));
+
+        let mut file_path = PathBuf::from(tempdir.path());
         file_path.push(String::from("out"));
 
+        let value = value.display().to_string();
         let file = file_path.display().to_string();
+
         let file = TopLevelWord(Single(Simple(Box::new(Literal(file)))));
         let var_value = TopLevelWord(Single(Simple(Box::new(Literal(value.to_owned())))));
 
@@ -1208,11 +1211,12 @@ mod tests {
         use syntax::ast::Word::Simple;
 
         let var = "var";
-        let value = "foobar";
         let tempdir = mktmp!();
 
-        let mut file_path = PathBuf::new();
-        file_path.push(tempdir.path());
+        let mut value = PathBuf::from(tempdir.path());
+        value.push(String::from("foobar"));
+
+        let mut file_path = PathBuf::from(tempdir.path());
         file_path.push(String::from("out"));
 
         let mut missing_file_path = PathBuf::new();
@@ -1225,6 +1229,7 @@ mod tests {
         let missing = missing_file_path.display().to_string();
         let missing = TopLevelWord(Single(Simple(Box::new(Literal(missing)))));
 
+        let value = value.display().to_string();
         let var_value = TopLevelWord(Single(Simple(Box::new(Literal(value.to_owned())))));
 
         let mut env = Env::new();
