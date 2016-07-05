@@ -2,6 +2,7 @@ use runtime::env::SubEnvironment;
 use runtime::ref_counted::RefCounted;
 
 use std::collections::HashMap;
+use std::fmt;
 use std::hash::Hash;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -56,7 +57,7 @@ impl<'a, T: ?Sized + UnsetFunctionEnvironment> UnsetFunctionEnvironment for &'a 
 macro_rules! impl_env {
     ($(#[$attr:meta])* pub struct $Env:ident, $Rc:ident) => {
         $(#[$attr])*
-        #[derive(Debug, PartialEq, Eq)]
+        #[derive(PartialEq, Eq)]
         pub struct $Env<N: Hash + Eq, F> {
             functions: $Rc<HashMap<N, F>>,
         }
@@ -72,6 +73,20 @@ macro_rules! impl_env {
             #[doc(hidden)]
             pub fn fn_names(&self) -> ::std::collections::hash_map::Keys<N, F> {
                 self.functions.keys()
+            }
+        }
+
+        impl<N, F> fmt::Debug for $Env<N, F>
+            where N: Hash + Eq + fmt::Debug + Ord,
+                  F: fmt::Debug,
+        {
+            fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+                use std::collections::BTreeMap;
+                use std::iter::FromIterator;
+
+                fmt.debug_struct(stringify!($Env))
+                    .field("functions", &BTreeMap::from_iter(self.functions.iter()))
+                    .finish()
             }
         }
 
