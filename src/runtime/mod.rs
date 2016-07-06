@@ -331,9 +331,7 @@ impl<T, E, W, C> Run<E> for CompoundCommandKind<W, C>
                 // An `If` AST node without any branches (conditional guards)
                 // isn't really a valid instantiation, but we'll just
                 // pretend it was an unsuccessful command (which it sort of is).
-                let exit = EXIT_ERROR;
-                env.set_last_status(exit);
-                exit
+                EXIT_ERROR
             } else {
                 let mut exit = None;
                 for &GuardBodyPair { ref guard, ref body } in conditionals.iter() {
@@ -343,12 +341,10 @@ impl<T, E, W, C> Run<E> for CompoundCommandKind<W, C>
                     }
                 }
 
-                let exit = match exit {
+                match exit {
                     Some(e) => e,
                     None => try!(else_branch.as_ref().map_or(Ok(EXIT_SUCCESS), |els| run(els, env))),
-                };
-                env.set_last_status(exit);
-                exit
+                }
             },
 
             // Subshells should swallow (but report) errors since they are considered a separate shell.
