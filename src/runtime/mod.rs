@@ -178,19 +178,9 @@ impl<T, E: ?Sized> Run<E> for TopLevelCommand
     }
 }
 
-impl<T, E: ?Sized, W, C> Run<E> for Command<W, C>
-    where T: StringWrapper,
-          E: ArgumentsEnvironment<Arg = T>
-            + FileDescEnvironment
-            + FunctionExecutorEnvironment<Name = T>
-            + IsInteractiveEnvironment
-            + LastStatusEnvironment
-            + SubEnvironment
-            + VariableEnvironment<Var = T>,
-          E::FileHandle: FileDescWrapper,
-          E::Fn: From<Rc<Run<E>>>,
-          C: Run<E> + 'static,
-          W: WordEval<T, E> + 'static,
+impl<T, E: ?Sized> Run<E> for Command<T>
+    where T: Run<E>,
+          E: LastStatusEnvironment,
 {
     fn run(&self, env: &mut E) -> Result<ExitStatus> {
         match *self {
@@ -551,7 +541,7 @@ mod tests {
     use syntax::ast::PipeableCommand::*;
 
     #[derive(Clone)]
-    struct Command(::syntax::ast::Command<MockWord, Command>);
+    struct Command(::syntax::ast::Command<::syntax::ast::CommandList<MockWord, Command>>);
 
     type CompoundCommand     = ::syntax::ast::CompoundCommand<MockWord, Command>;
     type CompoundCommandKind = ::syntax::ast::CompoundCommandKind<MockWord, Command>;
@@ -784,10 +774,11 @@ mod tests {
     fn test_run_command_error_handling() {
         // FIXME: test Job when implemented
         test_error_handling(false, |cmd, mut env| {
-            let command: ::syntax::ast::Command<MockWord, Command> = List(CommandList {
-                first: Single(Simple(Box::new(cmd))),
-                rest: vec!(),
-            });
+            let command: ::syntax::ast::Command<::syntax::ast::CommandList<MockWord, Command>>
+                = List(CommandList {
+                    first: Single(Simple(Box::new(cmd))),
+                    rest: vec!(),
+                });
             command.run(&mut env)
         }, None);
     }

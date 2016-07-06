@@ -10,7 +10,7 @@
 //! struct to the parser if you wish to use the default AST implementation.
 
 use std::rc::Rc;
-use syntax::ast::{AndOr, AndOrList, Arithmetic, Command, CommandList, CompoundCommand,
+use syntax::ast::{AndOr, AndOrList, Arithmetic, Command, CompoundCommand, CommandList,
                   CompoundCommandKind, ComplexWord, GuardBodyPair, ListableCommand, Parameter,
                   ParameterSubstitution, PipeableCommand, Redirect, SimpleCommand, SimpleWord,
                   TopLevelCommand, TopLevelWord, Word};
