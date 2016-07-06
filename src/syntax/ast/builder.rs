@@ -119,7 +119,7 @@ pub enum SimpleWordKind<C> {
     /// Access of a value inside a parameter, e.g. `$foo` or `$$`.
     Param(Parameter),
     /// A parameter substitution, e.g. `${param-word}`.
-    Subst(ParameterSubstitutionKind<C, ComplexWordKind<C>>),
+    Subst(ParameterSubstitutionKind<ComplexWordKind<C>, C>),
     /// Represents the standard output of some command, e.g. \`echo foo\`.
     CommandSubst(Vec<C>),
     /// A token which normally has a special meaning is treated as a literal
@@ -162,7 +162,7 @@ pub enum RedirectKind<W> {
 
 /// Represents the type of parameter that was parsed
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum ParameterSubstitutionKind<C, W> {
+pub enum ParameterSubstitutionKind<W: ?Sized, C> {
     /// Returns the standard output of running a command, e.g. `$(cmd)`
     Command(Vec<C>),
     /// Returns the length of the value of a parameter, e.g. ${#param}
@@ -519,7 +519,7 @@ impl Builder for DefaultBuilder {
 
     /// Constructs a `CompoundCommand::Loop` node with the provided inputs.
     fn loop_command(&mut self,
-                    kind: LoopKind, // FIXME: just make each loop have its own method?
+                    kind: LoopKind,
                     mut guard_body_pair: GuardBodyPair<Self::Command>,
                     mut redirects: Vec<Self::Redirect>)
         -> Result<Self::CompoundCommand>
