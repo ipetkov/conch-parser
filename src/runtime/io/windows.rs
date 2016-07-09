@@ -6,7 +6,6 @@ use winapi;
 use std::fmt;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read, Result, SeekFrom, Write};
-use std::num::Zero;
 use std::ops::{Deref, DerefMut};
 use std::os::raw::c_void as HANDLE;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, RawHandle};
@@ -196,9 +195,22 @@ impl Drop for RawIo {
     }
 }
 
-// Taken from rust: src/libstd/sys/windows/mod.rs
-fn cvt<I: PartialEq + Zero>(i: I) -> Result<I> {
-    if i == I::zero() {
+trait IsZero {
+    fn is_zero(&self) -> bool;
+}
+
+macro_rules! impl_is_zero {
+    ($($t:ident)*) => ($(impl IsZero for $t {
+        fn is_zero(&self) -> bool {
+            *self == 0
+        }
+    })*)
+}
+
+impl_is_zero! { i8 i16 i32 i64 isize u8 u16 u32 u64 usize }
+
+fn cvt<I: IsZero>(i: I) -> Result<I> {
+    if i.is_zero() {
         Err(Error::last_os_error())
     } else {
         Ok(i)

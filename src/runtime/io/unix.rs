@@ -3,8 +3,6 @@
 use libc::{self, c_void, size_t};
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read, Result, SeekFrom, Write};
-use std::num::One;
-use std::ops::Neg;
 use std::os::unix::io::{RawFd, AsRawFd, FromRawFd, IntoRawFd};
 use std::process::Stdio;
 use super::FileDesc;
@@ -169,20 +167,29 @@ impl Drop for RawIo {
     }
 }
 
-// Taken from rust: libstd/sys/unix/mod.rs
-fn cvt<T: One + PartialEq + Neg<Output=T>>(t: T) -> Result<T> {
-    let one: T = T::one();
-    if t == -one {
+trait IsMinusOne {
+    fn is_minus_one(&self) -> bool;
+}
+
+macro_rules! impl_is_minus_one {
+    ($($t:ident)*) => ($(impl IsMinusOne for $t {
+        fn is_minus_one(&self) -> bool {
+            *self == -1
+        }
+    })*)
+}
+
+impl_is_minus_one! { i8 i16 i32 i64 isize }
+
+fn cvt<T: IsMinusOne>(t: T) -> Result<T> {
+    if t.is_minus_one() {
         Err(Error::last_os_error())
     } else {
         Ok(t)
     }
 }
 
-// Taken from rust: libstd/sys/unix/mod.rs
-fn cvt_r<T, F>(mut f: F) -> Result<T>
-    where T: One + PartialEq + Neg<Output=T>, F: FnMut() -> T
-{
+fn cvt_r<T: IsMinusOne, F: FnMut() -> T>(mut f: F) -> Result<T> {
     loop {
         match cvt(f()) {
             Err(ref e) if e.kind() == ErrorKind::Interrupted => {}
