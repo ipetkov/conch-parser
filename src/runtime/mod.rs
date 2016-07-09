@@ -345,11 +345,18 @@ impl<T, E, W, C> Run<E> for CompoundCommandKind<W, C>
             // so we'll emulate the same behavior in case it is expected
             For { ref var, ref words, ref body } => {
                 let mut exit = EXIT_SUCCESS;
+
                 let values = match *words {
                     Some(ref words) => {
                         let mut values = Vec::with_capacity(words.len());
                         for w in words {
-                            values.extend(try!(w.eval(env)).into_iter());
+                            match w.eval(env) {
+                                Ok(fields) => values.extend(fields.into_iter()),
+                                Err(e) => {
+                                    env.set_last_status(EXIT_ERROR);
+                                    return Err(e.into());
+                                },
+                            }
                         }
                         values
                     },
@@ -1561,7 +1568,10 @@ mod tests {
                 })))),
                 body: vec!(),
             };
-            compound.run(&mut env)
+            let ret = compound.run(&mut env);
+            let last_status = env.last_status();
+            assert!(!last_status.success(), "unexpected success: {:#?}", last_status);
+            ret
         }, None);
 
         test_error_handling(true, |cmd, mut env| {
@@ -1570,7 +1580,10 @@ mod tests {
                 words: Some(vec!(word("foo"))),
                 body: vec!(cmd_from_simple(cmd)),
             };
-            compound.run(&mut env)
+            let ret = compound.run(&mut env);
+            let last_status = env.last_status();
+            assert!(!last_status.success(), "unexpected success: {:#?}", last_status);
+            ret
         }, None);
     }
 
