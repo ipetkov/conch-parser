@@ -180,10 +180,13 @@ impl<W, C> ParameterSubstitution<W, C> {
                 Some(Fields::Star(v)) => v.len().to_string().into(),
 
                 // Since we should have specified NO field splitting above,
-                // this variant should never occur.
-                // FIXME: might be better served by a "this is a bug" error
-                // since this is an API failure (can't guarantee external impls won't do this)
-                Some(Fields::Split(_)) => unreachable!(),
+                // this variant should never occur, but since we cannot control
+                // external implementations, we'll fallback somewhat gracefully
+                // rather than panicking.
+                Some(Fields::Split(v)) => {
+                    let len = v.into_iter().fold(0, |len, s| len + s.as_str().len());
+                    len.to_string().into()
+                },
             }),
 
             Arith(ref a) => Fields::Single(match *a {
