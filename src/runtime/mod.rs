@@ -377,18 +377,33 @@ impl<T, E, W, C> Run<E> for CompoundCommandKind<W, C>
                     require_literal_leading_dot: false,
                 };
 
-                let word = try!(word.eval_with_config(env, WordEvalConfig {
+                let cfg = WordEvalConfig {
                     tilde_expansion: TildeExpansion::First,
                     split_fields_further: false,
-                })).join();
+                };
+
+                let word = match word.eval_with_config(env, cfg) {
+                    Ok(w) => w.join(),
+                    Err(e) => {
+                        env.set_last_status(EXIT_ERROR);
+                        return Err(e.into());
+                    },
+                };
+                let word = word.as_str();
 
                 // If no arm was taken we still consider the command a success
                 let mut exit = EXIT_SUCCESS;
                 'case: for pattern_body_pair in arms {
                     for pat in &pattern_body_pair.patterns {
-                        if try!(pat.eval_as_pattern(env)).matches_with(word.as_str(), &match_opts) {
-                            exit = try!(run(&pattern_body_pair.body, env));
-                            break 'case;
+                        match pat.eval_as_pattern(env) {
+                            Ok(pat) => if pat.matches_with(word, &match_opts) {
+                                exit = try!(run(&pattern_body_pair.body, env));
+                                break 'case;
+                            },
+                            Err(e) => {
+                                env.set_last_status(EXIT_ERROR);
+                                return Err(e.into());
+                            },
                         }
                     }
                 }
@@ -579,6 +594,7 @@ mod tests {
     #[derive(Clone)]
     pub enum MockWord {
         Regular(String),
+        Multiple(Vec<String>),
         Error(Rc<Fn() -> RuntimeError + 'static>),
     }
 
@@ -591,6 +607,13 @@ mod tests {
                     let s: E::Var = s.clone().into();
                     Ok(s.into())
                 },
+                MockWord::Multiple(ref v) => {
+                    let v: Vec<E::Var> = v.iter()
+                        .cloned()
+                        .map(Into::into)
+                        .collect();
+                    Ok(v.into())
+                },
                 MockWord::Error(ref e) => Err(e()),
             }
         }
@@ -598,6 +621,7 @@ mod tests {
         fn eval_as_pattern(&self, _: &mut E) -> Result<glob::Pattern> {
             match *self {
                 MockWord::Regular(ref s) => Ok(glob::Pattern::new(s).unwrap()),
+                MockWord::Multiple(ref v) => Ok(glob::Pattern::new(&v.join(" ")).unwrap()),
                 MockWord::Error(ref e) => Err(e()),
             }
         }
@@ -1964,6 +1988,93 @@ mod tests {
             let cmd = cmd_from_simple(cmd);
             let compound: CompoundCommandKind = Subshell(vec!(cmd, cmd!(should_not_run)));
             compound.run(&mut env)
+        }, None);
+    }
+
+    #[test]
+    fn test_run_command_compound_kind_case() {
+        use syntax::ast::PatternBodyPair;
+
+        let status = 42;
+        let should_not_run = "should not run";
+
+        let mut env = Env::new();
+        env.set_function(should_not_run.to_owned().into(), MockFn::new(|_| {
+            panic!("ran command that should not be run")
+        }));
+
+        let compound: CompoundCommandKind = Case {
+            // case-word should be joined if it results in multipe fields
+            word: MockWord::Multiple(vec!("foo".to_owned(), "bar".to_owned())),
+            arms: vec!(
+                // Arms should not be run if none of their patterns match
+                PatternBodyPair {
+                    patterns: vec!(word("foo"), word("bar")),
+                    body: vec!(cmd!(should_not_run)),
+                },
+                // Arm should be run if any pattern matches
+                PatternBodyPair {
+                    patterns: vec!(word("baz"), word("foo bar")),
+                    body: vec!(exit(status)),
+                },
+                // Only the first matched arm should run
+                PatternBodyPair {
+                    patterns: vec!(word("foo bar")),
+                    body: vec!(cmd!(should_not_run)),
+                },
+            ),
+        };
+
+        assert_eq!(compound.run(&mut env), Ok(ExitStatus::Code(status)));
+    }
+
+    #[test]
+    fn test_run_command_compound_kind_case_error_handling() {
+        use syntax::ast::PatternBodyPair;
+
+        test_error_handling(false, |cmd, mut env| {
+            let compound: CompoundCommandKind = Case {
+                word: MockWord::Error(Rc::new(move || {
+                    let mut env = DefaultEnv::<Rc<String>>::new(); // Env not important here
+                    cmd.run(&mut env).unwrap_err()
+                })),
+                arms: vec!(),
+            };
+            let ret = compound.run(&mut env);
+            let last_status = env.last_status();
+            assert!(!last_status.success(), "unexpected success: {:#?}", last_status);
+            ret
+        }, None);
+
+        test_error_handling(false, |cmd, mut env| {
+            let compound: CompoundCommandKind = Case {
+                word: word("foo"),
+                arms: vec!(PatternBodyPair {
+                    patterns: vec!(MockWord::Error(Rc::new(move || {
+                        let mut env = DefaultEnv::<Rc<String>>::new(); // Env not important here
+                        cmd.run(&mut env).unwrap_err()
+                    }))),
+                    body: vec!(),
+                }),
+            };
+            let ret = compound.run(&mut env);
+            let last_status = env.last_status();
+            assert!(!last_status.success(), "unexpected success: {:#?}", last_status);
+            ret
+        }, None);
+
+        test_error_handling(true, |cmd, mut env| {
+            let compound: CompoundCommandKind = Case {
+                word: word("foo"),
+                arms: vec!(PatternBodyPair {
+                    patterns: vec!(word("foo")),
+                    body: vec!(cmd_from_simple(cmd)),
+                }),
+            };
+            let ret = compound.run(&mut env);
+            let last_status = env.last_status();
+            assert!(!last_status.success(), "unexpected success: {:#?}", last_status);
+            ret
         }, None);
     }
 }
