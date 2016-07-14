@@ -1,9 +1,10 @@
-use std::borrow::Cow;
+use std::borrow::Borrow;
+use std::hash::Hash;
 use std::rc::Rc;
 use std::sync::Arc;
 
 /// An interface for any `Clone`able wrapper around a `String`.
-pub trait StringWrapper: From<String> + Clone {
+pub trait StringWrapper: Borrow<String> + Clone + Eq + From<String> + Hash {
     /// Unwrap to an owned `String`.
     fn into_owned(self) -> String;
     /// Borrow the contents as a slice.
@@ -50,16 +51,6 @@ impl StringWrapper for Arc<String> {
             Ok(s) => s,
             Err(arc) => (*arc).clone(),
         }
-    }
-
-    fn as_str(&self) -> &str {
-        self
-    }
-}
-
-impl<'a> StringWrapper for Cow<'a, str> {
-    fn into_owned(self) -> String {
-        (*self).to_owned()
     }
 
     fn as_str(&self) -> &str {

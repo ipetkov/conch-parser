@@ -31,6 +31,11 @@ pub mod io;
 pub use self::errors::*;
 pub use self::ref_counted::*;
 
+lazy_static! {
+    static ref HOME: String = { String::from("HOME") };
+    static ref IFS: String = { String::from("IFS") };
+}
+
 /// Exit code for commands that exited successfully.
 pub const EXIT_SUCCESS:            ExitStatus = ExitStatus::Code(0);
 /// Exit code for commands that did not exit successfully.
@@ -165,12 +170,13 @@ impl<T, E: ?Sized> Run<E> for TopLevelCommand
     where T: StringWrapper,
           E: ArgumentsEnvironment<Arg = T>
             + FileDescEnvironment
-            + FunctionExecutorEnvironment<Name = T>
+            + FunctionExecutorEnvironment<FnName = T>
             + IsInteractiveEnvironment
             + LastStatusEnvironment
             + SubEnvironment
             + VariableEnvironment<Var = T>,
           E::FileHandle: FileDescWrapper,
+          E::VarName: StringWrapper,
           E::Fn: From<Rc<Run<E>>>,
 {
     fn run(&self, env: &mut E) -> Result<ExitStatus> {
@@ -231,13 +237,14 @@ impl<T, E: ?Sized, W, C> Run<E> for PipeableCommand<W, C>
     where T: StringWrapper,
           E: ArgumentsEnvironment<Arg = T>
             + FileDescEnvironment
-            + FunctionExecutorEnvironment<Name = T>
+            + FunctionExecutorEnvironment<FnName = T>
             + IsInteractiveEnvironment
             + LastStatusEnvironment
             + SubEnvironment
             + VariableEnvironment<Var = T>,
           E::FileHandle: FileDescWrapper,
           E::Fn: From<Rc<Run<E>>>,
+          E::VarName: StringWrapper,
           C: Run<E> + 'static,
           W: WordEval<T, E> + 'static,
 {
@@ -266,6 +273,7 @@ impl<T, E, W, C> Run<E> for CompoundCommand<W, C>
             + SubEnvironment
             + VariableEnvironment<Var = T>,
           E::FileHandle: FileDescWrapper,
+          E::VarName: StringWrapper,
           W: WordEval<T, E>,
           C: Run<E>,
 {
@@ -281,6 +289,7 @@ impl<T, E, W, C> Run<E> for CompoundCommandKind<W, C>
             + LastStatusEnvironment
             + SubEnvironment
             + VariableEnvironment<Var = T>,
+          E::VarName: StringWrapper,
           W: WordEval<T, E>,
           C: Run<E>,
 {
@@ -364,7 +373,7 @@ impl<T, E, W, C> Run<E> for CompoundCommandKind<W, C>
                 };
 
                 for val in values {
-                    env.set_var(var.clone(), val);
+                    env.set_var(var.clone().into(), val);
                     exit = try_and_swallow_non_fatal!(run(body, env), env);
                 }
                 exit
@@ -1538,8 +1547,8 @@ mod tests {
     #[test]
     fn test_run_command_compound_kind_for() {
         let fn_body = "fn_body";
-        let var = "var";
-        let result_var = "result_var";
+        let var = "var".to_owned();
+        let result_var = Rc::new("result_var".to_owned());
 
         let mut env = Env::with_config(EnvConfig {
             args_env: ArgsEnv::with_name_and_args("shell".to_owned().into(), vec!(
@@ -1549,24 +1558,28 @@ mod tests {
             .. Default::default()
         });
 
-        env.set_function(fn_body.to_owned().into(), MockFn::new::<DefaultEnv>(move |mut env| {
-            let mut result = env.var(result_var).unwrap().clone();
-            result.make_mut().push_str(env.var(var).unwrap().as_str());
-            env.set_var(result_var.to_owned(), result.into());
-            Ok(ExitStatus::Code(42))
-        }));
+        {
+            let var = var.clone();
+            let result_var = result_var.clone();
+            env.set_function(fn_body.to_owned().into(), MockFn::new::<DefaultEnv>(move |mut env| {
+                let mut result = env.var(&result_var).unwrap().clone();
+                result.make_mut().push_str(env.var(&var).unwrap().as_str());
+                env.set_var(result_var.clone(), result.into());
+                Ok(ExitStatus::Code(42))
+            }));
+        }
 
         let compound: CompoundCommandKind = For {
-            var: var.to_owned(),
+            var: var.clone(),
             words: Some(vec!(word("foo"), word("bar"))),
             body: vec!(cmd!(fn_body)),
         };
 
-        env.set_var(result_var.to_owned(), "".to_owned().into());
+        env.set_var(result_var.clone().into(), "".to_owned().into());
         assert_eq!(compound.run(&mut env), Ok(ExitStatus::Code(42)));
-        assert_eq!(**env.var(result_var).unwrap(), "foobar");
+        assert_eq!(**env.var(&result_var).unwrap(), "foobar");
         // Bash appears to retain the last value of the bound variable
-        assert_eq!(**env.var(var).unwrap(), "bar");
+        assert_eq!(**env.var(&var).unwrap(), "bar");
 
         let compound: CompoundCommandKind = For {
             var: var.to_owned(),
@@ -1574,11 +1587,11 @@ mod tests {
             body: vec!(cmd!(fn_body)),
         };
 
-        env.set_var(result_var.to_owned(), "".to_owned().into());
+        env.set_var(result_var.clone(), "".to_owned().into());
         assert_eq!(compound.run(&mut env), Ok(ExitStatus::Code(42)));
-        assert_eq!(**env.var(result_var).unwrap(), "arg1arg2");
+        assert_eq!(**env.var(&result_var).unwrap(), "arg1arg2");
         // Bash appears to retain the last value of the bound variable
-        assert_eq!(**env.var(var).unwrap(), "arg2");
+        assert_eq!(**env.var(&var).unwrap(), "arg2");
     }
 
     #[test]
@@ -1741,15 +1754,14 @@ mod tests {
 
     #[test]
     fn test_run_command_command_kind_subshell_child_inherits_var_definitions() {
-        let var_name = "var".to_owned();
-        let var_value = "value".to_owned();
+        let var_name = Rc::new("var".to_owned());
+        let var_value = Rc::new("value".to_owned());
         let fn_check_vars = "fn_check_vars";
 
         let mut env = Env::new();
-        env.set_var(var_name.clone(), Rc::new(var_value.clone()));
+        env.set_var(var_name.clone(), var_value.clone());
 
         env.set_function(fn_check_vars.to_owned().into(), MockFn::new::<DefaultEnv<_>>(move |env| {
-            let var_value = Rc::new(var_value.to_owned());
             assert_eq!(env.var(&var_name), Some(&var_value));
             Ok(EXIT_SUCCESS)
         }));
@@ -1758,21 +1770,21 @@ mod tests {
 
     #[test]
     fn test_run_compound_command_kind_subshell_parent_isolated_from_var_changes() {
-        let parent_name = "parent-var".to_owned();
-        let parent_value = "parent-value".to_owned();
-        let child_name = "child-var".to_owned();
-        let child_value = "child-value";
+        let parent_name = Rc::new("parent-var".to_owned());
+        let parent_value = Rc::new("parent-value".to_owned());
+        let child_name = Rc::new("child-var".to_owned());
+        let child_value = Rc::new("child-value".to_owned());
         let fn_check_vars = "fn_check_vars";
 
         let mut env = Env::new();
-        env.set_var(parent_name.clone(), Rc::new(parent_value.clone()));
+        env.set_var(parent_name.clone(), parent_value.clone());
 
         {
             let parent_name = parent_name.clone();
             let child_name = child_name.clone();
+            let child_value = child_value.clone();
 
             env.set_function(fn_check_vars.to_owned().into(), MockFn::new::<DefaultEnv<_>>(move |env| {
-                let child_value = Rc::new(child_value.to_owned());
                 assert_eq!(env.var(&parent_name), Some(&child_value));
                 assert_eq!(env.var(&child_name), Some(&child_value));
                 Ok(EXIT_SUCCESS)
@@ -1783,18 +1795,18 @@ mod tests {
             cmd_from_simple(SimpleCommand {
                 cmd: None,
                 io: vec!(),
-                vars: vec!((parent_name.clone(), Some(word(child_value)))),
+                vars: vec!(((*parent_name).clone(), Some(word(child_value.clone())))),
             }),
             cmd_from_simple(SimpleCommand {
                 cmd: None,
                 io: vec!(),
-                vars: vec!((child_name.clone(), Some(word(child_value)))),
+                vars: vec!(((*child_name).clone(), Some(word(child_value.clone())))),
             }),
             cmd!(fn_check_vars)
         ));
         assert_eq!(compound.run(&mut env), Ok(EXIT_SUCCESS));
 
-        assert_eq!(env.var(&parent_name), Some(&Rc::new(parent_value.to_owned())));
+        assert_eq!(env.var(&parent_name), Some(&parent_value));
         assert_eq!(env.var(&child_name), None);
     }
 

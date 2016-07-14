@@ -11,6 +11,7 @@ impl Arithmetic {
     #[cfg_attr(feature = "clippy", allow(if_not_else))]
     pub fn eval<E: ?Sized>(&self, env: &mut E) -> Result<isize, ExpansionError>
         where E: VariableEnvironment,
+              E::VarName: StringWrapper,
               E::Var: StringWrapper,
     {
         use syntax::ast::Arithmetic::*;
@@ -27,25 +28,25 @@ impl Arithmetic {
 
             PostIncr(ref var) => {
                 let value = get_var(env, var);
-                env.set_var(var.clone(), (value + 1).to_string().into());
+                env.set_var(var.clone().into(), (value + 1).to_string().into());
                 value
             },
 
             PostDecr(ref var) => {
                 let value = get_var(env, var);
-                env.set_var(var.clone(), (value - 1).to_string().into());
+                env.set_var(var.clone().into(), (value - 1).to_string().into());
                 value
             },
 
             PreIncr(ref var) => {
                 let value = get_var(env, var) + 1;
-                env.set_var(var.clone(), value.to_string().into());
+                env.set_var(var.clone().into(), value.to_string().into());
                 value
             },
 
             PreDecr(ref var) => {
                 let value = get_var(env, var) - 1;
-                env.set_var(var.clone(), value.to_string().into());
+                env.set_var(var.clone().into(), value.to_string().into());
                 value
             },
 
@@ -117,7 +118,7 @@ impl Arithmetic {
 
             Assign(ref var, ref value) => {
                 let value = try!(value.eval(env));
-                env.set_var(var.clone(), value.to_string().into());
+                env.set_var(var.clone().into(), value.to_string().into());
                 value
             },
 

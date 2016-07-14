@@ -1,6 +1,6 @@
 //! A module which defines evaluating any kind of word.
 
-use runtime::{Result, Run};
+use runtime::{HOME, Result, Run};
 use runtime::env::{ArgumentsEnvironment, FileDescEnvironment, FunctionExecutorEnvironment,
                    IsInteractiveEnvironment, LastStatusEnvironment,
                    StringWrapper, SubEnvironment, VariableEnvironment};
@@ -18,6 +18,7 @@ impl<T, E: ?Sized, W, C> WordEval<T, E> for SimpleWord<W, C>
               + SubEnvironment
               + VariableEnvironment<Var = T>,
           E::FileHandle: FileDescWrapper,
+          E::VarName: StringWrapper,
           W: WordEval<T, E>,
           C: Run<E>,
 {
@@ -39,7 +40,7 @@ impl<T, E: ?Sized, W, C> WordEval<T, E> for SimpleWord<W, C>
                     // Note: even though we are expanding the equivalent of `$HOME`, a tilde
                     // expansion is NOT considered a parameter expansion, and therefore
                     // should not be subjected to field splitting.
-                    env.var("HOME").map_or(Fields::Zero, |f| Fields::Single(f.clone()))
+                    env.var(&HOME).map_or(Fields::Zero, |f| Fields::Single(f.clone()))
                 },
             },
 
@@ -59,6 +60,7 @@ impl<T, E: ?Sized, W, C> WordEval<T, E> for Word<W, C>
               + SubEnvironment
               + VariableEnvironment<Var = T>,
           E::FileHandle: FileDescWrapper,
+          E::VarName: StringWrapper,
           W: WordEval<T, E>,
           C: Run<E>,
 {
@@ -139,6 +141,7 @@ impl<T, E: ?Sized, W, C> WordEval<T, E> for ComplexWord<W, C>
               + SubEnvironment
               + VariableEnvironment<Var = T>,
           E::FileHandle: FileDescWrapper,
+          E::VarName: StringWrapper,
           W: WordEval<T, E>,
           C: Run<E>,
 {
@@ -181,12 +184,13 @@ impl<T, E: ?Sized> WordEval<T, E> for TopLevelWord
     where T: StringWrapper,
           E: ArgumentsEnvironment<Arg = T>
               + FileDescEnvironment
-              + FunctionExecutorEnvironment<Name = T>
+              + FunctionExecutorEnvironment<FnName = T>
               + IsInteractiveEnvironment
               + LastStatusEnvironment
               + SubEnvironment
               + VariableEnvironment<Var = T>,
           E::FileHandle: FileDescWrapper,
+          E::VarName: StringWrapper,
           E::Fn: From<::std::rc::Rc<::runtime::Run<E>>>,
 {
     fn eval_with_config(&self, env: &mut E, cfg: WordEvalConfig) -> Result<Fields<T>> {

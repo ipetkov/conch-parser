@@ -21,6 +21,7 @@
 
 #[cfg(feature = "runtime")] extern crate glob;
 #[cfg(feature = "runtime")] extern crate libc;
+#[cfg(feature = "runtime")] #[macro_use] extern crate lazy_static;
 #[cfg(feature = "runtime")] extern crate void;
 
 /// Poor man's mktmp. A macro for creating "unique" test directories.

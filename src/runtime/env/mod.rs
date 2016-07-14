@@ -4,7 +4,7 @@
 use runtime::{ExitStatus, Fd, Result, Run};
 use runtime::io::Permissions;
 
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::convert::From;
 use std::hash::Hash;
 use std::fmt;
@@ -42,11 +42,11 @@ impl<'a, T: IsInteractiveEnvironment> IsInteractiveEnvironment for &'a T {
 /// An interface for executing registered shell functions.
 pub trait FunctionExecutorEnvironment: FunctionEnvironment {
     /// Attempt to execute a function with a set of arguments if it has been defined.
-    fn run_function(&mut self, name: &Self::Name, args: Vec<Self::Name>) -> Option<Result<ExitStatus>>;
+    fn run_function(&mut self, name: &Self::FnName, args: Vec<Self::FnName>) -> Option<Result<ExitStatus>>;
 }
 
 impl<'a, T: ?Sized + FunctionExecutorEnvironment> FunctionExecutorEnvironment for &'a mut T {
-    fn run_function(&mut self, name: &Self::Name, args: Vec<Self::Name>) -> Option<Result<ExitStatus>> {
+    fn run_function(&mut self, name: &Self::FnName, args: Vec<Self::FnName>) -> Option<Result<ExitStatus>> {
         (**self).run_function(name, args)
     }
 }
@@ -115,7 +115,7 @@ pub type DefaultEnvConfig<T = Rc<String>> =
         ArgsEnv<T>,
         FileDescEnv,
         LastStatusEnv,
-        VarEnv<T>,
+        VarEnv<T, T>,
         T
     >;
 
@@ -366,18 +366,18 @@ macro_rules! impl_env {
         impl<A, FD, L, V, N> FunctionEnvironment for $Env<A, FD, L, V, N>
             where N: Hash + Eq + Clone,
         {
-            type Name = N;
+            type FnName = N;
             type Fn = $Rc<Run<Self>>;
 
-            fn function(&self, name: &Self::Name) -> Option<&Self::Fn> {
+            fn function(&self, name: &Self::FnName) -> Option<&Self::Fn> {
                 self.fn_env.function(name)
             }
 
-            fn set_function(&mut self, name: Self::Name, func: Self::Fn) {
+            fn set_function(&mut self, name: Self::FnName, func: Self::Fn) {
                 self.fn_env.set_function(name, func);
             }
 
-            fn has_function(&self, name: &Self::Name) -> bool {
+            fn has_function(&self, name: &Self::FnName) -> bool {
                 self.fn_env.has_function(name)
             }
         }
@@ -385,7 +385,7 @@ macro_rules! impl_env {
         impl<A, FD, L, V, N> UnsetFunctionEnvironment for $Env<A, FD, L, V, N>
             where N: Hash + Eq + Clone,
         {
-            fn unset_function(&mut self, name: &Self::Name) {
+            fn unset_function(&mut self, name: &Self::FnName) {
                 self.fn_env.unset_function(name);
             }
         }
@@ -407,17 +407,20 @@ macro_rules! impl_env {
             where V: VariableEnvironment,
                   N: Hash + Eq,
         {
+            type VarName = V::VarName;
             type Var = V::Var;
 
-            fn var(&self, name: &str) -> Option<&Self::Var> {
+            fn var<Q: ?Sized>(&self, name: &Q) -> Option<&Self::Var>
+                where Self::VarName: Borrow<Q>, Q: Hash + Eq,
+            {
                 self.var_env.var(name)
             }
 
-            fn set_var(&mut self, name: String, val: Self::Var) {
+            fn set_var(&mut self, name: Self::VarName, val: Self::Var) {
                 self.var_env.set_var(name, val);
             }
 
-            fn env_vars(&self) -> Cow<[(&str, &Self::Var)]> {
+            fn env_vars(&self) -> Cow<[(&Self::VarName, &Self::Var)]> {
                 self.var_env.env_vars()
             }
         }
@@ -426,7 +429,9 @@ macro_rules! impl_env {
             where V: UnsetVariableEnvironment,
                   N: Hash + Eq,
         {
-            fn unset_var(&mut self, name: &str) {
+            fn unset_var<Q: ?Sized>(&mut self, name: &Q)
+                where Self::VarName: Borrow<Q>, Q: Hash + Eq
+            {
                 self.var_env.unset_var(name)
             }
         }
@@ -479,7 +484,7 @@ impl_env!(
 /// // Can be instantiated as follows
 /// let cfg = DefaultEnv::<Rc<String>>::new();
 /// ```
-pub type DefaultEnv<T = Rc<String>> = Env<ArgsEnv<T>, FileDescEnv, LastStatusEnv, VarEnv<T>, T>;
+pub type DefaultEnv<T = Rc<String>> = Env<ArgsEnv<T>, FileDescEnv, LastStatusEnv, VarEnv<T, T>, T>;
 
 impl<T> DefaultEnv<T> where T: Default + Eq + Hash + From<String> {
     /// Creates a new default environment.

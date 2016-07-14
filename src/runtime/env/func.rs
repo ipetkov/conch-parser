@@ -10,34 +10,34 @@ use std::sync::Arc;
 /// An interface for setting and getting shell functions.
 pub trait FunctionEnvironment {
     /// The name to be associated with a function.
-    type Name;
+    type FnName;
     /// The type of the function.
     type Fn;
 
     /// Get a particularly named function if it was registered.
-    fn function(&self, name: &Self::Name) -> Option<&Self::Fn>;
+    fn function(&self, name: &Self::FnName) -> Option<&Self::Fn>;
     /// Register a shell function with a given name.
-    fn set_function(&mut self, name: Self::Name, func: Self::Fn);
+    fn set_function(&mut self, name: Self::FnName, func: Self::Fn);
 
     /// Check if a particularly named function was registered.
-    fn has_function(&self, name: &Self::Name) -> bool {
+    fn has_function(&self, name: &Self::FnName) -> bool {
         self.function(name).is_some()
     }
 }
 
 impl<'a, T: ?Sized + FunctionEnvironment> FunctionEnvironment for &'a mut T {
-    type Name = T::Name;
+    type FnName = T::FnName;
     type Fn = T::Fn;
 
-    fn function(&self, name: &Self::Name) -> Option<&Self::Fn> {
+    fn function(&self, name: &Self::FnName) -> Option<&Self::Fn> {
         (**self).function(name)
     }
 
-    fn set_function(&mut self, name: Self::Name, func: Self::Fn) {
+    fn set_function(&mut self, name: Self::FnName, func: Self::Fn) {
         (**self).set_function(name, func);
     }
 
-    fn has_function(&self, name: &Self::Name) -> bool {
+    fn has_function(&self, name: &Self::FnName) -> bool {
         (**self).has_function(name)
     }
 }
@@ -45,11 +45,11 @@ impl<'a, T: ?Sized + FunctionEnvironment> FunctionEnvironment for &'a mut T {
 /// An interface for unsetting shell functions.
 pub trait UnsetFunctionEnvironment: FunctionEnvironment {
     /// Removes the definition of a function if it was registered.
-    fn unset_function(&mut self, name: &Self::Name);
+    fn unset_function(&mut self, name: &Self::FnName);
 }
 
 impl<'a, T: ?Sized + UnsetFunctionEnvironment> UnsetFunctionEnvironment for &'a mut T {
-    fn unset_function(&mut self, name: &Self::Name) {
+    fn unset_function(&mut self, name: &Self::FnName) {
         (**self).unset_function(name);
     }
 }
@@ -114,14 +114,14 @@ macro_rules! impl_env {
             where N: Clone + Hash + Eq,
                   F: Clone,
         {
-            type Name = N;
+            type FnName = N;
             type Fn = F;
 
-            fn function(&self, name: &Self::Name) -> Option<&Self::Fn> {
+            fn function(&self, name: &Self::FnName) -> Option<&Self::Fn> {
                 self.functions.get(name)
             }
 
-            fn set_function(&mut self, name: Self::Name, func: Self::Fn) {
+            fn set_function(&mut self, name: Self::FnName, func: Self::Fn) {
                 // FIXME: after specialization lands, don't insert if F: Eq and old == new
                 self.functions.make_mut().insert(name, func);
             }
@@ -131,7 +131,7 @@ macro_rules! impl_env {
             where N: Clone + Hash + Eq,
                   F: Clone,
         {
-            fn unset_function(&mut self, name: &Self::Name) {
+            fn unset_function(&mut self, name: &Self::FnName) {
                 if self.has_function(name) {
                     self.functions.make_mut().remove(name);
                 }

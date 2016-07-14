@@ -7,8 +7,9 @@ mod redirect;
 mod word;
 
 use glob;
-use runtime::Result;
+use runtime::{IFS, Result};
 use runtime::env::{StringWrapper, VariableEnvironment};
+use std::borrow::Borrow;
 use std::vec;
 
 pub use self::parameter::*;
@@ -75,6 +76,7 @@ impl<T: StringWrapper> Fields<T> {
     /// Note: `Zero` is treated as a empty-but-present field for simplicity.
     fn join_with_ifs<E: ?Sized>(self, env: &E) -> T
         where E: VariableEnvironment,
+              E::VarName: Borrow<String>,
               E::Var: StringWrapper,
     {
         match self {
@@ -83,7 +85,7 @@ impl<T: StringWrapper> Fields<T> {
             Fields::At(v)   |
             Fields::Star(v) |
             Fields::Split(v) => {
-                let sep = env.var("IFS")
+                let sep = env.var(&IFS)
                     .map(StringWrapper::as_str)
                     .map_or(" ", |s| if s.is_empty() { "" } else { &s[0..1] });
 
@@ -183,6 +185,7 @@ pub trait WordEval<T, E: ?Sized> {
     fn eval_as_assignment(&self, env: &mut E) -> Result<T>
         where T: StringWrapper,
               E: VariableEnvironment,
+              E::VarName: Borrow<String>,
               E::Var: StringWrapper,
     {
         let cfg = WordEvalConfig {
@@ -273,8 +276,9 @@ mod tests {
 
     #[test]
     fn test_fields_join_with_ifs() {
-        use runtime::env::VariableEnvironment;
+        use runtime::env::{VariableEnvironment, UnsetVariableEnvironment};
 
+        let ifs = "IFS".to_owned();
         let strs = vec!(
             "foo".to_owned(),
             "".to_owned(), // Empty strings should not be eliminated
@@ -283,7 +287,7 @@ mod tests {
 
         let mut env = Env::new();
 
-        env.set_var(String::from("IFS"), "!".to_owned());
+        env.set_var(ifs.clone(), "!".to_owned());
         assert_eq!(Fields::Zero::<String>.join_with_ifs(&env), "");
         assert_eq!(Fields::Single("foo".to_owned()).join_with_ifs(&env), "foo");
         assert_eq!(Fields::At(strs.clone()).join_with_ifs(&env), "foo!!bar");
@@ -291,14 +295,19 @@ mod tests {
         assert_eq!(Fields::Split(strs.clone()).join_with_ifs(&env), "foo!!bar");
 
         // Blank IFS
-        env.set_var(String::from("IFS"), "".to_owned());
+        env.set_var(ifs.clone(), "".to_owned());
         assert_eq!(Fields::Zero::<String>.join_with_ifs(&env), "");
         assert_eq!(Fields::Single("foo".to_owned()).join_with_ifs(&env), "foo");
         assert_eq!(Fields::At(strs.clone()).join_with_ifs(&env), "foobar");
         assert_eq!(Fields::Star(strs.clone()).join_with_ifs(&env), "foobar");
         assert_eq!(Fields::Split(strs.clone()).join_with_ifs(&env), "foobar");
 
-        // FIXME: test with unset IFS
+        env.unset_var(&ifs);
+        assert_eq!(Fields::Zero::<String>.join_with_ifs(&env), "");
+        assert_eq!(Fields::Single("foo".to_owned()).join_with_ifs(&env), "foo");
+        assert_eq!(Fields::At(strs.clone()).join_with_ifs(&env), "foo  bar");
+        assert_eq!(Fields::Star(strs.clone()).join_with_ifs(&env), "foo  bar");
+        assert_eq!(Fields::Split(strs.clone()).join_with_ifs(&env), "foo  bar");
     }
 
     #[test]

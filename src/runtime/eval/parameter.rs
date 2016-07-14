@@ -3,11 +3,12 @@
 use glob;
 use libc;
 
-use runtime::{ExpansionError, ExitStatus, Result, Run, RuntimeError};
+use runtime::{ExpansionError, ExitStatus, IFS, Result, Run, RuntimeError};
 use runtime::env::{ArgumentsEnvironment, FileDescEnvironment, LastStatusEnvironment,
                    StringWrapper, SubEnvironment, VariableEnvironment};
 use runtime::eval::{Fields, TildeExpansion, WordEval, WordEvalConfig};
 use runtime::io::FileDescWrapper;
+use std::borrow::Borrow;
 use std::io;
 use syntax::ast::{Parameter, ParameterSubstitution};
 
@@ -22,6 +23,7 @@ impl Parameter {
     pub fn eval<T, E: ?Sized>(&self, split_fields_further: bool, env: &E) -> Option<Fields<T>>
         where T: StringWrapper,
               E: ArgumentsEnvironment<Arg = T> + LastStatusEnvironment + VariableEnvironment<Var = T>,
+              E::VarName: Borrow<String>,
     {
         let get_args = || {
             let args = env.args();
@@ -75,6 +77,7 @@ impl<W, C> ParameterSubstitution<W, C> {
                   + SubEnvironment
                   + VariableEnvironment<Var = T>,
               E::FileHandle: FileDescWrapper,
+              E::VarName: StringWrapper,
               W: WordEval<T, E>,
               C: Run<E>,
     {
@@ -96,6 +99,7 @@ impl<W, C> ParameterSubstitution<W, C> {
                   + SubEnvironment
                   + VariableEnvironment<Var = T>,
               E::FileHandle: FileDescWrapper,
+              E::VarName: StringWrapper,
               W: WordEval<T, E>,
               C: Run<E>,
     {
@@ -109,6 +113,7 @@ impl<W, C> ParameterSubstitution<W, C> {
                   E: ArgumentsEnvironment<Arg = T>
                       + LastStatusEnvironment
                       + VariableEnvironment<Var = T>,
+                  E::VarName: Borrow<String>,
                   W: WordEval<T, E>,
                   F: Fn(T, &glob::Pattern) -> T,
         {
@@ -222,7 +227,7 @@ impl<W, C> ParameterSubstitution<W, C> {
                             None => Fields::Zero,
                         };
 
-                        env.set_var(name.clone(), val.clone().join());
+                        env.set_var(name.clone().into(), val.clone().join());
                         val
                     },
                 }
@@ -394,6 +399,7 @@ fn run_cmd_subst<I, E>(body: I, env: &E) -> io::Result<String>
 fn split_fields<T, E: ?Sized>(fields: Fields<T>, env: &E) -> Fields<T>
     where T: StringWrapper,
           E: VariableEnvironment,
+          E::VarName: Borrow<String>,
           E::Var: StringWrapper,
 {
     match fields {
@@ -409,10 +415,11 @@ fn split_fields<T, E: ?Sized>(fields: Fields<T>, env: &E) -> Fields<T>
 fn split_fields_internal<T, E: ?Sized>(words: Vec<T>, env: &E) -> Vec<T>
     where T: StringWrapper,
           E: VariableEnvironment,
+          E::VarName: Borrow<String>,
           E::Var: StringWrapper,
 {
     // If IFS is set but null, there is nothing left to split
-    let ifs = env.var("IFS").map_or(IFS_DEFAULT, StringWrapper::as_str);
+    let ifs = env.var(&IFS).map_or(IFS_DEFAULT, StringWrapper::as_str);
     if ifs.is_empty() {
         return words;
     }

@@ -37,12 +37,13 @@ struct PrepData<T, F> {
 impl<T, E: ?Sized, W> Run<E> for SimpleCommand<W>
     where T: StringWrapper,
           E: FileDescEnvironment
-              + FunctionExecutorEnvironment<Name = T>
+              + FunctionExecutorEnvironment<FnName = T>
               + IsInteractiveEnvironment
               + LastStatusEnvironment
               + SubEnvironment
               + VariableEnvironment<Var = T>,
           E::FileHandle: FileDescWrapper,
+          E::VarName: StringWrapper,
           W: WordEval<T, E>,
 {
     fn run(&self, env: &mut E) -> Result<ExitStatus> {
@@ -63,11 +64,12 @@ impl<W> SimpleCommand<W> {
     fn run_simple_command<T, E>(&self, env: &mut E) -> Result<ExitStatus>
         where T: StringWrapper,
               E: FileDescEnvironment
-                  + FunctionExecutorEnvironment<Name = T>
+                  + FunctionExecutorEnvironment<FnName = T>
                   + IsInteractiveEnvironment
                   + SubEnvironment
                   + VariableEnvironment<Var = T>,
               E::FileHandle: FileDescWrapper,
+              E::VarName: StringWrapper,
               W: WordEval<T, E>,
     {
         // Whether this is a variable assignment, function invocation,
@@ -85,7 +87,7 @@ impl<W> SimpleCommand<W> {
             let (cmd, args) = match self.cmd {
                 None => {
                     for (var, val) in vars {
-                        env.set_var(var, val);
+                        env.set_var(var.into(), val);
                     }
                     return Ok(CommandPrep::Finished(EXIT_SUCCESS));
                 },
@@ -147,7 +149,7 @@ impl<W> SimpleCommand<W> {
 
         // First inherit all default ENV variables
         for &(var, val) in &*env.env_vars() {
-            cmd.env(var, val.as_str());
+            cmd.env(var.as_str(), val.as_str());
         }
 
         // Then apply the overrides
