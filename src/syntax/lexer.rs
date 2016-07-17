@@ -1,6 +1,6 @@
 //! This module defines a lexer to recognize tokens of the shell language.
 
-use super::token::Token;
+use super::token::{Positional, Token};
 use super::token::Token::*;
 use self::TokenOrLiteral::*;
 
@@ -85,14 +85,30 @@ impl<I: Iterator<Item = char>> Lexer<I> {
             '[' => SquareOpen,
             ']' => SquareClose,
 
-            '$' => match self.inner.peek() {
+            '$' => {
                 // Positional parameters are 0-9, so we only
                 // need to check a single digit ahead.
-                Some(&d) if d.is_digit(10) => {
-                    self.inner.next();
-                    ParamPositional(d.to_digit(10).unwrap() as u8)
-                },
-                _ => Dollar,
+                let positional = match self.inner.peek() {
+                    Some(&'0') => Some(Positional::Zero),
+                    Some(&'1') => Some(Positional::One),
+                    Some(&'2') => Some(Positional::Two),
+                    Some(&'3') => Some(Positional::Three),
+                    Some(&'4') => Some(Positional::Four),
+                    Some(&'5') => Some(Positional::Five),
+                    Some(&'6') => Some(Positional::Six),
+                    Some(&'7') => Some(Positional::Seven),
+                    Some(&'8') => Some(Positional::Eight),
+                    Some(&'9') => Some(Positional::Nine),
+                    _ => None,
+                };
+
+                match positional {
+                    Some(p) => {
+                        self.inner.next(); // Consume the character we just peeked
+                        ParamPositional(p)
+                    },
+                    None => Dollar,
+                }
             },
 
             '<' => if self.next_is('<') {
@@ -218,7 +234,7 @@ impl<I: Iterator<Item = char>> Iterator for Lexer<I> {
 
 #[cfg(test)]
 mod test {
-    use syntax::token::Token;
+    use syntax::token::{Positional, Token};
     use syntax::token::Token::*;
 
     macro_rules! check_tok {
@@ -287,7 +303,7 @@ mod test {
     check_tok!(check_Whitespace, Whitespace(String::from(" \t\r")));
     check_tok!(check_Name, Name(String::from("abc_23_defg")));
     check_tok!(check_Literal, Literal(String::from("5abcdefg80hijklmnop")));
-    check_tok!(check_ParamPositional, ParamPositional(9));
+    check_tok!(check_ParamPositional, ParamPositional(Positional::Nine));
 
     lex_str!(check_greedy_Amp,    "&&&",  AndIf, Amp);
     lex_str!(check_greedy_Pipe,   "|||",  OrIf, Pipe);

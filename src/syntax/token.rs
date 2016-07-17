@@ -3,6 +3,72 @@
 use std::fmt;
 use self::Token::*;
 
+/// The inner representation of a positional parameter.
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+pub enum Positional {
+    /// $0
+    Zero,
+    /// $1
+    One,
+    /// $2
+    Two,
+    /// $3
+    Three,
+    /// $4
+    Four,
+    /// $5
+    Five,
+    /// $6
+    Six,
+    /// $7
+    Seven,
+    /// $8
+    Eight,
+    /// $9
+    Nine,
+}
+
+impl Positional {
+    /// Converts a `Positional` as a numeric representation
+    pub fn as_num(&self) -> u8 {
+        match *self {
+            Positional::Zero  => 0,
+            Positional::One   => 1,
+            Positional::Two   => 2,
+            Positional::Three => 3,
+            Positional::Four  => 4,
+            Positional::Five  => 5,
+            Positional::Six   => 6,
+            Positional::Seven => 7,
+            Positional::Eight => 8,
+            Positional::Nine  => 9,
+        }
+    }
+
+    /// Attempts to convert a number to a `Positional` representation
+    pub fn from_num(num: u8) -> Option<Self> {
+        match num {
+            0 => Some(Positional::Zero),
+            1 => Some(Positional::One),
+            2 => Some(Positional::Two),
+            3 => Some(Positional::Three),
+            4 => Some(Positional::Four),
+            5 => Some(Positional::Five),
+            6 => Some(Positional::Six),
+            7 => Some(Positional::Seven),
+            8 => Some(Positional::Eight),
+            9 => Some(Positional::Nine),
+            _ => None,
+        }
+    }
+}
+
+impl Into<u8> for Positional {
+    fn into(self) -> u8 {
+        self.as_num()
+    }
+}
+
 /// The representation of (context free) shell tokens.
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub enum Token {
@@ -98,7 +164,7 @@ pub enum Token {
     ///
     /// Must be its own token to avoid lumping the positional parameter
     /// as a `Literal` if the parameter is concatenated to something.
-    ParamPositional(u8),
+    ParamPositional(Positional),
 
     /// Any string of whitespace characters NOT including a newline.
     Whitespace(String),
@@ -112,53 +178,7 @@ pub enum Token {
 
 impl fmt::Display for Token {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        match *self {
-            Newline             => fmt.write_str("\n"),
-            ParenOpen           => fmt.write_str("("),
-            ParenClose          => fmt.write_str(")"),
-            CurlyOpen           => fmt.write_str("{"),
-            CurlyClose          => fmt.write_str("}"),
-            SquareOpen          => fmt.write_str("["),
-            SquareClose         => fmt.write_str("]"),
-            Dollar              => fmt.write_str("$"),
-            Bang                => fmt.write_str("!"),
-            Semi                => fmt.write_str(";"),
-            Amp                 => fmt.write_str("&"),
-            Less                => fmt.write_str("<"),
-            Great               => fmt.write_str(">"),
-            Pipe                => fmt.write_str("|"),
-            Tilde               => fmt.write_str("~"),
-            Pound               => fmt.write_str("#"),
-            Star                => fmt.write_str("*"),
-            Question            => fmt.write_str("?"),
-            Backslash           => fmt.write_str("\\"),
-            Percent             => fmt.write_str("%"),
-            Dash                => fmt.write_str("-"),
-            Equals              => fmt.write_str("="),
-            Plus                => fmt.write_str("+"),
-            Colon               => fmt.write_str(":"),
-            At                  => fmt.write_str("@"),
-            Caret               => fmt.write_str("^"),
-            Slash               => fmt.write_str("/"),
-            Comma               => fmt.write_str(","),
-            SingleQuote         => fmt.write_str("\'"),
-            DoubleQuote         => fmt.write_str("\""),
-            Backtick            => fmt.write_str("`"),
-            AndIf               => fmt.write_str("&&"),
-            OrIf                => fmt.write_str("||"),
-            DSemi               => fmt.write_str(";;"),
-            DLess               => fmt.write_str("<<"),
-            DGreat              => fmt.write_str(">>"),
-            GreatAnd            => fmt.write_str(">&"),
-            LessAnd             => fmt.write_str("<&"),
-            DLessDash           => fmt.write_str("<<-"),
-            Clobber             => fmt.write_str(">|"),
-            LessGreat           => fmt.write_str("<>"),
-            ParamPositional(p)  => write!(fmt, "${}", p),
-            Whitespace(ref s)   |
-            Name(ref s)         |
-            Literal(ref s)      => fmt.write_str(s),
-        }
+        write!(fmt, "{}", self.as_str())
     }
 }
 
@@ -170,56 +190,7 @@ impl Token {
 
     /// Returns the number of characters it took to recognize a token.
     pub fn len(&self) -> usize {
-        match *self {
-            Newline     |
-            ParenOpen   |
-            ParenClose  |
-            CurlyOpen   |
-            CurlyClose  |
-            SquareOpen  |
-            SquareClose |
-            Dollar      |
-            Bang        |
-            Star        |
-            Question    |
-            Backslash   |
-            Percent     |
-            Dash        |
-            Equals      |
-            Plus        |
-            Colon       |
-            At          |
-            Caret       |
-            Slash       |
-            Comma       |
-            Semi        |
-            Amp         |
-            Less        |
-            Great       |
-            Pipe        |
-            Tilde       |
-            Pound       |
-            SingleQuote |
-            DoubleQuote |
-            Backtick    => 1,
-
-            AndIf         |
-            OrIf          |
-            DSemi         |
-            DLess         |
-            DGreat        |
-            GreatAnd      |
-            LessAnd       |
-            Clobber       |
-            LessGreat     |
-            ParamPositional(_) => 2,
-
-            DLessDash => 3,
-
-            Whitespace(ref s) |
-            Literal(ref s)    |
-            Name(ref s)       => s.len(),
-        }
+        self.as_str().len()
     }
 
     /// Indicates whether a word can be delimited by this token
@@ -272,6 +243,68 @@ impl Token {
             Name(_)            |
             Literal(_)         |
             ParamPositional(_) => false,
+        }
+    }
+
+    /// Gets a representation of the token as a string slice.
+    pub fn as_str(&self) -> &str {
+        match *self {
+            Newline     => "\n",
+            ParenOpen   => "(",
+            ParenClose  => ")",
+            CurlyOpen   => "{",
+            CurlyClose  => "}",
+            SquareOpen  => "[",
+            SquareClose => "]",
+            Dollar      => "$",
+            Bang        => "!",
+            Semi        => ";",
+            Amp         => "&",
+            Less        => "<",
+            Great       => ">",
+            Pipe        => "|",
+            Tilde       => "~",
+            Pound       => "#",
+            Star        => "*",
+            Question    => "?",
+            Backslash   => "\\",
+            Percent     => "%",
+            Dash        => "-",
+            Equals      => "=",
+            Plus        => "+",
+            Colon       => ":",
+            At          => "@",
+            Caret       => "^",
+            Slash       => "/",
+            Comma       => ",",
+            SingleQuote => "\'",
+            DoubleQuote => "\"",
+            Backtick    => "`",
+            AndIf       => "&&",
+            OrIf        => "||",
+            DSemi       => ";;",
+            DLess       => "<<",
+            DGreat      => ">>",
+            GreatAnd    => ">&",
+            LessAnd     => "<&",
+            DLessDash   => "<<-",
+            Clobber     => ">|",
+            LessGreat   => "<>",
+
+            ParamPositional(Positional::Zero)  => "$0",
+            ParamPositional(Positional::One)   => "$1",
+            ParamPositional(Positional::Two)   => "$2",
+            ParamPositional(Positional::Three) => "$3",
+            ParamPositional(Positional::Four)  => "$4",
+            ParamPositional(Positional::Five)  => "$5",
+            ParamPositional(Positional::Six)   => "$6",
+            ParamPositional(Positional::Seven) => "$7",
+            ParamPositional(Positional::Eight) => "$8",
+            ParamPositional(Positional::Nine)  => "$9",
+
+            Whitespace(ref s) |
+            Name(ref s)       |
+            Literal(ref s)    => s,
         }
     }
 }

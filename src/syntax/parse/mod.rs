@@ -653,8 +653,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         macro_rules! get_dup_path {
             ($parser:expr) => {{
                 let path = if $parser.peek_reserved_token(&[Dash]).is_some() {
-                    let dash = try!($parser.reserved_token(&[Dash])).to_string();
-                    Single(Simple(SimpleWordKind::Literal(dash)))
+                    let dash = try!($parser.reserved_token(&[Dash]));
+                    Single(Simple(SimpleWordKind::Literal(dash.to_string())))
                 } else {
                     let path_start_pos = $parser.iter.pos();
                     let path = if let Some(p) = try!($parser.word_preserve_trailing_whitespace_raw()) {
@@ -718,6 +718,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Note: this method expects that the caller provide a potential file
     /// descriptor for redirection.
     pub fn redirect_heredoc(&mut self, src_fd: Option<u16>) -> Result<B::Redirect> {
+        use std::iter::FromIterator;
+
         let strip_tabs = eat!(self, {
             DLess => { false },
             DLessDash => { true },
@@ -759,13 +761,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             match iter.next() {
                 Some(Backslash) => {
                     quoted = true;
-                    iter.next().map(|t| delim.push_str(&t.to_string()));
+                    iter.next().map(|t| delim.push_str(t.as_str()));
                 },
 
                 Some(SingleQuote) => {
                     quoted = true;
                     for t in iter.single_quoted(start_pos) {
-                        delim.push_str(&try!(t).to_string());
+                        delim.push_str(try!(t).as_str());
                     }
                 },
 
@@ -780,19 +782,19 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                                     Some(Ok(tok@Backtick))    |
                                     Some(Ok(tok@DoubleQuote)) |
                                     Some(Ok(tok@Backslash))   |
-                                    Some(Ok(tok@Newline))     => delim.push_str(&tok.to_string()),
+                                    Some(Ok(tok@Newline))     => delim.push_str(tok.as_str()),
 
                                     Some(t) => {
                                         let t = try!(t);
-                                        delim.push_str(&Backslash.to_string());
-                                        delim.push_str(&t.to_string());
+                                        delim.push_str(Backslash.as_str());
+                                        delim.push_str(t.as_str());
                                     },
 
-                                    None => delim.push_str(&Backslash.to_string()),
+                                    None => delim.push_str(Backslash.as_str()),
                                 }
                             },
 
-                            t => delim.push_str(&t.to_string()),
+                            t => delim.push_str(t.as_str()),
                         }
                     }
                 },
@@ -820,14 +822,14 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 // be expanded, and backslashes are only removed if followed by \, $, or `.
                 Some(Backtick) => {
                     quoted = true;
-                    delim.push_str(&Backtick.to_string());
+                    delim.push_str(Backtick.as_str());
                     for t in iter.backticked_remove_backslashes(start_pos) {
-                        delim.push_str(&try!(t).to_string());
+                        delim.push_str(try!(t).as_str());
                     }
-                    delim.push_str(&Backtick.to_string());
+                    delim.push_str(Backtick.as_str());
                 },
 
-                Some(t) => delim.push_str(&t.to_string()),
+                Some(t) => delim.push_str(t.as_str()),
                 None => break,
             }
         }
@@ -839,7 +841,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         delim.shrink_to_fit();
         let (delim, quoted) = (delim, quoted);
         let delim_len = delim.len();
-        let delim_r = delim.clone() + "\r";
+        let delim_r = String::from_iter(vec!(delim.as_str(), "\r"));
         let delim_r_len = delim_r.len();
 
         // Here we will fast-forward to the next newline and capture the heredoc's
@@ -919,8 +921,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                         // of positions in the source, as we could have one or two byte Newlines,
                         // or two different tokens to deal with.
                         if line_len == delim_len || line_len == delim_r_len {
-                            let line_str = line.iter().map(|t| t.to_string()).collect::<Vec<String>>().concat();
-
+                            let line_str = concat_tokens(&line);
                             if line_str == delim || line_str == delim_r {
                                 break 'heredoc;
                             }
@@ -940,12 +941,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         self.iter.backup_buffered_tokens(saved_tokens, saved_pos);
 
         let body = if quoted {
-            let body = heredoc.into_iter()
-                              .flat_map(|(t,_)| t)
-                              .map(|t| t.to_string())
-                              .collect::<Vec<String>>()
-                              .concat();
-            Single(Simple(SimpleWordKind::Literal(body)))
+            let body = heredoc.into_iter().flat_map(|(t, _)| t).collect::<Vec<_>>();
+            Single(Simple(SimpleWordKind::Literal(concat_tokens(&body))))
         } else {
             let mut tok_iter = iter::TokenIter::with_position(::std::iter::empty(), heredoc_start_pos);
             while let Some((line, pos)) = heredoc.pop() {
@@ -1118,7 +1115,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 SingleQuote => {
                     let mut buf = String::new();
                     for t in self.iter.single_quoted(start_pos) {
-                        buf.push_str(&try!(t).to_string());
+                        buf.push_str(try!(t).as_str());
                     }
 
                     SingleQuoted(buf)
@@ -1239,14 +1236,14 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     if special || self.iter.peek() == delim_close.as_ref() {
                         store!(SimpleWordKind::Escaped(self.iter.next().unwrap().to_string()))
                     } else {
-                        buf.push_str(&Backslash.to_string());
+                        buf.push_str(Backslash.as_str());
                     }
                 },
 
                 Some(Dollar) => unreachable!(), // Sanity
                 Some(Backtick) => unreachable!(), // Sanity
 
-                Some(t) => buf.push_str(&t.to_string()),
+                Some(t) => buf.push_str(t.as_str()),
                 None => match delim_open {
                     Some(delim) => return Err(ParseError::Unmatched(delim, start_pos)),
                     None => break,
@@ -2087,13 +2084,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         match self.iter.peek() {
             Some(&Pound) => {
-                let comment = self.iter.by_ref()
-                    .take_while(|t| t != &Newline)
-                    .map(|t| t.to_string())
-                    .collect::<Vec<String>>()
-                    .concat();
-
-                Some(builder::Newline(Some(comment)))
+                let comment = self.iter.by_ref().take_while(|t| t != &Newline).collect::<Vec<_>>();
+                Some(builder::Newline(Some(concat_tokens(&comment))))
             },
 
             Some(&Newline) => {
@@ -2592,6 +2584,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             return Err(self.make_unexpected_err())
         }
     }
+}
+
+fn concat_tokens(tokens: &[Token]) -> String {
+    let len = tokens.iter().fold(0, |len, t| len + t.len());
+    let mut s = String::with_capacity(len);
+    s.extend(tokens.iter().map(Token::as_str));
+    s
 }
 
 #[cfg(test)]
