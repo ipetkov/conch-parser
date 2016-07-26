@@ -14,6 +14,7 @@ use std::path;
 use std::process::Stdio;
 
 pub use self::file_desc_wrapper::*;
+pub use self::os::getpid;
 
 /// An indicator of the read/write permissions of an OS file primitive.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

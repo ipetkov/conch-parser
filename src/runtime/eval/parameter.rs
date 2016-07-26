@@ -1,13 +1,12 @@
 //! A module that defines evaluating parameters and parameter subsitutions.
 
 use glob;
-use libc;
 
 use runtime::{ExpansionError, ExitStatus, IFS, Result, Run, RuntimeError};
 use runtime::env::{ArgumentsEnvironment, FileDescEnvironment, LastStatusEnvironment,
                    StringWrapper, SubEnvironment, VariableEnvironment};
 use runtime::eval::{Fields, TildeExpansion, WordEval, WordEvalConfig};
-use runtime::io::FileDescWrapper;
+use runtime::io::{FileDescWrapper, getpid};
 use std::borrow::Borrow;
 use std::io;
 use syntax::ast::{Parameter, ParameterSubstitution};
@@ -39,7 +38,7 @@ impl Parameter {
             Parameter::Star => Some(get_args().map_or(Fields::Zero, Fields::Star)),
 
             Parameter::Pound  => Some(Fields::Single(env.args_len().to_string().into())),
-            Parameter::Dollar => Some(Fields::Single(unsafe { libc::getpid() }.to_string().into())),
+            Parameter::Dollar => Some(Fields::Single(getpid().to_string().into())),
             Parameter::Dash   |        // FIXME: implement properly
             Parameter::Bang   => None, // FIXME: eventual job control would be nice
 
@@ -539,6 +538,8 @@ mod tests {
 
     #[test]
     fn test_eval_parameter_with_set_vars() {
+        use runtime::io::getpid;
+
         let var1 = "var1_value".to_owned();
         let var2 = "var2_value".to_owned();
         let var3 = "".to_owned(); // var3 is set to the empty string
@@ -565,9 +566,7 @@ mod tests {
         assert_eq!(Parameter::At.eval(false, &env), Some(Fields::At(args.clone())));
         assert_eq!(Parameter::Star.eval(false, &env), Some(Fields::Star(args.clone())));
 
-        assert_eq!(Parameter::Dollar.eval(false, &env), Some(Fields::Single(unsafe {
-            ::libc::getpid().to_string()
-        })));
+        assert_eq!(Parameter::Dollar.eval(false, &env), Some(Fields::Single(getpid().to_string())));
 
         // FIXME: test these
         //assert_eq!(Parameter::Dash.eval(false, &env), ...);
@@ -852,7 +851,7 @@ mod tests {
             (Parameter::At,    3),
             (Parameter::Star,  3),
             (Parameter::Pound, 1),
-            (Parameter::Dollar, unsafe { ::libc::getpid().to_string().len() }),
+            (Parameter::Dollar, unsafe { ::runtime::io::getpid().to_string().len() }),
 
             // FIXME: test these as well
             //Parameter::Dash,

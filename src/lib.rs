@@ -15,12 +15,14 @@
 
 #![cfg_attr(all(windows, feature = "runtime"), feature(unique))]
 
+// Unix only libs
+#[cfg(all(unix, feature = "runtime"))] extern crate libc;
+
 // Windows only libs
 #[cfg(all(windows, feature = "runtime"))] extern crate kernel32;
 #[cfg(all(windows, feature = "runtime"))] extern crate winapi;
 
 #[cfg(feature = "runtime")] extern crate glob;
-#[cfg(feature = "runtime")] extern crate libc;
 #[cfg(feature = "runtime")] #[macro_use] extern crate lazy_static;
 #[cfg(feature = "runtime")] extern crate void;
 

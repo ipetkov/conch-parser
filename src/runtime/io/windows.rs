@@ -254,3 +254,10 @@ pub fn dup_stdio() -> Result<(RawIo, RawIo, RawIo)> {
         try!(dup_handle(winapi::STD_ERROR_HANDLE))
     ))
 }
+
+/// Retrieves the process identifier of the calling process.
+pub fn getpid() -> winapi::DWORD {
+    unsafe {
+        kernel32::GetCurrentProcessId()
+    }
+}

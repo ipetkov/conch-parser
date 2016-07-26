@@ -253,3 +253,10 @@ pub fn dup_stdio() -> Result<(RawIo, RawIo, RawIo)> {
         ))
     }
 }
+
+/// Returns the process ID of the calling process
+pub fn getpid() -> libc::pid_t {
+    unsafe {
+        libc::getpid()
+    }
+}
