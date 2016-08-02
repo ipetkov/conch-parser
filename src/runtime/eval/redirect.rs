@@ -548,7 +548,7 @@ mod tests {
             DupWrite(None, MockWord(Some(STDOUT_FILENO))),
         );
 
-        for interactive in vec!(true, false) {
+        for &interactive in &[true, false] {
             let mut env = Env::with_config(EnvConfig {
                 interactive: interactive,
                 file_desc_env: FileDescEnv::with_process_fds().unwrap(),

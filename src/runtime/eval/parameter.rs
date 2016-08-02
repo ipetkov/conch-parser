@@ -864,8 +864,8 @@ mod tests {
             (Parameter::Var("missing".to_owned()), 0),
         );
 
-        for tilde in vec!(TildeExpansion::None, TildeExpansion::First, TildeExpansion::All) {
-            for split in vec!(false, true) {
+        for &tilde in &[TildeExpansion::None, TildeExpansion::First, TildeExpansion::All] {
+            for &split in &[false, true] {
                 // Field splitting and tilde expansion should not affect calculating Len
                 let cfg = WordEvalConfig {
                     tilde_expansion: tilde,
@@ -892,8 +892,8 @@ mod tests {
 
         let mut env = Env::new();
 
-        for tilde in vec!(TildeExpansion::None, TildeExpansion::First, TildeExpansion::All) {
-            for split in vec!(false, true) {
+        for &tilde in &[TildeExpansion::None, TildeExpansion::First, TildeExpansion::All] {
+            for &split in &[false, true] {
                 // Field splitting and tilde expansion should not affect calculating Arith
                 let cfg = WordEvalConfig {
                     tilde_expansion: tilde,
