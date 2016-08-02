@@ -1071,8 +1071,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 Some(&DLessDash)     |
                 Some(&Clobber)       |
                 Some(&LessGreat)     |
-                Some(&Whitespace(_)) => break,
-
+                Some(&Whitespace(_)) |
                 None => break,
             }
 
@@ -1107,9 +1106,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 Colon       => Simple(SimpleWordKind::Colon),
 
                 Backslash => match self.iter.next() {
-                    Some(Newline) => break, // escaped newlines become whitespace and a delimiter
+                    // Escaped newlines become whitespace and a delimiter.
+                    // Alternatively, can't escape EOF, just ignore the slash
+                    Some(Newline) | None => break,
                     Some(t) => Simple(SimpleWordKind::Escaped(t.to_string())),
-                    None => break, // Can't escape EOF, just ignore the slash
                 },
 
                 SingleQuote => {
