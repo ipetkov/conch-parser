@@ -8,7 +8,6 @@ impl Arithmetic {
     /// Evaluates an arithmetic expression in the context of an environment.
     /// A mutable reference to the environment is needed since an arithmetic
     /// expression could mutate environment variables.
-    #[cfg_attr(feature = "clippy", allow(if_not_else))]
     pub fn eval<E: ?Sized>(&self, env: &mut E) -> Result<isize, ExpansionError>
         where E: VariableEnvironment,
               E::VarName: StringWrapper,
