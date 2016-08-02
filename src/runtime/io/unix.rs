@@ -260,3 +260,36 @@ pub fn getpid() -> libc::pid_t {
         libc::getpid()
     }
 }
+
+/// Safe wrapper around `is_child_process_running`. See docs for more info.
+pub fn is_child_running(child: &::std::process::Child) -> Result<bool> {
+    unsafe {
+        is_child_process_running(child.id() as libc::pid_t)
+    }
+}
+
+/// Checks if a given child process is still running.
+///
+/// Note: this function has Unix specific behavior. Check the documentation of
+/// its Windows counterpart if caller supports both platforms.
+pub unsafe fn is_child_process_running(pid: libc::pid_t) -> Result<bool> {
+    if pid <= 0 {
+        return Err(Error::new(ErrorKind::InvalidInput, "pid must be greater than 0"));
+    }
+
+    let mut status = 0;
+    let ret = try!(cvt_r(|| libc::waitpid(pid, &mut status, libc::WNOHANG)));
+
+    if ret == 0 {
+        // No children have changed state, i.e. still running
+        Ok(true)
+    } else if ret == pid {
+        // We got the state for the child we asked about
+        let exited = libc::WIFEXITED(status);
+        let signaled = libc::WIFSIGNALED(status);
+        Ok(!exited && !signaled)
+    } else {
+        // Got an unexpected result, i.e. exit status of some other child
+        Err(Error::new(ErrorKind::InvalidData, "waitpid() gave unexpected result"))
+    }
+}

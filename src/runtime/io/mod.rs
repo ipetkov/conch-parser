@@ -14,7 +14,7 @@ use std::path;
 use std::process::Stdio;
 
 pub use self::file_desc_wrapper::*;
-pub use self::os::getpid;
+pub use self::os::{getpid, is_child_running, is_child_process_running};
 
 /// An indicator of the read/write permissions of an OS file primitive.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -400,5 +400,31 @@ mod tests {
         file.read_to_string(&mut read).unwrap();
 
         assert_eq!(read, "***???!!!");
+    }
+
+    #[test]
+    fn test_is_child_running() {
+        use std::process::{Command, Stdio};
+
+        let cmd = if cfg!(windows) {
+            "cmd"
+        } else {
+            "sh"
+        };
+
+        let mut child = Command::new(cmd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to start up command");
+
+        assert_eq!(true, is_child_running(&child).unwrap());
+
+        // Close the input pipe, shell should exit
+        drop(child.stdin.take());
+        thread::sleep(Duration::from_millis(100));
+
+        assert_eq!(false, is_child_running(&child).unwrap());
     }
 }
