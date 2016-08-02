@@ -851,7 +851,7 @@ mod tests {
             (Parameter::At,    3),
             (Parameter::Star,  3),
             (Parameter::Pound, 1),
-            (Parameter::Dollar, unsafe { ::runtime::io::getpid().to_string().len() }),
+            (Parameter::Dollar, ::runtime::io::getpid().to_string().len()),
 
             // FIXME: test these as well
             //Parameter::Dash,
