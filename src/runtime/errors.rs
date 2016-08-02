@@ -84,6 +84,7 @@ impl Display for RedirectionError {
 
 /// An error which may arise when spawning a command process.
 #[derive(PartialEq, Eq, Clone, Debug)]
+#[cfg_attr(feature = "clippy", allow(enum_variant_names))]
 pub enum CommandError {
     /// Unable to find a command/function/builtin to execute.
     NotFound(String),
