@@ -136,7 +136,6 @@ impl Arithmetic {
 }
 
 #[cfg(test)]
-#[cfg_attr(feature = "clippy", allow(similar_names))]
 mod tests {
     use runtime::ExpansionError;
     use runtime::env::{Env, VariableEnvironment};

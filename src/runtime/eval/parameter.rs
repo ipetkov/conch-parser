@@ -498,7 +498,6 @@ fn split_fields_internal<T, E: ?Sized>(words: Vec<T>, env: &E) -> Vec<T>
 }
 
 #[cfg(test)]
-#[cfg_attr(feature = "clippy", allow(similar_names))]
 mod tests {
     use glob;
     use runtime::{ExitStatus, EXIT_SUCCESS, ExpansionError, Result, Run, RuntimeError};
