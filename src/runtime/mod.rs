@@ -6,9 +6,6 @@ use self::env::{ArgumentsEnvironment, FileDescEnvironment, FunctionExecutorEnvir
                 IsInteractiveEnvironment, LastStatusEnvironment, StringWrapper, SubEnvironment,
                 VariableEnvironment};
 
-use std::borrow::Borrow;
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::convert::{From, Into};
 use std::fmt;
 use std::iter::{IntoIterator, Iterator};
@@ -19,7 +16,7 @@ use std::result;
 use syntax::ast::{AndOr, AndOrList, Command, CompoundCommand, CompoundCommandKind, GuardBodyPair,
                   ListableCommand, PipeableCommand, Redirect, TopLevelCommand};
 use runtime::eval::{TildeExpansion, WordEval, WordEvalConfig};
-use runtime::io::{FileDescWrapper, Permissions};
+use runtime::io::FileDescWrapper;
 
 mod errors;
 mod ref_counted;
@@ -469,81 +466,21 @@ pub fn run_with_local_redirections<'a, I, F, T, E, W, R>(env: &mut E, redirects:
           E::FileHandle: FileDescWrapper,
           W: WordEval<T, E> + 'a,
 {
-    use runtime::eval::RedirectAction::*;
+    use runtime::env::ReversibleRedirectWrapper;
 
-    struct RedirectionOverride<T> {
-        /// The local FileDesc that should be temporarily placed in/removed from the environment.
-        override_fdes: Option<T>,
-        /// The previous FileDesc and permissions in the environment, which was overriden.
-        previous_fdes: Option<(T, Permissions)>,
-    }
+    // Make all file descriptor changes through a reversible wrapper
+    // so it can handle the restoration for us when it is dropped.
+    let mut env_wrapper = ReversibleRedirectWrapper::new(env);
 
-    // We'll swap the descriptors here temporarily
-    // and hope the environment implementation doesn't mind
-    // our shenanigans before we return them.
-    let redirects = redirects.into_iter();
-    let mut overrides: HashMap<Fd, RedirectionOverride<_>> = HashMap::with_capacity(redirects.size_hint().0);
-
-    let mut io_err = None;
     for io in redirects {
-        match io.eval(env) {
-            // Make sure we cleanup and restore the environment
-            // before propagating any errors to the caller.
-            Err(e) => {
-                io_err = Some(e);
-                break;
-            },
-
-            Ok(redirect_action) => {
-                let (fd, fdes_and_perms) = match redirect_action {
-                    Close(fd) => (fd, None),
-                    Open(fd, fdes, perms) => (fd, Some((fdes, perms))),
-                };
-
-                let new_fdes = fdes_and_perms.as_ref().map(|&(ref fdes, _)| fdes.clone());
-
-                // Only backup any descriptor which has NOT already been LOCALLY
-                // overriden, e.g. if `2>err` was already in the environment, but
-                // `2>foo 2>bar` are specified as local overrides, only `2>err`
-                // should be backed up.
-                match overrides.entry(fd) {
-                    Entry::Occupied(mut entry) => entry.get_mut().override_fdes = new_fdes,
-                    Entry::Vacant(entry) => {
-                        entry.insert(RedirectionOverride {
-                            override_fdes: new_fdes,
-                            previous_fdes: env.file_desc(fd).map(|(fdes, perms)| (fdes.clone(), perms)),
-                        });
-                    }
-                }
-
-                env.close_file_desc(fd);
-                fdes_and_perms.map(|(fdes, perms)| env.set_file_desc(fd, fdes, perms));
-            },
-        }
+        // Evaluate the redirect in the context of the inner environment
+        let redirect_action = try!(io.eval(env_wrapper.as_mut()));
+        // But make sure we apply the change through the wrapper so it
+        // can capture the update and restore it later.
+        redirect_action.apply(&mut env_wrapper);
     }
 
-    let ret = match io_err {
-        Some(err) => Err(err),
-        None => closure(env),
-    };
-
-    // We must only reset descriptors which we know were locally overridden, because
-    // it is possible that a descriptor was changed via `exec`, which change we need
-    // to keep (e.g. `{ exec 2>new_file; } 2>temp; echo foo 1>&2` should write foo to new_file).
-    for (fd, override_) in overrides {
-        let reset = {
-            let override_fdes = override_.override_fdes.as_ref().map(|f| f.borrow());
-            env.file_desc(fd).map(|(fdes, _)| fdes.borrow()) == override_fdes
-        };
-        if reset {
-            match override_.previous_fdes {
-                Some((fdes, perms)) => env.set_file_desc(fd, fdes, perms),
-                None => env.close_file_desc(fd),
-            }
-        }
-    }
-
-    ret
+    closure(env_wrapper.as_mut())
 }
 
 #[cfg(test)]
@@ -1281,87 +1218,6 @@ mod tests {
         assert!(env.file_desc(5).is_none());
         assert!(env.file_desc(6).is_none());
         assert_eq!(env.var(var), Some(&value.to_owned()));
-    }
-
-    #[test]
-    fn test_run_compound_command_local_redirections_not_reset_if_fd_changed_via_exec() {
-        const FD_EXEC_OPEN: Fd = STDOUT_FILENO;
-        const FD_EXEC_CLOSE: Fd = STDERR_FILENO;
-        const FD_EXEC_CHANGE: Fd = 3;
-
-        let msg_fd_exec_open = "msg_fd_exec_open";
-        let msg_fd_exec_change = "msg_fd_exec_change";
-
-        let fn_name = String::from("foofn");
-        let tempdir = mktmp!();
-
-        let mut file_path_default = PathBuf::new();
-        file_path_default.push(tempdir.path());
-        file_path_default.push(String::from("default"));
-
-        let mut file_exec_open_path = PathBuf::new();
-        file_exec_open_path.push(tempdir.path());
-        file_exec_open_path.push(String::from("exec_open"));
-
-        let mut file_exec_change_path = PathBuf::new();
-        file_exec_change_path.push(tempdir.path());
-        file_exec_change_path.push(String::from("exec_change"));
-
-        let file_default = Permissions::Write.open(&file_path_default).unwrap();
-
-        let mut env = Env::with_config(EnvConfig {
-            file_desc_env: FileDescEnv::with_fds(vec!(
-                (FD_EXEC_CLOSE, Rc::new(FileDesc::from(file_default)), Permissions::Write),
-            )),
-            .. Default::default()
-        });
-
-        // Mock a function which will change some file descriptors via `exec` utility
-        {
-            let file_exec_open_path = file_exec_open_path.clone();
-            let file_exec_change_path = file_exec_change_path.clone();
-
-            env.set_function(Rc::new(fn_name.clone()), MockFn::new::<DefaultEnv>(move |mut env| {
-                let file_exec_open = FileDesc::from(Permissions::Write.open(&file_exec_open_path).unwrap());
-                let file_exec_change = FileDesc::from(Permissions::Write.open(&file_exec_change_path).unwrap());
-
-                env.close_file_desc(FD_EXEC_CLOSE);
-                env.set_file_desc(FD_EXEC_CHANGE, Rc::new(file_exec_change), Permissions::Write);
-                env.set_file_desc(FD_EXEC_OPEN, Rc::new(file_exec_open), Permissions::Write);
-                Ok(EXIT_SUCCESS)
-            }));
-        }
-
-        let compound = CompoundCommand {
-            kind: Brace(vec!(cmd!(fn_name))),
-            io: vec!(
-                Redirect::Write(Some(FD_EXEC_CLOSE), word(DEV_NULL)),
-                Redirect::Write(Some(FD_EXEC_CHANGE), word(DEV_NULL)),
-                Redirect::DupWrite(Some(FD_EXEC_OPEN), word("-")),
-            )
-        };
-
-        assert_eq!(compound.run(&mut env), Ok(EXIT_SUCCESS));
-        assert!(env.file_desc(FD_EXEC_CLOSE).is_none());
-
-        unsafe {
-            env.file_desc(FD_EXEC_OPEN).unwrap().0.unsafe_write()
-                .write(msg_fd_exec_open.as_bytes()).unwrap();
-            env.file_desc(FD_EXEC_CHANGE).unwrap().0.unsafe_write()
-                .write(msg_fd_exec_change.as_bytes()).unwrap();
-        }
-
-        let mut read = String::new();
-        Permissions::Read.open(&file_exec_open_path).unwrap().read_to_string(&mut read).unwrap();
-        assert_eq!(read, msg_fd_exec_open);
-
-        read.clear();
-        Permissions::Read.open(&file_exec_change_path).unwrap().read_to_string(&mut read).unwrap();
-        assert_eq!(read, msg_fd_exec_change);
-
-        read.clear();
-        Permissions::Read.open(&file_path_default).unwrap().read_to_string(&mut read).unwrap();
-        assert_eq!(read, "");
     }
 
     #[test]

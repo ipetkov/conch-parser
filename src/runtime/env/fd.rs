@@ -18,7 +18,7 @@ pub trait FileDescEnvironment {
     /// Get the permissions and a handle associated with an opened file descriptor.
     fn file_desc(&self, fd: Fd) -> Option<(&Self::FileHandle, Permissions)>;
     /// Associate a file descriptor with a given handle and permissions.
-    fn set_file_desc(&mut self, fd: Fd, fdes: Self::FileHandle, perms: Permissions);
+    fn set_file_desc(&mut self, fd: Fd, handle: Self::FileHandle, perms: Permissions);
     /// Treat the specified file descriptor as closed for the current environment.
     fn close_file_desc(&mut self, fd: Fd);
     /// Reports any `Error` as appropriate, e.g. print to stderr.
@@ -32,8 +32,8 @@ impl<'a, T: ?Sized + FileDescEnvironment> FileDescEnvironment for &'a mut T {
         (**self).file_desc(fd)
     }
 
-    fn set_file_desc(&mut self, fd: Fd, fdes: Self::FileHandle, perms: Permissions) {
-        (**self).set_file_desc(fd, fdes, perms)
+    fn set_file_desc(&mut self, fd: Fd, handle: Self::FileHandle, perms: Permissions) {
+        (**self).set_file_desc(fd, handle, perms)
     }
 
     fn close_file_desc(&mut self, fd: Fd) {
@@ -77,7 +77,7 @@ macro_rules! impl_env {
             pub fn with_fds<I: IntoIterator<Item = (Fd, T, Permissions)>>(iter: I) -> Self {
                 $Env {
                     fds: iter.into_iter()
-                        .map(|(fd, fdes, perms)| (fd, (fdes, perms)))
+                        .map(|(fd, handle, perms)| (fd, (handle, perms)))
                         .collect::<HashMap<_, _>>()
                         .into(),
                 }
@@ -95,9 +95,9 @@ macro_rules! impl_env {
                 }
 
                 let mut fds = BTreeMap::new();
-                for (fd, &(ref fdesc, perms)) in &*self.fds {
+                for (fd, &(ref handle, perms)) in &*self.fds {
                     fds.insert(fd, FileDescDebug {
-                        os_handle: fdesc,
+                        os_handle: handle,
                         permissions: perms,
                     });
                 }
@@ -132,17 +132,17 @@ macro_rules! impl_env {
             type FileHandle = T;
 
             fn file_desc(&self, fd: Fd) -> Option<(&Self::FileHandle, Permissions)> {
-                self.fds.get(&fd).map(|&(ref fdes, perms)| (fdes, perms))
+                self.fds.get(&fd).map(|&(ref handle, perms)| (handle, perms))
             }
 
-            fn set_file_desc(&mut self, fd: Fd, fdes: Self::FileHandle, perms: Permissions) {
+            fn set_file_desc(&mut self, fd: Fd, handle: Self::FileHandle, perms: Permissions) {
                 let needs_insert = {
-                    let existing = self.fds.get(&fd).map(|&(ref fdes, perms)| (fdes.borrow(), perms));
-                    existing != Some((fdes.borrow(), perms))
+                    let existing = self.fds.get(&fd).map(|&(ref handle, perms)| (handle.borrow(), perms));
+                    existing != Some((handle.borrow(), perms))
                 };
 
                 if needs_insert {
-                    self.fds.make_mut().insert(fd, (fdes, perms));
+                    self.fds.make_mut().insert(fd, (handle, perms));
                 }
             }
 

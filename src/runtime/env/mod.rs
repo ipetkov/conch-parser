@@ -17,6 +17,7 @@ mod args;
 mod fd;
 mod func;
 mod last_status;
+mod reversible_redirect;
 mod string_wrapper;
 mod var;
 
@@ -24,6 +25,7 @@ pub use self::args::*;
 pub use self::fd::*;
 pub use self::func::*;
 pub use self::last_status::*;
+pub use self::reversible_redirect::*;
 pub use self::string_wrapper::*;
 pub use self::var::*;
 
