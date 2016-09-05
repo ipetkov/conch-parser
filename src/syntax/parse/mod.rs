@@ -133,7 +133,7 @@ impl fmt::Display for ParseError {
             ParseError::BadSubst(ref t, pos)  => write!(fmt, "bad substitution {}: invalid token: {}", pos, t),
             ParseError::Unmatched(ref t, pos) => write!(fmt, "unmatched `{}` starting on line {}", t, pos),
 
-            ParseError::IncompleteCmd(ref c, start, ref kw, kw_pos) => write!(fmt,
+            ParseError::IncompleteCmd(c, start, kw, kw_pos) => write!(fmt,
                 "did not find `{}` keyword on line {}, in `{}` command which starts on line {}",
                 kw, kw_pos, c, start),
 
@@ -2624,8 +2624,8 @@ pub mod test {
                 (&Unmatched(ref a1, ref b1),  &Unmatched(ref a2, ref b2))  => a1 == a2 && b1 == b2,
                 (&Unexpected(ref a1, ref b1), &Unexpected(ref a2, ref b2)) => a1 == a2 && b1 == b2,
 
-                (&IncompleteCmd(ref a1, ref b1, ref c1, ref d1),
-                 &IncompleteCmd(ref a2, ref b2, ref c2, ref d2)) =>
+                (&IncompleteCmd(a1, ref b1, c1, ref d1),
+                 &IncompleteCmd(a2, ref b2, c2, ref d2)) =>
                     a1 == a2 && b1 == b2 && c1 == c2 && d1 == d2,
 
                 (&Custom(_), &Custom(_)) =>

@@ -148,7 +148,7 @@ impl RuntimeError {
             (&Expansion(ref a),     &Expansion(ref b))     => a == b,
             (&Redirection(ref a),   &Redirection(ref b))   => a == b,
             (&Command(ref a),       &Command(ref b))       => a == b,
-            (&Unimplemented(ref a), &Unimplemented(ref b)) => a == b,
+            (&Unimplemented(a),     &Unimplemented(b))     => a == b,
             (&Custom(_),            &Custom(_))            =>
                 panic!("unable to compare custom errors without downcasting"),
 
