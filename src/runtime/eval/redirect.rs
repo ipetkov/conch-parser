@@ -4,7 +4,7 @@ use std::fs::OpenOptions;
 use syntax::ast::Redirect;
 use runtime::{Fd, RedirectionError, Result, RuntimeError};
 use runtime::{STDIN_FILENO, STDOUT_FILENO};
-use runtime::env::{FileDescEnvironment, IsInteractiveEnvironment, StringWrapper, SubEnvironment};
+use runtime::env::{FileDescEnvironment, IsInteractiveEnvironment, StringWrapper};
 use runtime::eval::{Fields, TildeExpansion, WordEval, WordEvalConfig};
 use runtime::io::{FileDesc, Permissions};
 
@@ -38,7 +38,7 @@ impl<W> Redirect<W> {
     // FIXME: on unix set file permission bits based on umask
     pub fn eval<T, E>(&self, env: &mut E) -> Result<RedirectAction<E::FileHandle>>
         where T: StringWrapper,
-              E: FileDescEnvironment + IsInteractiveEnvironment + SubEnvironment,
+              E: FileDescEnvironment + IsInteractiveEnvironment,
               E::FileHandle: Clone + From<FileDesc>,
               W: WordEval<T, E>,
     {
@@ -92,7 +92,7 @@ impl<W> Redirect<W> {
 /// results in more than one path, an error will be returned.
 fn eval_path<T, E, W: ?Sized>(path: &W, env: &mut E) -> Result<T>
     where T: StringWrapper,
-          E: IsInteractiveEnvironment + SubEnvironment,
+          E: IsInteractiveEnvironment,
           W: WordEval<T, E>,
 {
     let cfg = WordEvalConfig {
@@ -123,7 +123,7 @@ fn eval_path<T, E, W: ?Sized>(path: &W, env: &mut E) -> Result<T>
 fn dup_fd<T, E, W: ?Sized>(dst_fd: Fd, src_fd: &W, readable: bool, env: &mut E)
     -> Result<RedirectAction<E::FileHandle>>
     where T: StringWrapper,
-          E: FileDescEnvironment + IsInteractiveEnvironment + SubEnvironment,
+          E: FileDescEnvironment + IsInteractiveEnvironment,
           E::FileHandle: Clone,
           W: WordEval<T, E>,
 {

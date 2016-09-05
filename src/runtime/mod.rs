@@ -460,9 +460,7 @@ pub fn run_with_local_redirections<'a, I, F, T, E, W, R>(env: &mut E, redirects:
     where I: IntoIterator<Item = &'a Redirect<W>>,
           F: FnOnce(&mut E) -> Result<R>,
           T: StringWrapper,
-          E: FileDescEnvironment
-            + IsInteractiveEnvironment
-            + SubEnvironment,
+          E: FileDescEnvironment + IsInteractiveEnvironment,
           E::FileHandle: FileDescWrapper,
           W: WordEval<T, E> + 'a,
 {

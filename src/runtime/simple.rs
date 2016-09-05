@@ -66,7 +66,6 @@ impl<W> SimpleCommand<W> {
               E: FileDescEnvironment
                   + FunctionExecutorEnvironment<FnName = T>
                   + IsInteractiveEnvironment
-                  + SubEnvironment
                   + VariableEnvironment<Var = T>,
               E::FileHandle: FileDescWrapper,
               E::VarName: StringWrapper,
