@@ -695,7 +695,7 @@ impl Builder for DefaultBuilder {
                 WordKind::DoubleQuoted(v) => Word::DoubleQuoted(try!(
                     v.into_iter()
                      .map(&mut map_simple)
-                     .collect::<Result<Vec<SimpleWord<Self::Word, Self::Command>>>>()
+                     .collect::<Result<Vec<_>>>()
                 )),
             };
             Ok(word)
@@ -706,7 +706,7 @@ impl Builder for DefaultBuilder {
             ComplexWordKind::Concat(words) => ComplexWord::Concat(try!(
                     words.into_iter()
                          .map(map_word)
-                         .collect::<Result<Vec<Word<Self::Word, Self::Command>>>>()
+                         .collect::<Result<Vec<_>>>()
             )),
         };
 

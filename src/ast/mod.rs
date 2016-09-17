@@ -78,10 +78,10 @@ pub struct TopLevelCommand(pub Command<CommandList<TopLevelWord, TopLevelCommand
 /// top-level word representation, `ComplexWord`, and the top-level command
 /// representation, `Command`, while allowing them to be generic on their own.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct TopLevelWord(pub ComplexWord<Word<TopLevelWord, TopLevelCommand>>);
+pub struct TopLevelWord(pub ComplexWord<Word<SimpleWord<TopLevelWord, TopLevelCommand>>>);
 
 /// Represents whitespace delimited text.
-/// Generic over the top-level representation of a shell word and command.
+/// Generic over the representation of a whitespace delimited word.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum ComplexWord<W> {
     /// Several distinct words concatenated together.
@@ -90,15 +90,14 @@ pub enum ComplexWord<W> {
     Single(W),
 }
 
-// FIXME: parametrize over W directly
-/// Represents whitespace delimited text.
-/// Generic over the top-level representation of a shell word and command.
+/// Represents whitespace delimited single, double, or non quoted text.
+/// Generic over the representation of a non-quoted word.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Word<W, C> {
+pub enum Word<W> {
     /// A regular word.
-    Simple(SimpleWord<W, C>),
+    Simple(W),
     /// List of words concatenated within double quotes.
-    DoubleQuoted(Vec<SimpleWord<W, C>>),
+    DoubleQuoted(Vec<W>),
     /// List of words concatenated within single quotes. Virtually
     /// identical as a literal, but makes a distinction between the two.
     SingleQuoted(String),
@@ -392,7 +391,7 @@ impl PartialEq<Command<CommandList<TopLevelWord, TopLevelCommand>>> for TopLevel
 }
 
 impl ops::Deref for TopLevelWord {
-    type Target = ComplexWord<Word<TopLevelWord, TopLevelCommand>>;
+    type Target = ComplexWord<Word<SimpleWord<TopLevelWord, TopLevelCommand>>>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -405,8 +404,8 @@ impl ops::DerefMut for TopLevelWord {
     }
 }
 
-impl PartialEq<ComplexWord<Word<TopLevelWord, TopLevelCommand>>> for TopLevelWord {
-    fn eq(&self, other: &ComplexWord<Word<TopLevelWord, TopLevelCommand>>) -> bool {
+impl PartialEq<ComplexWord<Word<SimpleWord<TopLevelWord, TopLevelCommand>>>> for TopLevelWord {
+    fn eq(&self, other: &ComplexWord<Word<SimpleWord<TopLevelWord, TopLevelCommand>>>) -> bool {
         &self.0 == other
     }
 }
