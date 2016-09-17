@@ -78,16 +78,16 @@ pub struct TopLevelCommand(pub Command<CommandList<TopLevelWord, TopLevelCommand
 /// top-level word representation, `ComplexWord`, and the top-level command
 /// representation, `Command`, while allowing them to be generic on their own.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct TopLevelWord(pub ComplexWord<TopLevelWord, TopLevelCommand>);
+pub struct TopLevelWord(pub ComplexWord<Word<TopLevelWord, TopLevelCommand>>);
 
 /// Represents whitespace delimited text.
 /// Generic over the top-level representation of a shell word and command.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum ComplexWord<W, C> {
+pub enum ComplexWord<W> {
     /// Several distinct words concatenated together.
-    Concat(Vec<Word<W, C>>),
+    Concat(Vec<W>),
     /// A regular word.
-    Single(Word<W, C>),
+    Single(W),
 }
 
 /// Represents whitespace delimited text.
@@ -391,7 +391,7 @@ impl PartialEq<Command<CommandList<TopLevelWord, TopLevelCommand>>> for TopLevel
 }
 
 impl ops::Deref for TopLevelWord {
-    type Target = ComplexWord<TopLevelWord, TopLevelCommand>;
+    type Target = ComplexWord<Word<TopLevelWord, TopLevelCommand>>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -404,8 +404,8 @@ impl ops::DerefMut for TopLevelWord {
     }
 }
 
-impl PartialEq<ComplexWord<TopLevelWord, TopLevelCommand>> for TopLevelWord {
-    fn eq(&self, other: &ComplexWord<TopLevelWord, TopLevelCommand>) -> bool {
+impl PartialEq<ComplexWord<Word<TopLevelWord, TopLevelCommand>>> for TopLevelWord {
+    fn eq(&self, other: &ComplexWord<Word<TopLevelWord, TopLevelCommand>>) -> bool {
         &self.0 == other
     }
 }
