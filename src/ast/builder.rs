@@ -10,11 +10,11 @@
 //! struct to the parser if you wish to use the default AST implementation.
 
 use std::rc::Rc;
-use syntax::ast::{AndOr, AndOrList, Arithmetic, Command, CompoundCommand, CommandList,
-                  CompoundCommandKind, ComplexWord, GuardBodyPair, ListableCommand, Parameter,
-                  ParameterSubstitution, PipeableCommand, Redirect, SimpleCommand, SimpleWord,
-                  TopLevelCommand, TopLevelWord, Word};
-use syntax::parse::Result;
+use ast::{AndOr, AndOrList, Arithmetic, Command, CompoundCommand, CommandList,
+          CompoundCommandKind, ComplexWord, GuardBodyPair, ListableCommand, Parameter,
+          ParameterSubstitution, PipeableCommand, Redirect, SimpleCommand, SimpleWord,
+          TopLevelCommand, TopLevelWord, Word};
+use parse::Result;
 
 /// An indicator to the builder of how complete commands are separated.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -596,7 +596,7 @@ impl Builder for DefaultBuilder {
                     mut redirects: Vec<Self::Redirect>)
         -> Result<Self::CompoundCommand>
     {
-        use syntax::ast::PatternBodyPair;
+        use ast::PatternBodyPair;
 
         let arms = fragments.arms.into_iter().map(|(pat_fragment, mut body)| {
             let mut patterns = pat_fragment.pattern_alternatives;

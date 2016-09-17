@@ -3,7 +3,7 @@ use std::{fmt, ops};
 use std::rc::Rc;
 
 pub mod builder;
-pub use syntax::ast::builder::Builder;
+pub use ast::builder::Builder;
 
 /// Represents reading a parameter (or variable) value, e.g. `$foo`.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -442,7 +442,7 @@ mod tests {
         use super::SimpleWord::Param;
         use super::TopLevelWord;
         use super::Word::Simple;
-        use syntax::parse::test::make_parser;
+        use parse::test::make_parser;
 
         let params = vec!(
             At,

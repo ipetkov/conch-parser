@@ -3,12 +3,12 @@
 use std::error::Error;
 use std::fmt;
 use std::str::FromStr;
-use syntax::ast;
-use syntax::ast::builder::{self, Builder, SimpleWordKind};
-use syntax::ast::builder::ComplexWordKind::{self, Concat, Single};
-use syntax::ast::builder::WordKind::{self, DoubleQuoted, Simple, SingleQuoted};
-use syntax::token::Token;
-use syntax::token::Token::*;
+use ast;
+use ast::builder::{self, Builder, SimpleWordKind};
+use ast::builder::ComplexWordKind::{self, Concat, Single};
+use ast::builder::WordKind::{self, DoubleQuoted, Simple, SingleQuoted};
+use token::Token;
+use token::Token::*;
 
 mod iter;
 
@@ -197,9 +197,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Iterator for Parser<I, B> {
 /// library provides both a default `Token` lexer, as well as an AST `Builder`.
 ///
 /// ```
-/// use shell_lang::syntax::ast::builder::{Builder, DefaultBuilder};
-/// use shell_lang::syntax::lexer::Lexer;
-/// use shell_lang::syntax::parse::Parser;
+/// use shell_lang::ast::builder::{Builder, DefaultBuilder};
+/// use shell_lang::lexer::Lexer;
+/// use shell_lang::parse::Parser;
 ///
 /// let source = "echo hello world";
 /// let lexer = Lexer::new(source.chars());
@@ -211,8 +211,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Iterator for Parser<I, B> {
 /// you can also use the `DefaultParser` type alias for a simpler setup.
 ///
 /// ```
-/// use shell_lang::syntax::lexer::Lexer;
-/// use shell_lang::syntax::parse::DefaultParser;
+/// use shell_lang::lexer::Lexer;
+/// use shell_lang::parse::DefaultParser;
 ///
 /// let source = "echo hello world";
 /// let lexer = Lexer::new(source.chars());
@@ -1313,8 +1313,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Identical to `Parser::parameter()` but does not pass the result to the AST builder.
     fn parameter_raw(&mut self) -> Result<SimpleWordKind<B::Command>> {
-        use syntax::ast::Parameter;
-        use syntax::ast::builder::ParameterSubstitutionKind::*;
+        use ast::Parameter;
+        use ast::builder::ParameterSubstitutionKind::*;
 
         let start_pos = self.iter.pos();
         match self.iter.next() {
@@ -1511,7 +1511,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses a valid parameter that can appear inside a set of curly braces.
     fn parameter_inner(&mut self) -> Result<ast::Parameter> {
-        use syntax::ast::Parameter;
+        use ast::Parameter;
 
         let start_pos = self.iter.pos();
         let param = match self.iter.next() {
@@ -2274,7 +2274,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Parses expressions such as `var = expr` or `var op= expr`, where `op` is
     /// any of the following operators: *, /, %, +, -, <<, >>, &, |, ^.
     fn arith_assig(&mut self) -> Result<ast::Arithmetic> {
-        use syntax::ast::Arithmetic::*;
+        use ast::Arithmetic::*;
 
         self.skip_whitespace();
 
@@ -2596,18 +2596,18 @@ fn concat_tokens(tokens: &[Token]) -> String {
 #[cfg(test)]
 pub mod test {
     use std::rc::Rc;
-    use syntax::lexer::Lexer;
+    use lexer::Lexer;
 
-    use syntax::ast::*;
-    use syntax::ast::builder::Newline;
-    use syntax::ast::Command::*;
-    use syntax::ast::ComplexWord::*;
-    use syntax::ast::CompoundCommandKind::*;
-    use syntax::ast::PipeableCommand::*;
-    use syntax::ast::SimpleWord::*;
-    use syntax::parse::*;
-    use syntax::parse::ParseError::*;
-    use syntax::token::Token;
+    use ast::*;
+    use ast::builder::Newline;
+    use ast::Command::*;
+    use ast::ComplexWord::*;
+    use ast::CompoundCommandKind::*;
+    use ast::PipeableCommand::*;
+    use ast::SimpleWord::*;
+    use parse::*;
+    use parse::ParseError::*;
+    use token::Token;
 
     // Extension errors may not implement Eq/PartialEq, but
     // equality checking is invaluable for testing, so we'll compromise and implement
@@ -3077,8 +3077,8 @@ pub mod test {
 
     #[test]
     fn test_parameter_substitution_smallest_suffix() {
-        use syntax::ast::Parameter::*;
-        use syntax::ast::ParameterSubstitution::*;
+        use ast::Parameter::*;
+        use ast::ParameterSubstitution::*;
 
         let word = word("foo");
 
@@ -3120,8 +3120,8 @@ pub mod test {
 
     #[test]
     fn test_parameter_substitution_largest_suffix() {
-        use syntax::ast::Parameter::*;
-        use syntax::ast::ParameterSubstitution::*;
+        use ast::Parameter::*;
+        use ast::ParameterSubstitution::*;
 
         let word = word("foo");
 
@@ -3163,8 +3163,8 @@ pub mod test {
 
     #[test]
     fn test_parameter_substitution_smallest_prefix() {
-        use syntax::ast::Parameter::*;
-        use syntax::ast::ParameterSubstitution::*;
+        use ast::Parameter::*;
+        use ast::ParameterSubstitution::*;
 
         let word = word("foo");
 
@@ -3206,8 +3206,8 @@ pub mod test {
 
     #[test]
     fn test_parameter_substitution_largest_prefix() {
-        use syntax::ast::Parameter::*;
-        use syntax::ast::ParameterSubstitution::*;
+        use ast::Parameter::*;
+        use ast::ParameterSubstitution::*;
 
         let word = word("foo");
 
@@ -3249,8 +3249,8 @@ pub mod test {
 
     #[test]
     fn test_parameter_substitution_default() {
-        use syntax::ast::Parameter::*;
-        use syntax::ast::ParameterSubstitution::*;
+        use ast::Parameter::*;
+        use ast::ParameterSubstitution::*;
 
         let word = word("foo");
 
@@ -3319,8 +3319,8 @@ pub mod test {
 
     #[test]
     fn test_parameter_substitution_error() {
-        use syntax::ast::Parameter::*;
-        use syntax::ast::ParameterSubstitution::*;
+        use ast::Parameter::*;
+        use ast::ParameterSubstitution::*;
 
         let word = word("foo");
 
@@ -3389,8 +3389,8 @@ pub mod test {
 
     #[test]
     fn test_parameter_substitution_assign() {
-        use syntax::ast::Parameter::*;
-        use syntax::ast::ParameterSubstitution::*;
+        use ast::Parameter::*;
+        use ast::ParameterSubstitution::*;
 
         let word = word("foo");
 
@@ -3459,8 +3459,8 @@ pub mod test {
 
     #[test]
     fn test_parameter_substitution_alternative() {
-        use syntax::ast::Parameter::*;
-        use syntax::ast::ParameterSubstitution::*;
+        use ast::Parameter::*;
+        use ast::ParameterSubstitution::*;
 
         let word = word("foo");
 
@@ -3529,8 +3529,8 @@ pub mod test {
 
     #[test]
     fn test_parameter_substitution_words_can_have_spaces_and_escaped_curlies() {
-        use syntax::ast::Parameter::*;
-        use syntax::ast::ParameterSubstitution::*;
+        use ast::Parameter::*;
+        use ast::ParameterSubstitution::*;
 
         let var = Var(String::from("foo_bar123"));
         let word = TopLevelWord(Concat(vec!(
@@ -3581,8 +3581,8 @@ pub mod test {
 
     #[test]
     fn test_parameter_substitution_words_can_start_with_pound() {
-        use syntax::ast::Parameter::*;
-        use syntax::ast::ParameterSubstitution::*;
+        use ast::Parameter::*;
+        use ast::ParameterSubstitution::*;
 
         let var = Var(String::from("foo_bar123"));
         let word = TopLevelWord(Concat(vec!(
@@ -3633,8 +3633,8 @@ pub mod test {
 
     #[test]
     fn test_parameter_substitution_words_can_be_parameters_or_substitutions_as_well() {
-        use syntax::ast::Parameter::*;
-        use syntax::ast::ParameterSubstitution::*;
+        use ast::Parameter::*;
+        use ast::ParameterSubstitution::*;
 
         let var = Var(String::from("foo_bar123"));
         let word = TopLevelWord(Concat(vec!(
@@ -6954,7 +6954,7 @@ pub mod test {
 
     #[test]
     fn test_arithmetic_substitution_valid() {
-        use syntax::ast::Arithmetic::*;
+        use ast::Arithmetic::*;
 
         fn x() -> Box<Arithmetic> { Box::new(Var(String::from("x"))) }
         fn y() -> Box<Arithmetic> { Box::new(Var(String::from("y"))) }
@@ -7031,7 +7031,7 @@ pub mod test {
 
     #[test]
     fn test_arithmetic_substitution_left_to_right_associativity() {
-        use syntax::ast::Arithmetic::*;
+        use ast::Arithmetic::*;
 
         fn x() -> Box<Arithmetic> { Box::new(Var(String::from("x"))) }
         fn y() -> Box<Arithmetic> { Box::new(Var(String::from("y"))) }
@@ -7107,7 +7107,7 @@ pub mod test {
 
     #[test]
     fn test_arithmetic_substitution_right_to_left_associativity() {
-        use syntax::ast::Arithmetic::*;
+        use ast::Arithmetic::*;
 
         fn x() -> Box<Arithmetic> { Box::new(Var(String::from("x"))) }
         fn y() -> Box<Arithmetic> { Box::new(Var(String::from("y"))) }
@@ -7236,7 +7236,7 @@ pub mod test {
 
     #[test]
     fn test_arithmetic_substitution_precedence() {
-        use syntax::ast::Arithmetic::*;
+        use ast::Arithmetic::*;
 
         fn var(x: &str) -> Box<Arithmetic> { Box::new(Var(String::from(x))) }
 
@@ -7292,7 +7292,7 @@ pub mod test {
 
     #[test]
     fn test_arithmetic_substitution_operators_of_equal_precedence() {
-        use syntax::ast::Arithmetic::*;
+        use ast::Arithmetic::*;
 
         fn x() -> Box<Arithmetic> { Box::new(Var(String::from("x"))) }
         fn y() -> Box<Arithmetic> { Box::new(Var(String::from("y"))) }

@@ -2,9 +2,9 @@
 
 use std::collections::VecDeque;
 use std::iter as std_iter;
-use syntax::parse::SourcePos;
-use syntax::token::Token;
-use syntax::token::Token::*;
+use parse::SourcePos;
+use token::Token;
+use token::Token::*;
 
 /// Indicates an error such that EOF was encountered while some unmatched
 /// tokens were still pending. The error stores the unmatched token

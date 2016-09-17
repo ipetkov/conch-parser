@@ -234,8 +234,8 @@ impl<I: Iterator<Item = char>> Iterator for Lexer<I> {
 
 #[cfg(test)]
 mod test {
-    use syntax::token::{Positional, Token};
-    use syntax::token::Token::*;
+    use token::{Positional, Token};
+    use token::Token::*;
 
     macro_rules! check_tok {
         ($fn_name:ident, $tok:expr) => {

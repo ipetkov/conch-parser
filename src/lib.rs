@@ -1,5 +1,4 @@
-//! A library for parsing, executing, and analyzing programs
-//! written in the shell programming language.
+//! A library for parsing programs written in the shell programming language.
 #![cfg_attr(feature = "clippy", feature(plugin))]
 #![cfg_attr(feature = "clippy", plugin(clippy))]
 
@@ -13,32 +12,9 @@
 #![deny(unused_import_braces)]
 #![deny(unused_qualifications)]
 
-#![cfg_attr(all(windows, feature = "runtime"), feature(unique))]
+#![forbid(unsafe_code)]
 
-// Unix only libs
-#[cfg(all(unix, feature = "runtime"))] extern crate libc;
-
-// Windows only libs
-#[cfg(all(windows, feature = "runtime"))] extern crate kernel32;
-#[cfg(all(windows, feature = "runtime"))] extern crate winapi;
-
-#[cfg(feature = "runtime")] extern crate glob;
-#[cfg(feature = "runtime")] #[macro_use] extern crate lazy_static;
-#[cfg(feature = "runtime")] extern crate void;
-
-/// Poor man's mktmp. A macro for creating "unique" test directories.
-#[cfg(test)]
-macro_rules! mktmp {
-    () => {{
-        let path = concat!("test-", module_path!(), "-", line!(), "-", column!());
-        if cfg!(windows) {
-            TempDir::new(&path.replace(":", "_")).unwrap()
-        } else {
-            TempDir::new(path).unwrap()
-        }
-    }};
-}
-
-#[cfg(feature = "runtime")]
-pub mod runtime;
-pub mod syntax;
+pub mod ast;
+pub mod lexer;
+pub mod parse;
+pub mod token;
