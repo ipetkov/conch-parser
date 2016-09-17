@@ -90,12 +90,13 @@ pub enum ComplexWord<W> {
     Single(W),
 }
 
+// FIXME: parametrize over W directly
 /// Represents whitespace delimited text.
 /// Generic over the top-level representation of a shell word and command.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Word<W, C> {
     /// A regular word.
-    Simple(Box<SimpleWord<W, C>>),
+    Simple(SimpleWord<W, C>),
     /// List of words concatenated within double quotes.
     DoubleQuoted(Vec<SimpleWord<W, C>>),
     /// List of words concatenated within single quotes. Virtually
@@ -460,7 +461,7 @@ mod tests {
 
         for p in params {
             let src = p.to_string();
-            let correct = TopLevelWord(Single(Simple(Box::new(Param(p)))));
+            let correct = TopLevelWord(Single(Simple(Param(p))));
 
             let parsed = match make_parser(&src).word() {
                 Ok(Some(w)) => w,

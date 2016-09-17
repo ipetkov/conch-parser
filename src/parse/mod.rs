@@ -2637,15 +2637,15 @@ pub mod test {
     }
 
     pub fn lit<W, C>(s: &str) -> Word<W, C> {
-        Word::Simple(Box::new(Literal(String::from(s))))
+        Word::Simple(Literal(String::from(s)))
     }
 
     pub fn escaped<W, C>(s: &str) -> Word<W, C> {
-        Word::Simple(Box::new(Escaped(String::from(s))))
+        Word::Simple(Escaped(String::from(s)))
     }
 
     pub fn subst<W, C>(s: ParameterSubstitution<W, C>) -> Word<W, C> {
-        Word::Simple(Box::new(Subst(Box::new(s))))
+        Word::Simple(Subst(Box::new(s)))
     }
 
     pub fn single_quoted(s: &str) -> TopLevelWord {
@@ -2671,7 +2671,7 @@ pub mod test {
     }
 
     pub fn word_param(p: Parameter) -> TopLevelWord {
-        TopLevelWord(Single(Word::Simple(Box::new(Param(p)))))
+        TopLevelWord(Single(Word::Simple(Param(p))))
     }
 
     pub fn make_parser(src: &str) -> DefaultParser<Lexer<::std::str::Chars>> {
@@ -3638,7 +3638,7 @@ pub mod test {
 
         let var = Var(String::from("foo_bar123"));
         let word = TopLevelWord(Concat(vec!(
-            Word::Simple(Box::new(Param(At))),
+            Word::Simple(Param(At)),
             subst(RemoveLargestPrefix(
                 Var(String::from("foo")),
                 Some(word("bar"))
@@ -3776,7 +3776,7 @@ pub mod test {
         let mut p = make_parser("123$$'foo'>out");
         let correct = TopLevelWord(Concat(vec!(
             lit("123"),
-            Word::Simple(Box::new(Param(Parameter::Dollar))),
+            Word::Simple(Param(Parameter::Dollar)),
             Word::SingleQuoted(String::from("foo")),
         )));
         assert_eq!(Some(Err(correct)), p.redirect().unwrap());
@@ -3808,7 +3808,7 @@ pub mod test {
             None,
             TopLevelWord(Concat(vec!(
                 lit("123"),
-                Word::Simple(Box::new(Param(Parameter::Dollar))),
+                Word::Simple(Param(Parameter::Dollar)),
                 subst(ParameterSubstitution::Command(vec!(cmd_args("echo", &["2"])))),
                 subst(ParameterSubstitution::Command(vec!(cmd_args("echo", &["bar"])))),
             ))),
@@ -4065,7 +4065,7 @@ pub mod test {
         let expanded = Some(cmd_from_simple(SimpleCommand {
             cmd: cat.clone(), vars: vec!(), io: vec!(
                 Redirect::Heredoc(None, TopLevelWord(Concat(vec!(
-                    Word::Simple(Box::new(Param(Parameter::Dollar))),
+                    Word::Simple(Param(Parameter::Dollar)),
                     lit(" "),
                     subst(ParameterSubstitution::Len(Parameter::Bang)),
                     lit(" "),
@@ -6690,7 +6690,7 @@ pub mod test {
 
         for p in params.into_iter() {
             match make_parser(p).word() {
-                Ok(Some(TopLevelWord(Single(Word::Simple(w))))) => if let Param(_) = *w {} else {
+                Ok(Some(TopLevelWord(Single(Word::Simple(w))))) => if let Param(_) = w {} else {
                     panic!("Unexpectedly parsed \"{}\" as a non-parameter word:\n{:#?}", p, w);
                 },
                 Ok(Some(w)) => panic!("Unexpectedly parsed \"{}\" as a non-parameter word:\n{:#?}", p, w),
@@ -6758,12 +6758,12 @@ pub mod test {
 
     #[test]
     fn test_word_special_words_recognized_as_such() {
-        assert_eq!(Ok(Some(TopLevelWord(Single(Word::Simple(Box::new(Star)))))),        make_parser("*").word());
-        assert_eq!(Ok(Some(TopLevelWord(Single(Word::Simple(Box::new(Question)))))),    make_parser("?").word());
-        assert_eq!(Ok(Some(TopLevelWord(Single(Word::Simple(Box::new(Tilde)))))),       make_parser("~").word());
-        assert_eq!(Ok(Some(TopLevelWord(Single(Word::Simple(Box::new(SquareOpen)))))),  make_parser("[").word());
-        assert_eq!(Ok(Some(TopLevelWord(Single(Word::Simple(Box::new(SquareClose)))))), make_parser("]").word());
-        assert_eq!(Ok(Some(TopLevelWord(Single(Word::Simple(Box::new(Colon)))))),       make_parser(":").word());
+        assert_eq!(Ok(Some(TopLevelWord(Single(Word::Simple(Star))))),        make_parser("*").word());
+        assert_eq!(Ok(Some(TopLevelWord(Single(Word::Simple(Question))))),    make_parser("?").word());
+        assert_eq!(Ok(Some(TopLevelWord(Single(Word::Simple(Tilde))))),       make_parser("~").word());
+        assert_eq!(Ok(Some(TopLevelWord(Single(Word::Simple(SquareOpen))))),  make_parser("[").word());
+        assert_eq!(Ok(Some(TopLevelWord(Single(Word::Simple(SquareClose))))), make_parser("]").word());
+        assert_eq!(Ok(Some(TopLevelWord(Single(Word::Simple(Colon))))),       make_parser(":").word());
     }
 
     #[test]
@@ -6812,7 +6812,7 @@ pub mod test {
             vars: vec!(), io: vec!(),
             cmd: Some((word("foo"), vec!(
                 TopLevelWord(Concat(vec!(
-                    Word::Simple(Box::new(Param(Parameter::Dollar))),
+                    Word::Simple(Param(Parameter::Dollar)),
                     escaped("`"),
                     escaped("o"),
                 )))
