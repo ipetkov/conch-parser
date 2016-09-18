@@ -3,7 +3,6 @@ use std::{fmt, ops};
 use std::rc::Rc;
 
 pub mod builder;
-pub use ast::builder::Builder;
 
 /// Represents reading a parameter (or variable) value, e.g. `$foo`.
 ///
