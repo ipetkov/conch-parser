@@ -81,7 +81,7 @@ pub enum ParameterSubstitution<
 /// top-level word representation, `ComplexWord`, and the top-level command
 /// representation, `Command`, while allowing them to be generic on their own.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct TopLevelCommand(pub Command<CommandList<TopLevelWord, TopLevelCommand, Redirect>>);
+pub struct TopLevelCommand(pub Command);
 
 /// A top-level representation of a shell word. This wrapper unifies the provided
 /// top-level word representation, `ComplexWord`, and the top-level command
@@ -185,10 +185,8 @@ pub struct PatternBodyPair<W, C> {
 }
 
 /// Represents any valid shell command.
-///
-/// Generic over the top-level representations of shell words and commands.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Command<T> {
+pub enum Command<T = AndOrList> {
     /// A command that runs asynchronously, that is, the shell will not wait
     /// for it to exit before running the next command, e.g. `foo &`.
     Job(T),
@@ -405,7 +403,7 @@ pub enum Arithmetic<T = String> {
 }
 
 impl ops::Deref for TopLevelCommand {
-    type Target = Command<CommandList<TopLevelWord, TopLevelCommand, Redirect>>;
+    type Target = Command;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -418,8 +416,8 @@ impl ops::DerefMut for TopLevelCommand {
     }
 }
 
-impl PartialEq<Command<CommandList<TopLevelWord, TopLevelCommand, Redirect>>> for TopLevelCommand {
-    fn eq(&self, other: &Command<CommandList<TopLevelWord, TopLevelCommand, Redirect>>) -> bool {
+impl PartialEq<Command> for TopLevelCommand {
+    fn eq(&self, other: &Command) -> bool {
         &self.0 == other
     }
 }
