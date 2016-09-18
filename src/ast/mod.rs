@@ -32,7 +32,7 @@ pub enum Parameter<T = String> {
 
 /// A parameter substitution, e.g. `${param-word}`.
 ///
-/// Generic over the representations of parameters, top-level words, top-level
+/// Generic over the representations of parameters, shell words and
 /// commands, and arithmetic expansions.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum ParameterSubstitution<
@@ -144,7 +144,7 @@ pub enum SimpleWord<L = String, P = Parameter, S = Box<ParameterSubstitution>> {
 
 /// Represents redirecting a command's file descriptors.
 ///
-/// Generic over the top-level representation of a shell word.
+/// Generic over the representation of a shell word.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Redirect<W = TopLevelWord> {
     /// Open a file for reading, e.g. `[n]< file`.
@@ -271,7 +271,7 @@ pub struct CompoundCommand<T = CompoundCommandKind, R = Redirect> {
 
 /// A specific kind of a `CompoundCommand`.
 ///
-/// Generic over the top-level representation of a shell word and command.
+/// Generic over the representation of shell words and commands.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum CompoundCommandKind<W = TopLevelWord, C = TopLevelCommand> {
     /// A group of commands that should be executed in the current environment.
