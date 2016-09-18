@@ -81,7 +81,7 @@ pub enum ParameterSubstitution<
 /// top-level word representation, `ComplexWord`, and the top-level command
 /// representation, `Command`, while allowing them to be generic on their own.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct TopLevelCommand(pub Command<CommandList<TopLevelWord, TopLevelCommand>>);
+pub struct TopLevelCommand(pub Command<CommandList<TopLevelWord, TopLevelCommand, Redirect>>);
 
 /// A top-level representation of a shell word. This wrapper unifies the provided
 /// top-level word representation, `ComplexWord`, and the top-level command
@@ -197,7 +197,14 @@ pub enum Command<T> {
 }
 
 /// A type alias over an and/or list of conventional shell commands.
-pub type CommandList<W, C> = AndOrList<ListableCommand<PipeableCommand<W, C>>>;
+///
+/// Generic over the representation of shell words, commands, and redirects.
+pub type CommandList<W, C, R> = AndOrList<ListableCommand<PipeableCommand<
+    String,
+    Box<SimpleCommand<String, W, R>>,
+    Box<CompoundCommand<CompoundCommandKind<W, C>, R>>,
+    Rc<CompoundCommand<CompoundCommandKind<W, C>, R>>
+>>>;
 
 /// A command which conditionally runs based on the exit status of the previous command.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -233,17 +240,23 @@ pub enum ListableCommand<T> {
 
 /// Commands that can be used within a pipeline.
 ///
-/// Generic over the top-level representations of shell words and commands.
+/// Generic over the representations of function names, simple commands,
+/// compound commands, and function bodies.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum PipeableCommand<W, C> {
+pub enum PipeableCommand<
+    N = String,
+    S = Box<SimpleCommand>,
+    C = Box<CompoundCommand>,
+    F = Rc<CompoundCommand>
+> {
     /// The simplest possible command: an executable with arguments,
     /// environment variable assignments, and redirections.
-    Simple(Box<SimpleCommand<String, W>>),
+    Simple(S),
     /// A class of commands where redirection is applied to a command group.
-    Compound(Box<CompoundCommand<CompoundCommandKind<W, C>>>),
+    Compound(C),
     /// A function definition, associating a name with a group of commands,
     /// e.g. `function foo() { echo foo function; }`.
-    FunctionDef(String, Rc<CompoundCommand<CompoundCommandKind<W, C>>>),
+    FunctionDef(N, F),
 }
 
 /// A class of commands where redirection is applied to a command group.
@@ -392,7 +405,7 @@ pub enum Arithmetic<T = String> {
 }
 
 impl ops::Deref for TopLevelCommand {
-    type Target = Command<CommandList<TopLevelWord, TopLevelCommand>>;
+    type Target = Command<CommandList<TopLevelWord, TopLevelCommand, Redirect>>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -405,8 +418,8 @@ impl ops::DerefMut for TopLevelCommand {
     }
 }
 
-impl PartialEq<Command<CommandList<TopLevelWord, TopLevelCommand>>> for TopLevelCommand {
-    fn eq(&self, other: &Command<CommandList<TopLevelWord, TopLevelCommand>>) -> bool {
+impl PartialEq<Command<CommandList<TopLevelWord, TopLevelCommand, Redirect>>> for TopLevelCommand {
+    fn eq(&self, other: &Command<CommandList<TopLevelWord, TopLevelCommand, Redirect>>) -> bool {
         &self.0 == other
     }
 }

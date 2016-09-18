@@ -409,9 +409,14 @@ pub trait Builder {
 
 impl Builder for DefaultBuilder {
     type Command         = TopLevelCommand;
-    type CommandList     = CommandList<Self::Word, Self::Command>;
+    type CommandList     = CommandList<Self::Word, Self::Command, Self::Redirect>;
     type ListableCommand = ListableCommand<Self::PipeableCommand>;
-    type PipeableCommand = PipeableCommand<Self::Word, Self::Command>;
+    type PipeableCommand = PipeableCommand<
+        String,
+        Box<SimpleCommand<String, Self::Word, Self::Redirect>>,
+        Box<Self::CompoundCommand>,
+        Rc<Self::CompoundCommand>
+    >;
     type CompoundCommand = CompoundCommand<CompoundCommandKind<Self::Word, Self::Command>, Self::Redirect>;
     type Word            = TopLevelWord;
     type Redirect        = Redirect<Self::Word>;
