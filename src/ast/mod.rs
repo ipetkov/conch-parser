@@ -217,7 +217,7 @@ pub enum AndOr<T> {
 
 /// A nonempty list of `AndOr` commands, e.g. `foo && bar || baz`.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct AndOrList<T> {
+pub struct AndOrList<T = ListableCommand> {
     /// The first command that always runs.
     pub first: T,
     /// The remainder of the conditional commands which may or may not run.
