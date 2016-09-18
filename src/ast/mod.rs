@@ -240,21 +240,22 @@ pub enum PipeableCommand<W, C> {
     /// environment variable assignments, and redirections.
     Simple(Box<SimpleCommand<String, W>>),
     /// A class of commands where redirection is applied to a command group.
-    Compound(Box<CompoundCommand<W, C>>),
+    Compound(Box<CompoundCommand<CompoundCommandKind<W, C>>>),
     /// A function definition, associating a name with a group of commands,
     /// e.g. `function foo() { echo foo function; }`.
-    FunctionDef(String, Rc<CompoundCommand<W, C>>),
+    FunctionDef(String, Rc<CompoundCommand<CompoundCommandKind<W, C>>>),
 }
 
 /// A class of commands where redirection is applied to a command group.
 ///
-/// Generic over the top-level representation of a shell word and command.
+/// Generic over the representation of a type of compound command, and the
+/// representation of a redirect.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct CompoundCommand<W, C> {
+pub struct CompoundCommand<T = CompoundCommandKind, R = Redirect> {
     /// The specific kind of compound command.
-    pub kind: CompoundCommandKind<W, C>,
+    pub kind: T,
     /// Any redirections to be applied to the entire compound command
-    pub io: Vec<Redirect<W>>,
+    pub io: Vec<R>,
 }
 
 /// A specific kind of a `CompoundCommand`.

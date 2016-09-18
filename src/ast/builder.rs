@@ -412,7 +412,7 @@ impl Builder for DefaultBuilder {
     type CommandList     = CommandList<Self::Word, Self::Command>;
     type ListableCommand = ListableCommand<Self::PipeableCommand>;
     type PipeableCommand = PipeableCommand<Self::Word, Self::Command>;
-    type CompoundCommand = CompoundCommand<Self::Word, Self::Command>;
+    type CompoundCommand = CompoundCommand<CompoundCommandKind<Self::Word, Self::Command>, Self::Redirect>;
     type Word            = TopLevelWord;
     type Redirect        = Redirect<Self::Word>;
 
