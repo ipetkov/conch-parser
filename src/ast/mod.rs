@@ -226,7 +226,7 @@ pub struct AndOrList<T> {
 
 /// Commands that can be used within an and/or list.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum ListableCommand<T> {
+pub enum ListableCommand<T = PipeableCommand> {
     /// A chain of concurrent commands where the standard output of the
     /// previous becomes the standard input of the next, e.g.
     /// `[!] foo | bar | baz`.
