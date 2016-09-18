@@ -302,9 +302,9 @@ pub enum CompoundCommandKind<W = TopLevelWord, C = TopLevelCommand> {
 /// The simplest possible command: an executable with arguments,
 /// environment variable assignments, and redirections.
 ///
-/// Generic over the top-level representation of a shell word.
+/// Generic over representations of variable names, shell words, and redirects.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct SimpleCommand<V = String, W = TopLevelWord> {
+pub struct SimpleCommand<V = String, W = TopLevelWord, R = Redirect<W>> {
     /// Name or path of the executable along with any arguments. It's possible to
     /// have to have a command that is only an assigment which would set a value
     /// in the global environment, making the executable optional.
@@ -313,7 +313,7 @@ pub struct SimpleCommand<V = String, W = TopLevelWord> {
     /// tuples of (var name, value).
     pub vars: Vec<(V, Option<W>)>,
     /// All redirections that should be applied before running the command.
-    pub io: Vec<Redirect<W>>,
+    pub io: Vec<R>,
 }
 
 /// Represents an expression within an arithmetic subsitution.
