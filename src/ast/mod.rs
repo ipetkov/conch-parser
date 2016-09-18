@@ -146,7 +146,7 @@ pub enum SimpleWord<L = String, P = Parameter, S = Box<ParameterSubstitution>> {
 ///
 /// Generic over the top-level representation of a shell word.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Redirect<W> {
+pub enum Redirect<W = TopLevelWord> {
     /// Open a file for reading, e.g. `[n]< file`.
     Read(Option<u16>, W),
     /// Open a file for writing after truncating, e.g. `[n]> file`.

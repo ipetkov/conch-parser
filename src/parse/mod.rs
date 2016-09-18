@@ -2724,7 +2724,7 @@ pub mod test {
     struct SimpleCommandFragments {
         cmd: Option<(TopLevelWord, Vec<TopLevelWord>)>,
         vars: Vec<(String, Option<TopLevelWord>)>,
-        io: Vec<Redirect<TopLevelWord>>,
+        io: Vec<Redirect>,
     }
 
     fn sample_simple_command() -> SimpleCommandFragments {
