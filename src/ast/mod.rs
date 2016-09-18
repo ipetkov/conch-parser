@@ -102,9 +102,9 @@ pub enum ComplexWord<W = Word> {
 
 /// Represents whitespace delimited single, double, or non quoted text.
 ///
-/// Generic over the representation of a non-quoted words, and single-quoted literals.
+/// Generic over the representation of single-quoted literals, and non-quoted words.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Word<W = SimpleWord, L = String> {
+pub enum Word<L = String, W = SimpleWord> {
     /// A regular word.
     Simple(W),
     /// List of words concatenated within double quotes.
