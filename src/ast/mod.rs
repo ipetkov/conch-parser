@@ -238,7 +238,7 @@ pub enum ListableCommand<T> {
 pub enum PipeableCommand<W, C> {
     /// The simplest possible command: an executable with arguments,
     /// environment variable assignments, and redirections.
-    Simple(Box<SimpleCommand<W>>),
+    Simple(Box<SimpleCommand<String, W>>),
     /// A class of commands where redirection is applied to a command group.
     Compound(Box<CompoundCommand<W, C>>),
     /// A function definition, associating a name with a group of commands,
@@ -304,14 +304,14 @@ pub enum CompoundCommandKind<W, C> {
 ///
 /// Generic over the top-level representation of a shell word.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct SimpleCommand<W> {
+pub struct SimpleCommand<V = String, W = TopLevelWord> {
     /// Name or path of the executable along with any arguments. It's possible to
     /// have to have a command that is only an assigment which would set a value
     /// in the global environment, making the executable optional.
     pub cmd: Option<(W, Vec<W>)>,
     /// Environment variable assignments for this command, bound as
     /// tuples of (var name, value).
-    pub vars: Vec<(String, Option<W>)>,
+    pub vars: Vec<(V, Option<W>)>,
     /// All redirections that should be applied before running the command.
     pub io: Vec<Redirect<W>>,
 }

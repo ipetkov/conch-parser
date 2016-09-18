@@ -2680,7 +2680,7 @@ pub mod test {
         DefaultParser::new(src.into_iter())
     }
 
-    pub fn cmd_args_simple(cmd: &str, args: &[&str]) -> Box<SimpleCommand<TopLevelWord>> {
+    pub fn cmd_args_simple(cmd: &str, args: &[&str]) -> Box<SimpleCommand> {
         let cmd = word(cmd);
         let args = args.iter().map(|&a| word(a)).collect();
 
@@ -2691,7 +2691,7 @@ pub mod test {
         })
     }
 
-    fn cmd_simple(cmd: &str) -> Box<SimpleCommand<TopLevelWord>> {
+    fn cmd_simple(cmd: &str) -> Box<SimpleCommand> {
         cmd_args_simple(cmd, &[])
     }
 
@@ -2706,7 +2706,7 @@ pub mod test {
         cmd_args(cmd, &[])
     }
 
-    fn cmd_from_simple(cmd: SimpleCommand<TopLevelWord>) -> TopLevelCommand {
+    fn cmd_from_simple(cmd: SimpleCommand) -> TopLevelCommand {
         TopLevelCommand(List(CommandList {
             first: ListableCommand::Single(Simple(Box::new(cmd))),
             rest: vec!(),
