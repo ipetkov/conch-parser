@@ -2636,41 +2636,41 @@ pub mod test {
         }
     }
 
-    pub fn lit<W, C>(s: &str) -> Word<SimpleWord<W, C>> {
+    fn lit(s: &str) -> Word<SimpleWord> {
         Word::Simple(Literal(String::from(s)))
     }
 
-    pub fn escaped<W, C>(s: &str) -> Word<SimpleWord<W, C>> {
+    fn escaped(s: &str) -> Word<SimpleWord> {
         Word::Simple(Escaped(String::from(s)))
     }
 
-    pub fn subst<W, C>(s: ParameterSubstitution<W, C>) -> Word<SimpleWord<W, C>> {
+    fn subst(s: ParameterSubstitution<TopLevelWord, TopLevelCommand>) -> Word<SimpleWord> {
         Word::Simple(Subst(Box::new(s)))
     }
 
-    pub fn single_quoted(s: &str) -> TopLevelWord {
+    fn single_quoted(s: &str) -> TopLevelWord {
         TopLevelWord(Single(Word::SingleQuoted(String::from(s))))
     }
 
-    pub fn double_quoted(s: &str) -> TopLevelWord {
+    fn double_quoted(s: &str) -> TopLevelWord {
         TopLevelWord(Single(Word::DoubleQuoted(vec!(Literal(String::from(s))))))
     }
 
-    pub fn word(s: &str) -> TopLevelWord {
+    fn word(s: &str) -> TopLevelWord {
         TopLevelWord(Single(lit(s)))
     }
 
-    pub fn word_escaped(s: &str) -> TopLevelWord {
+    fn word_escaped(s: &str) -> TopLevelWord {
         TopLevelWord(Single(escaped(s)))
     }
 
-    pub fn word_subst(s: ParameterSubstitution<TopLevelWord, TopLevelCommand>)
+    fn word_subst(s: ParameterSubstitution<TopLevelWord, TopLevelCommand>)
         -> TopLevelWord
     {
         TopLevelWord(Single(subst(s)))
     }
 
-    pub fn word_param(p: Parameter) -> TopLevelWord {
+    fn word_param(p: Parameter) -> TopLevelWord {
         TopLevelWord(Single(Word::Simple(Param(p))))
     }
 

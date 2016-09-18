@@ -78,7 +78,7 @@ pub struct TopLevelCommand(pub Command<CommandList<TopLevelWord, TopLevelCommand
 /// top-level word representation, `ComplexWord`, and the top-level command
 /// representation, `Command`, while allowing them to be generic on their own.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct TopLevelWord(pub ComplexWord<Word<SimpleWord<TopLevelWord, TopLevelCommand>>>);
+pub struct TopLevelWord(pub ComplexWord<Word<SimpleWord>>);
 
 /// Represents whitespace delimited text.
 /// Generic over the representation of a whitespace delimited word.
@@ -103,19 +103,23 @@ pub enum Word<W> {
     SingleQuoted(String),
 }
 
-/// Represents whitespace delimited text.
-/// Generic over the top-level representation of a shell word and command.
+/// Represents the smallest fragment of any text.
+/// Generic over the representation of a literals, parameters, and substitutions.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum SimpleWord<W, C> {
+pub enum SimpleWord<
+    L = String,
+    P = Parameter,
+    S = Box<ParameterSubstitution<TopLevelWord, TopLevelCommand>>
+> {
     /// A non-special literal word.
-    Literal(String),
-    /// Access of a value inside a parameter, e.g. `$foo` or `$$`.
-    Param(Parameter),
-    /// A parameter substitution, e.g. `${param-word}`.
-    Subst(Box<ParameterSubstitution<W, C>>),
+    Literal(L),
     /// A token which normally has a special meaning is treated as a literal
     /// because it was escaped, typically with a backslash, e.g. `\"`.
-    Escaped(String),
+    Escaped(L),
+    /// Access of a value inside a parameter, e.g. `$foo` or `$$`.
+    Param(P),
+    /// A parameter substitution, e.g. `${param-word}`.
+    Subst(S),
     /// Represents `*`, useful for handling pattern expansions.
     Star,
     /// Represents `?`, useful for handling pattern expansions.
@@ -391,7 +395,7 @@ impl PartialEq<Command<CommandList<TopLevelWord, TopLevelCommand>>> for TopLevel
 }
 
 impl ops::Deref for TopLevelWord {
-    type Target = ComplexWord<Word<SimpleWord<TopLevelWord, TopLevelCommand>>>;
+    type Target = ComplexWord<Word<SimpleWord>>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -404,8 +408,8 @@ impl ops::DerefMut for TopLevelWord {
     }
 }
 
-impl PartialEq<ComplexWord<Word<SimpleWord<TopLevelWord, TopLevelCommand>>>> for TopLevelWord {
-    fn eq(&self, other: &ComplexWord<Word<SimpleWord<TopLevelWord, TopLevelCommand>>>) -> bool {
+impl PartialEq<ComplexWord<Word<SimpleWord>>> for TopLevelWord {
+    fn eq(&self, other: &ComplexWord<Word<SimpleWord>>) -> bool {
         &self.0 == other
     }
 }
