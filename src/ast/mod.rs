@@ -261,7 +261,7 @@ pub struct CompoundCommand<W, C> {
 ///
 /// Generic over the top-level representation of a shell word and command.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum CompoundCommandKind<W, C> {
+pub enum CompoundCommandKind<W = TopLevelWord, C = TopLevelCommand> {
     /// A group of commands that should be executed in the current environment.
     Brace(Vec<C>),
     /// A group of commands that should be executed in a subshell environment.
