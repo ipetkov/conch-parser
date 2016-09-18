@@ -2644,7 +2644,7 @@ pub mod test {
         Word::Simple(Escaped(String::from(s)))
     }
 
-    fn subst(s: ParameterSubstitution<TopLevelWord, TopLevelCommand>) -> Word {
+    fn subst(s: ParameterSubstitution) -> Word {
         Word::Simple(Subst(Box::new(s)))
     }
 
@@ -2664,9 +2664,7 @@ pub mod test {
         TopLevelWord(Single(escaped(s)))
     }
 
-    fn word_subst(s: ParameterSubstitution<TopLevelWord, TopLevelCommand>)
-        -> TopLevelWord
-    {
+    fn word_subst(s: ParameterSubstitution) -> TopLevelWord {
         TopLevelWord(Single(subst(s)))
     }
 

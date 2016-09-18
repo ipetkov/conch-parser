@@ -6,6 +6,7 @@ pub mod builder;
 pub use ast::builder::Builder;
 
 /// Represents reading a parameter (or variable) value, e.g. `$foo`.
+///
 /// Generic over the representation of variable names.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Parameter<T = String> {
@@ -30,43 +31,50 @@ pub enum Parameter<T = String> {
 }
 
 /// A parameter substitution, e.g. `${param-word}`.
-/// Generic over the top-level representation of a shell word and command.
+///
+/// Generic over the representations of parameters, top-level words, top-level
+/// commands, and arithmetic expansions.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum ParameterSubstitution<W, C> {
+pub enum ParameterSubstitution<
+    P = Parameter,
+    W = TopLevelWord,
+    C = TopLevelCommand,
+    A = Arithmetic,
+> {
     /// Returns the standard output of running a command, e.g. `$(cmd)`
     Command(Vec<C>),
     /// Returns the length of the value of a parameter, e.g. `${#param}`
     Len(Parameter),
     /// Returns the resulting value of an arithmetic subsitution, e.g. `$(( x++ ))`
-    Arith(Option<Arithmetic>),
+    Arith(Option<A>),
     /// Use a provided value if the parameter is null or unset, e.g.
     /// `${param:-[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Default(bool, Parameter, Option<W>),
+    Default(bool, P, Option<W>),
     /// Assign a provided value to the parameter if it is null or unset,
     /// e.g. `${param:=[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Assign(bool, Parameter, Option<W>),
+    Assign(bool, P, Option<W>),
     /// If the parameter is null or unset, an error should result with the provided
     /// message, e.g. `${param:?[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Error(bool, Parameter, Option<W>),
+    Error(bool, P, Option<W>),
     /// If the parameter is NOT null or unset, a provided word will be used,
     /// e.g. `${param:+[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Alternative(bool, Parameter, Option<W>),
+    Alternative(bool, P, Option<W>),
     /// Remove smallest suffix pattern from a parameter's value, e.g. `${param%pattern}`
-    RemoveSmallestSuffix(Parameter, Option<W>),
+    RemoveSmallestSuffix(P, Option<W>),
     /// Remove largest suffix pattern from a parameter's value, e.g. `${param%%pattern}`
-    RemoveLargestSuffix(Parameter, Option<W>),
+    RemoveLargestSuffix(P, Option<W>),
     /// Remove smallest prefix pattern from a parameter's value, e.g. `${param#pattern}`
-    RemoveSmallestPrefix(Parameter, Option<W>),
+    RemoveSmallestPrefix(P, Option<W>),
     /// Remove largest prefix pattern from a parameter's value, e.g. `${param##pattern}`
-    RemoveLargestPrefix(Parameter, Option<W>),
+    RemoveLargestPrefix(P, Option<W>),
 }
 
 /// A top-level representation of a shell command. This wrapper unifies the provided
@@ -82,6 +90,7 @@ pub struct TopLevelCommand(pub Command<CommandList<TopLevelWord, TopLevelCommand
 pub struct TopLevelWord(pub ComplexWord);
 
 /// Represents whitespace delimited text.
+///
 /// Generic over the representation of a whitespace delimited word.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum ComplexWord<W = Word> {
@@ -92,6 +101,7 @@ pub enum ComplexWord<W = Word> {
 }
 
 /// Represents whitespace delimited single, double, or non quoted text.
+///
 /// Generic over the representation of a non-quoted words, and single-quoted literals.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Word<W = SimpleWord, L = String> {
@@ -105,13 +115,10 @@ pub enum Word<W = SimpleWord, L = String> {
 }
 
 /// Represents the smallest fragment of any text.
+///
 /// Generic over the representation of a literals, parameters, and substitutions.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum SimpleWord<
-    L = String,
-    P = Parameter,
-    S = Box<ParameterSubstitution<TopLevelWord, TopLevelCommand>>
-> {
+pub enum SimpleWord<L = String, P = Parameter, S = Box<ParameterSubstitution>> {
     /// A non-special literal word.
     Literal(L),
     /// A token which normally has a special meaning is treated as a literal
@@ -136,6 +143,7 @@ pub enum SimpleWord<
 }
 
 /// Represents redirecting a command's file descriptors.
+///
 /// Generic over the top-level representation of a shell word.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Redirect<W> {
@@ -177,6 +185,7 @@ pub struct PatternBodyPair<W, C> {
 }
 
 /// Represents any valid shell command.
+///
 /// Generic over the top-level representations of shell words and commands.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Command<T> {
@@ -223,6 +232,7 @@ pub enum ListableCommand<T> {
 }
 
 /// Commands that can be used within a pipeline.
+///
 /// Generic over the top-level representations of shell words and commands.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum PipeableCommand<W, C> {
@@ -237,6 +247,7 @@ pub enum PipeableCommand<W, C> {
 }
 
 /// A class of commands where redirection is applied to a command group.
+///
 /// Generic over the top-level representation of a shell word and command.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct CompoundCommand<W, C> {
@@ -247,6 +258,7 @@ pub struct CompoundCommand<W, C> {
 }
 
 /// A specific kind of a `CompoundCommand`.
+///
 /// Generic over the top-level representation of a shell word and command.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum CompoundCommandKind<W, C> {
@@ -289,6 +301,7 @@ pub enum CompoundCommandKind<W, C> {
 
 /// The simplest possible command: an executable with arguments,
 /// environment variable assignments, and redirections.
+///
 /// Generic over the top-level representation of a shell word.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SimpleCommand<W> {
