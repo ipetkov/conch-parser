@@ -78,7 +78,7 @@ pub struct TopLevelCommand(pub Command<CommandList<TopLevelWord, TopLevelCommand
 /// top-level word representation, `ComplexWord`, and the top-level command
 /// representation, `Command`, while allowing them to be generic on their own.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct TopLevelWord(pub ComplexWord<Word<SimpleWord>>);
+pub struct TopLevelWord(pub ComplexWord<Word>);
 
 /// Represents whitespace delimited text.
 /// Generic over the representation of a whitespace delimited word.
@@ -91,16 +91,16 @@ pub enum ComplexWord<W> {
 }
 
 /// Represents whitespace delimited single, double, or non quoted text.
-/// Generic over the representation of a non-quoted word.
+/// Generic over the representation of a non-quoted words, and single-quoted literals.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Word<W> {
+pub enum Word<W = SimpleWord, L = String> {
     /// A regular word.
     Simple(W),
     /// List of words concatenated within double quotes.
     DoubleQuoted(Vec<W>),
     /// List of words concatenated within single quotes. Virtually
     /// identical as a literal, but makes a distinction between the two.
-    SingleQuoted(String),
+    SingleQuoted(L),
 }
 
 /// Represents the smallest fragment of any text.
@@ -395,7 +395,7 @@ impl PartialEq<Command<CommandList<TopLevelWord, TopLevelCommand>>> for TopLevel
 }
 
 impl ops::Deref for TopLevelWord {
-    type Target = ComplexWord<Word<SimpleWord>>;
+    type Target = ComplexWord<Word>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -408,8 +408,8 @@ impl ops::DerefMut for TopLevelWord {
     }
 }
 
-impl PartialEq<ComplexWord<Word<SimpleWord>>> for TopLevelWord {
-    fn eq(&self, other: &ComplexWord<Word<SimpleWord>>) -> bool {
+impl PartialEq<ComplexWord<Word>> for TopLevelWord {
+    fn eq(&self, other: &ComplexWord<Word>) -> bool {
         &self.0 == other
     }
 }

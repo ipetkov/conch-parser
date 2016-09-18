@@ -2636,15 +2636,15 @@ pub mod test {
         }
     }
 
-    fn lit(s: &str) -> Word<SimpleWord> {
+    fn lit(s: &str) -> Word {
         Word::Simple(Literal(String::from(s)))
     }
 
-    fn escaped(s: &str) -> Word<SimpleWord> {
+    fn escaped(s: &str) -> Word {
         Word::Simple(Escaped(String::from(s)))
     }
 
-    fn subst(s: ParameterSubstitution<TopLevelWord, TopLevelCommand>) -> Word<SimpleWord> {
+    fn subst(s: ParameterSubstitution<TopLevelWord, TopLevelCommand>) -> Word {
         Word::Simple(Subst(Box::new(s)))
     }
 
