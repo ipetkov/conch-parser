@@ -119,7 +119,7 @@ pub enum SimpleWordKind<C> {
     /// Access of a value inside a parameter, e.g. `$foo` or `$$`.
     Param(Parameter),
     /// A parameter substitution, e.g. `${param-word}`.
-    Subst(ParameterSubstitutionKind<ComplexWordKind<C>, C>),
+    Subst(Box<ParameterSubstitutionKind<ComplexWordKind<C>, C>>),
     /// Represents the standard output of some command, e.g. \`echo foo\`.
     CommandSubst(Vec<C>),
     /// A token which normally has a special meaning is treated as a literal
@@ -162,7 +162,7 @@ pub enum RedirectKind<W> {
 
 /// Represents the type of parameter that was parsed
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum ParameterSubstitutionKind<W: ?Sized, C> {
+pub enum ParameterSubstitutionKind<W, C> {
     /// Returns the standard output of running a command, e.g. `$(cmd)`
     Command(Vec<C>),
     /// Returns the length of the value of a parameter, e.g. ${#param}
@@ -173,30 +173,30 @@ pub enum ParameterSubstitutionKind<W: ?Sized, C> {
     /// `${param:-[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Default(bool, Parameter, Option<Box<W>>),
+    Default(bool, Parameter, Option<W>),
     /// Assign a provided value to the parameter if it is null or unset,
     /// e.g. `${param:=[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Assign(bool, Parameter, Option<Box<W>>),
+    Assign(bool, Parameter, Option<W>),
     /// If the parameter is null or unset, an error should result with the provided
     /// message, e.g. `${param:?[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Error(bool, Parameter, Option<Box<W>>),
+    Error(bool, Parameter, Option<W>),
     /// If the parameter is NOT null or unset, a provided word will be used,
     /// e.g. `${param:+[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Alternative(bool, Parameter, Option<Box<W>>),
+    Alternative(bool, Parameter, Option<W>),
     /// Remove smallest suffix pattern, e.g. `${param%pattern}`
-    RemoveSmallestSuffix(Parameter, Option<Box<W>>),
+    RemoveSmallestSuffix(Parameter, Option<W>),
     /// Remove largest suffix pattern, e.g. `${param%%pattern}`
-    RemoveLargestSuffix(Parameter, Option<Box<W>>),
+    RemoveLargestSuffix(Parameter, Option<W>),
     /// Remove smallest prefix pattern, e.g. `${param#pattern}`
-    RemoveSmallestPrefix(Parameter, Option<Box<W>>),
+    RemoveSmallestPrefix(Parameter, Option<W>),
     /// Remove largest prefix pattern, e.g. `${param##pattern}`
-    RemoveLargestPrefix(Parameter, Option<Box<W>>),
+    RemoveLargestPrefix(Parameter, Option<W>),
 }
 
 /// Represents a parsed newline, more specifically, the presense of a comment
@@ -654,7 +654,7 @@ impl Builder for DefaultBuilder {
         macro_rules! map {
             ($pat:expr) => {
                 match $pat {
-                    Some(w) => Some(try!(self.word(*w))),
+                    Some(w) => Some(try!(self.word(w))),
                     None => None,
                 }
             }
@@ -676,19 +676,25 @@ impl Builder for DefaultBuilder {
                     Box::new(ParameterSubstitution::Command(c))
                 ),
 
-                SimpleWordKind::Subst(s) => SimpleWord::Subst(Box::new(match s {
-                    Len(p)                     => ParameterSubstitution::Len(p),
-                    Command(c)                 => ParameterSubstitution::Command(c),
-                    Arith(a)                   => ParameterSubstitution::Arith(a),
-                    Default(c, p, w)           => ParameterSubstitution::Default(c, p, map!(w)),
-                    Assign(c, p, w)            => ParameterSubstitution::Assign(c, p, map!(w)),
-                    Error(c, p, w)             => ParameterSubstitution::Error(c, p, map!(w)),
-                    Alternative(c, p, w)       => ParameterSubstitution::Alternative(c, p, map!(w)),
-                    RemoveSmallestSuffix(p, w) => ParameterSubstitution::RemoveSmallestSuffix(p, map!(w)),
-                    RemoveLargestSuffix(p, w)  => ParameterSubstitution::RemoveLargestSuffix(p, map!(w)),
-                    RemoveSmallestPrefix(p, w) => ParameterSubstitution::RemoveSmallestPrefix(p, map!(w)),
-                    RemoveLargestPrefix(p, w)  => ParameterSubstitution::RemoveLargestPrefix(p, map!(w)),
-                })),
+                SimpleWordKind::Subst(s) => {
+                    // Force a move out of the boxed substitution. For some reason doing
+                    // the deref in the match statment gives a strange borrow failure
+                    let s = *s;
+                    let subst = match s {
+                        Len(p)                     => ParameterSubstitution::Len(p),
+                        Command(c)                 => ParameterSubstitution::Command(c),
+                        Arith(a)                   => ParameterSubstitution::Arith(a),
+                        Default(c, p, w)           => ParameterSubstitution::Default(c, p, map!(w)),
+                        Assign(c, p, w)            => ParameterSubstitution::Assign(c, p, map!(w)),
+                        Error(c, p, w)             => ParameterSubstitution::Error(c, p, map!(w)),
+                        Alternative(c, p, w)       => ParameterSubstitution::Alternative(c, p, map!(w)),
+                        RemoveSmallestSuffix(p, w) => ParameterSubstitution::RemoveSmallestSuffix(p, map!(w)),
+                        RemoveLargestSuffix(p, w)  => ParameterSubstitution::RemoveLargestSuffix(p, map!(w)),
+                        RemoveSmallestPrefix(p, w) => ParameterSubstitution::RemoveSmallestPrefix(p, map!(w)),
+                        RemoveLargestPrefix(p, w)  => ParameterSubstitution::RemoveLargestPrefix(p, map!(w)),
+                    };
+                    SimpleWord::Subst(Box::new(subst))
+                },
             };
             Ok(simple)
         };

@@ -1341,17 +1341,15 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         }
 
         let start_pos = self.iter.pos();
-        let param_word = |parser: &mut Self| -> Result<Option<Box<ComplexWordKind<B::Command>>>> {
+        let param_word = |parser: &mut Self| -> Result<Option<ComplexWordKind<B::Command>>> {
             let mut words = try!(parser.word_interpolated_raw(Some((CurlyOpen, CurlyClose)), start_pos));
-            let ret = if words.is_empty() {
-                None
+            if words.is_empty() {
+                Ok(None)
             } else if words.len() == 1 {
-                Some(Single(Simple(words.pop().unwrap())))
+                Ok(Some(Single(Simple(words.pop().unwrap()))))
             } else {
-                Some(Concat(words.into_iter().map(Simple).collect()))
-            };
-
-            Ok(ret.map(Box::new))
+                Ok(Some(Concat(words.into_iter().map(Simple).collect())))
+            }
         };
 
         let param = match self.iter.peek() {
@@ -1387,7 +1385,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     Command(try!(self.subshell_internal(true)))
                 };
 
-                return Ok(SimpleWordKind::Subst(subst));
+                return Ok(SimpleWordKind::Subst(Box::new(subst)));
             },
 
             Some(&CurlyOpen) => {
@@ -1497,7 +1495,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
                 match param {
                     // Substitutions have already consumed the closing CurlyClose token
-                    Err(subst) => return Ok(SimpleWordKind::Subst(subst)),
+                    Err(subst) => return Ok(SimpleWordKind::Subst(Box::new(subst))),
                     // Regular parameters, however, have not
                     Ok(p) => eat!(self, { CurlyClose => { p } }),
                 }
