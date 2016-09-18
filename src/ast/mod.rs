@@ -317,24 +317,26 @@ pub struct SimpleCommand<W> {
 }
 
 /// Represents an expression within an arithmetic subsitution.
+///
+/// Generic over the representation of a variable name.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Arithmetic {
+pub enum Arithmetic<T = String> {
     /// The value of a variable, e.g. `$var` or `var`.
-    Var(String),
+    Var(T),
     /// A numeric literal such as `42` or `0xdeadbeef`.
     Literal(isize),
     /// `left ** right`.
     Pow(Box<Arithmetic>, Box<Arithmetic>),
     /// Returns the current value of a variable,
     /// and then increments its value immediately after, e.g. `var++`
-    PostIncr(String),
+    PostIncr(T),
     /// Returns the current value of a variable,
     /// and then decrements its value immediately after, e.g. `var--`
-    PostDecr(String),
+    PostDecr(T),
     /// Increments the value of a variable and returns the new value, e.g. `++var`.
-    PreIncr(String),
+    PreIncr(T),
     /// Decrements the value of a variable and returns the new value, e.g. `--var`.
-    PreDecr(String),
+    PreDecr(T),
     /// Ensures the sign of the underlying result is positive, e.g. `+(1-2)`.
     UnaryPlus(Box<Arithmetic>),
     /// Ensures the sign of the underlying result is negative, e.g. `-(1+2)`.
@@ -383,7 +385,7 @@ pub enum Arithmetic {
     Ternary(Box<Arithmetic>, Box<Arithmetic>, Box<Arithmetic>),
     /// Assigns the value of an underlying expression to a
     /// variable and returns the value, e.g. `x = 5`, or `x += 2`.
-    Assign(String, Box<Arithmetic>),
+    Assign(T, Box<Arithmetic>),
     /// `expr[, expr[, ...]]`
     Sequence(Vec<Arithmetic>),
 }
