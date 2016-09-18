@@ -6,8 +6,9 @@ pub mod builder;
 pub use ast::builder::Builder;
 
 /// Represents reading a parameter (or variable) value, e.g. `$foo`.
+/// Generic over the representation of variable names.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Parameter {
+pub enum Parameter<T = String> {
     /// $@
     At,
     /// $*
@@ -25,7 +26,7 @@ pub enum Parameter {
     /// $0, $1, ..., $9, ${100}
     Positional(u32),
     /// $foo
-    Var(String),
+    Var(T),
 }
 
 /// A parameter substitution, e.g. `${param-word}`.
