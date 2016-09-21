@@ -1,8 +1,9 @@
 //! This module defines a lexer to recognize tokens of the shell language.
 
+use self::TokenOrLiteral::*;
+use std::iter::{Fuse, Peekable};
 use super::token::{Positional, Token};
 use super::token::Token::*;
-use self::TokenOrLiteral::*;
 
 #[derive(PartialEq, Eq, Debug)]
 enum TokenOrLiteral {
@@ -14,7 +15,7 @@ enum TokenOrLiteral {
 /// Converts raw characters into shell tokens.
 #[allow(missing_debug_implementations)]
 pub struct Lexer<I: Iterator<Item = char>> {
-    inner: ::std::iter::Peekable<I>,
+    inner: Peekable<Fuse<I>>,
     peeked: Option<TokenOrLiteral>,
 }
 
@@ -22,7 +23,7 @@ impl<I: Iterator<Item = char>> Lexer<I> {
     /// Creates a new Lexer from any char iterator.
     pub fn new(iter: I) -> Lexer<I> {
         Lexer {
-            inner: iter.peekable(),
+            inner: iter.fuse().peekable(),
             peeked: None,
         }
     }

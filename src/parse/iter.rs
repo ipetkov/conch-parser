@@ -36,8 +36,9 @@ impl TokenOrPos {
 /// A Token iterator that keeps track of how many lines have been read.
 #[derive(Debug)]
 pub struct TokenIter<I: Iterator<Item = Token>> {
-    /// The underlying token iterator being wrapped.
-    iter: I,
+    /// The underlying token iterator being wrapped. Iterator is fused to avoid
+    /// inconsistent behavior when doing multiple `peek_many` operations.
+    iter: std_iter::Fuse<I>,
     /// Any tokens that were previously yielded but to be consumed later, stored
     /// as a stack. Intersperced between the tokens are any changes to the current
     /// position that should be applied. This is useful for situations where the
@@ -116,7 +117,7 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
     /// Creates a new TokenIter from another Token iterator.
     pub fn new(iter: I) -> TokenIter<I> {
         TokenIter {
-            iter: iter,
+            iter: iter.fuse(),
             prev_buffered: Vec::new(),
             peek_buf: VecDeque::new(),
             pos: SourcePos::new(),
@@ -146,6 +147,8 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
         let mut tok_count = self.peek_buf.iter().filter(|t| t.is_tok()).count();
 
         // Fill up the peek buffer if needed
+        // NB: this relies on self.iter being fused, other wise weird things may happen
+        // between different calls to peek_many
         while tok_count < amt {
             let next = self.prev_buffered.pop().or_else(|| self.iter.next().map(TokenOrPos::Tok));
             match next {
