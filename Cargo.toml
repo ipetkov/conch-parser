@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["Ivan Petkov <ivanppetkov@gmail.com>"]
 
 [features]
-nightly = ["clippy"]
+nightly = []
 
 [dependencies]
 clippy = { version = "~0.0.80", optional = true }
