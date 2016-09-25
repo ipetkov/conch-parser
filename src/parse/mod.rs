@@ -12,6 +12,21 @@ use token::Token::*;
 
 mod iter;
 
+const CASE:     &'static str = "case";
+const DO:       &'static str = "do";
+const DONE:     &'static str = "done";
+const ELIF:     &'static str = "elif";
+const ELSE:     &'static str = "else";
+const ESAC:     &'static str = "esac";
+const FI:       &'static str = "fi";
+const FOR:      &'static str = "for";
+const FUNCTION: &'static str = "function";
+const IF:       &'static str = "if";
+const IN:       &'static str = "in";
+const THEN:     &'static str = "then";
+const UNTIL:    &'static str = "until";
+const WHILE:    &'static str = "while";
+
 /// A parser which will use a default AST builder implementation,
 /// yielding results in terms of types defined in the `ast` module.
 pub type DefaultParser<I> = Parser<I, builder::DefaultBuilder>;
@@ -1539,10 +1554,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// quoted or concatenated.
     pub fn do_group(&mut self) -> Result<Vec<B::Command>> {
         let start_pos = self.iter.pos();
-        try!(self.reserved_word(&["do"]).map_err(|_| self.make_unexpected_err()));
-        let result = try!(self.command_list(&["done"], &[]));
-        try!(self.reserved_word(&["done"])
-             .or(Err(ParseError::IncompleteCmd("do", start_pos, "done", self.iter.pos()))));
+        try!(self.reserved_word(&[DO]).map_err(|_| self.make_unexpected_err()));
+        let result = try!(self.command_list(&[DONE], &[]));
+        try!(self.reserved_word(&[DONE])
+             .or(Err(ParseError::IncompleteCmd(DO, start_pos, DONE, self.iter.pos()))));
         Ok(result)
     }
 
@@ -1605,12 +1620,12 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         } else if let Some(_) = self.peek_reserved_token(&[CurlyOpen]) {
             Some(CompoundCmdKeyword::Brace)
         } else {
-            match self.peek_reserved_word(&["for", "case", "if", "while", "until"]) {
-                Some("for")   => Some(CompoundCmdKeyword::For),
-                Some("case")  => Some(CompoundCmdKeyword::Case),
-                Some("if")    => Some(CompoundCmdKeyword::If),
-                Some("while") => Some(CompoundCmdKeyword::While),
-                Some("until") => Some(CompoundCmdKeyword::Until),
+            match self.peek_reserved_word(&[FOR, CASE, IF, WHILE, UNTIL]) {
+                Some(FOR)   => Some(CompoundCmdKeyword::For),
+                Some(CASE)  => Some(CompoundCmdKeyword::Case),
+                Some(IF)    => Some(CompoundCmdKeyword::If),
+                Some(WHILE) => Some(CompoundCmdKeyword::While),
+                Some(UNTIL) => Some(CompoundCmdKeyword::Until),
                 _ => None,
             }
         }
@@ -1677,19 +1692,19 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// without constructing an AST node, it so that the caller can do so with redirections.
     pub fn loop_command(&mut self) -> Result<(builder::LoopKind, ast::GuardBodyPair<B::Command>)> {
         let start_pos = self.iter.pos();
-        let kind = match try!(self.reserved_word(&["while", "until"])
+        let kind = match try!(self.reserved_word(&[WHILE, UNTIL])
                               .map_err(|_| self.make_unexpected_err())) {
-            "while" => builder::LoopKind::While,
-            "until" => builder::LoopKind::Until,
+            WHILE => builder::LoopKind::While,
+            UNTIL => builder::LoopKind::Until,
             _ => unreachable!(),
         };
-        let guard = try!(self.command_list(&["do"], &[]));
-        match self.peek_reserved_word(&["do"]) {
+        let guard = try!(self.command_list(&[DO], &[]));
+        match self.peek_reserved_word(&[DO]) {
             Some(_) => Ok((kind, ast::GuardBodyPair {
                 guard: guard,
                 body: try!(self.do_group())
             })),
-            None => Err(ParseError::IncompleteCmd("while", start_pos, "do", self.iter.pos())),
+            None => Err(ParseError::IncompleteCmd(WHILE, start_pos, DO, self.iter.pos())),
         }
     }
 
@@ -1700,35 +1715,35 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// AST node, it so that the caller can do so with redirections.
     pub fn if_command(&mut self) -> Result<builder::IfFragments<B::Command>> {
         let start_pos = self.iter.pos();
-        try!(self.reserved_word(&["if"]).map_err(|_| self.make_unexpected_err()));
+        try!(self.reserved_word(&[IF]).map_err(|_| self.make_unexpected_err()));
 
         macro_rules! missing_fi {
-            () => { |_| ParseError::IncompleteCmd("if", start_pos, "fi", self.iter.pos()) }
+            () => { |_| ParseError::IncompleteCmd(IF, start_pos, FI, self.iter.pos()) }
         }
 
         macro_rules! missing_then {
-            () => { |_| ParseError::IncompleteCmd("if", start_pos, "then", self.iter.pos()) }
+            () => { |_| ParseError::IncompleteCmd(IF, start_pos, THEN, self.iter.pos()) }
         }
 
         let mut conditionals = Vec::new();
         loop {
-            let guard = try!(self.command_list(&["then"], &[]));
-            try!(self.reserved_word(&["then"]).map_err(missing_then!()));
+            let guard = try!(self.command_list(&[THEN], &[]));
+            try!(self.reserved_word(&[THEN]).map_err(missing_then!()));
 
-            let body = try!(self.command_list(&["elif", "else", "fi"], &[]));
+            let body = try!(self.command_list(&[ELIF, ELSE, FI], &[]));
             conditionals.push(ast::GuardBodyPair {
                 guard: guard,
                 body: body,
             });
 
-            let els = match try!(self.reserved_word(&["elif", "else", "fi"]).map_err(missing_fi!())) {
-                "elif" => continue,
-                "else" => {
-                    let els = try!(self.command_list(&["fi"], &[]));
-                    try!(self.reserved_word(&["fi"]).map_err(missing_fi!()));
+            let els = match try!(self.reserved_word(&[ELIF, ELSE, FI]).map_err(missing_fi!())) {
+                ELIF => continue,
+                ELSE => {
+                    let els = try!(self.command_list(&[FI], &[]));
+                    try!(self.reserved_word(&[FI]).map_err(missing_fi!()));
                     Some(els)
                 },
-                "fi" => None,
+                FI => None,
                 _ => unreachable!(),
             };
 
@@ -1743,7 +1758,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// AST node, it so that the caller can do so with redirections.
     pub fn for_command(&mut self) -> Result<builder::ForFragments<B::Word, B::Command>> {
         let start_pos = self.iter.pos();
-        try!(self.reserved_word(&["for"]).map_err(|_| self.make_unexpected_err()));
+        try!(self.reserved_word(&[FOR]).map_err(|_| self.make_unexpected_err()));
 
         self.skip_whitespace();
 
@@ -1765,8 +1780,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         eat!(self, { Whitespace(_) => {} });
 
         let post_var_comments = self.linebreak();
-        let (words, post_words_comments) = if self.peek_reserved_word(&["in"]).is_some() {
-            self.reserved_word(&["in"]).unwrap();
+        let (words, post_words_comments) = if self.peek_reserved_word(&[IN]).is_some() {
+            self.reserved_word(&[IN]).unwrap();
 
             let mut words = Vec::new();
             while let Some(w) = try!(self.word()) {
@@ -1788,17 +1803,17 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             }
 
             (Some(words), Some(post_words_comments))
-        } else if self.peek_reserved_word(&["do"]).is_none() {
+        } else if self.peek_reserved_word(&[DO]).is_none() {
             // If we didn't find an `in` keyword, and we havent hit the body
             // (a `do` keyword), then we can reasonably say the script has
             // words without an `in` keyword.
-            return Err(ParseError::IncompleteCmd("for", start_pos, "in", self.iter.pos()));
+            return Err(ParseError::IncompleteCmd(FOR, start_pos, IN, self.iter.pos()));
         } else {
             (None, None)
         };
 
-        if self.peek_reserved_word(&["do"]).is_none() {
-            return Err(ParseError::IncompleteCmd("for", start_pos , "do", self.iter.pos()));
+        if self.peek_reserved_word(&[DO]).is_none() {
+            return Err(ParseError::IncompleteCmd(FOR, start_pos , DO, self.iter.pos()));
         }
 
         let body = try!(self.do_group());
@@ -1820,14 +1835,14 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         let start_pos = self.iter.pos();
 
         macro_rules! missing_in {
-            () => { |_| ParseError::IncompleteCmd("case", start_pos, "in", self.iter.pos()); }
+            () => { |_| ParseError::IncompleteCmd(CASE, start_pos, IN, self.iter.pos()); }
         }
 
         macro_rules! missing_esac {
-            () => { |_| ParseError::IncompleteCmd("case", start_pos, "esac", self.iter.pos()); }
+            () => { |_| ParseError::IncompleteCmd(CASE, start_pos, ESAC, self.iter.pos()); }
         }
 
-        try!(self.reserved_word(&["case"]).map_err(|_| self.make_unexpected_err()));
+        try!(self.reserved_word(&[CASE]).map_err(|_| self.make_unexpected_err()));
 
         let word = match try!(self.word()) {
             Some(w) => w,
@@ -1835,13 +1850,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         };
 
         let post_word_comments = self.linebreak();
-        try!(self.reserved_word(&["in"]).map_err(missing_in!()));
+        try!(self.reserved_word(&[IN]).map_err(missing_in!()));
 
         let mut pre_esac_comments = None;
         let mut arms = Vec::new();
         loop {
             let pre_pat_comments = self.linebreak();
-            if self.peek_reserved_word(&["esac"]).is_some() {
+            if self.peek_reserved_word(&[ESAC]).is_some() {
                 // Make sure we don't lose the captured comments if there are no body
                 debug_assert_eq!(pre_esac_comments, None);
                 pre_esac_comments = Some(pre_pat_comments);
@@ -1892,8 +1907,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             let mut cmds = Vec::new();
             loop {
                 // Make sure we check for both delimiters
-                if self.peek_reserved_word(&["esac"]).is_some() { break; }
-                if let Some(&DSemi) = self.iter.peek() { break; }
+                if Some(&DSemi) == self.iter.peek() || self.peek_reserved_word(&[ESAC]).is_some() {
+                    break;
+                }
 
                 match try!(self.complete_command()) {
                     Some(c) => cmds.push(c),
@@ -1927,7 +1943,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             None => remaining_comments,
         };
 
-        try!(self.reserved_word(&["esac"]).map_err(missing_esac!()));
+        try!(self.reserved_word(&[ESAC]).map_err(missing_esac!()));
 
         Ok(builder::CaseFragments {
             word: word,
@@ -1940,7 +1956,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Parses a single function declaration if present. If no function is present,
     /// nothing is consumed from the token stream.
     pub fn maybe_function_declaration(&mut self) -> Result<Option<B::PipeableCommand>> {
-        if self.peek_reserved_word(&["function"]).is_some() {
+        if self.peek_reserved_word(&[FUNCTION]).is_some() {
             return self.function_declaration().map(Some);
         }
 
@@ -1980,7 +1996,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     fn function_declaration_internal(&mut self)
         -> Result<(String, Vec<builder::Newline>, B::CompoundCommand)>
     {
-        let found_fn = match self.peek_reserved_word(&["function"]) {
+        let found_fn = match self.peek_reserved_word(&[FUNCTION]) {
             Some(_) => { self.iter.next(); true },
             None => false,
         };
