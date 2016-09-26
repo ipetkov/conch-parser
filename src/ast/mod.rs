@@ -468,12 +468,13 @@ impl fmt::Display for Parameter {
 mod tests {
     #[test]
     fn test_display_parameter() {
+        use lexer::Lexer;
+        use parse::DefaultParser;
         use super::Parameter::*;
         use super::ComplexWord::Single;
         use super::SimpleWord::Param;
         use super::TopLevelWord;
         use super::Word::Simple;
-        use parse::test::make_parser;
 
         let params = vec!(
             At,
@@ -493,7 +494,7 @@ mod tests {
             let src = p.to_string();
             let correct = TopLevelWord(Single(Simple(Param(p))));
 
-            let parsed = match make_parser(&src).word() {
+            let parsed = match DefaultParser::new(Lexer::new(src.chars())).word() {
                 Ok(Some(w)) => w,
                 Ok(None) => panic!("The source \"{}\" generated from the command `{:#?}` failed to parse as anything", src, correct),
                 Err(e) => panic!("The source \"{}\" generated from the command `{:#?}` failed to parse: {}", src, correct, e),
