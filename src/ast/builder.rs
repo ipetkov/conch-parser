@@ -14,7 +14,8 @@ use ast::{AndOr, AndOrList, Arithmetic, Command, CompoundCommand,
           CompoundCommandKind, ComplexWord, GuardBodyPair, ListableCommand, Parameter,
           ParameterSubstitution, PipeableCommand, Redirect, SimpleCommand, SimpleWord,
           TopLevelCommand, TopLevelWord, Word};
-use parse::Result;
+use parse::ParseResult;
+use void::Void;
 
 /// An indicator to the builder of how complete commands are separated.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -227,6 +228,8 @@ pub trait Builder {
     type Word;
     /// The type which represents a file descriptor redirection.
     type Redirect;
+    /// A type for returning custom parse/build errors.
+    type Error;
 
     /// Invoked once a complete command is found. That is, a command delimited by a
     /// newline, semicolon, ampersand, or the end of input.
@@ -240,8 +243,8 @@ pub trait Builder {
                         pre_cmd_comments: Vec<Newline>,
                         list: Self::CommandList,
                         separator: SeparatorKind,
-                        pos_cmd_comments: Vec<Newline>)
-        -> Result<Self::Command>;
+                        post_cmd_comments: Vec<Newline>)
+        -> ParseResult<Self::Command, Self::Error>;
 
     /// Invoked when multiple commands are parsed which are separated by `&&` or `||`.
     /// Typically after the first command is run, each of the following commands may or
@@ -253,7 +256,7 @@ pub trait Builder {
     fn and_or_list(&mut self,
               first: Self::ListableCommand,
               rest: Vec<(Vec<Newline>, AndOr<Self::ListableCommand>)>)
-        -> Result<Self::CommandList>;
+        -> ParseResult<Self::CommandList, Self::Error>;
 
     /// Invoked when a pipeline of commands is parsed.
     /// A pipeline is one or more commands where the standard output of the previous
@@ -267,7 +270,7 @@ pub trait Builder {
     fn pipeline(&mut self,
                 bang: bool,
                 cmds: Vec<(Vec<Newline>, Self::PipeableCommand)>)
-        -> Result<Self::ListableCommand>;
+        -> ParseResult<Self::ListableCommand, Self::Error>;
 
     /// Invoked when the "simplest" possible command is parsed: an executable with arguments.
     ///
@@ -281,7 +284,7 @@ pub trait Builder {
                       env_vars: Vec<(String, Option<Self::Word>)>,
                       cmd: Option<(Self::Word, Vec<Self::Word>)>,
                       redirects: Vec<Self::Redirect>)
-        -> Result<Self::PipeableCommand>;
+        -> ParseResult<Self::PipeableCommand, Self::Error>;
 
     /// Invoked when a non-zero number of commands were parsed between balanced curly braces.
     /// Typically these commands should run within the current shell environment.
@@ -292,7 +295,7 @@ pub trait Builder {
     fn brace_group(&mut self,
                    cmds: Vec<Self::Command>,
                    redirects: Vec<Self::Redirect>)
-        -> Result<Self::CompoundCommand>;
+        -> ParseResult<Self::CompoundCommand, Self::Error>;
 
     /// Invoked when a non-zero number of commands were parsed between balanced parentheses.
     /// Typically these commands should run within their own environment without affecting
@@ -304,7 +307,7 @@ pub trait Builder {
     fn subshell(&mut self,
                 cmds: Vec<Self::Command>,
                 redirects: Vec<Self::Redirect>)
-        -> Result<Self::CompoundCommand>;
+        -> ParseResult<Self::CompoundCommand, Self::Error>;
 
     /// Invoked when a loop command like `while` or `until` is parsed.
     /// Typically these commands will execute their body based on the exit status of their guard.
@@ -318,7 +321,7 @@ pub trait Builder {
                     kind: LoopKind,
                     guard_body_pair: GuardBodyPair<Self::Command>,
                     redirects: Vec<Self::Redirect>)
-        -> Result<Self::CompoundCommand>;
+        -> ParseResult<Self::CompoundCommand, Self::Error>;
 
     /// Invoked when an `if` conditional command is parsed.
     /// Typically an `if` command is made up of one or more guard-body pairs, where the body
@@ -331,7 +334,7 @@ pub trait Builder {
     fn if_command(&mut self,
                   fragments: IfFragments<Self::Command>,
                   redirects: Vec<Self::Redirect>)
-        -> Result<Self::CompoundCommand>;
+        -> ParseResult<Self::CompoundCommand, Self::Error>;
 
     /// Invoked when a `for` command is parsed.
     /// Typically a `for` command binds a variable to each member in a group of words and
@@ -344,7 +347,7 @@ pub trait Builder {
     fn for_command(&mut self,
                    fragments: ForFragments<Self::Word, Self::Command>,
                    redirects: Vec<Self::Redirect>)
-        -> Result<Self::CompoundCommand>;
+        -> ParseResult<Self::CompoundCommand, Self::Error>;
 
     /// Invoked when a `case` command is parsed.
     /// Typically this command will execute certain commands when a given word matches a pattern.
@@ -355,7 +358,7 @@ pub trait Builder {
     fn case_command(&mut self,
                     fragments: CaseFragments<Self::Word, Self::Command>,
                     redirects: Vec<Self::Redirect>)
-        -> Result<Self::CompoundCommand>;
+        -> ParseResult<Self::CompoundCommand, Self::Error>;
 
     /// Bridges the gap between a `PipeableCommand` and a `CompoundCommand` since
     /// `CompoundCommand`s are typically `PipeableCommand`s as well.
@@ -364,7 +367,7 @@ pub trait Builder {
     /// cmd: The `CompoundCommand` to convert into a `PipeableCommand`
     fn compound_command_as_pipeable(&mut self,
                                     cmd: Self::CompoundCommand)
-        -> Result<Self::PipeableCommand>;
+        -> ParseResult<Self::PipeableCommand, Self::Error>;
 
     /// Invoked when a function declaration is parsed.
     /// Typically a function declaration overwrites any previously defined function
@@ -378,7 +381,7 @@ pub trait Builder {
                             name: String,
                             post_name_comments: Vec<Newline>,
                             body: Self::CompoundCommand)
-        -> Result<Self::PipeableCommand>;
+        -> ParseResult<Self::PipeableCommand, Self::Error>;
 
     /// Invoked when only comments are parsed with no commands following.
     /// This can occur if an entire shell script is commented out or if there
@@ -388,7 +391,7 @@ pub trait Builder {
     /// * comments: the parsed comments
     fn comments(&mut self,
                 comments: Vec<Newline>)
-        -> Result<()>;
+        -> ParseResult<(), Self::Error>;
 
     /// Invoked when a word is parsed.
     ///
@@ -396,7 +399,7 @@ pub trait Builder {
     /// * kind: the type of word that was parsed
     fn word(&mut self,
             kind: ComplexWordKind<Self::Command>)
-        -> Result<Self::Word>;
+        -> ParseResult<Self::Word, Self::Error>;
 
     /// Invoked when a redirect is parsed.
     ///
@@ -404,7 +407,7 @@ pub trait Builder {
     /// * kind: the type of redirect that was parsed
     fn redirect(&mut self,
                 kind: RedirectKind<Self::Word>)
-        -> Result<Self::Redirect>;
+        -> ParseResult<Self::Redirect, Self::Error>;
 }
 
 impl Builder for DefaultBuilder {
@@ -420,6 +423,7 @@ impl Builder for DefaultBuilder {
     type CompoundCommand = CompoundCommand<CompoundCommandKind<Self::Word, Self::Command>, Self::Redirect>;
     type Word            = TopLevelWord;
     type Redirect        = Redirect<Self::Word>;
+    type Error           = Void;
 
     /// Constructs a `Command::Job` node with the provided inputs if the command
     /// was delimited by an ampersand or the command itself otherwise.
@@ -428,7 +432,7 @@ impl Builder for DefaultBuilder {
                         list: Self::CommandList,
                         separator: SeparatorKind,
                         _pos_cmd_comments: Vec<Newline>)
-        -> Result<Self::Command>
+        -> ParseResult<Self::Command, Self::Error>
     {
         let cmd = match separator {
             SeparatorKind::Semi  |
@@ -444,7 +448,7 @@ impl Builder for DefaultBuilder {
     fn and_or_list(&mut self,
               first: Self::ListableCommand,
               rest: Vec<(Vec<Newline>, AndOr<Self::ListableCommand>)>)
-        -> Result<Self::CommandList>
+        -> ParseResult<Self::CommandList, Self::Error>
     {
         Ok(AndOrList {
             first: first,
@@ -457,7 +461,7 @@ impl Builder for DefaultBuilder {
     fn pipeline(&mut self,
                 bang: bool,
                 cmds: Vec<(Vec<Newline>, Self::PipeableCommand)>)
-        -> Result<Self::ListableCommand>
+        -> ParseResult<Self::ListableCommand, Self::Error>
     {
         debug_assert_eq!(cmds.is_empty(), false);
         let mut cmds: Vec<_> = cmds.into_iter().map(|(_, c)| c).collect();
@@ -478,7 +482,7 @@ impl Builder for DefaultBuilder {
                       mut env_vars: Vec<(String, Option<Self::Word>)>,
                       mut cmd: Option<(Self::Word, Vec<Self::Word>)>,
                       mut redirects: Vec<Self::Redirect>)
-        -> Result<Self::PipeableCommand>
+        -> ParseResult<Self::PipeableCommand, Self::Error>
     {
         env_vars.shrink_to_fit();
         redirects.shrink_to_fit();
@@ -498,7 +502,7 @@ impl Builder for DefaultBuilder {
     fn brace_group(&mut self,
                    mut cmds: Vec<Self::Command>,
                    mut redirects: Vec<Self::Redirect>)
-        -> Result<Self::CompoundCommand>
+        -> ParseResult<Self::CompoundCommand, Self::Error>
     {
         cmds.shrink_to_fit();
         redirects.shrink_to_fit();
@@ -512,7 +516,7 @@ impl Builder for DefaultBuilder {
     fn subshell(&mut self,
                 mut cmds: Vec<Self::Command>,
                 mut redirects: Vec<Self::Redirect>)
-        -> Result<Self::CompoundCommand>
+        -> ParseResult<Self::CompoundCommand, Self::Error>
     {
         cmds.shrink_to_fit();
         redirects.shrink_to_fit();
@@ -527,7 +531,7 @@ impl Builder for DefaultBuilder {
                     kind: LoopKind,
                     mut guard_body_pair: GuardBodyPair<Self::Command>,
                     mut redirects: Vec<Self::Redirect>)
-        -> Result<Self::CompoundCommand>
+        -> ParseResult<Self::CompoundCommand, Self::Error>
     {
         guard_body_pair.guard.shrink_to_fit();
         guard_body_pair.body.shrink_to_fit();
@@ -548,7 +552,7 @@ impl Builder for DefaultBuilder {
     fn if_command(&mut self,
                   fragments: IfFragments<Self::Command>,
                   mut redirects: Vec<Self::Redirect>)
-        -> Result<Self::CompoundCommand>
+        -> ParseResult<Self::CompoundCommand, Self::Error>
     {
         let IfFragments { mut conditionals, mut else_branch } = fragments;
 
@@ -576,7 +580,7 @@ impl Builder for DefaultBuilder {
     fn for_command(&mut self,
                    mut fragments: ForFragments<Self::Word, Self::Command>,
                    mut redirects: Vec<Self::Redirect>)
-        -> Result<Self::CompoundCommand>
+        -> ParseResult<Self::CompoundCommand, Self::Error>
     {
         for word in &mut fragments.words {
             word.shrink_to_fit();
@@ -599,7 +603,7 @@ impl Builder for DefaultBuilder {
     fn case_command(&mut self,
                     fragments: CaseFragments<Self::Word, Self::Command>,
                     mut redirects: Vec<Self::Redirect>)
-        -> Result<Self::CompoundCommand>
+        -> ParseResult<Self::CompoundCommand, Self::Error>
     {
         use ast::PatternBodyPair;
 
@@ -627,7 +631,7 @@ impl Builder for DefaultBuilder {
     /// Converts a `CompoundCommand` into a `PipeableCommand`.
     fn compound_command_as_pipeable(&mut self,
                                     cmd: Self::CompoundCommand)
-        -> Result<Self::PipeableCommand>
+        -> ParseResult<Self::PipeableCommand, Self::Error>
     {
         Ok(PipeableCommand::Compound(Box::new(cmd)))
     }
@@ -637,18 +641,18 @@ impl Builder for DefaultBuilder {
                             name: String,
                             _post_name_comments: Vec<Newline>,
                             body: Self::CompoundCommand)
-        -> Result<Self::PipeableCommand>
+        -> ParseResult<Self::PipeableCommand, Self::Error>
     {
         Ok(PipeableCommand::FunctionDef(name, Rc::new(body)))
     }
 
     /// Ignored by the builder.
-    fn comments(&mut self, _comments: Vec<Newline>) -> Result<()> {
+    fn comments(&mut self, _comments: Vec<Newline>) -> ParseResult<(), Self::Error> {
         Ok(())
     }
 
     /// Constructs a `ast::Word` from the provided input.
-    fn word(&mut self, kind: ComplexWordKind<Self::Command>) -> Result<Self::Word> {
+    fn word(&mut self, kind: ComplexWordKind<Self::Command>) -> ParseResult<Self::Word, Self::Error> {
         use self::ParameterSubstitutionKind::*;
 
         macro_rules! map {
@@ -706,7 +710,7 @@ impl Builder for DefaultBuilder {
                 WordKind::DoubleQuoted(v) => Word::DoubleQuoted(try!(
                     v.into_iter()
                      .map(&mut map_simple)
-                     .collect::<Result<Vec<_>>>()
+                     .collect::<ParseResult<Vec<_>, _>>()
                 )),
             };
             Ok(word)
@@ -717,7 +721,7 @@ impl Builder for DefaultBuilder {
             ComplexWordKind::Concat(words) => ComplexWord::Concat(try!(
                     words.into_iter()
                          .map(map_word)
-                         .collect::<Result<Vec<_>>>()
+                         .collect::<ParseResult<Vec<_>, _>>()
             )),
         };
 
@@ -727,7 +731,7 @@ impl Builder for DefaultBuilder {
     /// Constructs a `ast::Redirect` from the provided input.
     fn redirect(&mut self,
                 kind: RedirectKind<Self::Word>)
-        -> Result<Self::Redirect>
+        -> ParseResult<Self::Redirect, Self::Error>
     {
         let io = match kind {
             RedirectKind::Read(fd, path)      => Redirect::Read(fd, path),
@@ -752,13 +756,14 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
     type CompoundCommand = T::CompoundCommand;
     type Word            = T::Word;
     type Redirect        = T::Redirect;
+    type Error           = T::Error;
 
     fn complete_command(&mut self,
                         pre_cmd_comments: Vec<Newline>,
                         list: Self::CommandList,
                         separator: SeparatorKind,
                         post_cmd_comments: Vec<Newline>)
-        -> Result<Self::Command>
+        -> ParseResult<Self::Command, Self::Error>
     {
         (**self).complete_command(pre_cmd_comments, list, separator, post_cmd_comments)
     }
@@ -766,7 +771,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
     fn and_or_list(&mut self,
               first: Self::ListableCommand,
               rest: Vec<(Vec<Newline>, AndOr<Self::ListableCommand>)>)
-        -> Result<Self::CommandList>
+        -> ParseResult<Self::CommandList, Self::Error>
     {
         (**self).and_or_list(first, rest)
     }
@@ -774,7 +779,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
     fn pipeline(&mut self,
                 bang: bool,
                 cmds: Vec<(Vec<Newline>, Self::PipeableCommand)>)
-        -> Result<Self::ListableCommand>
+        -> ParseResult<Self::ListableCommand, Self::Error>
     {
         (**self).pipeline(bang, cmds)
     }
@@ -783,7 +788,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
                       env_vars: Vec<(String, Option<Self::Word>)>,
                       cmd: Option<(Self::Word, Vec<Self::Word>)>,
                       redirects: Vec<Self::Redirect>)
-        -> Result<Self::PipeableCommand>
+        -> ParseResult<Self::PipeableCommand, Self::Error>
     {
         (**self).simple_command(env_vars, cmd, redirects)
     }
@@ -791,7 +796,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
     fn brace_group(&mut self,
                    cmds: Vec<Self::Command>,
                    redirects: Vec<Self::Redirect>)
-        -> Result<Self::CompoundCommand>
+        -> ParseResult<Self::CompoundCommand, Self::Error>
     {
         (**self).brace_group(cmds, redirects)
     }
@@ -799,7 +804,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
     fn subshell(&mut self,
                 cmds: Vec<Self::Command>,
                 redirects: Vec<Self::Redirect>)
-        -> Result<Self::CompoundCommand>
+        -> ParseResult<Self::CompoundCommand, Self::Error>
     {
         (**self).subshell(cmds, redirects)
     }
@@ -808,7 +813,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
                     kind: LoopKind,
                     guard_body_pair: GuardBodyPair<Self::Command>,
                     redirects: Vec<Self::Redirect>)
-        -> Result<Self::CompoundCommand>
+        -> ParseResult<Self::CompoundCommand, Self::Error>
     {
         (**self).loop_command(kind, guard_body_pair, redirects)
     }
@@ -816,7 +821,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
     fn if_command(&mut self,
                   fragments: IfFragments<Self::Command>,
                   redirects: Vec<Self::Redirect>)
-        -> Result<Self::CompoundCommand>
+        -> ParseResult<Self::CompoundCommand, Self::Error>
     {
         (**self).if_command(fragments, redirects)
     }
@@ -824,7 +829,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
     fn for_command(&mut self,
                    fragments: ForFragments<Self::Word, Self::Command>,
                    redirects: Vec<Self::Redirect>)
-        -> Result<Self::CompoundCommand>
+        -> ParseResult<Self::CompoundCommand, Self::Error>
     {
         (**self).for_command(fragments, redirects)
     }
@@ -832,14 +837,14 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
     fn case_command(&mut self,
                     fragments: CaseFragments<Self::Word, Self::Command>,
                     redirects: Vec<Self::Redirect>)
-        -> Result<Self::CompoundCommand>
+        -> ParseResult<Self::CompoundCommand, Self::Error>
     {
         (**self).case_command(fragments, redirects)
     }
 
     fn compound_command_as_pipeable(&mut self,
                                     cmd: Self::CompoundCommand)
-        -> Result<Self::PipeableCommand>
+        -> ParseResult<Self::PipeableCommand, Self::Error>
     {
         (**self).compound_command_as_pipeable(cmd)
     }
@@ -848,28 +853,28 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
                             name: String,
                             post_name_comments: Vec<Newline>,
                             body: Self::CompoundCommand)
-        -> Result<Self::PipeableCommand>
+        -> ParseResult<Self::PipeableCommand, Self::Error>
     {
         (**self).function_declaration(name, post_name_comments, body)
     }
 
     fn comments(&mut self,
                 comments: Vec<Newline>)
-        -> Result<()>
+        -> ParseResult<(), Self::Error>
     {
         (**self).comments(comments)
     }
 
     fn word(&mut self,
             kind: ComplexWordKind<Self::Command>)
-        -> Result<Self::Word>
+        -> ParseResult<Self::Word, Self::Error>
     {
         (**self).word(kind)
     }
 
     fn redirect(&mut self,
                 kind: RedirectKind<Self::Word>)
-        -> Result<Self::Redirect>
+        -> ParseResult<Self::Redirect, Self::Error>
     {
         (**self).redirect(kind)
     }

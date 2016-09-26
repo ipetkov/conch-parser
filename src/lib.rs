@@ -14,6 +14,8 @@
 
 #![forbid(unsafe_code)]
 
+extern crate void;
+
 pub mod ast;
 pub mod lexer;
 pub mod parse;

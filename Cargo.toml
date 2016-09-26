@@ -8,3 +8,4 @@ nightly = []
 
 [dependencies]
 clippy = { version = "~0.0.80", optional = true }
+void = "1"
