@@ -56,12 +56,14 @@ pub struct IfFragments<C> {
 pub struct ForFragments<W, C> {
     /// The name of the variable to which each of the words will be bound.
     pub var: String,
-    /// Any comments that appear after the variable declaration.
-    pub post_var_comments: Vec<Newline>,
-    /// A group of words to iterate over, if present.
-    pub words: Option<Vec<W>>,
-    /// Any comments that appear after the `words` declaration (if it exists).
-    pub post_words_comments: Option<Vec<Newline>>,
+    /// A comment that begins on the same line as the variable declaration.
+    pub var_comment: Option<Newline>,
+    /// Any comments after the variable declaration, a group of words to
+    /// iterator over, and comment defined on the same line as the words.
+    pub words: Option<(Vec<Newline>, Vec<W>, Option<Newline>)>,
+    /// Any comments that appear after the `words` declaration (if it exists),
+    /// but before the body of commands.
+    pub pre_body_comments: Vec<Newline>,
     /// The body to be invoked for every iteration.
     pub body: Vec<C>,
 }
@@ -582,9 +584,10 @@ impl Builder for DefaultBuilder {
                    mut redirects: Vec<Self::Redirect>)
         -> ParseResult<Self::CompoundCommand, Self::Error>
     {
-        for word in &mut fragments.words {
-            word.shrink_to_fit();
-        }
+        let words = fragments.words.map(|(_, mut words, _)| {
+            words.shrink_to_fit();
+            words
+        });
 
         fragments.var.shrink_to_fit();
         fragments.body.shrink_to_fit();
@@ -592,7 +595,7 @@ impl Builder for DefaultBuilder {
         Ok(CompoundCommand {
             kind: CompoundCommandKind::For {
                 var: fragments.var,
-                words: fragments.words,
+                words: words,
                 body: fragments.body,
             },
             io: redirects

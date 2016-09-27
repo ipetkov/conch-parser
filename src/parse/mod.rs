@@ -1795,8 +1795,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         // ot the Name token which is the variable
         eat!(self, { Whitespace(_) => {} });
 
+        let var_comment = self.newline();
         let post_var_comments = self.linebreak();
-        let (words, post_words_comments) = if self.peek_reserved_word(&[IN]).is_some() {
+
+        let (words, pre_body_comments) = if self.peek_reserved_word(&[IN]).is_some() {
             self.reserved_word(&[IN]).unwrap();
 
             let mut words = Vec::new();
@@ -1813,19 +1815,19 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
             // We need either a newline or a ; to separate the words from the body
             // Thus if neither is found it is considered an error
-            let post_words_comments = self.linebreak();
-            if !found_semi && post_words_comments.is_empty() {
+            let words_comment = self.newline();
+            if !found_semi && words_comment.is_none() {
                 return Err(self.make_unexpected_err());
             }
 
-            (Some(words), Some(post_words_comments))
+            (Some((post_var_comments, words, words_comment)), self.linebreak())
         } else if self.peek_reserved_word(&[DO]).is_none() {
             // If we didn't find an `in` keyword, and we havent hit the body
             // (a `do` keyword), then we can reasonably say the script has
             // words without an `in` keyword.
             return Err(ParseError::IncompleteCmd(FOR, start_pos, IN, self.iter.pos()));
         } else {
-            (None, None)
+            (None, post_var_comments)
         };
 
         if self.peek_reserved_word(&[DO]).is_none() {
@@ -1835,9 +1837,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         let body = try!(self.do_group());
         Ok(builder::ForFragments {
             var: var,
-            post_var_comments: post_var_comments,
+            var_comment: var_comment,
             words: words,
-            post_words_comments: post_words_comments,
+            pre_body_comments: pre_body_comments,
             body: body,
         })
     }

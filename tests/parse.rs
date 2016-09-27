@@ -3,7 +3,7 @@ extern crate shell_lang;
 use std::rc::Rc;
 
 use shell_lang::ast::*;
-use shell_lang::ast::builder::Newline;
+use shell_lang::ast::builder::*;
 use shell_lang::ast::Command::*;
 use shell_lang::ast::ComplexWord::*;
 use shell_lang::ast::CompoundCommandKind::*;
@@ -2345,44 +2345,49 @@ fn test_braces_literal_unless_brace_group_expected() {
 
 #[test]
 fn test_for_command_valid_with_words() {
-    let mut p = make_parser("for var #comment1\nin one two three\n#comment2\n\ndo echo $var; done");
-    let fragments = p.for_command().unwrap();
-    assert_eq!(fragments.var, "var");
-    assert_eq!(fragments.post_var_comments, vec!(Newline(Some(String::from("#comment1")))));
-    assert_eq!(fragments.words.unwrap(), vec!(
-        word("one"),
-        word("two"),
-        word("three"),
-    ));
-    assert_eq!(fragments.post_words_comments, Some(vec!(
-        Newline(None),
-        Newline(Some(String::from("#comment2"))),
-        Newline(None),
-    )));
-
-    let correct_body = vec!(cmd_from_simple(SimpleCommand {
-        vars: vec!(), io: vec!(),
-        cmd: Some((word("echo"), vec!(word_param(Parameter::Var(String::from("var"))))))
+    let mut p = make_parser("for var #var comment\n#prew1\n#prew2\nin one two three #word comment\n#precmd1\n#precmd2\ndo echo $var; done");
+    assert_eq!(p.for_command(), Ok(ForFragments {
+        var: "var".into(),
+        var_comment: Some(Newline(Some("#var comment".into()))),
+        words: Some((
+            vec!(
+                Newline(Some("#prew1".into())),
+                Newline(Some("#prew2".into())),
+            ),
+            vec!(
+                word("one"),
+                word("two"),
+                word("three"),
+            ),
+            Some(Newline(Some("#word comment".into())))
+        )),
+        pre_body_comments: vec!(
+            Newline(Some("#precmd1".into())),
+            Newline(Some("#precmd2".into())),
+        ),
+        body: vec!(cmd_from_simple(SimpleCommand {
+            vars: vec!(), io: vec!(),
+            cmd: Some((word("echo"), vec!(word_param(Parameter::Var("var".into())))))
+        })),
     }));
-
-    assert_eq!(correct_body, fragments.body);
 }
 
 #[test]
 fn test_for_command_valid_without_words() {
-    let mut p = make_parser("for var #comment\ndo echo $var; done");
-    let fragments = p.for_command().unwrap();
-    assert_eq!(fragments.var, "var");
-    assert_eq!(fragments.post_var_comments, vec!(Newline(Some(String::from("#comment")))));
-    assert_eq!(fragments.words, None);
-    assert_eq!(fragments.post_words_comments, None);
-
-    let correct_body = vec!(cmd_from_simple(SimpleCommand {
-        vars: vec!(), io: vec!(),
-        cmd: Some((word("echo"), vec!(word_param(Parameter::Var(String::from("var"))))))
+    let mut p = make_parser("for var #var comment\n#w1\n#w2\ndo echo $var; done");
+    assert_eq!(p.for_command(), Ok(ForFragments {
+        var: "var".into(),
+        var_comment: Some(Newline(Some("#var comment".into()))),
+        words: None,
+        pre_body_comments: vec!(
+            Newline(Some("#w1".into())),
+            Newline(Some("#w2".into())),
+        ),
+        body: vec!(cmd_from_simple(SimpleCommand {
+            vars: vec!(), io: vec!(),
+            cmd: Some((word("echo"), vec!(word_param(Parameter::Var("var".into())))))
+        })),
     }));
-
-    assert_eq!(correct_body, fragments.body);
 }
 
 #[test]
