@@ -9,6 +9,7 @@
 #![deny(missing_debug_implementations)]
 #![deny(missing_docs)]
 #![deny(trivial_casts)]
+#![deny(trivial_numeric_casts)]
 #![deny(unused_import_braces)]
 #![deny(unused_qualifications)]
 

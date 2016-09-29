@@ -1869,15 +1869,16 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         let post_word_comments = self.linebreak();
         try!(self.reserved_word(&[IN]).map_err(missing_in!()));
+        let in_comment = self.newline();
 
         let mut pre_esac_comments = None;
         let mut arms = Vec::new();
         loop {
-            let pre_pat_comments = self.linebreak();
+            let pre_pattern_comments = self.linebreak();
             if self.peek_reserved_word(&[ESAC]).is_some() {
                 // Make sure we don't lose the captured comments if there are no body
                 debug_assert_eq!(pre_esac_comments, None);
-                pre_esac_comments = Some(pre_pat_comments);
+                pre_esac_comments = Some(pre_pattern_comments);
                 break;
             }
 
@@ -1918,7 +1919,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
             // NB: we must capture linebreaks here since `peek_reserved_word`
             // will not consume them, and it could mistake a reserved word for a command.
-            let post_pattern_comments = self.linebreak();
+            let pattern_comment = self.newline();
+            let pre_body_comments = self.linebreak();
 
             // DSemi's are always special tokens, hence they aren't
             // reserved words, and thus the `command_list` method doesn't apply.
@@ -1935,20 +1937,31 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 }
             }
 
-            let pat_fragments = builder::CasePatternFragments {
-                pre_pattern_comments: pre_pat_comments,
-                pattern_alternatives: patterns,
-                post_pattern_comments: post_pattern_comments,
+            let post_body_comments = self.linebreak();
+
+            let (may_have_more_arms, arm_comment) = if Some(&DSemi) == self.iter.peek() {
+                self.iter.next();
+                (true, self.newline())
+            } else {
+                (false, None)
             };
 
-            arms.push((pat_fragments, cmds));
-
-            match self.iter.peek() {
-                Some(&DSemi) => {
-                    self.iter.next();
-                    continue;
+            arms.push(builder::CaseArm {
+                patterns: builder::CasePatternFragments {
+                    pre_pattern_comments: pre_pattern_comments,
+                    pattern_alternatives: patterns,
+                    pattern_comment: pattern_comment,
                 },
-                _ => break,
+                pre_body_comments: pre_body_comments,
+                body: cmds,
+                post_body_comments: post_body_comments,
+                arm_comment: arm_comment,
+            });
+
+            if may_have_more_arms {
+                continue;
+            } else {
+                break;
             }
         }
 
@@ -1966,6 +1979,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         Ok(builder::CaseFragments {
             word: word,
             post_word_comments: post_word_comments,
+            in_comment: in_comment,
             arms: arms,
             post_arms_comments: pre_esac_comments,
         })

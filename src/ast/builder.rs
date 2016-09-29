@@ -75,11 +75,34 @@ pub struct CaseFragments<W, C> {
     pub word: W,
     /// The comments appearing after the word to match but before the `in` reserved word.
     pub post_word_comments: Vec<Newline>,
-    /// The different arms in the case command. Each arm has a number of pattern alternatives,
-    /// and a body of commands to run if any pattern matches.
-    pub arms: Vec<(CasePatternFragments<W>, Vec<C>)>,
-    /// The comments appearing after the last arm but before the `esac` reserved word
+    /// A comment appearing immediately after the `in` reserved word,
+    /// yet still on the same line.
+    pub in_comment: Option<Newline>,
+    /// All the possible branches of the `case` command.
+    pub arms: Vec<CaseArm<W, C>>,
+    /// The comments appearing after the last arm but before the `esac` reserved word.
     pub post_arms_comments: Vec<Newline>,
+}
+
+/// An individual "unit of execution" within a `case` command.
+///
+/// Each arm has a number of pattern alternatives, and a body
+/// of commands to run if any pattern matches.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct CaseArm<W, C> {
+    /// The patterns which correspond to this case arm.
+    pub patterns: CasePatternFragments<W>,
+    /// A set of comments appearing after the pattern declaration,
+    /// but before the body of commands.
+    pub pre_body_comments: Vec<Newline>,
+    /// The body of commands to run if any pattern matches.
+    pub body: Vec<C>,
+    /// Any comments appearing after the body declaration,
+    /// but before the end of the arm (i.e. before `;;`).
+    pub post_body_comments: Vec<Newline>,
+    /// A comment appearing at the end of the arm declaration,
+    /// i.e. after `;;` but on the same line.
+    pub arm_comment: Option<Newline>,
 }
 
 /// Parsed fragments relating to patterns in a shell `case` command.
@@ -89,8 +112,8 @@ pub struct CasePatternFragments<W> {
     pub pre_pattern_comments: Vec<Newline>,
     /// Pattern alternatives which all correspond to the same case arm.
     pub pattern_alternatives: Vec<W>,
-    /// Comments appearing after the patterns but before the start of the case arm.
-    pub post_pattern_comments: Vec<Newline>,
+    /// A comment appearing at the end of the pattern declaration on the same line.
+    pub pattern_comment: Option<Newline>,
 }
 
 /// An indicator to the builder what kind of complex word was parsed.
@@ -610,9 +633,11 @@ impl Builder for DefaultBuilder {
     {
         use ast::PatternBodyPair;
 
-        let arms = fragments.arms.into_iter().map(|(pat_fragment, mut body)| {
-            let mut patterns = pat_fragment.pattern_alternatives;
+        let arms = fragments.arms.into_iter().map(|arm| {
+            let mut patterns = arm.patterns.pattern_alternatives;
             patterns.shrink_to_fit();
+
+            let mut body = arm.body;
             body.shrink_to_fit();
 
             PatternBodyPair {

@@ -2808,23 +2808,30 @@ fn test_case_command_valid() {
     let correct = builder::CaseFragments {
         word: word("foo"),
         post_word_comments: vec!(),
+        in_comment: None,
         arms: vec!(
-            (
-                builder::CasePatternFragments {
+            builder::CaseArm {
+                patterns: builder::CasePatternFragments {
                     pre_pattern_comments: vec!(),
                     pattern_alternatives: vec!(word("hello"), word("goodbye")),
-                    post_pattern_comments: vec!(),
+                    pattern_comment: None,
                 },
-                vec!(cmd_args("echo", &["greeting"])),
-            ),
-            (
-                builder::CasePatternFragments {
+                pre_body_comments: vec!(),
+                body: vec!(cmd_args("echo", &["greeting"])),
+                post_body_comments: vec!(),
+                arm_comment: None,
+            },
+            builder::CaseArm {
+                patterns: builder::CasePatternFragments {
                     pre_pattern_comments: vec!(),
                     pattern_alternatives: vec!(word("world")),
-                    post_pattern_comments: vec!(),
+                    pattern_comment: None,
                 },
-                vec!(cmd_args("echo", &["noun"])),
-            ),
+                pre_body_comments: vec!(),
+                body: vec!(cmd_args("echo", &["noun"])),
+                post_body_comments: vec!(),
+                arm_comment: None,
+            },
         ),
         post_arms_comments: vec!(),
     };
@@ -2850,74 +2857,78 @@ fn test_case_command_valid_with_comments() {
     let correct = builder::CaseFragments {
         word: word("foo"),
         post_word_comments: vec!(
+            Newline(Some(String::from("#word_comment"))),
             Newline(Some(String::from("#post_word_a"))),
             Newline(None),
             Newline(Some(String::from("#post_word_b"))),
         ),
+        in_comment: Some(Newline(Some(String::from("#in_comment")))),
         arms: vec!(
-            (
-                builder::CasePatternFragments {
+            builder::CaseArm {
+                patterns: builder::CasePatternFragments {
                     pre_pattern_comments: vec!(
-                        Newline(Some(String::from("#pre_pat_1a"))),
                         Newline(None),
-                        Newline(Some(String::from("#pre_pat_1b"))),
+                        Newline(Some(String::from("#pre_pat_a"))),
                     ),
                     pattern_alternatives: vec!(word("hello"), word("goodbye")),
-                    post_pattern_comments: vec!(
-                        Newline(Some(String::from("#post_pat_1a"))),
-                        Newline(None),
-                        Newline(Some(String::from("#post_pat_1b"))),
-                    ),
+                    pattern_comment: Some(Newline(Some(String::from("#pat_a")))),
                 },
-                vec!(cmd_args("echo", &["greeting"])),
-            ),
-            (
-                builder::CasePatternFragments {
+                pre_body_comments: vec!(
+                    Newline(None),
+                    Newline(Some(String::from("#pre_body_a")))
+                ),
+                body: vec!(cmd_args("echo", &["greeting"])),
+                post_body_comments: vec!(),
+                arm_comment: Some(Newline(Some(String::from("#arm_a")))),
+            },
+            builder::CaseArm {
+                patterns: builder::CasePatternFragments {
                     pre_pattern_comments: vec!(
-                        Newline(Some(String::from("#pre_pat_2a"))),
                         Newline(None),
-                        Newline(Some(String::from("#pre_pat_2b"))),
+                        Newline(Some(String::from("#pre_pat_b"))),
                     ),
                     pattern_alternatives: vec!(word("world")),
-                    post_pattern_comments: vec!(
-                        Newline(Some(String::from("#post_pat_2a"))),
-                        Newline(None),
-                        Newline(Some(String::from("#post_pat_2b"))),
-                    ),
+                    pattern_comment: Some(Newline(Some(String::from("#pat_b")))),
                 },
-                vec!(cmd_args("echo", &["noun"])),
-            ),
+                pre_body_comments: vec!(
+                    Newline(None),
+                    Newline(Some(String::from("#pre_body_b")))
+                ),
+                body: vec!(cmd_args("echo", &["noun"])),
+                post_body_comments: vec!(),
+                arm_comment: Some(Newline(Some(String::from("#arm_b")))),
+            },
         ),
         post_arms_comments: vec!(
-            Newline(Some(String::from("#post_branch_a"))),
             Newline(None),
-            Newline(Some(String::from("#post_branch_b"))),
+            Newline(Some(String::from("#post_arms"))),
         ),
     };
 
     // Various newlines and comments allowed within the command
     let cmd =
-        "case foo #post_word_a
+        "case foo #word_comment
+        #post_word_a
 
         #post_word_b
-        in #pre_pat_1a
+        in #in_comment
 
-        #pre_pat_1b
-        (hello | goodbye) #post_pat_1a
+        #pre_pat_a
+        (hello | goodbye) #pat_a
 
-        #post_pat_1b
-        echo greeting #post_cmd
+        #pre_body_a
+        echo greeting #within_body
 
-        #post_cmd
-        ;; #pre_pat_2a
+        #post_body_a
+        ;; #arm_a
 
-        #pre_pat_2b
-        world) #post_pat_2a
+        #pre_pat_b
+        world) #pat_b
 
-        #post_pat_2b
-        echo noun;; #post_branch_a
+        #pre_body_b
+        echo noun;; #arm_b
 
-        #post_branch_b
+        #post_arms
         esac";
 
     assert_eq!(correct, make_parser(cmd).case_command().unwrap());
@@ -2928,27 +2939,29 @@ fn test_case_command_valid_with_comments_no_body() {
     let correct = builder::CaseFragments {
         word: word("foo"),
         post_word_comments: vec!(
+            Newline(Some(String::from("#word_comment"))),
             Newline(Some(String::from("#post_word_a"))),
             Newline(None),
             Newline(Some(String::from("#post_word_b"))),
         ),
+        in_comment: Some(Newline(Some(String::from("#in_comment")))),
         arms: vec!(),
         post_arms_comments: vec!(
-            Newline(Some(String::from("#post_branch_a"))),
             Newline(None),
-            Newline(Some(String::from("#post_branch_b"))),
+            Newline(Some(String::from("#post_arms"))),
         ),
     };
 
     // Various newlines and comments allowed within the command
     let cmd =
-        "case foo #post_word_a
+        "case foo #word_comment
+        #post_word_a
 
         #post_word_b
-        in #post_branch_a
+        in #in_comment
 
-        #post_branch_b
-        esac";
+        #post_arms
+        esac #case_comment";
 
     assert_eq!(correct, make_parser(cmd).case_command().unwrap());
 }
