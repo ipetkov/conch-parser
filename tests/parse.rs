@@ -2816,7 +2816,6 @@ fn test_case_command_valid() {
                     pattern_alternatives: vec!(word("hello"), word("goodbye")),
                     pattern_comment: None,
                 },
-                pre_body_comments: vec!(),
                 body: vec!(cmd_args("echo", &["greeting"])),
                 post_body_comments: vec!(),
                 arm_comment: None,
@@ -2827,7 +2826,6 @@ fn test_case_command_valid() {
                     pattern_alternatives: vec!(word("world")),
                     pattern_comment: None,
                 },
-                pre_body_comments: vec!(),
                 body: vec!(cmd_args("echo", &["noun"])),
                 post_body_comments: vec!(),
                 arm_comment: None,
@@ -2873,12 +2871,11 @@ fn test_case_command_valid_with_comments() {
                     pattern_alternatives: vec!(word("hello"), word("goodbye")),
                     pattern_comment: Some(Newline(Some(String::from("#pat_a")))),
                 },
-                pre_body_comments: vec!(
-                    Newline(None),
-                    Newline(Some(String::from("#pre_body_a")))
-                ),
                 body: vec!(cmd_args("echo", &["greeting"])),
-                post_body_comments: vec!(),
+                post_body_comments: vec!(
+                    Newline(None),
+                    Newline(Some(String::from("#post_body_a")))
+                ),
                 arm_comment: Some(Newline(Some(String::from("#arm_a")))),
             },
             builder::CaseArm {
@@ -2890,10 +2887,6 @@ fn test_case_command_valid_with_comments() {
                     pattern_alternatives: vec!(word("world")),
                     pattern_comment: Some(Newline(Some(String::from("#pat_b")))),
                 },
-                pre_body_comments: vec!(
-                    Newline(None),
-                    Newline(Some(String::from("#pre_body_b")))
-                ),
                 body: vec!(cmd_args("echo", &["noun"])),
                 post_body_comments: vec!(),
                 arm_comment: Some(Newline(Some(String::from("#arm_b")))),
@@ -2916,7 +2909,7 @@ fn test_case_command_valid_with_comments() {
         #pre_pat_a
         (hello | goodbye) #pat_a
 
-        #pre_body_a
+        #cmd_leading
         echo greeting #within_body
 
         #post_body_a
@@ -2925,13 +2918,14 @@ fn test_case_command_valid_with_comments() {
         #pre_pat_b
         world) #pat_b
 
-        #pre_body_b
-        echo noun;; #arm_b
+        #cmd_leading
+        echo noun
+        ;; #arm_b
 
         #post_arms
         esac";
 
-    assert_eq!(correct, make_parser(cmd).case_command().unwrap());
+    assert_eq!(Ok(correct), make_parser(cmd).case_command());
 }
 
 #[test]

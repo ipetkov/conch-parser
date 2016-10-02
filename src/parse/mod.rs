@@ -373,27 +373,37 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     pub fn complete_command(&mut self) -> ParseResult<Option<B::Command>, B::Error> {
         let pre_cmd_comments = self.linebreak();
 
-        if self.iter.peek().is_none() {
-            try!(self.builder.comments(pre_cmd_comments));
-            return Ok(None);
+        if self.iter.peek().is_some() {
+            Ok(Some(try!(self.complete_command_with_leading_comments(pre_cmd_comments))))
+        } else {
+            if !pre_cmd_comments.is_empty() {
+                try!(self.builder.comments(pre_cmd_comments));
+            }
+            Ok(None)
         }
+    }
 
+    /// Parses a single complete command, but expects caller to parse any leading comments.
+    ///
+    /// It is considered an error there is not a valid complete command to be parsed, thus
+    /// the caller should perform any EOF checks.
+    fn complete_command_with_leading_comments(&mut self, pre_cmd_comments: Vec<builder::Newline>)
+        -> ParseResult<B::Command, B::Error>
+    {
         let cmd = try!(self.and_or_list());
 
-        let sep = eat_maybe!(self, {
-            Semi => { builder::SeparatorKind::Semi },
-            Amp  => { builder::SeparatorKind::Amp  };
+        let (sep, cmd_comment) = eat_maybe!(self, {
+            Semi => { (builder::SeparatorKind::Semi, self.newline()) },
+            Amp  => { (builder::SeparatorKind::Amp , self.newline()) };
             _ => {
-                if let Some(n) = self.newline() {
-                    builder::SeparatorKind::Newline(n)
-                } else {
-                    builder::SeparatorKind::Other
+                match self.newline() {
+                    n@Some(_) => (builder::SeparatorKind::Newline, n),
+                    None => (builder::SeparatorKind::Other, None),
                 }
             }
         });
 
-        let post_cmd_comments = self.linebreak();
-        Ok(Some(try!(self.builder.complete_command(pre_cmd_comments, cmd, sep, post_cmd_comments))))
+        self.builder.complete_command(pre_cmd_comments, cmd, sep, cmd_comment)
     }
 
     /// Parses compound AND/OR commands.
@@ -1917,27 +1927,25 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 }
             }
 
-            // NB: we must capture linebreaks here since `peek_reserved_word`
-            // will not consume them, and it could mistake a reserved word for a command.
             let pattern_comment = self.newline();
-            let pre_body_comments = self.linebreak();
 
             // DSemi's are always special tokens, hence they aren't
             // reserved words, and thus the `command_list` method doesn't apply.
             let mut cmds = Vec::new();
+            let mut post_body_comments = vec!();
             loop {
+                let leading_comments = self.linebreak();
+
                 // Make sure we check for both delimiters
                 if Some(&DSemi) == self.iter.peek() || self.peek_reserved_word(&[ESAC]).is_some() {
+                    // Make sure we don't lose the captured comments if there are no body
+                    debug_assert!(post_body_comments.is_empty());
+                    post_body_comments = leading_comments;
                     break;
                 }
 
-                match try!(self.complete_command()) {
-                    Some(c) => cmds.push(c),
-                    None => break,
-                }
+                cmds.push(try!(self.complete_command_with_leading_comments(leading_comments)));
             }
-
-            let post_body_comments = self.linebreak();
 
             let (may_have_more_arms, arm_comment) = if Some(&DSemi) == self.iter.peek() {
                 self.iter.next();
@@ -1952,7 +1960,6 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     pattern_alternatives: patterns,
                     pattern_comment: pattern_comment,
                 },
-                pre_body_comments: pre_body_comments,
                 body: cmds,
                 post_body_comments: post_body_comments,
                 arm_comment: arm_comment,
@@ -2101,8 +2108,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             }
 
             let found_backslash_newline = {
-                let mut peeked = self.iter.peek_many(2).into_iter();
-                Some(&Backslash) == peeked.next() && Some(&Newline) == peeked.next()
+                if Some(&Backslash) == self.iter.peek() {
+                    let mut peeked = self.iter.peek_many(2).into_iter();
+                    peeked.next(); // Skip Backslash
+                    Some(&Newline) == peeked.next()
+                } else {
+                    false
+                }
             };
 
             if found_backslash_newline {
