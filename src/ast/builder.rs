@@ -10,8 +10,8 @@
 //! struct to the parser if you wish to use the default AST implementation.
 
 use std::rc::Rc;
-use ast::{AndOr, AndOrList, Arithmetic, Command, CompoundCommand,
-          CompoundCommandKind, ComplexWord, GuardBodyPair, ListableCommand, Parameter,
+use ast::{self, AndOr, AndOrList, Arithmetic, Command, CompoundCommand,
+          CompoundCommandKind, ComplexWord, ListableCommand, Parameter,
           ParameterSubstitution, PipeableCommand, Redirect, SimpleCommand, SimpleWord,
           TopLevelCommand, TopLevelWord, Word};
 use parse::ParseResult;
@@ -42,13 +42,32 @@ pub enum LoopKind {
     Until,
 }
 
+/// A grouping of a list of commands and any comments trailing after the commands.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct CommandGroup<C> {
+    /// The sequential list of commands.
+    pub commands: Vec<C>,
+    /// Any trailing comments appearing on the next line after the last command.
+    pub trailing_comments: Vec<Newline>,
+}
+
+/// A grouping of guard and body commands, and any comments they may have.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct GuardBodyPairGroup<C> {
+    /// The guard commands, which if successful, should lead to the
+    /// execution of the body commands.
+    pub guard: CommandGroup<C>,
+    /// The body commands to execute if the guard is successful.
+    pub body: CommandGroup<C>,
+}
+
 /// Parsed fragments relating to a shell `if` command.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct IfFragments<C> {
     /// A list of conditionals branches.
-    pub conditionals: Vec<GuardBodyPair<C>>,
+    pub conditionals: Vec<GuardBodyPairGroup<C>>,
     /// The `else` branch, if any,
-    pub else_branch: Option<Vec<C>>,
+    pub else_branch: Option<CommandGroup<C>>,
 }
 
 /// Parsed fragments relating to a shell `for` command.
@@ -65,7 +84,7 @@ pub struct ForFragments<W, C> {
     /// but before the body of commands.
     pub pre_body_comments: Vec<Newline>,
     /// The body to be invoked for every iteration.
-    pub body: Vec<C>,
+    pub body: CommandGroup<C>,
 }
 
 /// Parsed fragments relating to a shell `case` command.
@@ -93,10 +112,7 @@ pub struct CaseArm<W, C> {
     /// The patterns which correspond to this case arm.
     pub patterns: CasePatternFragments<W>,
     /// The body of commands to run if any pattern matches.
-    pub body: Vec<C>,
-    /// Any comments appearing after the body declaration,
-    /// but before the end of the arm (i.e. before `;;`).
-    pub post_body_comments: Vec<Newline>,
+    pub body: CommandGroup<C>,
     /// A comment appearing at the end of the arm declaration,
     /// i.e. after `;;` but on the same line.
     pub arm_comment: Option<Newline>,
@@ -144,7 +160,7 @@ pub enum SimpleWordKind<C> {
     /// A parameter substitution, e.g. `${param-word}`.
     Subst(Box<ParameterSubstitutionKind<ComplexWordKind<C>, C>>),
     /// Represents the standard output of some command, e.g. \`echo foo\`.
-    CommandSubst(Vec<C>),
+    CommandSubst(CommandGroup<C>),
     /// A token which normally has a special meaning is treated as a literal
     /// because it was escaped, typically with a backslash, e.g. `\"`.
     Escaped(String),
@@ -187,7 +203,7 @@ pub enum RedirectKind<W> {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum ParameterSubstitutionKind<W, C> {
     /// Returns the standard output of running a command, e.g. `$(cmd)`
-    Command(Vec<C>),
+    Command(CommandGroup<C>),
     /// Returns the length of the value of a parameter, e.g. ${#param}
     Len(Parameter),
     /// Returns the resulting value of an arithmetic subsitution, e.g. `$(( x++ ))`
@@ -315,7 +331,7 @@ pub trait Builder {
     /// * cmds: the commands that were parsed between braces
     /// * redirects: any redirects to be applied over the **entire** group of commands
     fn brace_group(&mut self,
-                   cmds: Vec<Self::Command>,
+                   cmds: CommandGroup<Self::Command>,
                    redirects: Vec<Self::Redirect>)
         -> ParseResult<Self::CompoundCommand, Self::Error>;
 
@@ -327,7 +343,7 @@ pub trait Builder {
     /// * cmds: the commands that were parsed between parens
     /// * redirects: any redirects to be applied over the **entire** group of commands
     fn subshell(&mut self,
-                cmds: Vec<Self::Command>,
+                cmds: CommandGroup<Self::Command>,
                 redirects: Vec<Self::Redirect>)
         -> ParseResult<Self::CompoundCommand, Self::Error>;
 
@@ -341,7 +357,7 @@ pub trait Builder {
     /// * redirects: any redirects to be applied over **all** commands part of the loop
     fn loop_command(&mut self,
                     kind: LoopKind,
-                    guard_body_pair: GuardBodyPair<Self::Command>,
+                    guard_body_pair: GuardBodyPairGroup<Self::Command>,
                     redirects: Vec<Self::Redirect>)
         -> ParseResult<Self::CompoundCommand, Self::Error>;
 
@@ -522,10 +538,11 @@ impl Builder for DefaultBuilder {
 
     /// Constructs a `CompoundCommand::Brace` node with the provided inputs.
     fn brace_group(&mut self,
-                   mut cmds: Vec<Self::Command>,
+                   cmd_group: CommandGroup<Self::Command>,
                    mut redirects: Vec<Self::Redirect>)
         -> ParseResult<Self::CompoundCommand, Self::Error>
     {
+        let mut cmds = cmd_group.commands;
         cmds.shrink_to_fit();
         redirects.shrink_to_fit();
         Ok(CompoundCommand {
@@ -536,10 +553,11 @@ impl Builder for DefaultBuilder {
 
     /// Constructs a `CompoundCommand::Subshell` node with the provided inputs.
     fn subshell(&mut self,
-                mut cmds: Vec<Self::Command>,
+                cmd_group: CommandGroup<Self::Command>,
                 mut redirects: Vec<Self::Redirect>)
         -> ParseResult<Self::CompoundCommand, Self::Error>
     {
+        let mut cmds = cmd_group.commands;
         cmds.shrink_to_fit();
         redirects.shrink_to_fit();
         Ok(CompoundCommand {
@@ -551,13 +569,21 @@ impl Builder for DefaultBuilder {
     /// Constructs a `CompoundCommand::Loop` node with the provided inputs.
     fn loop_command(&mut self,
                     kind: LoopKind,
-                    mut guard_body_pair: GuardBodyPair<Self::Command>,
+                    guard_body_pair: GuardBodyPairGroup<Self::Command>,
                     mut redirects: Vec<Self::Redirect>)
         -> ParseResult<Self::CompoundCommand, Self::Error>
     {
-        guard_body_pair.guard.shrink_to_fit();
-        guard_body_pair.body.shrink_to_fit();
+        let mut guard = guard_body_pair.guard.commands;
+        let mut body = guard_body_pair.body.commands;
+
+        guard.shrink_to_fit();
+        body.shrink_to_fit();
         redirects.shrink_to_fit();
+
+        let guard_body_pair = ast::GuardBodyPair {
+            guard: guard,
+            body: body,
+        };
 
         let loop_cmd = match kind {
             LoopKind::While => CompoundCommandKind::While(guard_body_pair),
@@ -576,16 +602,27 @@ impl Builder for DefaultBuilder {
                   mut redirects: Vec<Self::Redirect>)
         -> ParseResult<Self::CompoundCommand, Self::Error>
     {
-        let IfFragments { mut conditionals, mut else_branch } = fragments;
+        let IfFragments { conditionals, else_branch } = fragments;
 
-        for guard_body_pair in &mut conditionals {
-            guard_body_pair.guard.shrink_to_fit();
-            guard_body_pair.body.shrink_to_fit();
-        }
+        let conditionals = conditionals.into_iter()
+            .map(|gbp| {
+                let mut guard = gbp.guard.commands;
+                let mut body = gbp.body.commands;
 
-        if let Some(ref mut els) = else_branch {
+                guard.shrink_to_fit();
+                body.shrink_to_fit();
+
+                ast::GuardBodyPair {
+                    guard: guard,
+                    body: body,
+                }
+            })
+            .collect();
+
+        let else_branch = else_branch.map(|CommandGroup { commands: mut els, .. }| {
             els.shrink_to_fit();
-        }
+            els
+        });
 
         redirects.shrink_to_fit();
 
@@ -609,14 +646,17 @@ impl Builder for DefaultBuilder {
             words
         });
 
+        let mut body = fragments.body.commands;
+        body.shrink_to_fit();
+
         fragments.var.shrink_to_fit();
-        fragments.body.shrink_to_fit();
         redirects.shrink_to_fit();
+
         Ok(CompoundCommand {
             kind: CompoundCommandKind::For {
                 var: fragments.var,
                 words: words,
-                body: fragments.body,
+                body: body,
             },
             io: redirects
         })
@@ -634,7 +674,7 @@ impl Builder for DefaultBuilder {
             let mut patterns = arm.patterns.pattern_alternatives;
             patterns.shrink_to_fit();
 
-            let mut body = arm.body;
+            let mut body = arm.body.commands;
             body.shrink_to_fit();
 
             PatternBodyPair {
@@ -702,7 +742,7 @@ impl Builder for DefaultBuilder {
                 SimpleWordKind::Colon           => SimpleWord::Colon,
 
                 SimpleWordKind::CommandSubst(c) => SimpleWord::Subst(
-                    Box::new(ParameterSubstitution::Command(c))
+                    Box::new(ParameterSubstitution::Command(c.commands))
                 ),
 
                 SimpleWordKind::Subst(s) => {
@@ -711,7 +751,7 @@ impl Builder for DefaultBuilder {
                     let s = *s;
                     let subst = match s {
                         Len(p)                     => ParameterSubstitution::Len(p),
-                        Command(c)                 => ParameterSubstitution::Command(c),
+                        Command(c)                 => ParameterSubstitution::Command(c.commands),
                         Arith(a)                   => ParameterSubstitution::Arith(a),
                         Default(c, p, w)           => ParameterSubstitution::Default(c, p, map!(w)),
                         Assign(c, p, w)            => ParameterSubstitution::Assign(c, p, map!(w)),
@@ -819,7 +859,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
     }
 
     fn brace_group(&mut self,
-                   cmds: Vec<Self::Command>,
+                   cmds: CommandGroup<Self::Command>,
                    redirects: Vec<Self::Redirect>)
         -> ParseResult<Self::CompoundCommand, Self::Error>
     {
@@ -827,7 +867,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
     }
 
     fn subshell(&mut self,
-                cmds: Vec<Self::Command>,
+                cmds: CommandGroup<Self::Command>,
                 redirects: Vec<Self::Redirect>)
         -> ParseResult<Self::CompoundCommand, Self::Error>
     {
@@ -836,7 +876,7 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
 
     fn loop_command(&mut self,
                     kind: LoopKind,
-                    guard_body_pair: GuardBodyPair<Self::Command>,
+                    guard_body_pair: GuardBodyPairGroup<Self::Command>,
                     redirects: Vec<Self::Redirect>)
         -> ParseResult<Self::CompoundCommand, Self::Error>
     {

@@ -187,6 +187,29 @@ enum CompoundCmdKeyword {
     Subshell,
 }
 
+/// Used to configure when `Parser::command_group` stops parsing commands.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct CommandGroupDelimiters<'a, 'b, 'c> {
+    /// Any token which appears after a complete command separator (e.g. `;`, `&`, or a
+    /// newline) will be considered a delimeter for the command group.
+    pub reserved_tokens: &'a [Token],
+    /// Any `Literal` or `Name` token that matches any of these entries completely
+    /// *and* appear after a complete command will be considered a delimeter.
+    pub reserved_words: &'b [&'static str],
+    /// Any token which matches this provided set will be considered a delimeter.
+    pub exact_tokens: &'c [Token],
+}
+
+impl Default for CommandGroupDelimiters<'static, 'static, 'static> {
+    fn default() -> Self {
+        CommandGroupDelimiters {
+            reserved_tokens: &[],
+            reserved_words: &[],
+            exact_tokens: &[],
+        }
+    }
+}
+
 impl<I: Iterator<Item = Token>, B: Builder> Iterator for Parser<I, B> {
     type Item = ParseResult<B::Command, B::Error>;
 
@@ -1331,13 +1354,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             Redirect=B::Redirect,
             Error=B::Error> = &mut self.builder;
         let mut parser = Parser::with_token_iter_and_builder(tok_iter, b);
-
-        let mut cmds = Vec::new();
-        while let Some(c) = try!(parser.complete_command()) {
-            cmds.push(c);
-        }
-
-        Ok(SimpleWordKind::CommandSubst(cmds))
+        let cmd_subst = parser.command_group_internal(CommandGroupDelimiters::default());
+        Ok(SimpleWordKind::CommandSubst(try!(cmd_subst)))
     }
 
     /// Parses a parameters such as `$$`, `$1`, `$foo`, etc, or
@@ -1578,10 +1596,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Parses any number of sequential commands between the `do` and `done`
     /// reserved words. Each of the reserved words must be a literal token, and cannot be
     /// quoted or concatenated.
-    pub fn do_group(&mut self) -> ParseResult<Vec<B::Command>, B::Error> {
+    pub fn do_group(&mut self) -> ParseResult<builder::CommandGroup<B::Command>, B::Error> {
         let start_pos = self.iter.pos();
         try!(self.reserved_word(&[DO]).map_err(|_| self.make_unexpected_err()));
-        let result = try!(self.command_list(&[DONE], &[]));
+        let result = try!(self.command_group(CommandGroupDelimiters {
+            reserved_words: &[DONE],
+            .. Default::default()
+        }));
         try!(self.reserved_word(&[DONE])
              .or(Err(ParseError::IncompleteCmd(DO, start_pos, DONE, self.iter.pos()))));
         Ok(result)
@@ -1589,12 +1610,15 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses any number of sequential commands between balanced `{` and `}`
     /// reserved words. Each of the reserved words must be a literal token, and cannot be quoted.
-    pub fn brace_group(&mut self) -> ParseResult<Vec<B::Command>, B::Error> {
+    pub fn brace_group(&mut self) -> ParseResult<builder::CommandGroup<B::Command>, B::Error> {
         // CurlyClose must be encountered as a stand alone word,
         // even though it is represented as its own token
         let start_pos = self.iter.pos();
         try!(self.reserved_token(&[CurlyOpen]));
-        let cmds = try!(self.command_list(&[], &[CurlyClose]));
+        let cmds = try!(self.command_group(CommandGroupDelimiters {
+            reserved_tokens: &[CurlyClose],
+            .. Default::default()
+        }));
         try!(self.reserved_token(&[CurlyClose]).or(Err(ParseError::Unmatched(CurlyOpen, start_pos))));
         Ok(cmds)
     }
@@ -1602,36 +1626,28 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Parses any number of sequential commands between balanced `(` and `)`.
     ///
     /// It is considered an error if no commands are present inside the subshell.
-    pub fn subshell(&mut self) -> ParseResult<Vec<B::Command>, B::Error> {
+    pub fn subshell(&mut self) -> ParseResult<builder::CommandGroup<B::Command>, B::Error> {
         self.subshell_internal(false)
     }
 
     /// Like `Parser::subshell` but allows the caller to specify
     /// if an empty body constitutes an error or not.
-    fn subshell_internal(&mut self, empty_body_ok: bool) -> ParseResult<Vec<B::Command>, B::Error> {
+    fn subshell_internal(&mut self, empty_body_ok: bool)
+        -> ParseResult<builder::CommandGroup<B::Command>, B::Error>
+    {
         let start_pos = self.iter.pos();
         eat!(self, { ParenOpen => {} });
 
-        // Paren's are always special tokens, hence they aren't
-        // reserved words, and thus the `command_list` method doesn't apply.
-        let mut cmds = Vec::new();
-        loop {
-            let comments = self.linebreak();
-            if !comments.is_empty() {
-                try!(self.builder.comments(comments));
-            }
-
-            if let Some(&ParenClose) = self.iter.peek() { break; }
-            match try!(self.complete_command()) {
-                Some(c) => cmds.push(c),
-                None => break,
-            }
-        }
+        // Parens are always special tokens
+        let body = try!(self.command_group_internal(CommandGroupDelimiters {
+            exact_tokens: &[ParenClose],
+            .. Default::default()
+        }));
 
         match self.iter.peek() {
-            Some(&ParenClose) if empty_body_ok || !cmds.is_empty() => {
+            Some(&ParenClose) if empty_body_ok || !body.commands.is_empty() => {
                 self.iter.next();
-                Ok(cmds)
+                Ok(body)
             },
             Some(_) => Err(self.make_unexpected_err()),
             None => Err(ParseError::Unmatched(ParenOpen, start_pos)),
@@ -1716,7 +1732,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Since they are compound commands (and can have redirections applied to
     /// the entire loop) this method returns the relevant parts of the loop command,
     /// without constructing an AST node, it so that the caller can do so with redirections.
-    pub fn loop_command(&mut self) -> ParseResult<(builder::LoopKind, ast::GuardBodyPair<B::Command>), B::Error> {
+    pub fn loop_command(&mut self)
+        -> ParseResult<(builder::LoopKind, builder::GuardBodyPairGroup<B::Command>), B::Error>
+    {
         let start_pos = self.iter.pos();
         let kind = match try!(self.reserved_word(&[WHILE, UNTIL])
                               .map_err(|_| self.make_unexpected_err())) {
@@ -1724,9 +1742,12 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             UNTIL => builder::LoopKind::Until,
             _ => unreachable!(),
         };
-        let guard = try!(self.command_list(&[DO], &[]));
+        let guard = try!(self.command_group(CommandGroupDelimiters {
+            reserved_words: &[DO],
+            .. Default::default()
+        }));
         match self.peek_reserved_word(&[DO]) {
-            Some(_) => Ok((kind, ast::GuardBodyPair {
+            Some(_) => Ok((kind, builder::GuardBodyPairGroup {
                 guard: guard,
                 body: try!(self.do_group())
             })),
@@ -1753,11 +1774,17 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         let mut conditionals = Vec::new();
         loop {
-            let guard = try!(self.command_list(&[THEN], &[]));
+            let guard = try!(self.command_group(CommandGroupDelimiters {
+                reserved_words: &[THEN],
+                .. Default::default()
+            }));
             try!(self.reserved_word(&[THEN]).map_err(missing_then!()));
 
-            let body = try!(self.command_list(&[ELIF, ELSE, FI], &[]));
-            conditionals.push(ast::GuardBodyPair {
+            let body = try!(self.command_group(CommandGroupDelimiters {
+                reserved_words: &[ELIF, ELSE, FI],
+                .. Default::default()
+            }));
+            conditionals.push(builder::GuardBodyPairGroup {
                 guard: guard,
                 body: body,
             });
@@ -1765,7 +1792,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             let els = match try!(self.reserved_word(&[ELIF, ELSE, FI]).map_err(missing_fi!())) {
                 ELIF => continue,
                 ELSE => {
-                    let els = try!(self.command_list(&[FI], &[]));
+                    let els = try!(self.command_group(CommandGroupDelimiters {
+                        reserved_words: &[FI],
+                        .. Default::default()
+                    }));
                     try!(self.reserved_word(&[FI]).map_err(missing_fi!()));
                     Some(els)
                 },
@@ -1928,24 +1958,11 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             }
 
             let pattern_comment = self.newline();
-
-            // DSemi's are always special tokens, hence they aren't
-            // reserved words, and thus the `command_list` method doesn't apply.
-            let mut cmds = Vec::new();
-            let mut post_body_comments = vec!();
-            loop {
-                let leading_comments = self.linebreak();
-
-                // Make sure we check for both delimiters
-                if Some(&DSemi) == self.iter.peek() || self.peek_reserved_word(&[ESAC]).is_some() {
-                    // Make sure we don't lose the captured comments if there are no body
-                    debug_assert!(post_body_comments.is_empty());
-                    post_body_comments = leading_comments;
-                    break;
-                }
-
-                cmds.push(try!(self.complete_command_with_leading_comments(leading_comments)));
-            }
+            let body = try!(self.command_group_internal(CommandGroupDelimiters {
+                reserved_words: &[ESAC],
+                reserved_tokens: &[],
+                exact_tokens: &[DSemi]
+            }));
 
             let (may_have_more_arms, arm_comment) = if Some(&DSemi) == self.iter.peek() {
                 self.iter.next();
@@ -1960,8 +1977,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     pattern_alternatives: patterns,
                     pattern_comment: pattern_comment,
                 },
-                body: cmds,
-                post_body_comments: post_body_comments,
+                body: body,
                 arm_comment: arm_comment,
             });
 
@@ -2079,7 +2095,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             } else if Some(&ParenOpen) == self.iter.peek() {
                 // Otherwise it is possible for there to be a subshell as the body
                 let subshell = try!(self.subshell_internal(true));
-                if subshell.is_empty() {
+                if subshell.commands.is_empty() && subshell.trailing_comments.is_empty() {
                     // Case like `function foo () ...`
                     None
                 } else {
@@ -2280,32 +2296,61 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         }
     }
 
-    /// Parses commands until a reserved word or reserved token (or EOF)
-    /// is reached, without consuming the reserved word.
+    /// Parses commands until a configured delimeter (or EOF)
+    /// is reached, without consuming the token or reserved word.
     ///
-    /// The reserved word/token **must** appear after a complete command
+    /// Any reserved word/token **must** appear after a complete command
     /// separator (e.g. `;`, `&`, or a newline), otherwise it will be
     /// parsed as part of the command.
     ///
     /// It is considered an error if no commands are present.
-    pub fn command_list(&mut self, words: &[&str], tokens: &[Token]) -> ParseResult<Vec<B::Command>, B::Error> {
+    pub fn command_group(&mut self, cfg: CommandGroupDelimiters)
+        -> ParseResult<builder::CommandGroup<B::Command>, B::Error>
+    {
+        let group = try!(self.command_group_internal(cfg));
+        if group.commands.is_empty() {
+            Err(self.make_unexpected_err())
+        } else {
+            Ok(group)
+        }
+    }
+
+    /// Like `compound_list`, but allows for the list of commands to be empty.
+    fn command_group_internal(&mut self, cfg: CommandGroupDelimiters)
+        -> ParseResult<builder::CommandGroup<B::Command>, B::Error>
+    {
+        let found_delim = |slf: &mut Parser<_, _>| {
+            let found_exact = ! cfg.exact_tokens.is_empty() && slf.iter.peek()
+                    .map(|peeked| cfg.exact_tokens.iter().any(|tok| tok == peeked))
+                    .unwrap_or(false);
+
+            found_exact
+                || slf.peek_reserved_word(cfg.reserved_words).is_some()
+                || slf.peek_reserved_token(cfg.reserved_tokens).is_some()
+        };
+
         let mut cmds = Vec::new();
+        let mut trailing_comments = Vec::new();
         loop {
-            if self.peek_reserved_word(words).is_some() || self.peek_reserved_token(tokens).is_some() {
+            if found_delim(self) {
                 break;
             }
 
-            match try!(self.complete_command()) {
-                Some(c) => cmds.push(c),
-                None => break,
+            let leading_comments = self.linebreak();
+
+            if found_delim(self) || self.iter.peek().is_none() {
+                debug_assert!(trailing_comments.is_empty());
+                trailing_comments = leading_comments;
+                break;
             }
+
+            cmds.push(try!(self.complete_command_with_leading_comments(leading_comments)));
         }
 
-        if cmds.is_empty() {
-            Err(self.make_unexpected_err())
-        } else {
-            Ok(cmds)
-        }
+        Ok(builder::CommandGroup {
+            commands: cmds,
+            trailing_comments: trailing_comments,
+        })
     }
 
     /// Parses the body of any arbitrary arithmetic expression, e.g. `x + $y << 5`.
@@ -2686,6 +2731,10 @@ mod tests {
         })
     }
 
+    fn cmd(cmd: &str) -> TopLevelCommand {
+        cmd_args(cmd, &[])
+    }
+
     fn cmd_args(cmd: &str, args: &[&str]) -> TopLevelCommand {
         TopLevelCommand(List(CommandList {
             first: ListableCommand::Single(Simple(cmd_args_simple(cmd, args))),
@@ -2747,5 +2796,25 @@ mod tests {
         let mut p = make_parser("test       ");
         p.word_preserve_trailing_whitespace().unwrap();
         assert!(p.iter.next().is_some());
+    }
+
+    #[test]
+    fn test_parameter_substitution_command_can_contain_comments() {
+        let param_subst = builder::SimpleWordKind::Subst(Box::new(
+            builder::ParameterSubstitutionKind::Command(builder::CommandGroup {
+                commands: vec!(cmd("foo")),
+                trailing_comments: vec!(Newline(Some("#comment".into()))),
+            })
+        ));
+        assert_eq!(Ok(param_subst), make_parser("$(foo\n#comment\n)").parameter_raw());
+    }
+
+    #[test]
+    fn test_backticked_command_can_contain_comments() {
+        let cmd_subst = builder::SimpleWordKind::CommandSubst(builder::CommandGroup {
+            commands: vec!(cmd("foo")),
+            trailing_comments: vec!(Newline(Some("#comment".into()))),
+        });
+        assert_eq!(Ok(cmd_subst), make_parser("`foo\n#comment\n`").backticked_raw());
     }
 }

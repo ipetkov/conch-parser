@@ -1770,8 +1770,11 @@ fn test_redirect_list_rejects_non_fd_words() {
 
 #[test]
 fn test_do_group_valid() {
-    let mut p = make_parser("do foo\nbar; baz; done");
-    let correct = vec!(cmd("foo"), cmd("bar"), cmd("baz"));
+    let mut p = make_parser("do foo\nbar; baz\n#comment\n done");
+    let correct = CommandGroup {
+        commands: vec!(cmd("foo"), cmd("bar"), cmd("baz")),
+        trailing_comments: vec!(Newline(Some("#comment".into()))),
+    };
     assert_eq!(correct, p.do_group().unwrap());
 }
 
@@ -1784,7 +1787,10 @@ fn test_do_group_invalid_missing_separator() {
 #[test]
 fn test_do_group_valid_keyword_delimited_by_separator() {
     let mut p = make_parser("do foo done; done");
-    let correct = vec!(cmd_args("foo", &["done"]));
+    let correct = CommandGroup {
+        commands: vec!(cmd_args("foo", &["done"])),
+        trailing_comments: vec!(),
+    };
     assert_eq!(correct, p.do_group().unwrap());
 }
 
@@ -1857,13 +1863,19 @@ fn test_do_group_should_recognize_literals_and_names() {
 #[test]
 fn test_do_group_invalid_missing_body() {
     let mut p = make_parser("do\ndone");
-    assert_eq!(Err(IncompleteCmd("do", src(0,1,1), "done", src(7,2,5))), p.do_group());
+    assert_eq!(Err(Unexpected(Token::Name("done".into()), src(3,2,1))), p.do_group());
 }
 
 #[test]
 fn test_brace_group_valid() {
-    let mut p = make_parser("{ foo\nbar; baz; }");
-    let correct = vec!(cmd("foo"), cmd("bar"), cmd("baz"));
+    let mut p = make_parser("{ foo\nbar; baz\n#comment1\n#comment2\n }");
+    let correct = CommandGroup {
+        commands: vec!(cmd("foo"), cmd("bar"), cmd("baz")),
+        trailing_comments: vec!(
+            Newline(Some("#comment1".into())),
+            Newline(Some("#comment2".into())),
+        ),
+    };
     assert_eq!(correct, p.brace_group().unwrap());
 }
 
@@ -1891,7 +1903,10 @@ fn test_brace_group_valid_end_must_be_whitespace_and_separator_delimited() {
 #[test]
 fn test_brace_group_valid_keyword_delimited_by_separator() {
     let mut p = make_parser("{ foo }; }");
-    let correct = vec!(cmd_args("foo", &["}"]));
+    let correct = CommandGroup {
+        commands: vec!(cmd_args("foo", &["}"])),
+        trailing_comments: vec!(),
+    };
     assert_eq!(correct, p.brace_group().unwrap());
 }
 
@@ -1925,21 +1940,32 @@ fn test_brace_group_invalid_quoted() {
 
 #[test]
 fn test_brace_group_invalid_missing_body() {
-    assert_eq!(Err(Unmatched(Token::CurlyOpen, src(0, 1, 1))), make_parser("{\n}").brace_group());
+    assert_eq!(Err(Unexpected(Token::CurlyClose, src(2, 2, 1))), make_parser("{\n}").brace_group());
 }
 
 #[test]
 fn test_subshell_valid() {
-    let mut p = make_parser("( foo\nbar; baz; )");
-    let correct = vec!(cmd("foo"), cmd("bar"), cmd("baz"));
+    let mut p = make_parser("( foo\nbar; baz\n#comment\n )");
+    let correct = CommandGroup {
+        commands: vec!(cmd("foo"), cmd("bar"), cmd("baz")),
+        trailing_comments: vec!(Newline(Some("#comment".into()))),
+    };
     assert_eq!(correct, p.subshell().unwrap());
 }
 
 #[test]
 fn test_subshell_valid_separator_not_needed() {
-    let mut p = make_parser("( foo )");
-    let correct = vec!(cmd("foo"));
-    assert_eq!(correct, p.subshell().unwrap());
+    let correct = CommandGroup {
+        commands: vec!(cmd("foo")),
+        trailing_comments: vec!(),
+    };
+    assert_eq!(correct, make_parser("( foo )").subshell().unwrap());
+
+    let correct_with_comment = CommandGroup {
+        commands: vec!(cmd("foo")),
+        trailing_comments: vec!(Newline(Some("#comment".into()))),
+    };
+    assert_eq!(correct_with_comment, make_parser("( foo\n#comment\n )").subshell().unwrap());
 }
 
 #[test]
@@ -1987,11 +2013,17 @@ fn test_subshell_invalid_missing_body() {
 
 #[test]
 fn test_loop_command_while_valid() {
-    let mut p = make_parser("while guard1; guard2; do foo\nbar; baz; done");
-    let (until, GuardBodyPair { guard, body }) = p.loop_command().unwrap();
+    let mut p = make_parser("while guard1; guard2;\n#guard_comment\n do foo\nbar; baz\n#body_comment\n done");
+    let (until, GuardBodyPairGroup { guard, body }) = p.loop_command().unwrap();
 
-    let correct_guard = vec!(cmd("guard1"), cmd("guard2"));
-    let correct_body = vec!(cmd("foo"), cmd("bar"), cmd("baz"));
+    let correct_guard = CommandGroup {
+        commands: vec!(cmd("guard1"), cmd("guard2")),
+        trailing_comments: vec!(Newline(Some("#guard_comment".into()))),
+    };
+    let correct_body = CommandGroup {
+        commands: vec!(cmd("foo"), cmd("bar"), cmd("baz")),
+        trailing_comments: vec!(Newline(Some("#body_comment".into()))),
+    };
 
     assert_eq!(until, builder::LoopKind::While);
     assert_eq!(correct_guard, guard);
@@ -2000,11 +2032,17 @@ fn test_loop_command_while_valid() {
 
 #[test]
 fn test_loop_command_until_valid() {
-    let mut p = make_parser("until guard1\n guard2\n do foo\nbar; baz; done");
-    let (until, GuardBodyPair { guard, body }) = p.loop_command().unwrap();
+    let mut p = make_parser("until guard1; guard2;\n#guard_comment\n do foo\nbar; baz\n#body_comment\n done");
+    let (until, GuardBodyPairGroup { guard, body }) = p.loop_command().unwrap();
 
-    let correct_guard = vec!(cmd("guard1"), cmd("guard2"));
-    let correct_body = vec!(cmd("foo"), cmd("bar"), cmd("baz"));
+    let correct_guard = CommandGroup {
+        commands: vec!(cmd("guard1"), cmd("guard2")),
+        trailing_comments: vec!(Newline(Some("#guard_comment".into()))),
+    };
+    let correct_body = CommandGroup {
+        commands: vec!(cmd("foo"), cmd("bar"), cmd("baz")),
+        trailing_comments: vec!(Newline(Some("#body_comment".into()))),
+    };
 
     assert_eq!(until, builder::LoopKind::Until);
     assert_eq!(correct_guard, guard);
@@ -2113,89 +2151,104 @@ fn test_loop_command_should_recognize_literals_and_names() {
 
 #[test]
 fn test_if_command_valid_with_else() {
-    let guard1 = cmd_from_simple(SimpleCommand {
-        vars: vec!(),
-        cmd: Some((word("guard1"), vec!())),
-        io: vec!(Redirect::Read(None, word("in"))),
-    });
+    let guard1 = cmd("guard1");
+    let guard2 = cmd("guard2");
+    let guard3 = cmd("guard3");
 
-    let guard2 = cmd_from_simple(SimpleCommand {
-        vars: vec!(),
-        cmd: Some((word("guard2"), vec!())),
-        io: vec!(Redirect::Write(None, word("out"))),
-    });
-
-    let guard3 = cmd_from_simple(SimpleCommand {
-        vars: vec!(),
-        cmd: Some((word("guard3"), vec!())),
-        io: vec!(),
-    });
-
-    let body1 = cmd_from_simple(SimpleCommand {
-        vars: vec!(),
-        cmd: Some((word("body1"), vec!())),
-        io: vec!(Redirect::Clobber(None, word("clob"))),
-    });
-
-    let body2 = cmd_from_simple(SimpleCommand {
-        vars: vec!(),
-        cmd: Some((word("body2"), vec!())),
-        io: vec!(Redirect::Append(Some(2), word("app"))),
-    });
+    let body1 = cmd("body1");
+    let body2 = cmd("body2");
 
     let els = cmd("else");
 
     let correct = builder::IfFragments {
         conditionals: vec!(
-            GuardBodyPair { guard: vec!(guard1, guard2), body: vec!(body1) },
-            GuardBodyPair { guard: vec!(guard3), body: vec!(body2) },
+            GuardBodyPairGroup {
+                guard: builder::CommandGroup {
+                    commands: vec!(guard1, guard2),
+                    trailing_comments: vec!(Newline(Some("#guard_comment_a".into()))),
+                },
+                body: builder::CommandGroup {
+                    commands: vec!(body1),
+                    trailing_comments: vec!(Newline(Some("#body_comment_a".into()))),
+                },
+            },
+            GuardBodyPairGroup {
+                guard: builder::CommandGroup {
+                    commands: vec!(guard3),
+                    trailing_comments: vec!(Newline(Some("#guard_comment_b".into()))),
+                },
+                body: builder::CommandGroup {
+                    commands: vec!(body2),
+                    trailing_comments: vec!(Newline(Some("#body_comment_b".into()))),
+                },
+            },
         ),
-        else_branch: Some(vec!(els)),
+        else_branch: Some(builder::CommandGroup {
+            commands: vec!(els),
+            trailing_comments: vec!(Newline(Some("#else_comment".into()))),
+        }),
     };
-    let mut p = make_parser("if guard1 <in; >out guard2; then body1 >|clob\n elif guard3; then body2 2>>app; else else; fi");
+    let mut p = make_parser("\
+        if guard1; guard2;
+        #guard_comment_a
+        then body1
+        #body_comment_a
+        elif guard3;
+        #guard_comment_b
+        then body2;
+        #body_comment_b
+        else else;
+        #else_comment
+        fi
+    ");
     assert_eq!(correct, p.if_command().unwrap());
 }
 
 #[test]
 fn test_if_command_valid_without_else() {
-    let guard1 = cmd_from_simple(SimpleCommand {
-        vars: vec!(),
-        cmd: Some((word("guard1"), vec!())),
-        io: vec!(Redirect::Read(None, word("in"))),
-    });
+    let guard1 = cmd("guard1");
+    let guard2 = cmd("guard2");
+    let guard3 = cmd("guard3");
 
-    let guard2 = cmd_from_simple(SimpleCommand {
-        vars: vec!(),
-        cmd: Some((word("guard2"), vec!())),
-        io: vec!(Redirect::Write(None, word("out"))),
-    });
-
-    let guard3 = cmd_from_simple(SimpleCommand {
-        vars: vec!(),
-        cmd: Some((word("guard3"), vec!())),
-        io: vec!(),
-    });
-
-    let body1 = cmd_from_simple(SimpleCommand {
-        vars: vec!(),
-        cmd: Some((word("body1"), vec!())),
-        io: vec!(Redirect::Clobber(None, word("clob"))),
-    });
-
-    let body2 = cmd_from_simple(SimpleCommand {
-        vars: vec!(),
-        cmd: Some((word("body2"), vec!())),
-        io: vec!(Redirect::Append(Some(2), word("app"))),
-    });
+    let body1 = cmd("body1");
+    let body2 = cmd("body2");
 
     let correct = builder::IfFragments {
         conditionals: vec!(
-            GuardBodyPair { guard: vec!(guard1, guard2), body: vec!(body1) },
-            GuardBodyPair { guard: vec!(guard3), body: vec!(body2) },
+            GuardBodyPairGroup {
+                guard: builder::CommandGroup {
+                    commands: vec!(guard1, guard2),
+                    trailing_comments: vec!(Newline(Some("#guard_comment_a".into()))),
+                },
+                body: builder::CommandGroup {
+                    commands: vec!(body1),
+                    trailing_comments: vec!(Newline(Some("#body_comment_a".into()))),
+                },
+            },
+            GuardBodyPairGroup {
+                guard: builder::CommandGroup {
+                    commands: vec!(guard3),
+                    trailing_comments: vec!(Newline(Some("#guard_comment_b".into()))),
+                },
+                body: builder::CommandGroup {
+                    commands: vec!(body2),
+                    trailing_comments: vec!(Newline(Some("#body_comment_b".into()))),
+                },
+            },
         ),
         else_branch: None,
     };
-    let mut p = make_parser("if guard1 <in; >out guard2; then body1 >|clob\n elif guard3; then body2 2>>app; fi");
+    let mut p = make_parser("\
+        if guard1; guard2;
+        #guard_comment_a
+        then body1
+        #body_comment_a
+        elif guard3;
+        #guard_comment_b
+        then body2;
+        #body_comment_b
+        fi
+    ");
     assert_eq!(correct, p.if_command().unwrap());
 }
 
@@ -2345,7 +2398,17 @@ fn test_braces_literal_unless_brace_group_expected() {
 
 #[test]
 fn test_for_command_valid_with_words() {
-    let mut p = make_parser("for var #var comment\n#prew1\n#prew2\nin one two three #word comment\n#precmd1\n#precmd2\ndo echo $var; done");
+    let mut p = make_parser("\
+    for var #var comment
+    #prew1
+    #prew2
+    in one two three #word comment
+    #precmd1
+    #precmd2
+    do echo;
+    #body_comment
+    done
+    ");
     assert_eq!(p.for_command(), Ok(ForFragments {
         var: "var".into(),
         var_comment: Some(Newline(Some("#var comment".into()))),
@@ -2365,16 +2428,23 @@ fn test_for_command_valid_with_words() {
             Newline(Some("#precmd1".into())),
             Newline(Some("#precmd2".into())),
         ),
-        body: vec!(cmd_from_simple(SimpleCommand {
-            vars: vec!(), io: vec!(),
-            cmd: Some((word("echo"), vec!(word_param(Parameter::Var("var".into())))))
-        })),
+        body: CommandGroup {
+            commands: vec!(cmd("echo")),
+            trailing_comments: vec!(Newline(Some("#body_comment".into()))),
+        },
     }));
 }
 
 #[test]
 fn test_for_command_valid_without_words() {
-    let mut p = make_parser("for var #var comment\n#w1\n#w2\ndo echo $var; done");
+    let mut p = make_parser("\
+    for var #var comment
+    #w1
+    #w2
+    do echo;
+    #body_comment
+    done
+    ");
     assert_eq!(p.for_command(), Ok(ForFragments {
         var: "var".into(),
         var_comment: Some(Newline(Some("#var comment".into()))),
@@ -2383,10 +2453,10 @@ fn test_for_command_valid_without_words() {
             Newline(Some("#w1".into())),
             Newline(Some("#w2".into())),
         ),
-        body: vec!(cmd_from_simple(SimpleCommand {
-            vars: vec!(), io: vec!(),
-            cmd: Some((word("echo"), vec!(word_param(Parameter::Var("var".into())))))
-        })),
+        body: CommandGroup {
+            commands: vec!(cmd("echo")),
+            trailing_comments: vec!(Newline(Some("#body_comment".into()))),
+        },
     }));
 }
 
@@ -2816,8 +2886,10 @@ fn test_case_command_valid() {
                     pattern_alternatives: vec!(word("hello"), word("goodbye")),
                     pattern_comment: None,
                 },
-                body: vec!(cmd_args("echo", &["greeting"])),
-                post_body_comments: vec!(),
+                body: builder::CommandGroup {
+                    commands: vec!(cmd_args("echo", &["greeting"])),
+                    trailing_comments: vec!(),
+                },
                 arm_comment: None,
             },
             builder::CaseArm {
@@ -2826,8 +2898,10 @@ fn test_case_command_valid() {
                     pattern_alternatives: vec!(word("world")),
                     pattern_comment: None,
                 },
-                body: vec!(cmd_args("echo", &["noun"])),
-                post_body_comments: vec!(),
+                body: builder::CommandGroup {
+                    commands: vec!(cmd_args("echo", &["noun"])),
+                    trailing_comments: vec!(),
+                },
                 arm_comment: None,
             },
         ),
@@ -2871,11 +2945,13 @@ fn test_case_command_valid_with_comments() {
                     pattern_alternatives: vec!(word("hello"), word("goodbye")),
                     pattern_comment: Some(Newline(Some(String::from("#pat_a")))),
                 },
-                body: vec!(cmd_args("echo", &["greeting"])),
-                post_body_comments: vec!(
-                    Newline(None),
-                    Newline(Some(String::from("#post_body_a")))
-                ),
+                body: builder::CommandGroup {
+                    commands: vec!(cmd_args("echo", &["greeting"])),
+                    trailing_comments: vec!(
+                        Newline(None),
+                        Newline(Some(String::from("#post_body_a")))
+                    ),
+                },
                 arm_comment: Some(Newline(Some(String::from("#arm_a")))),
             },
             builder::CaseArm {
@@ -2887,8 +2963,10 @@ fn test_case_command_valid_with_comments() {
                     pattern_alternatives: vec!(word("world")),
                     pattern_comment: Some(Newline(Some(String::from("#pat_b")))),
                 },
-                body: vec!(cmd_args("echo", &["noun"])),
-                post_body_comments: vec!(),
+                body: builder::CommandGroup {
+                    commands: vec!(cmd_args("echo", &["noun"])),
+                    trailing_comments: vec!(),
+                },
                 arm_comment: Some(Newline(Some(String::from("#arm_b")))),
             },
         ),
