@@ -2025,7 +2025,7 @@ fn test_loop_command_while_valid() {
         trailing_comments: vec!(Newline(Some("#body_comment".into()))),
     };
 
-    assert_eq!(until, builder::LoopKind::While);
+    assert_eq!(until, LoopKind::While);
     assert_eq!(correct_guard, guard);
     assert_eq!(correct_body, body);
 }
@@ -2044,7 +2044,7 @@ fn test_loop_command_until_valid() {
         trailing_comments: vec!(Newline(Some("#body_comment".into()))),
     };
 
-    assert_eq!(until, builder::LoopKind::Until);
+    assert_eq!(until, LoopKind::Until);
     assert_eq!(correct_guard, guard);
     assert_eq!(correct_body, body);
 }
@@ -2160,30 +2160,30 @@ fn test_if_command_valid_with_else() {
 
     let els = cmd("else");
 
-    let correct = builder::IfFragments {
+    let correct = IfFragments {
         conditionals: vec!(
             GuardBodyPairGroup {
-                guard: builder::CommandGroup {
+                guard: CommandGroup {
                     commands: vec!(guard1, guard2),
                     trailing_comments: vec!(Newline(Some("#guard_comment_a".into()))),
                 },
-                body: builder::CommandGroup {
+                body: CommandGroup {
                     commands: vec!(body1),
                     trailing_comments: vec!(Newline(Some("#body_comment_a".into()))),
                 },
             },
             GuardBodyPairGroup {
-                guard: builder::CommandGroup {
+                guard: CommandGroup {
                     commands: vec!(guard3),
                     trailing_comments: vec!(Newline(Some("#guard_comment_b".into()))),
                 },
-                body: builder::CommandGroup {
+                body: CommandGroup {
                     commands: vec!(body2),
                     trailing_comments: vec!(Newline(Some("#body_comment_b".into()))),
                 },
             },
         ),
-        else_branch: Some(builder::CommandGroup {
+        else_branch: Some(CommandGroup {
             commands: vec!(els),
             trailing_comments: vec!(Newline(Some("#else_comment".into()))),
         }),
@@ -2213,24 +2213,24 @@ fn test_if_command_valid_without_else() {
     let body1 = cmd("body1");
     let body2 = cmd("body2");
 
-    let correct = builder::IfFragments {
+    let correct = IfFragments {
         conditionals: vec!(
             GuardBodyPairGroup {
-                guard: builder::CommandGroup {
+                guard: CommandGroup {
                     commands: vec!(guard1, guard2),
                     trailing_comments: vec!(Newline(Some("#guard_comment_a".into()))),
                 },
-                body: builder::CommandGroup {
+                body: CommandGroup {
                     commands: vec!(body1),
                     trailing_comments: vec!(Newline(Some("#body_comment_a".into()))),
                 },
             },
             GuardBodyPairGroup {
-                guard: builder::CommandGroup {
+                guard: CommandGroup {
                     commands: vec!(guard3),
                     trailing_comments: vec!(Newline(Some("#guard_comment_b".into()))),
                 },
-                body: builder::CommandGroup {
+                body: CommandGroup {
                     commands: vec!(body2),
                     trailing_comments: vec!(Newline(Some("#body_comment_b".into()))),
                 },
@@ -2875,30 +2875,30 @@ fn test_function_declaration_should_recognize_literals_and_names_for_fn_keyword(
 
 #[test]
 fn test_case_command_valid() {
-    let correct = builder::CaseFragments {
+    let correct = CaseFragments {
         word: word("foo"),
         post_word_comments: vec!(),
         in_comment: None,
         arms: vec!(
-            builder::CaseArm {
-                patterns: builder::CasePatternFragments {
+            CaseArm {
+                patterns: CasePatternFragments {
                     pre_pattern_comments: vec!(),
                     pattern_alternatives: vec!(word("hello"), word("goodbye")),
                     pattern_comment: None,
                 },
-                body: builder::CommandGroup {
+                body: CommandGroup {
                     commands: vec!(cmd_args("echo", &["greeting"])),
                     trailing_comments: vec!(),
                 },
                 arm_comment: None,
             },
-            builder::CaseArm {
-                patterns: builder::CasePatternFragments {
+            CaseArm {
+                patterns: CasePatternFragments {
                     pre_pattern_comments: vec!(),
                     pattern_alternatives: vec!(word("world")),
                     pattern_comment: None,
                 },
-                body: builder::CommandGroup {
+                body: CommandGroup {
                     commands: vec!(cmd_args("echo", &["noun"])),
                     trailing_comments: vec!(),
                 },
@@ -2926,7 +2926,7 @@ fn test_case_command_valid() {
 
 #[test]
 fn test_case_command_valid_with_comments() {
-    let correct = builder::CaseFragments {
+    let correct = CaseFragments {
         word: word("foo"),
         post_word_comments: vec!(
             Newline(Some(String::from("#word_comment"))),
@@ -2936,8 +2936,8 @@ fn test_case_command_valid_with_comments() {
         ),
         in_comment: Some(Newline(Some(String::from("#in_comment")))),
         arms: vec!(
-            builder::CaseArm {
-                patterns: builder::CasePatternFragments {
+            CaseArm {
+                patterns: CasePatternFragments {
                     pre_pattern_comments: vec!(
                         Newline(None),
                         Newline(Some(String::from("#pre_pat_a"))),
@@ -2945,7 +2945,7 @@ fn test_case_command_valid_with_comments() {
                     pattern_alternatives: vec!(word("hello"), word("goodbye")),
                     pattern_comment: Some(Newline(Some(String::from("#pat_a")))),
                 },
-                body: builder::CommandGroup {
+                body: CommandGroup {
                     commands: vec!(cmd_args("echo", &["greeting"])),
                     trailing_comments: vec!(
                         Newline(None),
@@ -2954,8 +2954,8 @@ fn test_case_command_valid_with_comments() {
                 },
                 arm_comment: Some(Newline(Some(String::from("#arm_a")))),
             },
-            builder::CaseArm {
-                patterns: builder::CasePatternFragments {
+            CaseArm {
+                patterns: CasePatternFragments {
                     pre_pattern_comments: vec!(
                         Newline(None),
                         Newline(Some(String::from("#pre_pat_b"))),
@@ -2963,7 +2963,7 @@ fn test_case_command_valid_with_comments() {
                     pattern_alternatives: vec!(word("world")),
                     pattern_comment: Some(Newline(Some(String::from("#pat_b")))),
                 },
-                body: builder::CommandGroup {
+                body: CommandGroup {
                     commands: vec!(cmd_args("echo", &["noun"])),
                     trailing_comments: vec!(),
                 },
@@ -3008,7 +3008,7 @@ fn test_case_command_valid_with_comments() {
 
 #[test]
 fn test_case_command_valid_with_comments_no_body() {
-    let correct = builder::CaseFragments {
+    let correct = CaseFragments {
         word: word("foo"),
         post_word_comments: vec!(
             Newline(Some(String::from("#word_comment"))),
@@ -4774,5 +4774,5 @@ fn ensure_parse_errors_are_send_and_sync() {
 #[test]
 fn ensure_parser_could_be_send_and_sync() {
     fn send_and_sync<T: Send + Sync>() {}
-    send_and_sync::<Parser<::std::vec::IntoIter<Token>, builder::DefaultBuilder>>();
+    send_and_sync::<Parser<::std::vec::IntoIter<Token>, DefaultBuilder>>();
 }
