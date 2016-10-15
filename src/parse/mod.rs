@@ -3,11 +3,14 @@
 use std::convert::From;
 use std::error::Error;
 use std::fmt;
+use std::mem;
 use std::str::FromStr;
+
 use ast;
 use ast::builder::{self, Builder, SimpleWordKind};
 use ast::builder::ComplexWordKind::{self, Concat, Single};
 use ast::builder::WordKind::{self, DoubleQuoted, Simple, SingleQuoted};
+use self::iter::{PeekableIterator, PositionIterator, TokenIter, TokenIterator, TokenIterWrapper};
 use token::Token;
 use token::Token::*;
 
@@ -286,7 +289,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Iterator for Parser<I, B> {
 /// multi-char tokens, as long as it is aware of the implications.
 #[derive(Debug)]
 pub struct Parser<I: Iterator<Item = Token>, B: Builder> {
-    iter: iter::TokenIter<I>,
+    iter: TokenIterWrapper<I>,
     builder: B,
 }
 
@@ -371,17 +374,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Creates a new Parser from a Token iterator and provided AST builder.
     pub fn with_builder(iter: I, builder: B) -> Parser<I, B> {
         Parser {
-            iter: iter::TokenIter::new(iter),
-            builder: builder,
-        }
-    }
-
-    /// Creates a new Parser from a TokenIter and provided AST builder.
-    /// Useful for when we have a collection of tokens which might not be contiguous
-    /// but we don't want to lose the position information.
-    fn with_token_iter_and_builder(iter: iter::TokenIter<I>, builder: B) -> Parser<I, B> {
-        Parser {
-            iter: iter,
+            iter: TokenIterWrapper::Regular(TokenIter::new(iter)),
             builder: builder,
         }
     }
@@ -810,7 +803,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             }
         }
 
-        let mut iter = iter::TokenIter::new(delim_tokens.into_iter());
+        let mut iter = TokenIter::new(delim_tokens.into_iter());
         let mut quoted = false;
         let mut delim = String::new();
         loop {
@@ -1003,27 +996,15 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             let body = heredoc.into_iter().flat_map(|(t, _)| t).collect::<Vec<_>>();
             Single(Simple(SimpleWordKind::Literal(concat_tokens(&body))))
         } else {
-            let mut tok_iter = iter::TokenIter::with_position(::std::iter::empty(), heredoc_start_pos);
+            let mut tok_iter = TokenIter::with_position(::std::iter::empty(), heredoc_start_pos);
             while let Some((line, pos)) = heredoc.pop() {
                 tok_iter.backup_buffered_tokens(line, pos);
             }
 
-            // Dodge an "ICE": If we don't erase the type of the builder, the type of the parser
-            // below will will be of type Parser<_, &mut B>, whose methods that create a sub-parser
-            // create a ones whose type will be Parser<_, &mut &mut B>, ad infinitum, causing rustc
-            // to overflow its stack. By erasing the builder's type the sub-parser's type is always
-            // fixed and rustc will remain happy :)
-            let b: &mut Builder<
-                Command=B::Command,
-                CommandList=B::CommandList,
-                ListableCommand=B::ListableCommand,
-                PipeableCommand=B::PipeableCommand,
-                CompoundCommand=B::CompoundCommand,
-                Word=B::Word,
-                Redirect=B::Redirect,
-                Error=B::Error> = &mut self.builder;
-            let mut parser = Parser::with_token_iter_and_builder(tok_iter, b);
-            let mut body = try!(parser.word_interpolated_raw(None, heredoc_start_pos));
+            let mut tok_backup = TokenIterWrapper::Buffered(tok_iter);
+            mem::swap(&mut self.iter, &mut tok_backup);
+            let mut body = try!(self.word_interpolated_raw(None, heredoc_start_pos));
+            mem::replace(&mut self.iter, tok_backup);
 
             if body.len() > 1 {
                 Concat(body.into_iter().map(Simple).collect())
@@ -1339,22 +1320,12 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             .map_err(|e| ParseError::Unmatched(e.0, e.1))
         );
 
-        // Dodge an "ICE": If we don't erase the type of the builder, the type of the parser
-        // below will will be of type Parser<_, &mut B>, whose methods that create a sub-parser
-        // create a ones whose type will be Parser<_, &mut &mut B>, ad infinitum, causing rustc
-        // to overflow its stack. By erasing the builder's type the sub-parser's type is always
-        // fixed and rustc will remain happy :)
-        let b: &mut Builder<
-            Command=B::Command,
-            CommandList=B::CommandList,
-            ListableCommand=B::ListableCommand,
-            PipeableCommand=B::PipeableCommand,
-            CompoundCommand=B::CompoundCommand,
-            Word=B::Word,
-            Redirect=B::Redirect,
-            Error=B::Error> = &mut self.builder;
-        let mut parser = Parser::with_token_iter_and_builder(tok_iter, b);
-        let cmd_subst = parser.command_group_internal(CommandGroupDelimiters::default());
+        let mut tok_backup = TokenIterWrapper::Buffered(tok_iter);
+
+        mem::swap(&mut self.iter, &mut tok_backup);
+        let cmd_subst = self.command_group_internal(CommandGroupDelimiters::default());
+        mem::replace(&mut self.iter, tok_backup);
+
         Ok(SimpleWordKind::CommandSubst(try!(cmd_subst)))
     }
 
