@@ -255,16 +255,30 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
     }
 
     /// Accepts a vector of tokens to be yielded completely before the inner
-    /// iterator is advanced further. The provided `post_buf_pos` indicates
-    /// what the iterator's position should be when the buffer of tokens is
-    /// exhausted completely.
-    pub fn backup_buffered_tokens(&mut self, mut buf: Vec<Token>, post_buf_pos: SourcePos) {
-        self.prev_buffered.reserve(buf.len()+1);
+    /// iterator is advanced further. The provided `buf_start` indicates
+    /// what the iterator's position should have been if we were to naturally
+    /// yield the provided buffer.
+    pub fn buffer_tokens_to_yield_first(&mut self, mut buf: Vec<Token>, buf_start: SourcePos) {
+        self.prev_buffered.reserve(buf.len() + self.peek_buf.len() + 1);
+
+        // Tokens that were previously peeked at are the same as buffered-but-not-yielded
+        // tokens, but since we are prioritizing the provided tokens, we have to
+        // move them into the previous buffer.
+        while let Some(t) = self.peek_buf.pop_back() {
+            self.prev_buffered.push(t);
+        }
+
+        // Push the current position further up the stack since we want to
+        // restore it before yielding any previously-peeked tokens.
         self.prev_buffered.push(TokenOrPos::Pos(self.pos));
+
+        // Buffer the newly provided tokens
         while let Some(t) = buf.pop() {
             self.prev_buffered.push(TokenOrPos::Tok(t));
         }
-        self.pos = post_buf_pos;
+
+        // Set our position to what it should be as we yield the buffered tokens
+        self.pos = buf_start;
     }
 
     /// Collects all tokens yielded by `TokenIter::backticked_remove_backslashes`
@@ -329,11 +343,11 @@ impl<I: Iterator<Item = Token>> TokenIterWrapper<I> {
         }
     }
 
-    /// Delegates to `TokenIter::backup_buffered_tokens`.
-    pub fn backup_buffered_tokens(&mut self, buf: Vec<Token>, post_buf_pos: SourcePos) {
+    /// Delegates to `TokenIter::buffer_tokens_to_yield_first`.
+    pub fn buffer_tokens_to_yield_first(&mut self, buf: Vec<Token>, buf_start: SourcePos) {
         match *self {
-            TokenIterWrapper::Regular(ref mut inner) => inner.backup_buffered_tokens(buf, post_buf_pos),
-            TokenIterWrapper::Buffered(ref mut inner) => inner.backup_buffered_tokens(buf, post_buf_pos),
+            TokenIterWrapper::Regular(ref mut inner) => inner.buffer_tokens_to_yield_first(buf, buf_start),
+            TokenIterWrapper::Buffered(ref mut inner) => inner.buffer_tokens_to_yield_first(buf, buf_start),
         }
     }
 
@@ -595,7 +609,7 @@ impl<'a> BacktickBackslashRemover<'a> {
 
         let mut tok_iter = TokenIter::with_position(std_iter::empty(), iter.pos());
         while let Some((chunk, chunk_end)) = all_chunks.pop() {
-            tok_iter.backup_buffered_tokens(chunk, chunk_end);
+            tok_iter.buffer_tokens_to_yield_first(chunk, chunk_end);
         }
         Ok(tok_iter)
     }
@@ -644,5 +658,27 @@ impl<'a> Iterator for BacktickBackslashRemover<'a> {
         // more than those of the underlying iterator, and will
         // probably be less, but this is a good enough estimate.
         self.iter.size_hint()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use parse::SourcePos;
+    use super::*;
+    use token::Token;
+
+    #[test]
+    fn test_tokiter_buffering_tokens_should_yield_peeked_tokens_after_buffer() {
+        let tokens = vec!(Token::ParenOpen, Token::Semi, Token::Dollar, Token::ParenClose);
+        let mut tok_iter = TokenIter::new(tokens.clone().into_iter());
+        let _ = tok_iter.peek_many(tokens.len());
+
+        let buffered_tokens = vec!(Token::Bang, Token::Tilde);
+        tok_iter.buffer_tokens_to_yield_first(buffered_tokens.clone(), SourcePos::new());
+
+        let mut yielded_tokens = buffered_tokens;
+        yielded_tokens.extend(tokens);
+
+        assert_eq!(yielded_tokens, tok_iter.collect::<Vec<_>>());
     }
 }

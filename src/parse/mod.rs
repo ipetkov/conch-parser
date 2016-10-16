@@ -990,7 +990,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             heredoc.push((line, line_start_pos));
         }
 
-        self.iter.backup_buffered_tokens(saved_tokens, saved_pos);
+        self.iter.buffer_tokens_to_yield_first(saved_tokens, saved_pos);
 
         let body = if quoted {
             let body = heredoc.into_iter().flat_map(|(t, _)| t).collect::<Vec<_>>();
@@ -998,7 +998,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         } else {
             let mut tok_iter = TokenIter::with_position(::std::iter::empty(), heredoc_start_pos);
             while let Some((line, pos)) = heredoc.pop() {
-                tok_iter.backup_buffered_tokens(line, pos);
+                tok_iter.buffer_tokens_to_yield_first(line, pos);
             }
 
             let mut tok_backup = TokenIterWrapper::Buffered(tok_iter);
