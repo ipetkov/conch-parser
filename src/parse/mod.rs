@@ -1315,6 +1315,11 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         let backtick_pos = self.iter.pos();
         eat!(self, { Backtick => {} });
 
+        // FIXME: it would be great to not have to buffer all tokens between backticks
+        // and lazily consume them. Unfortunately the BacktickBackslashRemover iterator
+        // returns a Result<Token, UnmatchedError>, so we can't temporarily substitute it
+        // for our regular iterator (without forcing us to check the the value of each
+        // `peek` or `next` operation we make).
         let tok_iter = try!(self.iter
             .token_iter_from_backticked_with_removed_backslashes(backtick_pos)
             .map_err(|e| ParseError::Unmatched(e.0, e.1))
