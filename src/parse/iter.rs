@@ -1,7 +1,6 @@
 //! An module for easily iterating over a `Token` stream.
 
 use std::collections::VecDeque;
-use std::fmt;
 use std::iter as std_iter;
 use parse::SourcePos;
 use token::Token;
@@ -71,11 +70,11 @@ pub trait PeekablePositionIterator: PeekableIterator + PositionIterator {}
 impl<T: PeekableIterator + PositionIterator> PeekablePositionIterator for T {}
 
 /// A convenience trait for converting `Token` iterators into other sub-iterators.
-pub trait TokenIterator: PeekablePositionIterator<Item = Token> + Sized {
+pub trait TokenIterator: Sized + PeekablePositionIterator<Item = Token> {
     /// Returns an iterator that yields at least one token, but continues to yield
     /// tokens until all matching cases of single/double quotes, backticks,
     /// ${ }, $( ), or ( ) are found.
-    fn balanced(&mut self) -> Balanced {
+    fn balanced(&mut self) -> Balanced<&mut Self> {
         let pos = self.pos();
         Balanced::new(self, None, pos)
     }
@@ -83,21 +82,21 @@ pub trait TokenIterator: PeekablePositionIterator<Item = Token> + Sized {
     /// Returns an iterator that yields tokens up to when a (closing) single quote
     /// is reached (assuming that the caller has reached the opening quote and
     /// wishes to continue up to but not including the closing quote).
-    fn single_quoted(&mut self, pos: SourcePos) -> Balanced {
+    fn single_quoted(&mut self, pos: SourcePos) -> Balanced<&mut Self> {
         Balanced::new(self, Some(SingleQuote), pos)
     }
 
     /// Returns an iterator that yields tokens up to when a (closing) double quote
     /// is reached (assuming that the caller has reached the opening quote and
     /// wishes to continue up to but not including the closing quote).
-    fn double_quoted(&mut self, pos: SourcePos) -> Balanced {
+    fn double_quoted(&mut self, pos: SourcePos) -> Balanced<&mut Self> {
         Balanced::new(self, Some(DoubleQuote), pos)
     }
 
     /// Returns an iterator that yields tokens up to when a (closing) backtick
     /// is reached (assuming that the caller has reached the opening backtick and
     /// wishes to continue up to but not including the closing backtick).
-    fn backticked(&mut self, pos: SourcePos) -> Balanced {
+    fn backticked(&mut self, pos: SourcePos) -> Balanced<&mut Self> {
         Balanced::new(self, Some(Backtick), pos)
     }
 
@@ -105,7 +104,9 @@ pub trait TokenIterator: PeekablePositionIterator<Item = Token> + Sized {
     /// is reached (assuming that the caller has reached the opening backtick and
     /// wishes to continue up to but not including the closing backtick).
     /// Any backslashes followed by \, $, or ` are removed from the stream.
-    fn backticked_remove_backslashes(&mut self, pos: SourcePos) -> BacktickBackslashRemover {
+    fn backticked_remove_backslashes(&mut self, pos: SourcePos)
+        -> BacktickBackslashRemover<&mut Self>
+    {
         BacktickBackslashRemover::new(self.backticked(pos))
     }
 }
@@ -367,9 +368,10 @@ impl<I: Iterator<Item = Token>> TokenIterWrapper<I> {
 /// An iterator that yields at least one token, but continues to yield
 /// tokens until all matching cases of single/double quotes, backticks,
 /// ${ }, $( ), or ( ) are found.
-pub struct Balanced<'a> {
+#[derive(Debug)]
+pub struct Balanced<I> {
     /// The underlying token iterator.
-    iter: &'a mut PeekablePositionIterator<Item = Token>,
+    iter: I,
     /// Any token we had to peek after a backslash but haven't yielded yet,
     /// as well as the position after it.
     escaped: Option<(Token, SourcePos)>,
@@ -383,19 +385,7 @@ pub struct Balanced<'a> {
     pos: SourcePos,
 }
 
-impl<'a> fmt::Debug for Balanced<'a> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        fmt.debug_struct("Balanced")
-            .field("escaped", &self.escaped)
-            .field("stack", &self.stack)
-            .field("skip_last_delimeter", &self.skip_last_delimeter)
-            .field("done", &self.done)
-            .field("pos", &self.pos)
-            .finish()
-    }
-}
-
-impl<'a> Balanced<'a> {
+impl<I: PositionIterator> Balanced<I> {
     /// Constructs a new balanced iterator.
     ///
     /// If no delimeter is given, a single token will be yielded, unless the
@@ -405,11 +395,7 @@ impl<'a> Balanced<'a> {
     ///
     /// If a delimeter is specified, tokens are yielded *up to* the delimeter,
     /// but the delimeter will be silently consumed.
-    pub fn new(iter: &'a mut PeekablePositionIterator<Item = Token>,
-           delim: Option<Token>,
-           pos: SourcePos)
-        -> Self
-    {
+    pub fn new(iter: I, delim: Option<Token>, pos: SourcePos) -> Self {
         Balanced {
             escaped: None,
             skip_last_delimeter: delim.is_some(),
@@ -421,13 +407,13 @@ impl<'a> Balanced<'a> {
     }
 }
 
-impl<'a> PositionIterator for Balanced<'a> {
+impl<I: PeekablePositionIterator<Item = Token>> PositionIterator for Balanced<I> {
     fn pos(&self) -> SourcePos {
         self.pos
     }
 }
 
-impl<'a> Iterator for Balanced<'a> {
+impl<I: PeekablePositionIterator<Item = Token>> Iterator for Balanced<I> {
     type Item = Result<Token, UnmatchedError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -546,30 +532,32 @@ impl<'a> Iterator for Balanced<'a> {
 /// A `Balanced` backtick `Token` iterator which removes all backslashes
 /// from the stream that are followed by \, $, or `.
 #[derive(Debug)]
-pub struct BacktickBackslashRemover<'a> {
+pub struct BacktickBackslashRemover<I> {
     /// The underlying token iterator.
-    iter: Balanced<'a>,
+    iter: Balanced<I>,
     peeked: Option<Result<Token, UnmatchedError>>,
     /// Makes the iterator *fused* by yielding None forever after we are done.
     done: bool,
 }
 
-impl<'a> BacktickBackslashRemover<'a> {
+impl<I> BacktickBackslashRemover<I> {
     /// Constructs a new balanced backtick iterator which removes all backslashes
     /// from the stream that are followed by \, $, or `.
-    pub fn new(iter: Balanced<'a>) -> Self {
+    pub fn new(iter: Balanced<I>) -> Self {
         BacktickBackslashRemover {
             iter: iter,
             peeked: None,
             done: false,
         }
     }
+}
 
+impl<I: PeekablePositionIterator<Item = Token>> BacktickBackslashRemover<I> {
     /// Collects all tokens yielded by `TokenIter::backticked_remove_backslashes`
     /// and creates a `TokenIter` which will yield the collected tokens, and maintain
     /// the correct position of where each token appears in the original source,
     /// regardless of how many backslashes may have been removed since then.
-    fn create_token_iter(mut iter: Balanced<'a>)
+    fn create_token_iter(mut iter: Balanced<I>)
         -> Result<TokenIter<std_iter::Empty<Token>>, UnmatchedError>
     {
         let mut all_chunks = Vec::new();
@@ -615,7 +603,7 @@ impl<'a> BacktickBackslashRemover<'a> {
     }
 }
 
-impl<'a> Iterator for BacktickBackslashRemover<'a> {
+impl<I: PeekablePositionIterator<Item = Token>> Iterator for BacktickBackslashRemover<I> {
     type Item = Result<Token, UnmatchedError>;
 
     fn next(&mut self) -> Option<Self::Item> {
