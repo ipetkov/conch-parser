@@ -138,6 +138,9 @@ impl<I: Iterator<Item = Token>> PositionIterator for TokenIter<I> {
 
 impl<I: Iterator<Item = Token>> PeekableIterator for TokenIter<I> {
     fn peek(&mut self) -> Option<&Self::Item> {
+        // FIXME: its unfortunate that we need an allocation here even if
+        // the token was already peeked into the buffer, but due to lexical
+        // borrowing I can't seem to write this in a way to please the borrow checker
         let slice = self.peek_many(1);
         if slice.is_empty() {
             None
