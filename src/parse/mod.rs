@@ -510,9 +510,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         loop {
             self.skip_whitespace();
             let is_name = {
-                let mut peeked = self.iter.peek_many(2).into_iter();
-                if let Some(&Name(_)) = peeked.next() {
-                    Some(&Equals) == peeked.next()
+                let mut peeked = self.iter.multipeek();
+                if let Some(&Name(_)) = peeked.peek_next() {
+                    Some(&Equals) == peeked.peek_next()
                 } else {
                     false
                 }
@@ -1390,9 +1390,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         let param = match self.iter.peek() {
             Some(&ParenOpen) => {
                 let is_arith = {
-                    let mut peeked = self.iter.peek_many(2).into_iter();
-                    peeked.next();
-                    Some(&ParenOpen) == peeked.next()
+                    let mut peeked = self.iter.multipeek();
+                    peeked.peek_next(); // Skip first ParenOpen
+                    Some(&ParenOpen) == peeked.peek_next()
                 };
 
                 let subst = if is_arith {
@@ -1992,14 +1992,12 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         }
 
         let is_fn = {
-            let mut peeked = self.iter.peek_many(3).into_iter();
-            if let Some(&Name(_)) = peeked.next() {
-                let second = peeked.next();
-
-                if let Some(&Whitespace(_)) = second {
-                    Some(&ParenOpen) == peeked.next()
-                } else {
-                    Some(&ParenOpen) == second
+            let mut peeked = self.iter.multipeek();
+            if let Some(&Name(_)) = peeked.peek_next() {
+                match peeked.peek_next() {
+                    Some(&Whitespace(_)) => Some(&ParenOpen) == peeked.peek_next(),
+                    Some(&ParenOpen) => true,
+                    _ => false,
                 }
             } else {
                 false
@@ -2100,13 +2098,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             }
 
             let found_backslash_newline = {
-                if Some(&Backslash) == self.iter.peek() {
-                    let mut peeked = self.iter.peek_many(2).into_iter();
-                    peeked.next(); // Skip Backslash
-                    Some(&Newline) == peeked.next()
-                } else {
-                    false
-                }
+                let mut peeked = self.iter.multipeek();
+                Some(&Backslash) == peeked.peek_next() && Some(&Newline) == peeked.peek_next()
             };
 
             if found_backslash_newline {
@@ -2181,19 +2174,20 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         for _ in 0..num_tries {
             {
-                let mut peeked = self.iter.peek_many(2).into_iter();
-                let tok = match peeked.next() {
-                    Some(tok) => tok,
+                let mut peeked = self.iter.multipeek();
+
+                let found_tok = match peeked.peek_next() {
+                    Some(tok) => tokens.iter().find(|&t| t == tok),
                     None => return None,
                 };
 
-                let is_delim = match peeked.next() {
-                    Some(delim) => delim.is_word_delimiter(),
-                    None => true, // EOF is also a valid delimeter
-                };
+                if let ret@Some(_) = found_tok {
+                    let found_delim = match peeked.peek_next() {
+                        Some(delim) => delim.is_word_delimiter(),
+                        None => true, // EOF is also a valid delimeter
+                    };
 
-                if is_delim {
-                    if let ret@Some(_) = tokens.iter().find(|&t| t == tok) {
+                    if found_delim {
                         return ret;
                     }
                 }
@@ -2220,22 +2214,16 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         }
 
         self.skip_whitespace();
-        let mut peeked = self.iter.peek_many(2).into_iter();
-        let tok = match peeked.next() {
-            Some(kw) => kw,
-            None => return None,
+        let mut peeked = self.iter.multipeek();
+        let found_tok = match peeked.peek_next() {
+            Some(&Name(ref kw)) |
+            Some(&Literal(ref kw)) => words.iter().find(|&w| w == kw).map(|kw| *kw),
+            _ => None,
         };
 
-        // EOF is a valid delimeter
-        if let Some(delim) = peeked.next() {
-            if !delim.is_word_delimiter() {
-                return None;
-            }
-        }
-
-        match *tok {
-            Name(ref kw) |
-            Literal(ref kw) => words.iter().find(|&w| w == kw).map(|kw| *kw),
+        match peeked.peek_next() {
+            Some(delim) if delim.is_word_delimiter() => found_tok,
+            None => found_tok, // EOF is a valid delimeter
             _ => None,
         }
     }
@@ -2358,30 +2346,38 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         self.skip_whitespace();
 
         let assig = {
-            let mut peeked = self.iter.peek_many(5).into_iter().peekable();
-            if Some(&&Dollar) == peeked.peek() { peeked.next(); }
+            let mut assig = false;
+            let mut peeked = self.iter.multipeek();
 
-            if let Some(&Name(_)) = peeked.next() {
-                if let Some(&&Whitespace(_)) = peeked.peek() { peeked.next(); }
-                match peeked.next() {
-                    Some(&Star)    |
-                    Some(&Slash)   |
-                    Some(&Percent) |
-                    Some(&Plus)    |
-                    Some(&Dash)    |
-                    Some(&DLess)   |
-                    Some(&DGreat)  |
-                    Some(&Amp)     |
-                    Some(&Pipe)    |
-                    Some(&Caret)   => Some(&Equals) == peeked.next(),
+            'assig_check: loop {
+                match peeked.peek_next() {
+                    Some(&Dollar) => continue, // Skip Dollar and peek next
+                    Some(&Name(_)) => loop {
+                        match peeked.peek_next() {
+                            Some(&Whitespace(_)) => continue, // Skip whitespace and peek next
+                            Some(&Star)    |
+                            Some(&Slash)   |
+                            Some(&Percent) |
+                            Some(&Plus)    |
+                            Some(&Dash)    |
+                            Some(&DLess)   |
+                            Some(&DGreat)  |
+                            Some(&Amp)     |
+                            Some(&Pipe)    |
+                            Some(&Caret)   => assig = Some(&Equals) == peeked.peek_next(),
 
-                    // Make sure we only recognize $(( x = ...)) but NOT $(( x == ...))
-                    Some(&Equals)  => Some(&Equals) != peeked.next(),
-                    _ => false,
+                            // Make sure we only recognize $(( x = ...)) but NOT $(( x == ...))
+                            Some(&Equals)  => assig = Some(&Equals) != peeked.peek_next(),
+                            _ => {}
+                        }
+
+                        break 'assig_check;
+                    },
+                    _ => break 'assig_check,
                 }
-            } else {
-                false
             }
+
+            assig
         };
 
         if !assig {
@@ -2535,7 +2531,12 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         // Thus we should be absolutely certain we should parse a ** operator
         // and avoid confusing it with a multiplication operation that is yet
         // to be parsed.
-        if self.iter.peek_many(2) == [&Star, &Star] {
+        let double_star = {
+            let mut peeked = self.iter.multipeek();
+            peeked.peek_next() == Some(&Star) && peeked.peek_next() == Some(&Star)
+        };
+
+        if double_star {
             eat!(self, { Star => {} });
             eat!(self, { Star => {} });
             Ok(ast::Arithmetic::Pow(Box::new(expr), Box::new(try!(self.arith_pow()))))
@@ -2634,8 +2635,12 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 // that is yet to be parsed.
                 let post_incr = {
                     self.skip_whitespace();
-                    let peeked = self.iter.peek_many(2);
-                    peeked == [&Plus, &Plus] || peeked == [&Dash, &Dash]
+                    let mut peeked = self.iter.multipeek();
+                    match peeked.peek_next() {
+                        Some(&Plus) => peeked.peek_next() == Some(&Plus),
+                        Some(&Dash) => peeked.peek_next() == Some(&Dash),
+                        _ => false,
+                    }
                 };
 
                 if post_incr {

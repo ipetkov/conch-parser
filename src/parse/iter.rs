@@ -1,7 +1,7 @@
 //! An module for easily iterating over a `Token` stream.
 
-use std::collections::VecDeque;
 use std::iter as std_iter;
+use std::mem;
 use parse::SourcePos;
 use token::Token;
 use token::Token::*;
@@ -111,11 +111,23 @@ pub trait TokenIterator: Sized + PeekablePositionIterator<Item = Token> {
     }
 }
 
+/// Convenience trait for `Token` iterators which could be "rewound" so that
+/// they can yield tokens that were already pulled out of their stream.
+trait RewindableTokenIterator {
+    /// Rewind the iterator with the provided tokens. Vector should contain
+    /// the tokens in the order they should be yielded.
+    fn rewind(&mut self, tokens: Vec<TokenOrPos>);
+
+    /// Grab the next token (or internal position) that should be buffered
+    /// by the caller.
+    fn next_token_or_pos(&mut self) -> Option<TokenOrPos>;
+}
+
 /// A Token iterator that keeps track of how many lines have been read.
 #[derive(Debug)]
-pub struct TokenIter<I: Iterator<Item = Token>> {
+pub struct TokenIter<I> {
     /// The underlying token iterator being wrapped. Iterator is fused to avoid
-    /// inconsistent behavior when doing multiple `peek_many` operations.
+    /// inconsistent behavior when doing multiple peek ahead operations.
     iter: std_iter::Fuse<I>,
     /// Any tokens that were previously yielded but to be consumed later, stored
     /// as a stack. Intersperced between the tokens are any changes to the current
@@ -123,9 +135,6 @@ pub struct TokenIter<I: Iterator<Item = Token>> {
     /// parser may have removed certain tokens (e.g. \ when unescaping), but we still
     /// want to keep track of token positions in the actual source.
     prev_buffered: Vec<TokenOrPos>,
-    /// Any tokens that have been peeked from the underlying token iterator or from
-    /// the previously buffered tokens, but which have not yet been yielded to the caller.
-    peek_buf: VecDeque<TokenOrPos>,
     /// The current position in the source that we have consumed up to
     pos: SourcePos,
 }
@@ -138,14 +147,21 @@ impl<I: Iterator<Item = Token>> PositionIterator for TokenIter<I> {
 
 impl<I: Iterator<Item = Token>> PeekableIterator for TokenIter<I> {
     fn peek(&mut self) -> Option<&Self::Item> {
-        // FIXME: its unfortunate that we need an allocation here even if
-        // the token was already peeked into the buffer, but due to lexical
-        // borrowing I can't seem to write this in a way to please the borrow checker
-        let slice = self.peek_many(1);
-        if slice.is_empty() {
-            None
+        {
+            // Peek the next token, then drop the wrapper to get the token pushed
+            // back on our buffer. Not the clearest solution, but gets around
+            // the borrow checker.
+            let mut peeked = self.multipeek();
+            if peeked.peek_next().is_none() {
+                // Didn't buffer anything, nothing to peek
+                return None;
+            }
+        }
+
+        if let Some(&TokenOrPos::Tok(ref t)) = self.prev_buffered.last() {
+            Some(t)
         } else {
-            Some(slice[0])
+            unreachable!("peeking next token failed due to inconsistent state. This is a bug!")
         }
     }
 }
@@ -154,47 +170,29 @@ impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
     type Item = Token;
 
     fn next(&mut self) -> Option<Token> {
-        // Grab the next token to be yielded to the caller.
-        let next = if self.peek_buf.is_empty() {
-            if self.prev_buffered.is_empty() {
-                self.iter.next().map(TokenOrPos::Tok)
-            } else {
-                self.prev_buffered.pop()
+        let mut ret = None;
+        loop {
+            // Make sure we update our current position before continuing.
+            match self.next_token_or_pos() {
+                Some(TokenOrPos::Tok(next)) => {
+                    self.pos.advance(&next);
+                    ret = Some(next);
+                    break;
+                },
+
+                Some(TokenOrPos::Pos(pos)) => self.pos = pos,
+                None => break,
             }
-        } else {
-            self.peek_buf.pop_front()
-        };
-
-        // Make sure we update our current position before continuing.
-        let ret = match next {
-            Some(TokenOrPos::Tok(next)) => {
-                self.pos.advance(&next);
-                Some(next)
-            },
-
-            // The code below should ensure that any `Pos` variants trailing
-            // after a `Tok` will be removed from the buffer. Any code that
-            // stores a `Pos` in any of the buffers should ensure that there
-            // is always a leading `Tok` variant ahead somewhere.
-            Some(TokenOrPos::Pos(_)) => unreachable!(),
-            None => None,
-        };
+        }
 
         // Make sure we update our position according to any trailing `Pos` points.
         // The parser expects that polling our current position will give it the
         // position of the next token we will yield. If we perform this check right
         // before yielding the next token, the parser will believe that token appears
         // much earlier in the source than it actually does.
-        loop {
-            if let Some(&TokenOrPos::Pos(pos)) = self.peek_buf.front() {
-                self.peek_buf.pop_front();
-                self.pos = pos;
-            } else if let Some(&TokenOrPos::Pos(pos)) = self.prev_buffered.last() {
-                self.prev_buffered.pop();
-                self.pos = pos;
-            } else {
-                break;
-            }
+        while let Some(&TokenOrPos::Pos(pos)) = self.prev_buffered.last() {
+            self.prev_buffered.pop();
+            self.pos = pos;
         }
 
         ret
@@ -202,12 +200,23 @@ impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         let (low_hint, hi) = self.iter.size_hint();
-        let low = if self.prev_buffered.is_empty() && self.peek_buf.is_empty() {
+        let low = if self.prev_buffered.is_empty() {
             low_hint
         } else {
-            self.prev_buffered.len() + self.peek_buf.len()
+            self.prev_buffered.len()
         };
         (low, hi)
+    }
+}
+
+impl<I: Iterator<Item = Token>> RewindableTokenIterator for TokenIter<I> {
+    fn rewind(&mut self, tokens: Vec<TokenOrPos>) {
+        self.buffer_tokens_and_positions_to_yield_first(tokens, None);
+    }
+
+    fn next_token_or_pos(&mut self) -> Option<TokenOrPos> {
+        self.prev_buffered.pop()
+            .or_else(|| self.iter.next().map(TokenOrPos::Tok))
     }
 }
 
@@ -219,7 +228,6 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
         TokenIter {
             iter: iter.fuse(),
             prev_buffered: Vec::new(),
-            peek_buf: VecDeque::new(),
             pos: SourcePos::new(),
         }
     }
@@ -231,58 +239,46 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
         iter
     }
 
-    /// Allows the caller to peek multiple tokens at a time, returning a vector of borrowed tokens.
-    pub fn peek_many(&mut self, amt: usize) -> Vec<&Token> {
-        let mut tok_count = self.peek_buf.iter().filter(|t| t.is_tok()).count();
+    /// Return a wrapper which allows for arbitrary look ahead. Dropping the
+    /// wrapper will restore the internal stream back to what it was.
+    pub fn multipeek(&mut self) -> Multipeek {
+        Multipeek::new(self)
+    }
 
-        // Fill up the peek buffer if needed
-        // NB: this relies on self.iter being fused, other wise weird things may happen
-        // between different calls to peek_many
-        while tok_count < amt {
-            let next = self.prev_buffered.pop().or_else(|| self.iter.next().map(TokenOrPos::Tok));
-            match next {
-                Some(t) => {
-                    if t.is_tok() { tok_count += 1 }
-                    self.peek_buf.push_back(t)
-                },
-                None => break,
-            }
+    /// Accepts a vector of tokens (and positions) to be yielded completely before the
+    /// inner iterator is advanced further. The optional `buf_start` (if provided)
+    /// indicates what the iterator's position should have been if we were to naturally
+    /// yield the provided buffer.
+    fn buffer_tokens_and_positions_to_yield_first(
+        &mut self,
+        mut tokens: Vec<TokenOrPos>,
+        token_start: Option<SourcePos>
+    ) {
+        self.prev_buffered.reserve(tokens.len() + 1);
+
+        // Push the current position further up the stack since we want to
+        // restore it before yielding any previously-peeked tokens.
+        if token_start.is_some() {
+            self.prev_buffered.push(TokenOrPos::Pos(self.pos));
         }
 
-        self.peek_buf.iter()
-            .filter_map(|t| match *t {
-                TokenOrPos::Tok(ref t) => Some(t),
-                TokenOrPos::Pos(_) => None,
-            })
-            .take(amt)
-            .collect()
+        // Buffer the newly provided tokens in reverse since we are using a stack
+        tokens.reverse();
+        self.prev_buffered.extend(tokens);
+
+        // Set our position to what it should be as we yield the buffered tokens
+        if let Some(p) = token_start {
+            self.pos = p;
+        }
     }
 
     /// Accepts a vector of tokens to be yielded completely before the inner
     /// iterator is advanced further. The provided `buf_start` indicates
     /// what the iterator's position should have been if we were to naturally
     /// yield the provided buffer.
-    pub fn buffer_tokens_to_yield_first(&mut self, mut buf: Vec<Token>, buf_start: SourcePos) {
-        self.prev_buffered.reserve(buf.len() + self.peek_buf.len() + 1);
-
-        // Tokens that were previously peeked at are the same as buffered-but-not-yielded
-        // tokens, but since we are prioritizing the provided tokens, we have to
-        // move them into the previous buffer.
-        while let Some(t) = self.peek_buf.pop_back() {
-            self.prev_buffered.push(t);
-        }
-
-        // Push the current position further up the stack since we want to
-        // restore it before yielding any previously-peeked tokens.
-        self.prev_buffered.push(TokenOrPos::Pos(self.pos));
-
-        // Buffer the newly provided tokens
-        while let Some(t) = buf.pop() {
-            self.prev_buffered.push(TokenOrPos::Tok(t));
-        }
-
-        // Set our position to what it should be as we yield the buffered tokens
-        self.pos = buf_start;
+    pub fn buffer_tokens_to_yield_first(&mut self, buf: Vec<Token>, buf_start: SourcePos) {
+        let tokens = buf.into_iter().map(TokenOrPos::Tok).collect();
+        self.buffer_tokens_and_positions_to_yield_first(tokens, Some(buf_start));
     }
 
     /// Collects all tokens yielded by `TokenIter::backticked_remove_backslashes`
@@ -296,10 +292,64 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
     }
 }
 
+/// A wrapper for peeking arbitrary amounts into a `Token` stream.
+/// Inspired by the `Multipeek` implementation in the `itertools` crate.
+pub struct Multipeek<'a> {
+    /// The underlying token iterator. This is pretty much just a `TokenIter`,
+    /// but we use a trait object to avoid having a generic signature and
+    /// make this wrapper more flexible.
+    iter: &'a mut RewindableTokenIterator,
+    /// A buffer of values taken from the underlying iterator, in the order
+    /// they were pulled.
+    buf: Vec<TokenOrPos>,
+}
+
+impl<'a> Drop for Multipeek<'a> {
+    fn drop(&mut self) {
+        let tokens = mem::replace(&mut self.buf, Vec::new());
+        self.iter.rewind(tokens);
+    }
+}
+
+impl<'a> Multipeek<'a> {
+    /// Wrap an iterator for arbitrary look-ahead.
+    fn new(iter: &'a mut RewindableTokenIterator) -> Self {
+        Multipeek {
+            iter: iter,
+            buf: Vec::new(),
+        }
+    }
+
+    /// Public method for lazily peeking the next (unpeeked) value.
+    /// Implemented as its own API instead of as an `Iterator` to avoid
+    /// confusion with advancing the regular iterator.
+    pub fn peek_next(&mut self) -> Option<&Token> {
+        loop {
+            match self.iter.next_token_or_pos() {
+                Some(t) => {
+                    let is_tok = t.is_tok();
+                    self.buf.push(t);
+
+                    if is_tok {
+                        break;
+                    }
+                },
+                None => return None,
+            }
+        }
+
+        if let Some(&TokenOrPos::Tok(ref t)) = self.buf.last() {
+            Some(t)
+        } else {
+            None
+        }
+    }
+}
+
 /// A wrapper which allows treating `TokenIter<I>` and `TokenIter<Empty<_>>` as
 /// the same thing, even though they are technically different types.
 #[derive(Debug)]
-pub enum TokenIterWrapper<I: Iterator<Item = Token>> {
+pub enum TokenIterWrapper<I> {
     /// A `TokenIter` which holds an aribtrary `Iterator` over `Token`s.
     Regular(TokenIter<I>),
     /// A `TokenIter` which has all `Token`s buffered in memory, and thus
@@ -339,11 +389,12 @@ impl<I: Iterator<Item = Token>> Iterator for TokenIterWrapper<I> {
 impl<I: Iterator<Item = Token>> TokenIterator for TokenIterWrapper<I> {}
 
 impl<I: Iterator<Item = Token>> TokenIterWrapper<I> {
-    /// Delegates to `TokenIter::peek_many`.
-    pub fn peek_many(&mut self, amt: usize) -> Vec<&Token> {
+    /// Return a wrapper which allows for arbitrary look ahead. Dropping the
+    /// wrapper will restore the internal stream back to what it was.
+    pub fn multipeek(&mut self) -> Multipeek {
         match *self {
-            TokenIterWrapper::Regular(ref mut inner) => inner.peek_many(amt),
-            TokenIterWrapper::Buffered(ref mut inner) => inner.peek_many(amt),
+            TokenIterWrapper::Regular(ref mut inner) => inner.multipeek(),
+            TokenIterWrapper::Buffered(ref mut inner) => inner.multipeek(),
         }
     }
 
@@ -654,22 +705,26 @@ impl<I: PeekablePositionIterator<Item = Token>> Iterator for BacktickBackslashRe
 
 #[cfg(test)]
 mod tests {
-    use parse::SourcePos;
     use super::*;
     use token::Token;
 
     #[test]
-    fn test_tokiter_buffering_tokens_should_yield_peeked_tokens_after_buffer() {
+    fn test_multipeek() {
         let tokens = vec!(Token::ParenOpen, Token::Semi, Token::Dollar, Token::ParenClose);
+
         let mut tok_iter = TokenIter::new(tokens.clone().into_iter());
-        let _ = tok_iter.peek_many(tokens.len());
+        {
+            let mut multipeek = tok_iter.multipeek();
+            let mut expected_peeked = tokens.iter();
+            while let Some(t) = multipeek.peek_next() {
+                assert_eq!(expected_peeked.next(), Some(t));
+            }
 
-        let buffered_tokens = vec!(Token::Bang, Token::Tilde);
-        tok_iter.buffer_tokens_to_yield_first(buffered_tokens.clone(), SourcePos::new());
+            // Exhausted the expected stream
+            assert_eq!(expected_peeked.next(), None);
+        }
 
-        let mut yielded_tokens = buffered_tokens;
-        yielded_tokens.extend(tokens);
-
-        assert_eq!(yielded_tokens, tok_iter.collect::<Vec<_>>());
+        // Original iterator still yields the expected values
+        assert_eq!(tokens, tok_iter.collect::<Vec<_>>());
     }
 }
