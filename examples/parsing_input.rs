@@ -18,6 +18,7 @@ fn run_with_stdin<F>(f: F) where F: FnOnce(&mut Iterator<Item = char>) {
     // There's no "easy" way to convert stdin into a char iterator on stable
     // (and by easy I mean without writing our own iterator wrapper) so
     // we'll just read all input into memory at once to get the point across.
+    println!("Note: buffering in all input before parsing");
     let mut input = String::new();
     io::stdin().read_to_string(&mut input).unwrap();
     let mut stdin = input.chars();
