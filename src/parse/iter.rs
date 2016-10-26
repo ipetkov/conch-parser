@@ -161,7 +161,7 @@ impl<I: Iterator<Item = Token>> PeekableIterator for TokenIter<I> {
         if let Some(&TokenOrPos::Tok(ref t)) = self.prev_buffered.last() {
             Some(t)
         } else {
-            unreachable!("peeking next token failed due to inconsistent state. This is a bug!")
+            unreachable!("unexpected state: peeking next token failed. This is a bug!")
         }
     }
 }
@@ -180,7 +180,7 @@ impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
                     break;
                 },
 
-                Some(TokenOrPos::Pos(pos)) => self.pos = pos,
+                Some(TokenOrPos::Pos(_)) => panic!("unexpected state. This is a bug!"),
                 None => break,
             }
         }
@@ -190,11 +190,7 @@ impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
         // position of the next token we will yield. If we perform this check right
         // before yielding the next token, the parser will believe that token appears
         // much earlier in the source than it actually does.
-        while let Some(&TokenOrPos::Pos(pos)) = self.prev_buffered.last() {
-            self.prev_buffered.pop();
-            self.pos = pos;
-        }
-
+        self.updated_buffered_pos();
         ret
     }
 
@@ -245,6 +241,17 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
         Multipeek::new(self)
     }
 
+    /// Update the current position based on any buffered state.
+    ///
+    /// This allows us to always correctly report the position of the next token
+    /// we are about to yield.
+    fn updated_buffered_pos(&mut self) {
+        while let Some(&TokenOrPos::Pos(pos)) = self.prev_buffered.last() {
+            self.prev_buffered.pop();
+            self.pos = pos;
+        }
+    }
+
     /// Accepts a vector of tokens (and positions) to be yielded completely before the
     /// inner iterator is advanced further. The optional `buf_start` (if provided)
     /// indicates what the iterator's position should have been if we were to naturally
@@ -270,6 +277,8 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
         if let Some(p) = token_start {
             self.pos = p;
         }
+
+        self.updated_buffered_pos();
     }
 
     /// Accepts a vector of tokens to be yielded completely before the inner
@@ -705,7 +714,8 @@ impl<I: PeekablePositionIterator<Item = Token>> Iterator for BacktickBackslashRe
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use parse::SourcePos;
+    use super::{PositionIterator, TokenIter, TokenOrPos};
     use token::Token;
 
     #[test]
@@ -726,5 +736,32 @@ mod tests {
 
         // Original iterator still yields the expected values
         assert_eq!(tokens, tok_iter.collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_buffering_tokens_should_immediately_update_position() {
+        fn src(byte: usize, line: usize, col: usize) -> SourcePos {
+            SourcePos {
+                byte: byte,
+                line: line,
+                col: col,
+            }
+        }
+
+        let mut tok_iter = TokenIter::new(::std::iter::empty());
+
+        let pos = src(4, 4, 4);
+
+        tok_iter.buffer_tokens_and_positions_to_yield_first(
+            vec!(
+                TokenOrPos::Pos(src(2, 2, 2)),
+                TokenOrPos::Pos(src(3, 3, 3)),
+                TokenOrPos::Pos(pos),
+                TokenOrPos::Tok(Token::Newline),
+            ),
+            Some(src(1, 1, 1)),
+        );
+
+        assert_eq!(tok_iter.pos(), pos);
     }
 }
