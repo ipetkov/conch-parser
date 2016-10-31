@@ -9,9 +9,11 @@
 //! the `Builder` trait for your AST. Otherwise you can provide the `DefaultBuilder`
 //! struct to the parser if you wish to use the default AST implementation.
 
+use std::marker::PhantomData;
 use std::rc::Rc;
+use std::sync::Arc;
 use ast::{self, AndOr, AndOrList, Arithmetic, Command, CompoundCommand,
-          CompoundCommandKind, ComplexWord, ListableCommand, Parameter,
+          CompoundCommandKind, ComplexWord, DefaultPipeableCommand, ListableCommand, Parameter,
           ParameterSubstitution, PipeableCommand, Redirect, SimpleCommand, SimpleWord,
           TopLevelCommand, TopLevelWord, Word};
 use parse::ParseResult;
@@ -448,18 +450,42 @@ pub trait Builder {
         -> ParseResult<Self::Redirect, Self::Error>;
 }
 
-impl Builder for DefaultBuilder {
-    type Command         = TopLevelCommand;
+/// A `Builder` implementation which builds shell commands using the AST definitions in the `ast` module.
+#[derive(Debug, Copy, Clone)]
+pub struct DefaultBuilder<T>(PhantomData<T>);
+
+/// A `DefaultBuilder` implementation which uses regular `String`s when
+/// representing shell words.
+pub type StringBuilder = DefaultBuilder<String>;
+
+/// A `DefaultBuilder` implementation which uses `Rc<String>`s when
+/// representing shell words.
+pub type RcBuilder = DefaultBuilder<Rc<String>>;
+
+/// A `DefaultBuilder` implementation which uses `Arc<String>`s when
+/// representing shell words.
+pub type ArcBuilder = DefaultBuilder<Arc<String>>;
+
+impl<T> ::std::default::Default for DefaultBuilder<T> {
+    fn default() -> Self {
+        DefaultBuilder::new()
+    }
+}
+
+impl<T> DefaultBuilder<T> {
+    /// Constructs a builder.
+    pub fn new() -> Self {
+        DefaultBuilder(PhantomData)
+    }
+}
+
+impl<T: From<String>> Builder for DefaultBuilder<T> {
+    type Command         = TopLevelCommand<T>;
     type CommandList     = AndOrList<Self::ListableCommand>;
     type ListableCommand = ListableCommand<Self::PipeableCommand>;
-    type PipeableCommand = PipeableCommand<
-        String,
-        Box<SimpleCommand<String, Self::Word, Self::Redirect>>,
-        Box<Self::CompoundCommand>,
-        Rc<Self::CompoundCommand>
-    >;
+    type PipeableCommand = DefaultPipeableCommand<T, Self::Word, Self::Command>;
     type CompoundCommand = CompoundCommand<CompoundCommandKind<Self::Word, Self::Command>, Self::Redirect>;
-    type Word            = TopLevelWord;
+    type Word            = TopLevelWord<T>;
     type Redirect        = Redirect<Self::Word>;
     type Error           = Void;
 
@@ -517,12 +543,11 @@ impl Builder for DefaultBuilder {
 
     /// Constructs a `Command::Simple` node with the provided inputs.
     fn simple_command(&mut self,
-                      mut env_vars: Vec<(String, Option<Self::Word>)>,
+                      env_vars: Vec<(String, Option<Self::Word>)>,
                       mut cmd: Option<(Self::Word, Vec<Self::Word>)>,
                       mut redirects: Vec<Self::Redirect>)
         -> ParseResult<Self::PipeableCommand, Self::Error>
     {
-        env_vars.shrink_to_fit();
         redirects.shrink_to_fit();
 
         if let Some(&mut (_, ref mut args)) = cmd.as_mut() {
@@ -531,7 +556,7 @@ impl Builder for DefaultBuilder {
 
         Ok(PipeableCommand::Simple(Box::new(SimpleCommand {
             cmd: cmd,
-            vars: env_vars,
+            vars: env_vars.into_iter().map(|(k, v)| (k.into(), v)).collect(),
             io: redirects,
         })))
     }
@@ -708,7 +733,7 @@ impl Builder for DefaultBuilder {
                             body: Self::CompoundCommand)
         -> ParseResult<Self::PipeableCommand, Self::Error>
     {
-        Ok(PipeableCommand::FunctionDef(name, Rc::new(body)))
+        Ok(PipeableCommand::FunctionDef(name.into(), Rc::new(body)))
     }
 
     /// Ignored by the builder.
@@ -729,11 +754,65 @@ impl Builder for DefaultBuilder {
             }
         }
 
+        fn map_arith<T: From<String>>(kind: Arithmetic) -> Arithmetic<T> {
+            use ast::Arithmetic::*;
+            match kind {
+                Var(v)           => Var(v.into()),
+                Literal(l)       => Literal(l.into()),
+                Pow(a, b)        => Pow(Box::new(map_arith(*a)), Box::new(map_arith(*b))),
+                PostIncr(p)      => PostIncr(p.into()),
+                PostDecr(p)      => PostDecr(p.into()),
+                PreIncr(p)       => PreIncr(p.into()),
+                PreDecr(p)       => PreDecr(p.into()),
+                UnaryPlus(a)     => UnaryPlus(Box::new(map_arith(*a))),
+                UnaryMinus(a)    => UnaryMinus(Box::new(map_arith(*a))),
+                LogicalNot(a)    => LogicalNot(Box::new(map_arith(*a))),
+                BitwiseNot(a)    => BitwiseNot(Box::new(map_arith(*a))),
+                Mult(a, b)       => Mult(Box::new(map_arith(*a)), Box::new(map_arith(*b))),
+                Div(a, b)        => Div(Box::new(map_arith(*a)), Box::new(map_arith(*b))),
+                Modulo(a, b)     => Modulo(Box::new(map_arith(*a)), Box::new(map_arith(*b))),
+                Add(a, b)        => Add(Box::new(map_arith(*a)), Box::new(map_arith(*b))),
+                Sub(a, b)        => Sub(Box::new(map_arith(*a)), Box::new(map_arith(*b))),
+                ShiftLeft(a, b)  => ShiftLeft(Box::new(map_arith(*a)), Box::new(map_arith(*b))),
+                ShiftRight(a, b) => ShiftRight(Box::new(map_arith(*a)), Box::new(map_arith(*b))),
+                Less(a, b)       => Less(Box::new(map_arith(*a)), Box::new(map_arith(*b))),
+                LessEq(a, b)     => LessEq(Box::new(map_arith(*a)), Box::new(map_arith(*b))),
+                Great(a, b)      => Great(Box::new(map_arith(*a)), Box::new(map_arith(*b))),
+                GreatEq(a, b)    => GreatEq(Box::new(map_arith(*a)), Box::new(map_arith(*b))),
+                Eq(a, b)         => Eq(Box::new(map_arith(*a)), Box::new(map_arith(*b))),
+                NotEq(a, b)      => NotEq(Box::new(map_arith(*a)), Box::new(map_arith(*b))),
+                BitwiseAnd(a, b) => BitwiseAnd(Box::new(map_arith(*a)), Box::new(map_arith(*b))),
+                BitwiseXor(a, b) => BitwiseXor(Box::new(map_arith(*a)), Box::new(map_arith(*b))),
+                BitwiseOr(a, b)  => BitwiseOr(Box::new(map_arith(*a)), Box::new(map_arith(*b))),
+                LogicalAnd(a, b) => LogicalAnd(Box::new(map_arith(*a)), Box::new(map_arith(*b))),
+                LogicalOr(a, b)  => LogicalOr(Box::new(map_arith(*a)), Box::new(map_arith(*b))),
+                Ternary(a, b, c) =>
+                    Ternary(Box::new(map_arith(*a)), Box::new(map_arith(*b)), Box::new(map_arith(*c))),
+                Assign(v, a) => Assign(v.into(), Box::new(map_arith(*a))),
+                Sequence(ariths) => Sequence(ariths.into_iter().map(map_arith).collect()),
+            }
+        }
+
+        let map_param = |kind: Parameter| -> Parameter<T> {
+            use ast::Parameter::*;
+            match kind {
+                At            => At,
+                Star          => Star,
+                Pound         => Pound,
+                Question      => Question,
+                Dash          => Dash,
+                Dollar        => Dollar,
+                Bang          => Bang,
+                Positional(p) => Positional(p),
+                Var(v)        => Var(v.into()),
+            }
+        };
+
         let mut map_simple = |kind| {
             let simple = match kind {
-                SimpleWordKind::Literal(s)      => SimpleWord::Literal(s),
-                SimpleWordKind::Escaped(s)      => SimpleWord::Escaped(s),
-                SimpleWordKind::Param(p)        => SimpleWord::Param(p),
+                SimpleWordKind::Literal(s)      => SimpleWord::Literal(s.into()),
+                SimpleWordKind::Escaped(s)      => SimpleWord::Escaped(s.into()),
+                SimpleWordKind::Param(p)        => SimpleWord::Param(map_param(p)),
                 SimpleWordKind::Star            => SimpleWord::Star,
                 SimpleWordKind::Question        => SimpleWord::Question,
                 SimpleWordKind::SquareOpen      => SimpleWord::SquareOpen,
@@ -750,17 +829,25 @@ impl Builder for DefaultBuilder {
                     // the deref in the match statment gives a strange borrow failure
                     let s = *s;
                     let subst = match s {
-                        Len(p)                     => ParameterSubstitution::Len(p),
-                        Command(c)                 => ParameterSubstitution::Command(c.commands),
-                        Arith(a)                   => ParameterSubstitution::Arith(a),
-                        Default(c, p, w)           => ParameterSubstitution::Default(c, p, map!(w)),
-                        Assign(c, p, w)            => ParameterSubstitution::Assign(c, p, map!(w)),
-                        Error(c, p, w)             => ParameterSubstitution::Error(c, p, map!(w)),
-                        Alternative(c, p, w)       => ParameterSubstitution::Alternative(c, p, map!(w)),
-                        RemoveSmallestSuffix(p, w) => ParameterSubstitution::RemoveSmallestSuffix(p, map!(w)),
-                        RemoveLargestSuffix(p, w)  => ParameterSubstitution::RemoveLargestSuffix(p, map!(w)),
-                        RemoveSmallestPrefix(p, w) => ParameterSubstitution::RemoveSmallestPrefix(p, map!(w)),
-                        RemoveLargestPrefix(p, w)  => ParameterSubstitution::RemoveLargestPrefix(p, map!(w)),
+                        Len(p) => ParameterSubstitution::Len(map_param(p)),
+                        Command(c) => ParameterSubstitution::Command(c.commands),
+                        Arith(a) => ParameterSubstitution::Arith(a.map(map_arith)),
+                        Default(c, p, w) =>
+                            ParameterSubstitution::Default(c, map_param(p), map!(w)),
+                        Assign(c, p, w) =>
+                            ParameterSubstitution::Assign(c, map_param(p), map!(w)),
+                        Error(c, p, w) =>
+                            ParameterSubstitution::Error(c, map_param(p), map!(w)),
+                        Alternative(c, p, w) =>
+                            ParameterSubstitution::Alternative(c, map_param(p), map!(w)),
+                        RemoveSmallestSuffix(p, w) =>
+                            ParameterSubstitution::RemoveSmallestSuffix(map_param(p), map!(w)),
+                        RemoveLargestSuffix(p, w)  =>
+                            ParameterSubstitution::RemoveLargestSuffix(map_param(p), map!(w)),
+                        RemoveSmallestPrefix(p, w) =>
+                            ParameterSubstitution::RemoveSmallestPrefix(map_param(p), map!(w)),
+                        RemoveLargestPrefix(p, w)  =>
+                            ParameterSubstitution::RemoveLargestPrefix(map_param(p), map!(w)),
                     };
                     SimpleWord::Subst(Box::new(subst))
                 },
@@ -771,7 +858,7 @@ impl Builder for DefaultBuilder {
         let mut map_word = |kind| {
             let word = match kind {
                 WordKind::Simple(s)       => Word::Simple(try!(map_simple(s))),
-                WordKind::SingleQuoted(s) => Word::SingleQuoted(s),
+                WordKind::SingleQuoted(s) => Word::SingleQuoted(s.into()),
                 WordKind::DoubleQuoted(v) => Word::DoubleQuoted(try!(
                     v.into_iter()
                      .map(&mut map_simple)
@@ -942,16 +1029,6 @@ impl<'a, T: Builder + ?Sized> Builder for &'a mut T {
         -> ParseResult<Self::Redirect, Self::Error>
     {
         (**self).redirect(kind)
-    }
-}
-
-/// A `Builder` implementation which builds shell commands using the AST definitions in the `ast` module.
-#[derive(Debug, Copy, Clone)]
-pub struct DefaultBuilder;
-
-impl ::std::default::Default for DefaultBuilder {
-    fn default() -> DefaultBuilder {
-        DefaultBuilder
     }
 }
 

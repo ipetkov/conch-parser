@@ -4774,5 +4774,5 @@ fn ensure_parse_errors_are_send_and_sync() {
 #[test]
 fn ensure_parser_could_be_send_and_sync() {
     fn send_and_sync<T: Send + Sync>() {}
-    send_and_sync::<Parser<::std::vec::IntoIter<Token>, DefaultBuilder>>();
+    send_and_sync::<Parser<::std::vec::IntoIter<Token>, StringBuilder>>();
 }

@@ -33,7 +33,7 @@ const WHILE:    &'static str = "while";
 
 /// A parser which will use a default AST builder implementation,
 /// yielding results in terms of types defined in the `ast` module.
-pub type DefaultParser<I> = Parser<I, builder::DefaultBuilder>;
+pub type DefaultParser<I> = Parser<I, builder::StringBuilder>;
 
 /// A specialized `Result` type for parsing shell commands.
 pub type ParseResult<T, E> = ::std::result::Result<T, ParseError<E>>;
@@ -239,13 +239,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Iterator for Parser<I, B> {
 /// library provides both a default `Token` lexer, as well as an AST `Builder`.
 ///
 /// ```
-/// use shell_lang::ast::builder::{Builder, DefaultBuilder};
+/// use shell_lang::ast::builder::{Builder, RcBuilder};
 /// use shell_lang::lexer::Lexer;
 /// use shell_lang::parse::Parser;
 ///
 /// let source = "echo hello world";
 /// let lexer = Lexer::new(source.chars());
-/// let mut parser = Parser::with_builder(lexer, DefaultBuilder);
+/// let mut parser = Parser::with_builder(lexer, RcBuilder::new());
 /// assert!(parser.complete_command().unwrap().is_some());
 /// ```
 ///

@@ -43,7 +43,7 @@ pub enum ParameterSubstitution<
     /// Returns the standard output of running a command, e.g. `$(cmd)`
     Command(Vec<C>),
     /// Returns the length of the value of a parameter, e.g. `${#param}`
-    Len(Parameter),
+    Len(P),
     /// Returns the resulting value of an arithmetic subsitution, e.g. `$(( x++ ))`
     Arith(Option<A>),
     /// Use a provided value if the parameter is null or unset, e.g.
@@ -80,13 +80,18 @@ pub enum ParameterSubstitution<
 /// top-level word representation, `ComplexWord`, and the top-level command
 /// representation, `Command`, while allowing them to be generic on their own.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct TopLevelCommand(pub Command);
+pub struct TopLevelCommand<T = String>(pub Command<CommandList<T, TopLevelWord<T>, TopLevelCommand<T>>>);
 
 /// A top-level representation of a shell word. This wrapper unifies the provided
 /// top-level word representation, `ComplexWord`, and the top-level command
 /// representation, `Command`, while allowing them to be generic on their own.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct TopLevelWord(pub ComplexWord);
+pub struct TopLevelWord<T = String>(pub ShellWord<T, TopLevelWord<T>, TopLevelCommand<T>>);
+
+/// A type alias for the default hiearchy for representing shell words.
+pub type ShellWord<T, W, C> = ComplexWord<Word<T, SimpleWord<T, Parameter<T>,
+    Box<ParameterSubstitution<Parameter<T>, W, C, Arithmetic>
+>>>>;
 
 /// Represents whitespace delimited text.
 ///
@@ -195,13 +200,16 @@ pub enum Command<T = AndOrList> {
 
 /// A type alias over an and/or list of conventional shell commands.
 ///
-/// Generic over the representation of shell words, commands, and redirects.
-pub type CommandList<W, C, R> = AndOrList<ListableCommand<PipeableCommand<
-    String,
-    Box<SimpleCommand<String, W, R>>,
-    Box<CompoundCommand<CompoundCommandKind<W, C>, R>>,
-    Rc<CompoundCommand<CompoundCommandKind<W, C>, R>>
->>>;
+/// Generic over the representation of literals, shell words, commands, and redirects.
+pub type CommandList<T, W, C> = AndOrList<ListableCommand<DefaultPipeableCommand<T, W, C>>>;
+
+/// A type alias for the default hiearchy to represent pipeable commands.
+pub type DefaultPipeableCommand<T, W, C> = PipeableCommand<
+    T,
+    Box<SimpleCommand<T, W, Redirect<W>>>,
+    Box<CompoundCommand<CompoundCommandKind<W, C>, Redirect<W>>>,
+    Rc<CompoundCommand<CompoundCommandKind<W, C>, Redirect<W>>>
+>;
 
 /// A command which conditionally runs based on the exit status of the previous command.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -401,47 +409,51 @@ pub enum Arithmetic<T = String> {
     Sequence(Vec<Arithmetic>),
 }
 
-impl ops::Deref for TopLevelCommand {
-    type Target = Command;
+impl<T> ops::Deref for TopLevelCommand<T> {
+    type Target = Command<CommandList<T, TopLevelWord<T>, TopLevelCommand<T>>>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl ops::DerefMut for TopLevelCommand {
+impl<T> ops::DerefMut for TopLevelCommand<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-impl PartialEq<Command> for TopLevelCommand {
-    fn eq(&self, other: &Command) -> bool {
+impl<T> PartialEq<Command<CommandList<T, TopLevelWord<T>, TopLevelCommand<T>>>> for
+    TopLevelCommand<T> where T: PartialEq<T>
+{
+    fn eq(&self, other: &Command<CommandList<T, TopLevelWord<T>, TopLevelCommand<T>>>) -> bool {
         &self.0 == other
     }
 }
 
-impl ops::Deref for TopLevelWord {
-    type Target = ComplexWord;
+impl<T> ops::Deref for TopLevelWord<T> {
+    type Target = ShellWord<T, TopLevelWord<T>, TopLevelCommand<T>>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl ops::DerefMut for TopLevelWord {
+impl<T> ops::DerefMut for TopLevelWord<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-impl PartialEq<ComplexWord> for TopLevelWord {
-    fn eq(&self, other: &ComplexWord) -> bool {
+impl<T> PartialEq<ShellWord<T, TopLevelWord<T>, TopLevelCommand<T>>> for TopLevelWord<T>
+    where T: PartialEq<T>,
+{
+    fn eq(&self, other: &ShellWord<T, TopLevelWord<T>, TopLevelCommand<T>>) -> bool {
         &self.0 == other
     }
 }
 
-impl fmt::Display for Parameter {
+impl<T: fmt::Display> fmt::Display for Parameter<T> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         use self::Parameter::*;
 
