@@ -90,7 +90,7 @@ pub struct TopLevelWord<T = String>(pub ShellWord<T, TopLevelWord<T>, TopLevelCo
 
 /// A type alias for the default hiearchy for representing shell words.
 pub type ShellWord<T, W, C> = ComplexWord<Word<T, SimpleWord<T, Parameter<T>,
-    Box<ParameterSubstitution<Parameter<T>, W, C, Arithmetic>
+    Box<ParameterSubstitution<Parameter<T>, W, C, Arithmetic<T>>
 >>>>;
 
 /// Represents whitespace delimited text.
@@ -345,7 +345,7 @@ pub enum Arithmetic<T = String> {
     /// A numeric literal such as `42` or `0xdeadbeef`.
     Literal(isize),
     /// `left ** right`.
-    Pow(Box<Arithmetic>, Box<Arithmetic>),
+    Pow(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
     /// Returns the current value of a variable,
     /// and then increments its value immediately after, e.g. `var++`
     PostIncr(T),
@@ -357,56 +357,56 @@ pub enum Arithmetic<T = String> {
     /// Decrements the value of a variable and returns the new value, e.g. `--var`.
     PreDecr(T),
     /// Ensures the sign of the underlying result is positive, e.g. `+(1-2)`.
-    UnaryPlus(Box<Arithmetic>),
+    UnaryPlus(Box<Arithmetic<T>>),
     /// Ensures the sign of the underlying result is negative, e.g. `-(1+2)`.
-    UnaryMinus(Box<Arithmetic>),
+    UnaryMinus(Box<Arithmetic<T>>),
     /// Returns one if the underlying result is zero, or zero otherwise, e.g. `!expr`.
-    LogicalNot(Box<Arithmetic>),
+    LogicalNot(Box<Arithmetic<T>>),
     /// Flips all bits from the underlying result, e.g. `~expr`.
-    BitwiseNot(Box<Arithmetic>),
+    BitwiseNot(Box<Arithmetic<T>>),
     /// `left * right`
-    Mult(Box<Arithmetic>, Box<Arithmetic>),
+    Mult(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
     /// `left / right`
-    Div(Box<Arithmetic>, Box<Arithmetic>),
+    Div(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
     /// `left % right`
-    Modulo(Box<Arithmetic>, Box<Arithmetic>),
+    Modulo(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
     /// `left + right`
-    Add(Box<Arithmetic>, Box<Arithmetic>),
+    Add(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
     /// `left - right`
-    Sub(Box<Arithmetic>, Box<Arithmetic>),
+    Sub(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
     /// `left << right`
-    ShiftLeft(Box<Arithmetic>, Box<Arithmetic>),
+    ShiftLeft(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
     /// `left >> right`
-    ShiftRight(Box<Arithmetic>, Box<Arithmetic>),
+    ShiftRight(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
     /// `left < right`
-    Less(Box<Arithmetic>, Box<Arithmetic>),
+    Less(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
     /// `left <= right`
-    LessEq(Box<Arithmetic>, Box<Arithmetic>),
+    LessEq(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
     /// `left > right`
-    Great(Box<Arithmetic>, Box<Arithmetic>),
+    Great(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
     /// `left >= right`
-    GreatEq(Box<Arithmetic>, Box<Arithmetic>),
+    GreatEq(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
     /// `left == right`
-    Eq(Box<Arithmetic>, Box<Arithmetic>),
+    Eq(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
     /// `left != right`
-    NotEq(Box<Arithmetic>, Box<Arithmetic>),
+    NotEq(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
     /// `left & right`
-    BitwiseAnd(Box<Arithmetic>, Box<Arithmetic>),
+    BitwiseAnd(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
     /// `left ^ right`
-    BitwiseXor(Box<Arithmetic>, Box<Arithmetic>),
+    BitwiseXor(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
     /// `left | right`
-    BitwiseOr(Box<Arithmetic>, Box<Arithmetic>),
+    BitwiseOr(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
     /// `left && right`
-    LogicalAnd(Box<Arithmetic>, Box<Arithmetic>),
+    LogicalAnd(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
     /// `left || right`
-    LogicalOr(Box<Arithmetic>, Box<Arithmetic>),
+    LogicalOr(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
     /// `first ? second : third`
-    Ternary(Box<Arithmetic>, Box<Arithmetic>, Box<Arithmetic>),
+    Ternary(Box<Arithmetic<T>>, Box<Arithmetic<T>>, Box<Arithmetic<T>>),
     /// Assigns the value of an underlying expression to a
     /// variable and returns the value, e.g. `x = 5`, or `x += 2`.
-    Assign(T, Box<Arithmetic>),
+    Assign(T, Box<Arithmetic<T>>),
     /// `expr[, expr[, ...]]`
-    Sequence(Vec<Arithmetic>),
+    Sequence(Vec<Arithmetic<T>>),
 }
 
 impl<T> ops::Deref for TopLevelCommand<T> {
