@@ -484,7 +484,7 @@ impl<T: From<String>> Builder for DefaultBuilder<T> {
     type CommandList     = AndOrList<Self::ListableCommand>;
     type ListableCommand = ListableCommand<Self::PipeableCommand>;
     type PipeableCommand = DefaultPipeableCommand<T, Self::Word, Self::Command>;
-    type CompoundCommand = CompoundCommand<CompoundCommandKind<Self::Word, Self::Command>, Self::Redirect>;
+    type CompoundCommand = CompoundCommand<CompoundCommandKind<T, Self::Word, Self::Command>, Self::Redirect>;
     type Word            = TopLevelWord<T>;
     type Redirect        = Redirect<Self::Word>;
     type Error           = Void;
@@ -662,7 +662,7 @@ impl<T: From<String>> Builder for DefaultBuilder<T> {
 
     /// Constructs a `CompoundCommand::For` node with the provided inputs.
     fn for_command(&mut self,
-                   mut fragments: ForFragments<Self::Word, Self::Command>,
+                   fragments: ForFragments<Self::Word, Self::Command>,
                    mut redirects: Vec<Self::Redirect>)
         -> ParseResult<Self::CompoundCommand, Self::Error>
     {
@@ -673,13 +673,11 @@ impl<T: From<String>> Builder for DefaultBuilder<T> {
 
         let mut body = fragments.body.commands;
         body.shrink_to_fit();
-
-        fragments.var.shrink_to_fit();
         redirects.shrink_to_fit();
 
         Ok(CompoundCommand {
             kind: CompoundCommandKind::For {
-                var: fragments.var,
+                var: fragments.var.into(),
                 words: words,
                 body: body,
             },

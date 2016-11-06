@@ -207,8 +207,8 @@ pub type CommandList<T, W, C> = AndOrList<ListableCommand<DefaultPipeableCommand
 pub type DefaultPipeableCommand<T, W, C> = PipeableCommand<
     T,
     Box<SimpleCommand<T, W, Redirect<W>>>,
-    Box<CompoundCommand<CompoundCommandKind<W, C>, Redirect<W>>>,
-    Rc<CompoundCommand<CompoundCommandKind<W, C>, Redirect<W>>>
+    Box<CompoundCommand<CompoundCommandKind<T, W, C>, Redirect<W>>>,
+    Rc<CompoundCommand<CompoundCommandKind<T, W, C>, Redirect<W>>>
 >;
 
 /// A command which conditionally runs based on the exit status of the previous command.
@@ -280,7 +280,7 @@ pub struct CompoundCommand<T = CompoundCommandKind, R = Redirect> {
 ///
 /// Generic over the representation of shell words and commands.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum CompoundCommandKind<W = TopLevelWord, C = TopLevelCommand> {
+pub enum CompoundCommandKind<V = String, W = TopLevelWord, C = TopLevelCommand> {
     /// A group of commands that should be executed in the current environment.
     Brace(Vec<C>),
     /// A group of commands that should be executed in a subshell environment.
@@ -301,7 +301,7 @@ pub enum CompoundCommandKind<W = TopLevelWord, C = TopLevelCommand> {
     /// its body once for each binding.
     For {
         /// The variable to bind to each of the specified words.
-        var: String,
+        var: V,
         /// The words to bind to the specified variable one by one.
         words: Option<Vec<W>>,
         /// The body to run with the variable binding.
