@@ -1633,9 +1633,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Peeks at the next token (after skipping whitespace) to determine
     /// if (and which) compound command may follow.
     fn next_compound_command_type(&mut self) -> Option<CompoundCmdKeyword> {
-        if let Some(&ParenOpen) = self.iter.peek() {
+        if Some(&ParenOpen) == self.iter.peek() {
             Some(CompoundCmdKeyword::Subshell)
-        } else if let Some(_) = self.peek_reserved_token(&[CurlyOpen]) {
+        } else if self.peek_reserved_token(&[CurlyOpen]).is_some() {
             Some(CompoundCmdKeyword::Brace)
         } else {
             match self.peek_reserved_word(&[FOR, CASE, IF, WHILE, UNTIL]) {
