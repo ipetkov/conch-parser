@@ -1,5 +1,9 @@
+// Certain helpers may only be used by specific tests,
+// suppress dead_code warnings since the compiler can't
+// see our intent
+#![allow(dead_code)]
+
 use shell_lang::ast::*;
-use shell_lang::ast::builder::*;
 use shell_lang::ast::Command::*;
 use shell_lang::ast::ComplexWord::*;
 use shell_lang::ast::PipeableCommand::*;
