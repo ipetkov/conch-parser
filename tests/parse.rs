@@ -9,120 +9,12 @@ use shell_lang::ast::ComplexWord::*;
 use shell_lang::ast::CompoundCommandKind::*;
 use shell_lang::ast::PipeableCommand::*;
 use shell_lang::ast::SimpleWord::*;
-use shell_lang::lexer::Lexer;
 use shell_lang::parse::*;
 use shell_lang::parse::ParseError::*;
 use shell_lang::token::Token;
 
-fn lit(s: &str) -> Word {
-    Word::Simple(Literal(String::from(s)))
-}
-
-fn escaped(s: &str) -> Word {
-    Word::Simple(Escaped(String::from(s)))
-}
-
-fn subst(s: ParameterSubstitution) -> Word {
-    Word::Simple(Subst(Box::new(s)))
-}
-
-fn single_quoted(s: &str) -> TopLevelWord {
-    TopLevelWord(Single(Word::SingleQuoted(String::from(s))))
-}
-
-fn double_quoted(s: &str) -> TopLevelWord {
-    TopLevelWord(Single(Word::DoubleQuoted(vec!(Literal(String::from(s))))))
-}
-
-fn word(s: &str) -> TopLevelWord {
-    TopLevelWord(Single(lit(s)))
-}
-
-fn word_escaped(s: &str) -> TopLevelWord {
-    TopLevelWord(Single(escaped(s)))
-}
-
-fn word_subst(s: ParameterSubstitution) -> TopLevelWord {
-    TopLevelWord(Single(subst(s)))
-}
-
-fn word_param(p: Parameter) -> TopLevelWord {
-    TopLevelWord(Single(Word::Simple(Param(p))))
-}
-
-fn make_parser(src: &str) -> DefaultParser<Lexer<::std::str::Chars>> {
-    DefaultParser::new(Lexer::new(src.chars()))
-}
-
-fn make_parser_from_tokens(src: Vec<Token>) -> DefaultParser<::std::vec::IntoIter<Token>> {
-    DefaultParser::new(src.into_iter())
-}
-
-fn cmd_args_simple(cmd: &str, args: &[&str]) -> Box<SimpleCommand> {
-    let cmd = word(cmd);
-    let args = args.iter().map(|&a| word(a)).collect();
-
-    Box::new(SimpleCommand {
-        cmd: Some((cmd, args)),
-        vars: vec!(),
-        io: vec!(),
-    })
-}
-
-fn cmd_simple(cmd: &str) -> Box<SimpleCommand> {
-    cmd_args_simple(cmd, &[])
-}
-
-fn cmd_args(cmd: &str, args: &[&str]) -> TopLevelCommand {
-    TopLevelCommand(List(CommandList {
-        first: ListableCommand::Single(Simple(cmd_args_simple(cmd, args))),
-        rest: vec!(),
-    }))
-}
-
-fn cmd(cmd: &str) -> TopLevelCommand {
-    cmd_args(cmd, &[])
-}
-
-fn cmd_from_simple(cmd: SimpleCommand) -> TopLevelCommand {
-    TopLevelCommand(List(CommandList {
-        first: ListableCommand::Single(Simple(Box::new(cmd))),
-        rest: vec!(),
-    }))
-}
-
-fn src(byte: usize, line: usize, col: usize) -> SourcePos {
-    SourcePos {
-        byte: byte,
-        line: line,
-        col: col,
-    }
-}
-
-struct SimpleCommandFragments {
-    cmd: Option<(TopLevelWord, Vec<TopLevelWord>)>,
-    vars: Vec<(String, Option<TopLevelWord>)>,
-    io: Vec<Redirect>,
-}
-
-fn sample_simple_command() -> SimpleCommandFragments {
-    SimpleCommandFragments {
-        cmd: Some((word("foo"), vec!(
-            word("bar"),
-            word("baz"),
-        ))),
-        vars: vec!(
-            (String::from("var"), Some(word("val"))),
-            (String::from("ENV"), Some(word("true"))),
-            (String::from("BLANK"), None),
-        ),
-        io: vec!(
-            Redirect::Clobber(Some(2), word("clob")),
-            Redirect::ReadWrite(Some(3), word("rw")),
-            Redirect::Read(None, word("in")),
-        ),
-    }
-}
+mod parse_support;
+use parse_support::*;
 
 #[test]
 fn test_linebreak_valid_with_comments_and_whitespace() {
