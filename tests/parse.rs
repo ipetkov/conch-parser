@@ -249,50 +249,6 @@ fn test_complete_command_valid_no_input() {
 }
 
 #[test]
-fn test_simple_command_valid_assignments_at_start_of_command() {
-    let mut p = make_parser("var=val ENV=true BLANK= foo bar baz");
-    let SimpleCommandFragments { cmd, vars, ..} = sample_simple_command();
-    let correct = Simple(Box::new(SimpleCommand { cmd: cmd, vars: vars, io: vec!() }));
-    assert_eq!(correct, p.simple_command().unwrap());
-}
-
-#[test]
-fn test_simple_command_assignments_after_start_of_command_should_be_args() {
-    let mut p = make_parser("var=val ENV=true BLANK= foo var2=val2 bar baz var3=val3");
-    let SimpleCommandFragments { cmd, vars, ..} = sample_simple_command();
-    let (cmd, mut args) = cmd.unwrap();
-    args.insert(0, word("var2=val2"));
-    args.push(word("var3=val3"));
-    let correct = Simple(Box::new(SimpleCommand { cmd: Some((cmd, args)), vars: vars, io: vec!() }));
-    assert_eq!(correct, p.simple_command().unwrap());
-}
-
-#[test]
-fn test_simple_command_redirections_at_start_of_command() {
-    let mut p = make_parser("2>|clob 3<>rw <in var=val ENV=true BLANK= foo bar baz");
-    let SimpleCommandFragments { cmd, vars, io } = sample_simple_command();
-    let correct = Simple(Box::new(SimpleCommand { cmd: cmd, vars: vars, io: io }));
-    assert_eq!(correct, p.simple_command().unwrap());
-}
-
-#[test]
-fn test_simple_command_redirections_at_end_of_command() {
-    let mut p = make_parser("var=val ENV=true BLANK= foo bar baz 2>|clob 3<>rw <in");
-    let SimpleCommandFragments { cmd, vars, io } = sample_simple_command();
-    let correct = Simple(Box::new(SimpleCommand { cmd: cmd, vars: vars, io: io }));
-    assert_eq!(correct, p.simple_command().unwrap());
-}
-
-#[test]
-fn test_simple_command_redirections_throughout_the_command() {
-    let mut p = make_parser("2>|clob var=val 3<>rw ENV=true BLANK= foo bar <in baz 4>&-");
-    let SimpleCommandFragments { cmd, vars, mut io } = sample_simple_command();
-    io.push(Redirect::DupWrite(Some(4), word("-")));
-    let correct = Simple(Box::new(SimpleCommand { cmd: cmd, vars: vars, io: io }));
-    assert_eq!(correct, p.simple_command().unwrap());
-}
-
-#[test]
 fn test_do_group_valid() {
     let mut p = make_parser("do foo\nbar; baz\n#comment\n done");
     let correct = CommandGroup {

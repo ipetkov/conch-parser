@@ -96,30 +96,3 @@ pub fn src(byte: usize, line: usize, col: usize) -> SourcePos {
         col: col,
     }
 }
-
-pub struct SimpleCommandFragments {
-    pub cmd: Option<(TopLevelWord, Vec<TopLevelWord>)>,
-    pub vars: Vec<(String, Option<TopLevelWord>)>,
-    pub io: Vec<Redirect>,
-}
-
-pub fn sample_simple_command() -> SimpleCommandFragments {
-    SimpleCommandFragments {
-        cmd: Some((word("foo"), vec!(
-            word("bar"),
-            word("baz"),
-        ))),
-        vars: vec!(
-            (String::from("var"), Some(word("val"))),
-            (String::from("ENV"), Some(word("true"))),
-            (String::from("BLANK"), None),
-        ),
-        io: vec!(
-            Redirect::Clobber(Some(2), word("clob")),
-            Redirect::ReadWrite(Some(3), word("rw")),
-            Redirect::Read(None, word("in")),
-        ),
-    }
-}
-
-
