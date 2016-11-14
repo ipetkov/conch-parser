@@ -75,29 +75,28 @@ pub trait TokenIterator: Sized + PeekablePositionIterator<Item = Token> {
     /// tokens until all matching cases of single/double quotes, backticks,
     /// ${ }, $( ), or ( ) are found.
     fn balanced(&mut self) -> Balanced<&mut Self> {
-        let pos = self.pos();
-        Balanced::new(self, None, pos)
+        Balanced::new(self, None)
     }
 
     /// Returns an iterator that yields tokens up to when a (closing) single quote
     /// is reached (assuming that the caller has reached the opening quote and
     /// wishes to continue up to but not including the closing quote).
     fn single_quoted(&mut self, pos: SourcePos) -> Balanced<&mut Self> {
-        Balanced::new(self, Some(SingleQuote), pos)
+        Balanced::new(self, Some((SingleQuote, pos)))
     }
 
     /// Returns an iterator that yields tokens up to when a (closing) double quote
     /// is reached (assuming that the caller has reached the opening quote and
     /// wishes to continue up to but not including the closing quote).
     fn double_quoted(&mut self, pos: SourcePos) -> Balanced<&mut Self> {
-        Balanced::new(self, Some(DoubleQuote), pos)
+        Balanced::new(self, Some((DoubleQuote, pos)))
     }
 
     /// Returns an iterator that yields tokens up to when a (closing) backtick
     /// is reached (assuming that the caller has reached the opening backtick and
     /// wishes to continue up to but not including the closing backtick).
     fn backticked(&mut self, pos: SourcePos) -> Balanced<&mut Self> {
-        Balanced::new(self, Some(Backtick), pos)
+        Balanced::new(self, Some((Backtick, pos)))
     }
 
     /// Returns an iterator that yields tokens up to when a (closing) backtick
@@ -456,13 +455,13 @@ impl<I: PositionIterator> Balanced<I> {
     /// tokens until its matching delimeter is found (the matching delimeter *will*
     /// be consumed).
     ///
-    /// If a delimeter is specified, tokens are yielded *up to* the delimeter,
-    /// but the delimeter will be silently consumed.
-    pub fn new(iter: I, delim: Option<Token>, pos: SourcePos) -> Self {
+    /// If a delimeter (and its position) is specified, tokens are yielded *up to*
+    /// the delimeter, but the delimeter will be silently consumed.
+    pub fn new(iter: I, delim: Option<(Token, SourcePos)>) -> Self {
         Balanced {
             escaped: None,
             skip_last_delimeter: delim.is_some(),
-            stack: delim.map_or(Vec::new(), |d| vec!((d, pos))),
+            stack: delim.map_or(Vec::new(), |d| vec!(d)),
             done: false,
             pos: iter.pos(),
             iter: iter,
