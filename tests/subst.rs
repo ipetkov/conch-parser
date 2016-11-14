@@ -625,7 +625,7 @@ fn test_parameter_substitution_command_close_paren_need_not_be_followed_by_word_
 fn test_parameter_substitution_invalid() {
     let cases = vec!(
         ("$(( x",     UnexpectedEOF),
-        ("${foo",     UnexpectedEOF),
+        ("${foo",     Unmatched(Token::CurlyOpen, src(1, 1, 2))),
         ("${ foo}",   BadSubst(Token::Whitespace(String::from(" ")), src(2,1,3))),
         ("${foo }",   BadSubst(Token::Whitespace(String::from(" ")), src(5,1,6))),
         ("${foo -}",  BadSubst(Token::Whitespace(String::from(" ")), src(5,1,6))),
@@ -642,6 +642,7 @@ fn test_parameter_substitution_invalid() {
         ("${foo: +}", BadSubst(Token::Whitespace(String::from(" ")), src(6,1,7))),
         ("${foo: %}", BadSubst(Token::Whitespace(String::from(" ")), src(6,1,7))),
         ("${foo: #}", BadSubst(Token::Whitespace(String::from(" ")), src(6,1,7))),
+        ("${foo-bar", Unmatched(Token::CurlyOpen, src(1, 1, 2))),
         ("${'foo'}",  BadSubst(Token::SingleQuote, src(2,1,3))),
         ("${\"foo\"}", BadSubst(Token::DoubleQuote, src(2,1,3))),
         ("${`foo`}",  BadSubst(Token::Backtick, src(2,1,3))),
@@ -656,4 +657,48 @@ fn test_parameter_substitution_invalid() {
             },
         }
     }
+}
+
+#[test]
+fn test_parameter_substitution_nested_quoted() {
+    let param = Var("foo".to_owned());
+    let cases = vec!(
+        ("${foo:+'bar'}",   Alternative(true, param.clone(), Some(single_quoted("bar")))),
+        ("${foo:+\"bar\"}", Alternative(true, param.clone(), Some(double_quoted("bar")))),
+        ("${foo:+`bar`}",   Alternative(true, param.clone(), Some(
+            word_subst(Command(vec!(cmd("bar")))))
+        )),
+    );
+
+    for (src, subst) in cases.into_iter() {
+        let correct = word_subst(subst);
+        let parsed = make_parser(src).parameter();
+        if parsed.as_ref() != Ok(&correct) {
+            panic!("Expected \"{}\" to parse as `{:?}`, but got `{:?}`", src, correct, parsed);
+        }
+    }
+}
+
+#[test]
+fn test_parameter_substitution_can_have_nested_substitution_and_parameter() {
+    let param_foo = Var("foo".to_owned());
+    let param_bar = Var("bar".to_owned());
+    let correct = word_subst(Alternative(true, param_foo, Some(
+        word_subst(Alternative(true, param_bar, Some(word_param(Dollar))))
+    )));
+
+    let mut p = make_parser("${foo:+${bar:+$$}}");
+    assert_eq!(Ok(correct), p.parameter());
+}
+
+#[test]
+fn test_parameter_substitution_special_tokens_in_words_become_literals() {
+    let correct = word_subst(Default(true, Var("foo".to_owned()), Some(TopLevelWord(Concat(vec!(
+        lit("#(bar);&|&&||;; << >> <& >& <<- "),
+        escaped("\n"),
+        lit("\n\t"),
+    ))))));
+
+    let mut p = make_parser("${foo:-#(bar);&|&&||;; << >> <& >& <<- \\\n\n\t}");
+    assert_eq!(Ok(correct), p.parameter());
 }

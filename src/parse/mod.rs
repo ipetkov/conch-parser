@@ -2,8 +2,10 @@
 
 use std::convert::From;
 use std::error::Error;
+use std::iter::empty as empty_iter;
 use std::fmt;
 use std::mem;
+use std::result::Result as StdResult;
 use std::str::FromStr;
 
 use ast;
@@ -36,7 +38,7 @@ const WHILE:    &'static str = "while";
 pub type DefaultParser<I> = Parser<I, builder::StringBuilder>;
 
 /// A specialized `Result` type for parsing shell commands.
-pub type ParseResult<T, E> = ::std::result::Result<T, ParseError<E>>;
+pub type ParseResult<T, E> = StdResult<T, ParseError<E>>;
 
 /// Indicates a character/token position in the original source.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -996,7 +998,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             let body = heredoc.into_iter().flat_map(|(t, _)| t).collect::<Vec<_>>();
             Single(Simple(SimpleWordKind::Literal(concat_tokens(&body))))
         } else {
-            let mut tok_iter = TokenIter::with_position(::std::iter::empty(), heredoc_start_pos);
+            let mut tok_iter = TokenIter::with_position(empty_iter(), heredoc_start_pos);
             while let Some((line, pos)) = heredoc.pop() {
                 tok_iter.buffer_tokens_to_yield_first(line, pos);
             }
@@ -1048,6 +1050,14 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     fn word_preserve_trailing_whitespace_raw(&mut self)
         -> ParseResult<Option<ComplexWordKind<B::Command>>, B::Error>
     {
+        self.word_preserve_trailing_whitespace_raw_with_delim(None)
+    }
+
+    /// Identical to `Parser::word_preserve_trailing_whitespace_raw()` but
+    /// allows for specifying an arbitrary token as a word delimiter.
+    fn word_preserve_trailing_whitespace_raw_with_delim(&mut self, delim: Option<Token>)
+        -> ParseResult<Option<ComplexWordKind<B::Command>>, B::Error>
+    {
         self.skip_whitespace();
 
         // Make sure we don't consume comments,
@@ -1058,6 +1068,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         let mut words = Vec::new();
         loop {
+            if delim.is_some() && self.iter.peek() == delim.as_ref() {
+                break;
+            }
+
             match self.iter.peek() {
                 Some(&CurlyOpen)          |
                 Some(&CurlyClose)         |
@@ -1349,11 +1363,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Identical to `Parser::parameter()` but does not pass the result to the AST builder.
     fn parameter_raw(&mut self) -> ParseResult<SimpleWordKind<B::Command>, B::Error> {
         use ast::Parameter;
-        use ast::builder::ParameterSubstitutionKind::*;
 
         let start_pos = self.iter.pos();
         match self.iter.next() {
-            Some(ParamPositional(p)) => return Ok(SimpleWordKind::Param(Parameter::Positional(p as u32))),
+            Some(ParamPositional(p)) => Ok(SimpleWordKind::Param(Parameter::Positional(p as u32))),
 
             Some(Dollar) => {
                 match self.iter.peek() {
@@ -1364,30 +1377,195 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     Some(&Bang)      |
                     Some(&Dash)      |
                     Some(&At)        |
-                    Some(&Name(_))   |
+                    Some(&Name(_))   => Ok(SimpleWordKind::Param(try!(self.parameter_inner()))),
+
                     Some(&ParenOpen) |
-                    Some(&CurlyOpen) => {},
-                    _ => return Ok(SimpleWordKind::Literal(Dollar.to_string())),
+                    Some(&CurlyOpen) => self.parameter_substitution_raw(),
+
+                    _ => Ok(SimpleWordKind::Literal(Dollar.to_string())),
                 }
             },
 
-            Some(t) => return Err(ParseError::Unexpected(t, start_pos)),
-            None => return Err(ParseError::UnexpectedEOF),
+            Some(t) => Err(ParseError::Unexpected(t, start_pos)),
+            None => Err(ParseError::UnexpectedEOF),
+        }
+    }
+
+    /// Parses the word part of a parameter substitution, up to and including
+    /// the closing curly brace.
+    ///
+    /// All tokens that normally cannot be part of a word will be treated
+    /// as literals.
+    fn parameter_substitution_word_raw(&mut self, curly_open_pos: SourcePos)
+        -> ParseResult<Option<ComplexWordKind<B::Command>>, B::Error>
+    {
+        let mut words = Vec::new();
+        'capture_words: loop {
+            'capture_literals: loop {
+                let found_backslash = match self.iter.peek() {
+                    None |
+                    Some(&CurlyClose) => break 'capture_words,
+
+                    Some(&Backslash) => true,
+
+                    // Tokens that are normally skipped or ignored either always or at the
+                    // start of a word (e.g. #), we want to make sure we capture these ourselves.
+                    Some(t@&Pound)         |
+                    Some(t@&ParenOpen)     |
+                    Some(t@&ParenClose)    |
+                    Some(t@&Semi)          |
+                    Some(t@&Amp)           |
+                    Some(t@&Pipe)          |
+                    Some(t@&AndIf)         |
+                    Some(t@&OrIf)          |
+                    Some(t@&DSemi)         |
+                    Some(t@&Less)          |
+                    Some(t@&Great)         |
+                    Some(t@&DLess)         |
+                    Some(t@&DGreat)        |
+                    Some(t@&GreatAnd)      |
+                    Some(t@&LessAnd)       |
+                    Some(t@&DLessDash)     |
+                    Some(t@&Clobber)       |
+                    Some(t@&LessGreat)     |
+                    Some(t@&Whitespace(_)) |
+                    Some(t@&Newline)       => {
+                        words.push(Simple(SimpleWordKind::Literal(t.as_str().to_owned())));
+                        false
+                    },
+
+                    // Tokens that are always part of a word,
+                    // don't have to handle them differently.
+                    Some(&CurlyOpen)          |
+                    Some(&SquareOpen)         |
+                    Some(&SquareClose)        |
+                    Some(&SingleQuote)        |
+                    Some(&DoubleQuote)        |
+                    Some(&Star)               |
+                    Some(&Question)           |
+                    Some(&Tilde)              |
+                    Some(&Bang)               |
+                    Some(&Percent)            |
+                    Some(&Dash)               |
+                    Some(&Equals)             |
+                    Some(&Plus)               |
+                    Some(&Colon)              |
+                    Some(&At)                 |
+                    Some(&Caret)              |
+                    Some(&Slash)              |
+                    Some(&Comma)              |
+                    Some(&Name(_))            |
+                    Some(&Literal(_))         |
+                    Some(&Backtick)           |
+                    Some(&Dollar)             |
+                    Some(&ParamPositional(_)) => break 'capture_literals,
+                };
+
+
+                // Escaped newlines are considered whitespace and usually ignored,
+                // so we have to manually capture here.
+                let skip_twice = if found_backslash {
+                    let mut peek = self.iter.multipeek();
+                    peek.peek_next(); // Skip past the Backslash
+                    if let Some(t@&Newline) = peek.peek_next() {
+                        words.push(Simple(SimpleWordKind::Escaped(t.as_str().to_owned())));
+                        true
+                    } else {
+                        // Backslash is escaping something other than newline,
+                        // capture it like a regular word.
+                        break 'capture_literals;
+                    }
+                } else {
+                    false
+                };
+
+                self.iter.next(); // Skip the first token that was peeked above
+                if skip_twice {
+                    self.iter.next();
+                }
+
+            }
+
+            match try!(self.word_preserve_trailing_whitespace_raw_with_delim(Some(CurlyClose))) {
+                Some(Single(w)) => words.push(w),
+                Some(Concat(ws)) => words.extend(ws),
+                None => break 'capture_words,
+            }
         }
 
-        let start_pos = self.iter.pos();
-        let param_word = |parser: &mut Self| -> ParseResult<Option<ComplexWordKind<B::Command>>, B::Error> {
-            let mut words = try!(parser.word_interpolated_raw(Some((CurlyOpen, CurlyClose)), start_pos));
-            if words.is_empty() {
-                Ok(None)
-            } else if words.len() == 1 {
-                Ok(Some(Single(Simple(words.pop().unwrap()))))
-            } else {
-                Ok(Some(Concat(words.into_iter().map(Simple).collect())))
-            }
+        eat_maybe!(self, {
+            CurlyClose => {};
+            _ => { return Err(ParseError::Unmatched(CurlyOpen, curly_open_pos)); }
+        });
+
+        if words.is_empty() {
+            Ok(None)
+        } else if words.len() == 1 {
+            Ok(Some(Single(words.pop().unwrap())))
+        } else {
+            Ok(Some(Concat(words)))
+        }
+    }
+
+    /// Parses everything that comes after the parameter in a parameter substitution.
+    ///
+    /// For example, given `${<param><colon><operator><word>}`, this function will consume
+    /// the colon, operator, word, and closing curly.
+    ///
+    /// Nothing is passed to the builder.
+    fn parameter_substitution_body_raw(&mut self, param: ast::Parameter, curly_open_pos: SourcePos)
+        -> ParseResult<SimpleWordKind<B::Command>, B::Error>
+    {
+        use ast::Parameter;
+        use ast::builder::ParameterSubstitutionKind::*;
+
+        let has_colon = eat_maybe!(self, {
+            Colon => { true };
+            _ => { false },
+        });
+
+        let op_pos = self.iter.pos();
+        let op = match self.iter.next() {
+            Some(tok@Dash)     |
+            Some(tok@Equals)   |
+            Some(tok@Question) |
+            Some(tok@Plus)     => tok,
+
+            Some(CurlyClose) => return Ok(SimpleWordKind::Param(param)),
+
+            Some(t) => return Err(ParseError::BadSubst(t, op_pos)),
+            None => return Err(ParseError::Unmatched(CurlyOpen, curly_open_pos)),
         };
 
-        let param = match self.iter.peek() {
+        let word = try!(self.parameter_substitution_word_raw(curly_open_pos));
+        let maybe_len = param == Parameter::Pound && !has_colon && word.is_none();
+
+        // We must carefully check if we get ${#-} or ${#?}, in which case
+        // we have parsed a Len substitution and not something else
+        let ret = if maybe_len && op == Dash {
+            Len(Parameter::Dash)
+        } else if maybe_len && op == Question {
+            Len(Parameter::Question)
+        } else {
+            match op {
+                Dash     => Default(has_colon, param, word),
+                Equals   => Assign(has_colon, param, word),
+                Question => Error(has_colon, param, word),
+                Plus     => Alternative(has_colon, param, word),
+                _ => unreachable!(),
+            }
+        };
+        Ok(SimpleWordKind::Subst(Box::new(ret)))
+    }
+
+    /// Parses a parameter substitution in the form of `${...}`, `$(...)`, or `$((...))`.
+    /// Nothing is passed to the builder.
+    fn parameter_substitution_raw(&mut self) -> ParseResult<SimpleWordKind<B::Command>, B::Error> {
+        use ast::Parameter;
+        use ast::builder::ParameterSubstitutionKind::*;
+
+        let start_pos = self.iter.pos();
+        match self.iter.peek() {
             Some(&ParenOpen) => {
                 let is_arith = {
                     let mut peeked = self.iter.multipeek();
@@ -1420,126 +1598,69 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     Command(try!(self.subshell_internal(true)))
                 };
 
-                return Ok(SimpleWordKind::Subst(Box::new(subst)));
+                Ok(SimpleWordKind::Subst(Box::new(subst)))
             },
 
             Some(&CurlyOpen) => {
+                let curly_open_pos = start_pos;
                 self.iter.next();
-                let param = if let Some(&Pound) = self.iter.peek() {
-                    self.iter.next();
-                    match self.iter.peek() {
-                        Some(&Percent) => {
-                            self.iter.next();
-                            if let Some(&Percent) = self.iter.peek() {
-                                self.iter.next();
-                                Err(RemoveLargestSuffix(Parameter::Pound, try!(param_word(self))))
-                            } else {
-                                Err(RemoveSmallestSuffix(Parameter::Pound, try!(param_word(self))))
-                            }
-                        },
 
-                        Some(&Pound) => {
-                            self.iter.next();
-                            if let Some(&Pound) = self.iter.peek() {
-                                self.iter.next();
-                                Err(RemoveLargestPrefix(Parameter::Pound, try!(param_word(self))))
-                            } else {
-                                match try!(param_word(self)) {
-                                    w@Some(_) => Err(RemoveSmallestPrefix(Parameter::Pound, w)),
-                                    None => Err(Len(Parameter::Pound)),
+                let param = try!(self.parameter_inner());
+                let subst = match self.iter.peek() {
+                    Some(&Percent) => {
+                        self.iter.next();
+                        eat_maybe!(self, {
+                            Percent => {
+                                let word = self.parameter_substitution_word_raw(curly_open_pos);
+                                RemoveLargestSuffix(param, try!(word))
+                            };
+                            _ => {
+                                let word = self.parameter_substitution_word_raw(curly_open_pos);
+                                RemoveSmallestSuffix(param, try!(word))
+                            }
+                        })
+                    },
+
+                    Some(&Pound) => {
+                        self.iter.next();
+                        eat_maybe!(self, {
+                            Pound => {
+                                let word = self.parameter_substitution_word_raw(curly_open_pos);
+                                RemoveLargestPrefix(param, try!(word))
+                            };
+                            _ => {
+                                match try!(self.parameter_substitution_word_raw(curly_open_pos)) {
+                                    // Handle ${##} case
+                                    None if Parameter::Pound == param => Len(Parameter::Pound),
+                                    w => RemoveSmallestPrefix(param, w),
                                 }
                             }
-                        },
-
-                        Some(&Colon)      |
-                        Some(&Dash)       |
-                        Some(&Equals)     |
-                        Some(&Question)   |
-                        Some(&Plus)       |
-                        Some(&CurlyClose) => Ok(Parameter::Pound),
-
-                        _ => {
-                            let param = try!(self.parameter_inner());
-                            eat!(self, { CurlyClose => { Err(Len(param)) } })
-                        },
-                    }
-                } else {
-                    let param = try!(self.parameter_inner());
-                    if let Some(&Percent) = self.iter.peek() {
-                        self.iter.next();
-                        if let Some(&Percent) = self.iter.peek() {
-                            self.iter.next();
-                            Err(RemoveLargestSuffix(param, try!(param_word(self))))
-                        } else {
-                            Err(RemoveSmallestSuffix(param, try!(param_word(self))))
-                        }
-                    } else if let Some(&Pound) = self.iter.peek() {
-                        self.iter.next();
-                        if let Some(&Pound) = self.iter.peek() {
-                            self.iter.next();
-                            Err(RemoveLargestPrefix(param, try!(param_word(self))))
-                        } else {
-                            Err(RemoveSmallestPrefix(param, try!(param_word(self))))
-                        }
-                    } else {
-                        Ok(param)
-                    }
-                };
-
-                // Handle any other substitutions unless we already found a remove prefix/suffix one
-                let param = match param {
-                    Err(p) => Err(p),
-                    Ok(p) => if let Some(&CurlyClose) = self.iter.peek() { Ok(p) } else {
-                        let has_colon = if let Some(&Colon) = self.iter.peek() {
-                            self.iter.next();
-                            true
-                        } else {
-                            false
-                        };
-
-                        let op_pos = self.iter.pos();
-                        let op = match self.iter.next() {
-                            Some(tok@Dash)     |
-                            Some(tok@Equals)   |
-                            Some(tok@Question) |
-                            Some(tok@Plus)     => tok,
-                            Some(t) => return Err(ParseError::BadSubst(t, op_pos)),
-                            None => return Err(ParseError::UnexpectedEOF),
-                        };
-
-                        let word = try!(param_word(self));
-                        let maybe_len = p == Parameter::Pound && !has_colon && word.is_none();
-
-                        // We must carefully check if we get ${#-} or ${#?}, in which case
-                        // we have parsed a Len substitution and not something else
-                        if maybe_len && op == Dash {
-                            Err(Len(Parameter::Dash))
-                        } else if maybe_len && op == Question {
-                            Err(Len(Parameter::Question))
-                        } else {
-                            match op {
-                                Dash     => Err(Default(has_colon, p, word)),
-                                Equals   => Err(Assign(has_colon, p, word)),
-                                Question => Err(Error(has_colon, p, word)),
-                                Plus     => Err(Alternative(has_colon, p, word)),
-                                _ => unreachable!(),
-                            }
-                        }
+                        })
                     },
+
+                    // In this case the found # is the parameter itself
+                    Some(&Colon)      |
+                    Some(&Dash)       |
+                    Some(&Equals)     |
+                    Some(&Question)   |
+                    Some(&Plus)       |
+                    Some(&CurlyClose) if Parameter::Pound == param =>
+                        return self.parameter_substitution_body_raw(param, curly_open_pos),
+
+                    // Otherwise we must have ${#param}
+                    _ if Parameter::Pound == param => {
+                        let param = try!(self.parameter_inner());
+                        eat!(self, { CurlyClose => { Len(param) } })
+                    },
+
+                    _ => return self.parameter_substitution_body_raw(param, curly_open_pos),
                 };
 
-                match param {
-                    // Substitutions have already consumed the closing CurlyClose token
-                    Err(subst) => return Ok(SimpleWordKind::Subst(Box::new(subst))),
-                    // Regular parameters, however, have not
-                    Ok(p) => eat!(self, { CurlyClose => { p } }),
-                }
+                Ok(SimpleWordKind::Subst(Box::new(subst)))
             },
 
-            _ => try!(self.parameter_inner()),
-        };
-
-        Ok(SimpleWordKind::Param(param))
+            _ => Err(self.make_unexpected_err()),
+        }
     }
 
     /// Parses a valid parameter that can appear inside a set of curly braces.
@@ -2253,7 +2374,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Checks that one of the specified strings appears as a reserved word
     /// and consumes it, returning the string it matched in case the caller
     /// cares which specific reserved word was found.
-    pub fn reserved_word<'a>(&mut self, words: &'a [&str]) -> ::std::result::Result<&'a str, ()> {
+    pub fn reserved_word<'a>(&mut self, words: &'a [&str]) -> StdResult<&'a str, ()> {
         match self.peek_reserved_word(words) {
             Some(s) => { self.iter.next(); Ok(s) },
             None => Err(()),
