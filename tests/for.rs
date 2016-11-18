@@ -72,11 +72,32 @@ fn test_for_command_valid_without_words() {
 }
 
 #[test]
-fn test_for_command_valid_with_in_but_no_words_with_separator() {
-    let mut p = make_parser("for var in\ndo echo $var; done");
-    p.for_command().unwrap();
-    let mut p = make_parser("for var in;do echo $var; done");
-    p.for_command().unwrap();
+fn test_for_command_valid_separators() {
+    let cases = vec!(
+        "for var                 do body; done",
+        "for var             ;   do body; done",
+        "for var             ;\n do body; done",
+        "for var\n               do body; done",
+        "for var\n in        ;   do body; done",
+        "for var\n in        ;\n do body; done",
+        "for var\n in         \n do body; done",
+        "for var   in        ;   do body; done",
+        "for var   in        ;\n do body; done",
+        "for var   in         \n do body; done",
+        "for var\n in one two;   do body; done",
+        "for var\n in one two;\n do body; done",
+        "for var\n in one two \n do body; done",
+        "for var   in one two;   do body; done",
+        "for var   in one two;\n do body; done",
+        "for var   in one two \n do body; done",
+    );
+
+    for src in cases {
+        match make_parser(src).for_command() {
+            Ok(_) => {},
+            e@Err(_) => panic!("expected `{}` to parse successfully, but got: {:?}", src, e),
+        }
+    }
 }
 
 #[test]
@@ -152,7 +173,7 @@ fn test_for_command_invalid_var_must_be_name() {
     let mut p = make_parser("for \"var\" in one two three\ndo echo $var; done");
     assert_eq!(Err(Unexpected(Token::DoubleQuote, src(4, 1, 5))), p.for_command());
     let mut p = make_parser("for var*% in one two three\ndo echo $var; done");
-    assert_eq!(Err(Unexpected(Token::Star, src(7, 1, 8))), p.for_command());
+    assert_eq!(Err(IncompleteCmd("for", src(0, 1, 1), "in", src(7, 1, 8))), p.for_command());
 }
 
 #[test]

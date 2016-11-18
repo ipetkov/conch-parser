@@ -1928,14 +1928,15 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             _ => unreachable!(),
         };
 
-        // Make sure that there isn't some extraneous token concatenated
-        // ot the Name token which is the variable
-        eat!(self, { Whitespace(_) => {} });
-
         let var_comment = self.newline();
         let post_var_comments = self.linebreak();
 
+        // A for command can take one of several different shapes (in pseudo regex syntax):
+        // `for name [\n*] [in [word*]] [;\n* | \n+] do_group`
+        // Below we'll disambiguate what situation we have as we move along.
         let (words, pre_body_comments) = if self.peek_reserved_word(&[IN]).is_some() {
+            // Found `in` keyword, therefore we're looking at something like
+            // `for name \n* in [words*] [;\n* | \n+] do_group`
             self.reserved_word(&[IN]).unwrap();
 
             let mut words = Vec::new();
@@ -1943,12 +1944,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 words.push(w);
             }
 
-            let found_semi = if let Some(&Semi) = self.iter.peek() {
-                self.iter.next();
-                true
-            } else {
-                false
-            };
+            let found_semi = eat_maybe!(self, {
+                Semi => { true };
+                _ => { false }
+            });
 
             // We need either a newline or a ; to separate the words from the body
             // Thus if neither is found it is considered an error
@@ -1958,12 +1957,17 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             }
 
             (Some((post_var_comments, words, words_comment)), self.linebreak())
+        } else if Some(&Semi) == self.iter.peek() {
+            // `for name \n*;\n* do_group`
+            eat!(self, { Semi => {} });
+            (None, self.linebreak())
         } else if self.peek_reserved_word(&[DO]).is_none() {
             // If we didn't find an `in` keyword, and we havent hit the body
             // (a `do` keyword), then we can reasonably say the script has
             // words without an `in` keyword.
             return Err(ParseError::IncompleteCmd(FOR, start_pos, IN, self.iter.pos()));
         } else {
+            // `for name \n* do_group`
             (None, post_var_comments)
         };
 
