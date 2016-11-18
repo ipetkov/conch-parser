@@ -1754,6 +1754,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Peeks at the next token (after skipping whitespace) to determine
     /// if (and which) compound command may follow.
     fn next_compound_command_type(&mut self) -> Option<CompoundCmdKeyword> {
+        self.skip_whitespace();
         if Some(&ParenOpen) == self.iter.peek() {
             Some(CompoundCmdKeyword::Subshell)
         } else if self.peek_reserved_token(&[CurlyOpen]).is_some() {

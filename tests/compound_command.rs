@@ -121,6 +121,9 @@ fn test_compound_command_delegates_valid_commands_subshell() {
     let commands = [
         "(foo)",
         "( foo)",
+        " (foo)",
+        "\t(foo)",
+        "\\\n(foo)",
     ];
 
     let correct = CompoundCommand {
