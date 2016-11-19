@@ -13,8 +13,10 @@ use ast::{AndOr, Arithmetic, Parameter};
 use parse::ParseResult;
 
 mod default_builder;
+mod null_builder;
 
 pub use self::default_builder::*;
+pub use self::null_builder::*;
 
 /// An indicator to the builder of how complete commands are separated.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
