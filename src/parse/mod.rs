@@ -215,15 +215,71 @@ impl Default for CommandGroupDelimiters<'static, 'static, 'static> {
     }
 }
 
-impl<I: Iterator<Item = Token>, B: Builder> Iterator for Parser<I, B> {
+/// An `Iterator` adapter around a `Parser`.
+///
+/// This iterator is `fused`, that is, if the underlying parser either yields
+/// no command, or an error, no further commands (or errors) will be yielded.
+///
+/// This is because the parser does not do any error handling or backtracking
+/// on errors, thus trying to parse another command after an error is not
+/// well defined, and will either fail as well, or will produce an incorrect
+/// result.
+#[derive(Debug)]
+pub struct ParserIterator<I, B> {
+    /// The underlying parser to poll for complete commands.
+    /// A `None` value indicates the stream has been exhausted.
+    parser: Option<Parser<I, B>>,
+}
+
+impl<I, B> ParserIterator<I, B> {
+    /// Construct a new adapter with a given parser.
+    fn new(parser: Parser<I, B>) -> Self {
+        ParserIterator {
+            parser: Some(parser),
+        }
+    }
+}
+
+if_nightly! {
+    impl<I, B> ::std::iter::FusedIterator for ParserIterator<I, B>
+        where I: Iterator<Item = Token>,
+              B: Builder,
+    {}
+}
+
+impl<I, B> Iterator for ParserIterator<I, B>
+    where I: Iterator<Item = Token>,
+          B: Builder,
+{
     type Item = ParseResult<B::Command, B::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.complete_command() {
-            Ok(Some(c)) => Some(Ok(c)),
-            Ok(None) => None,
-            Err(e) => Some(Err(e)),
+        match self.parser.as_mut().map(Parser::complete_command) {
+            None => None,
+            Some(ret) => match ret {
+                Ok(Some(c)) => Some(Ok(c)),
+                Ok(None) => {
+                    let _ = self.parser.take();
+                    None
+                },
+                Err(e) => {
+                    let _ = self.parser.take();
+                    Some(Err(e))
+                },
+            }
         }
+    }
+}
+
+impl<I, B> IntoIterator for Parser<I, B>
+    where I: Iterator<Item = Token>,
+          B: Builder,
+{
+    type IntoIter = ParserIterator<I, B>;
+    type Item = <Self::IntoIter as Iterator>::Item;
+
+    fn into_iter(self) -> Self::IntoIter {
+        ParserIterator::new(self)
     }
 }
 
@@ -290,7 +346,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Iterator for Parser<I, B> {
 /// it were `[Literal(<<)]`. The lexer's behavior need not be consistent between different
 /// multi-char tokens, as long as it is aware of the implications.
 #[derive(Debug)]
-pub struct Parser<I: Iterator<Item = Token>, B: Builder> {
+pub struct Parser<I, B> {
     iter: TokenIterWrapper<I>,
     builder: B,
 }

@@ -8,6 +8,13 @@ mod parse_support;
 use parse_support::*;
 
 #[test]
+fn test_parser_should_yield_none_after_error() {
+    let mut iter = make_parser("foo && ||").into_iter();
+    let _ = iter.next().expect("failed to get error").unwrap_err();
+    assert_eq!(iter.next(), None);
+}
+
+#[test]
 fn test_linebreak_valid_with_comments_and_whitespace() {
     let mut p = make_parser("\n\t\t\t\n # comment1\n#comment2\n   \n");
     assert_eq!(p.linebreak(), vec!(

@@ -15,6 +15,16 @@
 
 #![forbid(unsafe_code)]
 
+// Nightly optimizations that don't need their own feature
+#![cfg_attr(feature = "nightly", feature(fused))]
+
+macro_rules! if_nightly {
+    ($($i:item)*) => ($(
+        #[cfg(feature = "nightly")]
+        $i
+    )*)
+}
+
 extern crate void;
 
 pub mod ast;
