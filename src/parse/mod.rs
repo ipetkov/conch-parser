@@ -2864,10 +2864,7 @@ mod tests {
     use ast::*;
     use ast::builder::Newline;
     use ast::Command::*;
-    use ast::ComplexWord::*;
     use ast::CompoundCommandKind::*;
-    use ast::PipeableCommand::*;
-    use ast::SimpleWord::*;
     use lexer::Lexer;
     use parse::*;
 
@@ -2876,11 +2873,11 @@ mod tests {
     }
 
     fn lit(s: &str) -> Word {
-        Word::Simple(Literal(String::from(s)))
+        Word::Simple(SimpleWord::Literal(String::from(s)))
     }
 
     fn word(s: &str) -> TopLevelWord {
-        TopLevelWord(Single(lit(s)))
+        TopLevelWord(ComplexWord::Single(lit(s)))
     }
 
     fn cmd_args_simple(cmd: &str, args: &[&str]) -> Box<SimpleCommand> {
@@ -2900,7 +2897,7 @@ mod tests {
 
     fn cmd_args(cmd: &str, args: &[&str]) -> TopLevelCommand {
         TopLevelCommand(List(CommandList {
-            first: ListableCommand::Single(Simple(cmd_args_simple(cmd, args))),
+            first: ListableCommand::Single(PipeableCommand::Simple(cmd_args_simple(cmd, args))),
             rest: vec!(),
         }))
     }
