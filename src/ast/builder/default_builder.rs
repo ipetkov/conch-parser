@@ -473,7 +473,7 @@ impl<I: Iterator, F> Coalesce<I, F> {
     }
 }
 
-type CoalesceResult<T> = ::std::result::Result<T, (T, T)>;
+type CoalesceResult<T> = Result<T, (T, T)>;
 impl<I, F> Iterator for Coalesce<I, F>
     where I: Iterator,
           F: FnMut(I::Item, I::Item) -> CoalesceResult<I::Item>
