@@ -1,8 +1,8 @@
-extern crate shell_lang;
+extern crate conch_parser;
 
-use shell_lang::lexer::Lexer;
-use shell_lang::token::{Positional, Token};
-use shell_lang::token::Token::*;
+use conch_parser::lexer::Lexer;
+use conch_parser::token::{Positional, Token};
+use conch_parser::token::Token::*;
 
 macro_rules! check_tok {
     ($fn_name:ident, $tok:expr) => {

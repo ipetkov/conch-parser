@@ -1,8 +1,8 @@
-extern crate shell_lang;
+extern crate conch_parser;
 
-use shell_lang::ast::Parameter::*;
-use shell_lang::ast::ParameterSubstitution::*;
-use shell_lang::parse::ParseError::*;
+use conch_parser::ast::Parameter::*;
+use conch_parser::ast::ParameterSubstitution::*;
+use conch_parser::parse::ParseError::*;
 
 mod parse_support;
 use parse_support::*;

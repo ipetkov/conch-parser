@@ -1,9 +1,9 @@
-extern crate shell_lang;
+extern crate conch_parser;
 
-use shell_lang::ast::*;
-use shell_lang::ast::PipeableCommand::*;
-use shell_lang::parse::ParseError::*;
-use shell_lang::token::Token;
+use conch_parser::ast::*;
+use conch_parser::ast::PipeableCommand::*;
+use conch_parser::parse::ParseError::*;
+use conch_parser::token::Token;
 
 mod parse_support;
 use parse_support::*;

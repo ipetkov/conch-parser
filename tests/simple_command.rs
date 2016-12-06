@@ -1,8 +1,8 @@
-extern crate shell_lang;
+extern crate conch_parser;
 
-use shell_lang::ast::*;
-use shell_lang::ast::PipeableCommand::*;
-use shell_lang::ast::Redirect::*;
+use conch_parser::ast::*;
+use conch_parser::ast::PipeableCommand::*;
+use conch_parser::ast::Redirect::*;
 
 mod parse_support;
 use parse_support::*;

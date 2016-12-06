@@ -297,9 +297,9 @@ impl<I, B> IntoIterator for Parser<I, B>
 /// library provides both a default `Token` lexer, as well as an AST `Builder`.
 ///
 /// ```
-/// use shell_lang::ast::builder::{Builder, RcBuilder};
-/// use shell_lang::lexer::Lexer;
-/// use shell_lang::parse::Parser;
+/// use conch_parser::ast::builder::{Builder, RcBuilder};
+/// use conch_parser::lexer::Lexer;
+/// use conch_parser::parse::Parser;
 ///
 /// let source = "echo hello world";
 /// let lexer = Lexer::new(source.chars());
@@ -311,8 +311,8 @@ impl<I, B> IntoIterator for Parser<I, B>
 /// you can also use the `DefaultParser` type alias for a simpler setup.
 ///
 /// ```
-/// use shell_lang::lexer::Lexer;
-/// use shell_lang::parse::DefaultParser;
+/// use conch_parser::lexer::Lexer;
+/// use conch_parser::parse::DefaultParser;
 ///
 /// let source = "echo hello world";
 /// let lexer = Lexer::new(source.chars());

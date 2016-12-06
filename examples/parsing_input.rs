@@ -1,10 +1,11 @@
 #![cfg_attr(feature = "nightly", feature(io))]
 
-extern crate shell_lang as shell;
+extern crate conch_parser;
+
+use conch_parser::lexer::Lexer;
+use conch_parser::parse::DefaultParser;
 
 use std::io::{self, Read};
-use shell::lexer::Lexer;
-use shell::parse::DefaultParser;
 
 #[cfg(feature = "nightly")]
 fn run_with_stdin<F>(f: F) where F: FnOnce(&mut Iterator<Item = char>) {

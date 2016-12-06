@@ -1,12 +1,12 @@
-extern crate shell_lang;
+extern crate conch_parser;
 
 use std::rc::Rc;
 
-use shell_lang::ast::*;
-use shell_lang::ast::Command::*;
-use shell_lang::ast::CompoundCommandKind::*;
-use shell_lang::ast::PipeableCommand::*;
-use shell_lang::token::Token;
+use conch_parser::ast::*;
+use conch_parser::ast::Command::*;
+use conch_parser::ast::CompoundCommandKind::*;
+use conch_parser::ast::PipeableCommand::*;
+use conch_parser::token::Token;
 
 mod parse_support;
 use parse_support::*;

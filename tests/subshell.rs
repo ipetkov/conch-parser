@@ -1,8 +1,8 @@
-extern crate shell_lang;
+extern crate conch_parser;
 
-use shell_lang::ast::builder::*;
-use shell_lang::parse::ParseError::*;
-use shell_lang::token::Token;
+use conch_parser::ast::builder::*;
+use conch_parser::parse::ParseError::*;
+use conch_parser::token::Token;
 
 mod parse_support;
 use parse_support::*;

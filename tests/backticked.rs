@@ -1,10 +1,10 @@
-extern crate shell_lang;
+extern crate conch_parser;
 
-use shell_lang::ast::*;
-use shell_lang::ast::ComplexWord::*;
-use shell_lang::ast::SimpleWord::*;
-use shell_lang::parse::ParseError::*;
-use shell_lang::token::Token;
+use conch_parser::ast::*;
+use conch_parser::ast::ComplexWord::*;
+use conch_parser::ast::SimpleWord::*;
+use conch_parser::parse::ParseError::*;
+use conch_parser::token::Token;
 
 mod parse_support;
 use parse_support::*;

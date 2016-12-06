@@ -1,5 +1,5 @@
 [package]
-name = "shell_lang"
+name = "conch-parser"
 version = "0.1.0"
 authors = ["Ivan Petkov <ivanppetkov@gmail.com>"]
 
