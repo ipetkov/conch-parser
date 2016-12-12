@@ -5,7 +5,7 @@ use std::iter::{Fuse, Peekable};
 use super::token::{Positional, Token};
 use super::token::Token::*;
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 enum TokenOrLiteral {
     Tok(Token),
     Escaped(Option<Token>),
@@ -13,8 +13,8 @@ enum TokenOrLiteral {
 }
 
 /// Converts raw characters into shell tokens.
-#[allow(missing_debug_implementations)]
 #[must_use = "`Lexer` is lazy and does nothing unless consumed"]
+#[derive(Clone, Debug)]
 pub struct Lexer<I: Iterator<Item = char>> {
     inner: Peekable<Fuse<I>>,
     peeked: Option<TokenOrLiteral>,
