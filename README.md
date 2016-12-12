@@ -1,41 +1,92 @@
-# libshell
-## A Rust library for parsing and running Unix shell commands
+# conch-parser
 
-This library seeks to offer functionality for parsing and running shell commands
-as defined by the
-[POSIX.1-2008](http://pubs.opengroup.org/onlinepubs/9699919799/)
-standard. Eventually it will work with external tokenizers and AST builders to
-either use in place of the default implementation, or to extend the standard
-grammar with custom definitions.
+[![Crates.io](https://img.shields.io/crates/v/conch-parser.svg)](https://crates.io/crates/conch-parser)
+[![Documentation](https://docs.rs/conch-parser/badge.svg)](https://docs.rs/conch-parser)
 
-## Goals
+A Rust library for parsing Unix shell commands.
 
-* Provide an interface for parsing shell grammar
-* Provide an interface for extending the default parser
-* Provide several builtin shell utilities as defined by POSIX.1-2008
+## Quick Start
+First, add this to your `Cargo.toml`:
 
-## Non-goals
+```toml
+[dependencies]
+conch-parser = "0.1.0"
+```
 
+Next, you can get started with:
+
+```rust
+extern crate conch_parser;
+
+use conch_parser::lexer::Lexer;
+use conch_parser::parse::DefaultParser;
+
+fn main() {
+    // Initialize our token lexer and shell parser with the program's input
+    let lex = Lexer::new("echo foo bar".chars());
+    let parser = DefaultParser::new(lex);
+
+    // Parse our input!
+    for t in parser {
+        println!("{:?}", t);
+    }
+}
+```
+
+## About
+This library offers parsing shell commands as defined by the
+[POSIX.1-2008][POSIX] standard. The parser remains agnostic to the final AST
+representation by passing intermediate results to an AST `Builder`, allowing
+for easy changes to the final AST structure without having to walk and transform
+an entire AST produced by the parser. See the documentation for more information.
+
+[POSIX]: http://pubs.opengroup.org/onlinepubs/9699919799/
+
+### Goals
+* Provide shell command parser which is correct and efficient, and agnostic to
+the final AST representation
+* Parsing should never require any form of runtime, thus no part of the source
+should have to be executed or evaluated when parsing
+
+### Non-goals
 * 100% POSIX.1-2008 compliance: the standard is used as a baseline for
 implementation and features may be further added (or dropped) based on what
 makes sense or is most useful
-* Implement a full shell that will replace bash, zsh, ksh, or any other existing
-shell: see the use cases below.
+* Feature parity with all major shells: unless a specific feature is
+widely used (and considered common) or another compelling reason exists
+for inclusion. However, this is not to say that the library will never
+support extensions for adding additional syntax features.
 
-## Use cases
+## Supported grammar
+- [x] Conditional lists (`foo && bar || baz`)
+- [x] Pipelines (`! foo | bar`)
+- [x] Compound commands
+  - [x] Brace blocks (`{ foo; }`)
+  - [x] Subshells (`$(foo)`)
+  - [x] `for` / `case` / `if` / `while` / `until`
+- [x] Function declarations
+- [x] Redirections
+- [x] Heredocs
+- [x] Comments
+- [x] Parameters (`$foo`, `$@`, etc.)
+- [x] Parameter substitutions (`${foo:-bar}`)
+- [ ] Arithmetic substitutions
+  - [x] Common arithmetic operations required by the [standard][POSIX-arith]
+  - [x] Variable expansion
+  - [ ] Other inner abitrary parameter/substitution expansion
 
-If shell scripts are of interest beyond simply running, this library allows you
-to get to the meat of your project without having to write your own parser. If
-you would ever like to extend the shell syntax, the only work that remains is
-proportional to the syntax extensions.
+[POSIX-arith]: http://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html#tag_18_06_04
 
-Example projects:
+## License
+Licensed under either of
 
-* Extending the shell grammar with more expressive keywords or tokens, e.g. add
-a forked-pipe token which pipes the output of one command to two or more
-separate process
-* Analyze/lint shell scripts: most used commands, unhandled situations,
-lack of cleanup, etc.
-* Optimize and compile shell scripts into native code to avoid shell runtime
-overhead, or maybe even build the script into a library to be invoked from other
-code
+ * Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+ * MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+
+at your option.
+
+### Contribution
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in the work by you, as defined in the Apache-2.0
+license, shall be dual licensed as above, without any additional terms or
+conditions.

@@ -286,9 +286,10 @@ impl<I, B> IntoIterator for Parser<I, B>
 /// A parser for the shell language. It will parse shell commands from a
 /// stream of shell `Token`s, and pass them to an AST builder.
 ///
-/// The parser implements the `Iterator` trait so that it can behave like
-/// a stream of parsed shell commands. Calling `Iterator::next()` on the parser
-/// will yield a complete shell command, or an error should one arise.
+/// The parser implements the `IntoIterator` trait so that it can behave like
+/// a stream of parsed shell commands. Converting the parser into an `Iterator`
+/// and calling `next()` on the result will yield a complete shell command, or
+/// an error should one arise.
 ///
 /// # Building
 ///
