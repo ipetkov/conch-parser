@@ -123,6 +123,7 @@ trait RewindableTokenIterator {
 }
 
 /// A Token iterator that keeps track of how many lines have been read.
+#[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 #[derive(Debug)]
 pub struct TokenIter<I> {
     /// The underlying token iterator being wrapped. Iterator is fused to avoid
@@ -302,6 +303,7 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
 
 /// A wrapper for peeking arbitrary amounts into a `Token` stream.
 /// Inspired by the `Multipeek` implementation in the `itertools` crate.
+#[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 pub struct Multipeek<'a> {
     /// The underlying token iterator. This is pretty much just a `TokenIter`,
     /// but we use a trait object to avoid having a generic signature and
@@ -356,6 +358,7 @@ impl<'a> Multipeek<'a> {
 
 /// A wrapper which allows treating `TokenIter<I>` and `TokenIter<Empty<_>>` as
 /// the same thing, even though they are technically different types.
+#[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 #[derive(Debug)]
 pub enum TokenIterWrapper<I> {
     /// A `TokenIter` which holds an aribtrary `Iterator` over `Token`s.
@@ -430,6 +433,7 @@ impl<I: Iterator<Item = Token>> TokenIterWrapper<I> {
 /// An iterator that yields at least one token, but continues to yield
 /// tokens until all matching cases of single/double quotes, backticks,
 /// ${ }, $( ), or ( ) are found.
+#[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 #[derive(Debug)]
 pub struct Balanced<I> {
     /// The underlying token iterator.
@@ -593,6 +597,7 @@ impl<I: PeekablePositionIterator<Item = Token>> Iterator for Balanced<I> {
 
 /// A `Balanced` backtick `Token` iterator which removes all backslashes
 /// from the stream that are followed by \, $, or `.
+#[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 #[derive(Debug)]
 pub struct BacktickBackslashRemover<I> {
     /// The underlying token iterator.

@@ -224,6 +224,7 @@ impl Default for CommandGroupDelimiters<'static, 'static, 'static> {
 /// on errors, thus trying to parse another command after an error is not
 /// well defined, and will either fail as well, or will produce an incorrect
 /// result.
+#[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 #[derive(Debug)]
 pub struct ParserIterator<I, B> {
     /// The underlying parser to poll for complete commands.
@@ -1063,7 +1064,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             let mut tok_backup = TokenIterWrapper::Buffered(tok_iter);
             mem::swap(&mut self.iter, &mut tok_backup);
             let mut body = try!(self.word_interpolated_raw(None, heredoc_start_pos));
-            mem::replace(&mut self.iter, tok_backup);
+            let _ = mem::replace(&mut self.iter, tok_backup);
 
             if body.len() > 1 {
                 Concat(body.into_iter().map(Simple).collect())
@@ -1400,7 +1401,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         mem::swap(&mut self.iter, &mut tok_backup);
         let cmd_subst = self.command_group_internal(CommandGroupDelimiters::default());
-        mem::replace(&mut self.iter, tok_backup);
+        let _ = mem::replace(&mut self.iter, tok_backup);
 
         Ok(SimpleWordKind::CommandSubst(try!(cmd_subst)))
     }

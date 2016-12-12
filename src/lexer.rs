@@ -14,6 +14,7 @@ enum TokenOrLiteral {
 
 /// Converts raw characters into shell tokens.
 #[allow(missing_debug_implementations)]
+#[must_use = "`Lexer` is lazy and does nothing unless consumed"]
 pub struct Lexer<I: Iterator<Item = char>> {
     inner: Peekable<Fuse<I>>,
     peeked: Option<TokenOrLiteral>,

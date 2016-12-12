@@ -457,6 +457,7 @@ impl<T: From<String>> Builder for DefaultBuilder<T> {
     }
 }
 
+#[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 struct Coalesce<I: Iterator, F> {
     iter: I,
     cur: Option<I::Item>,
