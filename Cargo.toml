@@ -2,6 +2,7 @@
 name = "conch-parser"
 version = "0.1.0"
 authors = ["Ivan Petkov <ivanppetkov@gmail.com>"]
+license = "MIT/Apache-2.0"
 
 [features]
 nightly = []
