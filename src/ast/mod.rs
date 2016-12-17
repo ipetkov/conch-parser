@@ -1,6 +1,7 @@
 //! Defines abstract representations of the shell source.
 use std::{fmt, ops};
 use std::rc::Rc;
+use std::sync::Arc;
 
 pub mod builder;
 
@@ -226,14 +227,24 @@ pub enum Command<T> {
 /// A type alias over an and/or list of conventional shell commands.
 ///
 /// Generic over the representation of literals, shell words, commands, and redirects.
-pub type CommandList<T, W, C> = AndOrList<ListableCommand<DefaultPipeableCommand<T, W, C>>>;
+pub type CommandList<T, W, C> = AndOrList<ListableCommand<ShellPipeableCommand<T, W, C>>>;
 
-/// A type alias for the default hiearchy to represent pipeable commands.
-pub type DefaultPipeableCommand<T, W, C> = PipeableCommand<
+/// A type alias for the default hiearchy to represent pipeable commands,
+/// using `Rc` wrappers around function declarations.
+pub type ShellPipeableCommand<T, W, C> = PipeableCommand<
     T,
     Box<SimpleCommand<T, W, Redirect<W>>>,
     Box<CompoundCommand<CompoundCommandKind<T, W, C>, Redirect<W>>>,
     Rc<CompoundCommand<CompoundCommandKind<T, W, C>, Redirect<W>>>
+>;
+
+/// A type alias for the default hiearchy to represent pipeable commands,
+/// using `Arc` wrappers around function declarations.
+pub type AtomicShellPipeableCommand<T, W, C> = PipeableCommand<
+    T,
+    Box<SimpleCommand<T, W, Redirect<W>>>,
+    Box<CompoundCommand<CompoundCommandKind<T, W, C>, Redirect<W>>>,
+    Arc<CompoundCommand<CompoundCommandKind<T, W, C>, Redirect<W>>>
 >;
 
 /// A command which conditionally runs based on the exit status of the previous command.
@@ -258,7 +269,7 @@ pub struct AndOrList<T> {
 }
 
 /// Type alias for the default `ListableCommand` representation.
-pub type DefaultListableCommand = ListableCommand<PipeableCommand>;
+pub type DefaultListableCommand = ListableCommand<DefaultPipeableCommand>;
 
 /// Commands that can be used within an and/or list.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -274,17 +285,19 @@ pub enum ListableCommand<T> {
     Single(T),
 }
 
+/// Type alias for the default `PipeableCommand` representation.
+pub type DefaultPipeableCommand = ShellPipeableCommand<
+    String,
+    TopLevelWord<String>,
+    TopLevelCommand<String>
+>;
+
 /// Commands that can be used within a pipeline.
 ///
 /// Generic over the representations of function names, simple commands,
 /// compound commands, and function bodies.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum PipeableCommand<
-    N = String,
-    S = Box<DefaultSimpleCommand>,
-    C = Box<DefaultCompoundCommand>,
-    F = Rc<DefaultCompoundCommand>
-> {
+pub enum PipeableCommand<N, S, C, F> {
     /// The simplest possible command: an executable with arguments,
     /// environment variable assignments, and redirections.
     Simple(S),

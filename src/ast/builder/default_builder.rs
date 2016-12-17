@@ -2,9 +2,9 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
 use ast::{self, AndOr, AndOrList, Arithmetic, Command, CompoundCommand, CompoundCommandKind,
-          ComplexWord, DefaultArithmetic, DefaultParameter, DefaultPipeableCommand, ListableCommand,
-          Parameter, ParameterSubstitution, PipeableCommand, Redirect, SimpleCommand, SimpleWord,
-          TopLevelCommand, TopLevelWord, Word};
+          ComplexWord, DefaultArithmetic, DefaultParameter, ListableCommand, Parameter,
+          ParameterSubstitution, PipeableCommand, Redirect, ShellPipeableCommand, SimpleCommand,
+          SimpleWord, TopLevelCommand, TopLevelWord, Word};
 use ast::builder::*;
 use parse::ParseResult;
 use void::Void;
@@ -43,7 +43,7 @@ impl<T: From<String>> Builder for DefaultBuilder<T> {
     type Command         = TopLevelCommand<T>;
     type CommandList     = AndOrList<Self::ListableCommand>;
     type ListableCommand = ListableCommand<Self::PipeableCommand>;
-    type PipeableCommand = DefaultPipeableCommand<T, Self::Word, Self::Command>;
+    type PipeableCommand = ShellPipeableCommand<T, Self::Word, Self::Command>;
     type CompoundCommand = CompoundCommand<CompoundCommandKind<T, Self::Word, Self::Command>, Self::Redirect>;
     type Word            = TopLevelWord<T>;
     type Redirect        = Redirect<Self::Word>;
