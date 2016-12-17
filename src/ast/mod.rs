@@ -114,7 +114,7 @@ pub enum ComplexWord<W> {
 }
 
 /// Type alias for the default `Word` representation.
-pub type DefaultWord = Word<String, SimpleWord>;
+pub type DefaultWord = Word<String, DefaultSimpleWord>;
 
 /// Represents whitespace delimited single, double, or non quoted text.
 ///
@@ -130,11 +130,18 @@ pub enum Word<L, W> {
     SingleQuoted(L),
 }
 
+/// Type alias for the default `SimpleWord` representation.
+pub type DefaultSimpleWord = SimpleWord<
+    String,
+    DefaultParameter,
+    Box<DefaultParameterSubstitution>
+>;
+
 /// Represents the smallest fragment of any text.
 ///
 /// Generic over the representation of a literals, parameters, and substitutions.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum SimpleWord<L = String, P = DefaultParameter, S = Box<DefaultParameterSubstitution>> {
+pub enum SimpleWord<L, P, S> {
     /// A non-special literal word.
     Literal(L),
     /// A token which normally has a special meaning is treated as a literal
