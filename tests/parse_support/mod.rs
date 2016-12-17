@@ -20,7 +20,7 @@ pub fn escaped(s: &str) -> DefaultWord {
     Word::Simple(Escaped(String::from(s)))
 }
 
-pub fn subst(s: ParameterSubstitution) -> DefaultWord {
+pub fn subst(s: DefaultParameterSubstitution) -> DefaultWord {
     Word::Simple(Subst(Box::new(s)))
 }
 
@@ -40,7 +40,7 @@ pub fn word_escaped(s: &str) -> TopLevelWord {
     TopLevelWord(Single(escaped(s)))
 }
 
-pub fn word_subst(s: ParameterSubstitution) -> TopLevelWord {
+pub fn word_subst(s: DefaultParameterSubstitution) -> TopLevelWord {
     TopLevelWord(Single(subst(s)))
 }
 

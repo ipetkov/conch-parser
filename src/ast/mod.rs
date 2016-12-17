@@ -32,17 +32,20 @@ pub enum Parameter<T> {
     Var(T),
 }
 
+/// Type alias for the default `ParameterSubstitution` representation.
+pub type DefaultParameterSubstitution = ParameterSubstitution<
+    DefaultParameter,
+    TopLevelWord,
+    TopLevelCommand,
+    DefaultArithmetic
+>;
+
 /// A parameter substitution, e.g. `${param-word}`.
 ///
 /// Generic over the representations of parameters, shell words and
 /// commands, and arithmetic expansions.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum ParameterSubstitution<
-    P = DefaultParameter,
-    W = TopLevelWord,
-    C = TopLevelCommand,
-    A = DefaultArithmetic,
-> {
+pub enum ParameterSubstitution<P, W, C, A> {
     /// Returns the standard output of running a command, e.g. `$(cmd)`
     Command(Vec<C>),
     /// Returns the length of the value of a parameter, e.g. `${#param}`
@@ -131,7 +134,7 @@ pub enum Word<L, W> {
 ///
 /// Generic over the representation of a literals, parameters, and substitutions.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum SimpleWord<L = String, P = DefaultParameter, S = Box<ParameterSubstitution>> {
+pub enum SimpleWord<L = String, P = DefaultParameter, S = Box<DefaultParameterSubstitution>> {
     /// A non-special literal word.
     Literal(L),
     /// A token which normally has a special meaning is treated as a literal
