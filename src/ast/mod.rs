@@ -93,11 +93,14 @@ pub type ShellWord<T, W, C> = ComplexWord<Word<T, SimpleWord<T, Parameter<T>,
     Box<ParameterSubstitution<Parameter<T>, W, C, Arithmetic<T>>
 >>>>;
 
+/// Type alias for the default `ComplexWord` representation.
+pub type DefaultComplexWord = ComplexWord<Word>;
+
 /// Represents whitespace delimited text.
 ///
 /// Generic over the representation of a whitespace delimited word.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum ComplexWord<W = Word> {
+pub enum ComplexWord<W> {
     /// Several distinct words concatenated together.
     Concat(Vec<W>),
     /// A regular word.
@@ -146,11 +149,14 @@ pub enum SimpleWord<L = String, P = Parameter, S = Box<ParameterSubstitution>> {
     Colon,
 }
 
+/// Type alias for the default `Redirect` representation.
+pub type DefaultRedirect = Redirect<TopLevelWord>;
+
 /// Represents redirecting a command's file descriptors.
 ///
 /// Generic over the representation of a shell word.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Redirect<W = TopLevelWord> {
+pub enum Redirect<W> {
     /// Open a file for reading, e.g. `[n]< file`.
     Read(Option<u16>, W),
     /// Open a file for writing after truncating, e.g. `[n]> file`.
@@ -278,7 +284,7 @@ pub enum PipeableCommand<
 /// Generic over the representation of a type of compound command, and the
 /// representation of a redirect.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct CompoundCommand<T = CompoundCommandKind, R = Redirect> {
+pub struct CompoundCommand<T = CompoundCommandKind, R = DefaultRedirect> {
     /// The specific kind of compound command.
     pub kind: T,
     /// Any redirections to be applied to the entire compound command

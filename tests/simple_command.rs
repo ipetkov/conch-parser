@@ -10,7 +10,7 @@ use parse_support::*;
 pub struct SimpleCommandFragments {
     cmd: Option<(TopLevelWord, Vec<TopLevelWord>)>,
     vars: Vec<(String, Option<TopLevelWord>)>,
-    io: Vec<Redirect>,
+    io: Vec<DefaultRedirect>,
 }
 
 pub fn sample_simple_command() -> SimpleCommandFragments {
