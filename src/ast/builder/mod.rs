@@ -9,7 +9,7 @@
 //! the `Builder` trait for your AST. Otherwise you can provide the `DefaultBuilder`
 //! struct to the parser if you wish to use the default AST implementation.
 
-use ast::{AndOr, Arithmetic, Parameter};
+use ast::{AndOr, DefaultArithmetic, Parameter};
 use parse::ParseResult;
 
 mod default_builder;
@@ -208,7 +208,7 @@ pub enum ParameterSubstitutionKind<W, C> {
     /// Returns the length of the value of a parameter, e.g. ${#param}
     Len(Parameter),
     /// Returns the resulting value of an arithmetic subsitution, e.g. `$(( x++ ))`
-    Arith(Option<Arithmetic>),
+    Arith(Option<DefaultArithmetic>),
     /// Use a provided value if the parameter is null or unset, e.g.
     /// `${param:-[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has

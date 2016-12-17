@@ -7,7 +7,7 @@ use std::fmt;
 use std::mem;
 use std::str::FromStr;
 
-use ast;
+use ast::{self, DefaultArithmetic};
 use ast::builder::{self, Builder, SimpleWordKind};
 use ast::builder::ComplexWordKind::{self, Concat, Single};
 use ast::builder::WordKind::{self, DoubleQuoted, Simple, SingleQuoted};
@@ -404,7 +404,7 @@ macro_rules! eat {
 macro_rules! arith_parse {
     ($fn_name:ident, $next_expr:ident, $($tok:pat => $constructor:path),+) => {
         #[inline]
-        fn $fn_name(&mut self) -> ParseResult<ast::Arithmetic, B::Error> {
+        fn $fn_name(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
             let mut expr = try!(self.$next_expr());
             loop {
                 self.skip_whitespace();
@@ -2502,7 +2502,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses the body of any arbitrary arithmetic expression, e.g. `x + $y << 5`.
     /// The caller is responsible for parsing the external `$(( ))` tokens.
-    pub fn arithmetic_substitution(&mut self) -> ParseResult<ast::Arithmetic, B::Error> {
+    pub fn arithmetic_substitution(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
         let mut exprs = Vec::new();
         loop {
             self.skip_whitespace();
@@ -2523,7 +2523,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses expressions such as `var = expr` or `var op= expr`, where `op` is
     /// any of the following operators: *, /, %, +, -, <<, >>, &, |, ^.
-    fn arith_assig(&mut self) -> ParseResult<ast::Arithmetic, B::Error> {
+    fn arith_assig(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
         use ast::Arithmetic::*;
 
         self.skip_whitespace();
@@ -2603,7 +2603,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     }
 
     /// Parses expressions such as `expr ? expr : expr`.
-    fn arith_ternary(&mut self) -> ParseResult<ast::Arithmetic, B::Error> {
+    fn arith_ternary(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
         let guard = try!(self.arith_logical_or());
         self.skip_whitespace();
         eat_maybe!(self, {
@@ -2631,7 +2631,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses expressions such as `expr == expr` or `expr != expr`.
     #[inline]
-    fn arith_eq(&mut self) -> ParseResult<ast::Arithmetic, B::Error> {
+    fn arith_eq(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
         let mut expr = try!(self.arith_ineq());
         loop {
             self.skip_whitespace();
@@ -2654,7 +2654,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses expressions such as `expr < expr`,`expr <= expr`,`expr > expr`,`expr >= expr`.
     #[inline]
-    fn arith_ineq(&mut self) -> ParseResult<ast::Arithmetic, B::Error> {
+    fn arith_ineq(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
         let mut expr = try!(self.arith_shift());
         loop {
             self.skip_whitespace();
@@ -2705,7 +2705,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     );
 
     /// Parses expressions such as `expr ** expr`.
-    fn arith_pow(&mut self) -> ParseResult<ast::Arithmetic, B::Error> {
+    fn arith_pow(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
         let expr = try!(self.arith_unary_misc());
         self.skip_whitespace();
 
@@ -2729,7 +2729,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     }
 
     /// Parses expressions such as `!expr`, `~expr`, `+expr`, `-expr`, `++var` and `--var`.
-    fn arith_unary_misc(&mut self) -> ParseResult<ast::Arithmetic, B::Error> {
+    fn arith_unary_misc(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
         self.skip_whitespace();
         let expr = eat_maybe!(self, {
             Bang  => { ast::Arithmetic::LogicalNot(Box::new(try!(self.arith_unary_misc()))) },
@@ -2769,7 +2769,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Numeric literals must appear as a single `Literal` token. `Name` tokens will be
     /// treated as variables.
     #[inline]
-    fn arith_post_incr(&mut self) -> ParseResult<ast::Arithmetic, B::Error> {
+    fn arith_post_incr(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
         self.skip_whitespace();
         eat_maybe!(self, {
             ParenOpen => {

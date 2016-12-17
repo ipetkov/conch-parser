@@ -38,7 +38,7 @@ pub enum ParameterSubstitution<
     P = Parameter,
     W = TopLevelWord,
     C = TopLevelCommand,
-    A = Arithmetic,
+    A = DefaultArithmetic,
 > {
     /// Returns the standard output of running a command, e.g. `$(cmd)`
     Command(Vec<C>),
@@ -335,11 +335,14 @@ pub struct SimpleCommand<V = String, W = TopLevelWord, R = Redirect<W>> {
     pub io: Vec<R>,
 }
 
+/// Type alias for the default `Arithmetic` representation.
+pub type DefaultArithmetic = Arithmetic<String>;
+
 /// Represents an expression within an arithmetic subsitution.
 ///
 /// Generic over the representation of a variable name.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Arithmetic<T = String> {
+pub enum Arithmetic<T> {
     /// The value of a variable, e.g. `$var` or `var`.
     Var(T),
     /// A numeric literal such as `42` or `0xdeadbeef`.

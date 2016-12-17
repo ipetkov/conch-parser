@@ -1,15 +1,16 @@
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
-use ast::{self, AndOr, AndOrList, Arithmetic, Command, CompoundCommand,
-          CompoundCommandKind, ComplexWord, DefaultPipeableCommand, ListableCommand, Parameter,
+use ast::{self, AndOr, AndOrList, Arithmetic, Command, CompoundCommand, CompoundCommandKind,
+          ComplexWord, DefaultArithmetic, DefaultPipeableCommand, ListableCommand, Parameter,
           ParameterSubstitution, PipeableCommand, Redirect, SimpleCommand, SimpleWord,
           TopLevelCommand, TopLevelWord, Word};
 use ast::builder::*;
 use parse::ParseResult;
 use void::Void;
 
-/// A `Builder` implementation which builds shell commands using the AST definitions in the `ast` module.
+/// A `Builder` implementation which builds shell commands
+/// using the AST definitions in the `ast` module.
 #[derive(Debug, Copy, Clone)]
 pub struct DefaultBuilder<T>(PhantomData<T>);
 
@@ -311,7 +312,7 @@ impl<T: From<String>> Builder for DefaultBuilder<T> {
             }
         }
 
-        fn map_arith<T: From<String>>(kind: Arithmetic) -> Arithmetic<T> {
+        fn map_arith<T: From<String>>(kind: DefaultArithmetic) -> Arithmetic<T> {
             use ast::Arithmetic::*;
             match kind {
                 Var(v)           => Var(v.into()),
