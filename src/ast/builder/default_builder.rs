@@ -2,8 +2,8 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
 use ast::{self, AndOr, AndOrList, Arithmetic, Command, CompoundCommand, CompoundCommandKind,
-          ComplexWord, DefaultArithmetic, DefaultPipeableCommand, ListableCommand, Parameter,
-          ParameterSubstitution, PipeableCommand, Redirect, SimpleCommand, SimpleWord,
+          ComplexWord, DefaultArithmetic, DefaultParameter, DefaultPipeableCommand, ListableCommand,
+          Parameter, ParameterSubstitution, PipeableCommand, Redirect, SimpleCommand, SimpleWord,
           TopLevelCommand, TopLevelWord, Word};
 use ast::builder::*;
 use parse::ParseResult;
@@ -351,7 +351,7 @@ impl<T: From<String>> Builder for DefaultBuilder<T> {
             }
         }
 
-        let map_param = |kind: Parameter| -> Parameter<T> {
+        let map_param = |kind: DefaultParameter| -> Parameter<T> {
             use ast::Parameter::*;
             match kind {
                 At            => At,

@@ -4,11 +4,14 @@ use std::rc::Rc;
 
 pub mod builder;
 
+/// Type alias for the default `Parameter` representation.
+pub type DefaultParameter = Parameter<String>;
+
 /// Represents reading a parameter (or variable) value, e.g. `$foo`.
 ///
 /// Generic over the representation of variable names.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Parameter<T = String> {
+pub enum Parameter<T> {
     /// $@
     At,
     /// $*
@@ -35,7 +38,7 @@ pub enum Parameter<T = String> {
 /// commands, and arithmetic expansions.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum ParameterSubstitution<
-    P = Parameter,
+    P = DefaultParameter,
     W = TopLevelWord,
     C = TopLevelCommand,
     A = DefaultArithmetic,
@@ -128,7 +131,7 @@ pub enum Word<L, W> {
 ///
 /// Generic over the representation of a literals, parameters, and substitutions.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum SimpleWord<L = String, P = Parameter, S = Box<ParameterSubstitution>> {
+pub enum SimpleWord<L = String, P = DefaultParameter, S = Box<ParameterSubstitution>> {
     /// A non-special literal word.
     Literal(L),
     /// A token which normally has a special meaning is treated as a literal

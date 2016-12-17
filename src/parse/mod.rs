@@ -7,7 +7,7 @@ use std::fmt;
 use std::mem;
 use std::str::FromStr;
 
-use ast::{self, DefaultArithmetic};
+use ast::{self, DefaultArithmetic, DefaultParameter};
 use ast::builder::{self, Builder, SimpleWordKind};
 use ast::builder::ComplexWordKind::{self, Concat, Single};
 use ast::builder::WordKind::{self, DoubleQuoted, Simple, SingleQuoted};
@@ -1570,7 +1570,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// the colon, operator, word, and closing curly.
     ///
     /// Nothing is passed to the builder.
-    fn parameter_substitution_body_raw(&mut self, param: ast::Parameter, curly_open_pos: SourcePos)
+    fn parameter_substitution_body_raw(
+        &mut self,
+        param: DefaultParameter,
+        curly_open_pos: SourcePos)
         -> ParseResult<SimpleWordKind<B::Command>, B::Error>
     {
         use ast::Parameter;
@@ -1721,7 +1724,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     }
 
     /// Parses a valid parameter that can appear inside a set of curly braces.
-    fn parameter_inner(&mut self) -> ParseResult<ast::Parameter, B::Error> {
+    fn parameter_inner(&mut self) -> ParseResult<DefaultParameter, B::Error> {
         use ast::Parameter;
 
         let start_pos = self.iter.pos();

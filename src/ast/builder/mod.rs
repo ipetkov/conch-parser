@@ -9,7 +9,7 @@
 //! the `Builder` trait for your AST. Otherwise you can provide the `DefaultBuilder`
 //! struct to the parser if you wish to use the default AST implementation.
 
-use ast::{AndOr, DefaultArithmetic, Parameter};
+use ast::{AndOr, DefaultArithmetic, DefaultParameter};
 use parse::ParseResult;
 
 mod default_builder;
@@ -157,7 +157,7 @@ pub enum SimpleWordKind<C> {
     /// A non-special literal word.
     Literal(String),
     /// Access of a value inside a parameter, e.g. `$foo` or `$$`.
-    Param(Parameter),
+    Param(DefaultParameter),
     /// A parameter substitution, e.g. `${param-word}`.
     Subst(Box<ParameterSubstitutionKind<ComplexWordKind<C>, C>>),
     /// Represents the standard output of some command, e.g. \`echo foo\`.
@@ -206,37 +206,37 @@ pub enum ParameterSubstitutionKind<W, C> {
     /// Returns the standard output of running a command, e.g. `$(cmd)`
     Command(CommandGroup<C>),
     /// Returns the length of the value of a parameter, e.g. ${#param}
-    Len(Parameter),
+    Len(DefaultParameter),
     /// Returns the resulting value of an arithmetic subsitution, e.g. `$(( x++ ))`
     Arith(Option<DefaultArithmetic>),
     /// Use a provided value if the parameter is null or unset, e.g.
     /// `${param:-[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Default(bool, Parameter, Option<W>),
+    Default(bool, DefaultParameter, Option<W>),
     /// Assign a provided value to the parameter if it is null or unset,
     /// e.g. `${param:=[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Assign(bool, Parameter, Option<W>),
+    Assign(bool, DefaultParameter, Option<W>),
     /// If the parameter is null or unset, an error should result with the provided
     /// message, e.g. `${param:?[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Error(bool, Parameter, Option<W>),
+    Error(bool, DefaultParameter, Option<W>),
     /// If the parameter is NOT null or unset, a provided word will be used,
     /// e.g. `${param:+[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Alternative(bool, Parameter, Option<W>),
+    Alternative(bool, DefaultParameter, Option<W>),
     /// Remove smallest suffix pattern, e.g. `${param%pattern}`
-    RemoveSmallestSuffix(Parameter, Option<W>),
+    RemoveSmallestSuffix(DefaultParameter, Option<W>),
     /// Remove largest suffix pattern, e.g. `${param%%pattern}`
-    RemoveLargestSuffix(Parameter, Option<W>),
+    RemoveLargestSuffix(DefaultParameter, Option<W>),
     /// Remove smallest prefix pattern, e.g. `${param#pattern}`
-    RemoveSmallestPrefix(Parameter, Option<W>),
+    RemoveSmallestPrefix(DefaultParameter, Option<W>),
     /// Remove largest prefix pattern, e.g. `${param##pattern}`
-    RemoveLargestPrefix(Parameter, Option<W>),
+    RemoveLargestPrefix(DefaultParameter, Option<W>),
 }
 
 /// Represents a parsed newline, more specifically, the presense of a comment

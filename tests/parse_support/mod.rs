@@ -44,7 +44,7 @@ pub fn word_subst(s: ParameterSubstitution) -> TopLevelWord {
     TopLevelWord(Single(subst(s)))
 }
 
-pub fn word_param(p: Parameter) -> TopLevelWord {
+pub fn word_param(p: DefaultParameter) -> TopLevelWord {
     TopLevelWord(Single(Word::Simple(Param(p))))
 }
 
