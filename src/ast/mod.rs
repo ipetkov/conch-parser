@@ -269,8 +269,8 @@ pub enum ListableCommand<T> {
 pub enum PipeableCommand<
     N = String,
     S = Box<DefaultSimpleCommand>,
-    C = Box<CompoundCommand>,
-    F = Rc<CompoundCommand>
+    C = Box<DefaultCompoundCommand>,
+    F = Rc<DefaultCompoundCommand>
 > {
     /// The simplest possible command: an executable with arguments,
     /// environment variable assignments, and redirections.
@@ -282,12 +282,15 @@ pub enum PipeableCommand<
     FunctionDef(N, F),
 }
 
+/// Type alias for the default `CompoundCommandKind` representation.
+pub type DefaultCompoundCommand = CompoundCommand<DefaultCompoundCommandKind, DefaultRedirect>;
+
 /// A class of commands where redirection is applied to a command group.
 ///
 /// Generic over the representation of a type of compound command, and the
 /// representation of a redirect.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct CompoundCommand<T = DefaultCompoundCommandKind, R = DefaultRedirect> {
+pub struct CompoundCommand<T, R> {
     /// The specific kind of compound command.
     pub kind: T,
     /// Any redirections to be applied to the entire compound command
