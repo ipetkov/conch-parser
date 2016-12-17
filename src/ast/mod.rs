@@ -190,7 +190,7 @@ pub struct PatternBodyPair<W, C> {
 
 /// Represents any valid shell command.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Command<T = AndOrList> {
+pub enum Command<T = DefaultAndOrList> {
     /// A command that runs asynchronously, that is, the shell will not wait
     /// for it to exit before running the next command, e.g. `foo &`.
     Job(T),
@@ -220,9 +220,12 @@ pub enum AndOr<T> {
     Or(T),
 }
 
+/// Type alias for the default `AndOrList` representation.
+pub type DefaultAndOrList = AndOrList<DefaultListableCommand>;
+
 /// A nonempty list of `AndOr` commands, e.g. `foo && bar || baz`.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct AndOrList<T = DefaultListableCommand> {
+pub struct AndOrList<T> {
     /// The first command that always runs.
     pub first: T,
     /// The remainder of the conditional commands which may or may not run.
