@@ -222,16 +222,19 @@ pub enum AndOr<T> {
 
 /// A nonempty list of `AndOr` commands, e.g. `foo && bar || baz`.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct AndOrList<T = ListableCommand> {
+pub struct AndOrList<T = DefaultListableCommand> {
     /// The first command that always runs.
     pub first: T,
     /// The remainder of the conditional commands which may or may not run.
     pub rest: Vec<AndOr<T>>,
 }
 
+/// Type alias for the default `ListableCommand` representation.
+pub type DefaultListableCommand = ListableCommand<PipeableCommand>;
+
 /// Commands that can be used within an and/or list.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum ListableCommand<T = PipeableCommand> {
+pub enum ListableCommand<T> {
     /// A chain of concurrent commands where the standard output of the
     /// previous becomes the standard input of the next, e.g.
     /// `[!] foo | bar | baz`.
