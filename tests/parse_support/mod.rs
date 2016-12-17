@@ -12,15 +12,15 @@ use conch_parser::lexer::Lexer;
 use conch_parser::parse::*;
 use conch_parser::token::Token;
 
-pub fn lit(s: &str) -> Word {
+pub fn lit(s: &str) -> DefaultWord {
     Word::Simple(Literal(String::from(s)))
 }
 
-pub fn escaped(s: &str) -> Word {
+pub fn escaped(s: &str) -> DefaultWord {
     Word::Simple(Escaped(String::from(s)))
 }
 
-pub fn subst(s: ParameterSubstitution) -> Word {
+pub fn subst(s: ParameterSubstitution) -> DefaultWord {
     Word::Simple(Subst(Box::new(s)))
 }
 

@@ -2873,7 +2873,7 @@ mod tests {
         DefaultParser::new(Lexer::new(src.chars()))
     }
 
-    fn lit(s: &str) -> Word {
+    fn lit(s: &str) -> DefaultWord {
         Word::Simple(SimpleWord::Literal(String::from(s)))
     }
 

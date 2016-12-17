@@ -94,7 +94,7 @@ pub type ShellWord<T, W, C> = ComplexWord<Word<T, SimpleWord<T, Parameter<T>,
 >>>>;
 
 /// Type alias for the default `ComplexWord` representation.
-pub type DefaultComplexWord = ComplexWord<Word>;
+pub type DefaultComplexWord = ComplexWord<DefaultWord>;
 
 /// Represents whitespace delimited text.
 ///
@@ -107,11 +107,14 @@ pub enum ComplexWord<W> {
     Single(W),
 }
 
+/// Type alias for the default `Word` representation.
+pub type DefaultWord = Word<String, SimpleWord>;
+
 /// Represents whitespace delimited single, double, or non quoted text.
 ///
 /// Generic over the representation of single-quoted literals, and non-quoted words.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Word<L = String, W = SimpleWord> {
+pub enum Word<L, W> {
     /// A regular word.
     Simple(W),
     /// List of words concatenated within double quotes.
