@@ -287,18 +287,21 @@ pub enum PipeableCommand<
 /// Generic over the representation of a type of compound command, and the
 /// representation of a redirect.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct CompoundCommand<T = CompoundCommandKind, R = DefaultRedirect> {
+pub struct CompoundCommand<T = DefaultCompoundCommandKind, R = DefaultRedirect> {
     /// The specific kind of compound command.
     pub kind: T,
     /// Any redirections to be applied to the entire compound command
     pub io: Vec<R>,
 }
 
+/// Type alias for the default `CompoundCommandKind` representation.
+pub type DefaultCompoundCommandKind = CompoundCommandKind<String, TopLevelWord, TopLevelCommand>;
+
 /// A specific kind of a `CompoundCommand`.
 ///
 /// Generic over the representation of shell words and commands.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum CompoundCommandKind<V = String, W = TopLevelWord, C = TopLevelCommand> {
+pub enum CompoundCommandKind<V, W, C> {
     /// A group of commands that should be executed in the current environment.
     Brace(Vec<C>),
     /// A group of commands that should be executed in a subshell environment.
