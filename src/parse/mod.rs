@@ -5,7 +5,6 @@ use std::error::Error;
 use std::iter::empty as empty_iter;
 use std::fmt;
 use std::mem;
-use std::result::Result as StdResult;
 use std::str::FromStr;
 
 use ast;
@@ -38,7 +37,7 @@ const WHILE:    &'static str = "while";
 pub type DefaultParser<I> = Parser<I, builder::StringBuilder>;
 
 /// A specialized `Result` type for parsing shell commands.
-pub type ParseResult<T, E> = StdResult<T, ParseError<E>>;
+pub type ParseResult<T, E> = Result<T, ParseError<E>>;
 
 /// Indicates a character/token position in the original source.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -2437,7 +2436,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Checks that one of the specified strings appears as a reserved word
     /// and consumes it, returning the string it matched in case the caller
     /// cares which specific reserved word was found.
-    pub fn reserved_word<'a>(&mut self, words: &'a [&str]) -> StdResult<&'a str, ()> {
+    pub fn reserved_word<'a>(&mut self, words: &'a [&str]) -> Result<&'a str, ()> {
         match self.peek_reserved_word(words) {
             Some(s) => { self.iter.next(); Ok(s) },
             None => Err(()),
