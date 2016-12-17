@@ -2881,7 +2881,7 @@ mod tests {
         TopLevelWord(ComplexWord::Single(lit(s)))
     }
 
-    fn cmd_args_simple(cmd: &str, args: &[&str]) -> Box<SimpleCommand> {
+    fn cmd_args_simple(cmd: &str, args: &[&str]) -> Box<DefaultSimpleCommand> {
         let cmd = word(cmd);
         let args = args.iter().map(|&a| word(a)).collect();
 

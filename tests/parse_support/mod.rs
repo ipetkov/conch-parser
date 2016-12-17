@@ -56,7 +56,7 @@ pub fn make_parser_from_tokens(src: Vec<Token>) -> DefaultParser<::std::vec::Int
     DefaultParser::new(src.into_iter())
 }
 
-pub fn cmd_args_simple(cmd: &str, args: &[&str]) -> Box<SimpleCommand> {
+pub fn cmd_args_simple(cmd: &str, args: &[&str]) -> Box<DefaultSimpleCommand> {
     let cmd = word(cmd);
     let args = args.iter().map(|&a| word(a)).collect();
 
@@ -67,7 +67,7 @@ pub fn cmd_args_simple(cmd: &str, args: &[&str]) -> Box<SimpleCommand> {
     })
 }
 
-pub fn cmd_simple(cmd: &str) -> Box<SimpleCommand> {
+pub fn cmd_simple(cmd: &str) -> Box<DefaultSimpleCommand> {
     cmd_args_simple(cmd, &[])
 }
 
@@ -82,7 +82,7 @@ pub fn cmd(cmd: &str) -> TopLevelCommand {
     cmd_args(cmd, &[])
 }
 
-pub fn cmd_from_simple(cmd: SimpleCommand) -> TopLevelCommand {
+pub fn cmd_from_simple(cmd: DefaultSimpleCommand) -> TopLevelCommand {
     TopLevelCommand(List(CommandList {
         first: ListableCommand::Single(Simple(Box::new(cmd))),
         rest: vec!(),
