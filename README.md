@@ -70,6 +70,7 @@ support extensions for adding additional syntax features.
 - [x] Comments
 - [x] Parameters (`$foo`, `$@`, etc.)
 - [x] Parameter substitutions (`${foo:-bar}`)
+- [x] Quoting (single, double, backticks, escaping)
 - [ ] Arithmetic substitutions
   - [x] Common arithmetic operations required by the [standard][POSIX-arith]
   - [x] Variable expansion

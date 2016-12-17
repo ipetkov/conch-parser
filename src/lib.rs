@@ -22,6 +22,7 @@
 //! * Comments
 //! * Parameters (`$foo`, `$@`, etc.)
 //! * Parameter substitutions (`${foo:-bar}`)
+//! * Quoting (single, double, backticks, escaping)
 //! * Arithmetic substitutions
 //!  * Common arithmetic operations required by the POSIX standard
 //!  * Variable expansion
