@@ -227,7 +227,15 @@ pub enum Command<T> {
 /// A type alias over an and/or list of conventional shell commands.
 ///
 /// Generic over the representation of literals, shell words, commands, and redirects.
+/// Uses `Rc` wrappers around function declarations.
 pub type CommandList<T, W, C> = AndOrList<ListableCommand<ShellPipeableCommand<T, W, C>>>;
+
+/// A type alias over an and/or list of conventional shell commands.
+///
+/// Generic over the representation of literals, shell words, commands, and redirects.
+/// Uses `Arc` wrappers around function declarations.
+pub type AtomicCommandList<T, W, C>
+    = AndOrList<ListableCommand<AtomicShellPipeableCommand<T, W, C>>>;
 
 /// A type alias for the default hiearchy to represent pipeable commands,
 /// using `Rc` wrappers around function declarations.
