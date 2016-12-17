@@ -188,9 +188,12 @@ pub struct PatternBodyPair<W, C> {
     pub body: Vec<C>,
 }
 
+/// Type alias for the default `Command` representation.
+pub type DefaultCommand = Command<DefaultAndOrList>;
+
 /// Represents any valid shell command.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Command<T = DefaultAndOrList> {
+pub enum Command<T> {
     /// A command that runs asynchronously, that is, the shell will not wait
     /// for it to exit before running the next command, e.g. `foo &`.
     Job(T),
