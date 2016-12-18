@@ -83,18 +83,6 @@ pub enum ParameterSubstitution<P, W, C, A> {
     RemoveLargestPrefix(P, Option<W>),
 }
 
-/// A top-level representation of a shell command. This wrapper unifies the provided
-/// top-level word representation, `ComplexWord`, and the top-level command
-/// representation, `Command`, while allowing them to be generic on their own.
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct TopLevelCommand<T = String>(pub Command<CommandList<T, TopLevelWord<T>, TopLevelCommand<T>>>);
-
-/// A top-level representation of a shell word. This wrapper unifies the provided
-/// top-level word representation, `ComplexWord`, and the top-level command
-/// representation, `Command`, while allowing them to be generic on their own.
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct TopLevelWord<T = String>(pub ShellWord<T, TopLevelWord<T>, TopLevelCommand<T>>);
-
 /// A type alias for the default hiearchy for representing shell words.
 pub type ShellWord<T, W, C> = ComplexWord<Word<T, SimpleWord<T, Parameter<T>,
     Box<ParameterSubstitution<Parameter<T>, W, C, Arithmetic<T>>
@@ -473,48 +461,115 @@ pub enum Arithmetic<T> {
     Sequence(Vec<Arithmetic<T>>),
 }
 
-impl<T> ops::Deref for TopLevelCommand<T> {
-    type Target = Command<CommandList<T, TopLevelWord<T>, TopLevelCommand<T>>>;
+macro_rules! impl_top_level_cmd {
+    ($(#[$attr:meta])* pub struct $Cmd:ident, $CmdList:ident, $Word:ident) => {
+        $(#[$attr])*
+        #[derive(Debug, PartialEq, Eq, Clone)]
+        pub struct $Cmd<T = String>(pub Command<$CmdList<T, $Word<T>, $Cmd<T>>>);
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
+        impl<T> ops::Deref for $Cmd<T> {
+            type Target = Command<$CmdList<T, $Word<T>, $Cmd<T>>>;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl<T> ops::DerefMut for $Cmd<T> {
+            fn deref_mut(&mut self) -> &mut Self::Target {
+                &mut self.0
+            }
+        }
+
+        impl<T> PartialEq<Command<$CmdList<T, $Word<T>, $Cmd<T>>>> for $Cmd<T> where T: PartialEq<T>
+        {
+            fn eq(&self, other: &Command<$CmdList<T, $Word<T>, $Cmd<T>>>) -> bool {
+                &self.0 == other
+            }
+        }
+
+        impl<T> From<Command<$CmdList<T, $Word<T>, $Cmd<T>>>> for $Cmd<T> {
+            fn from(inner: Command<$CmdList<T, $Word<T>, $Cmd<T>>>) -> Self {
+                $Cmd(inner)
+            }
+        }
+    };
 }
 
-impl<T> ops::DerefMut for TopLevelCommand<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
+impl_top_level_cmd! {
+    /// A top-level representation of a shell command. Uses `Rc` wrappers for function declarations.
+    ///
+    /// This wrapper unifies the provided top-level word representation,
+    /// `ComplexWord`, and the top-level command representation, `Command`,
+    /// while allowing them to be generic on their own.
+    pub struct TopLevelCommand,
+    CommandList,
+    TopLevelWord
 }
 
-impl<T> PartialEq<Command<CommandList<T, TopLevelWord<T>, TopLevelCommand<T>>>> for
-    TopLevelCommand<T> where T: PartialEq<T>
-{
-    fn eq(&self, other: &Command<CommandList<T, TopLevelWord<T>, TopLevelCommand<T>>>) -> bool {
-        &self.0 == other
-    }
+impl_top_level_cmd! {
+    /// A top-level representation of a shell command. Uses `Arc` wrappers for function declarations.
+    ///
+    /// This wrapper unifies the provided top-level word representation,
+    /// `ComplexWord`, and the top-level command representation, `Command`,
+    /// while allowing them to be generic on their own.
+    pub struct AtomicTopLevelCommand,
+    AtomicCommandList,
+    AtomicTopLevelWord
 }
 
-impl<T> ops::Deref for TopLevelWord<T> {
-    type Target = ShellWord<T, TopLevelWord<T>, TopLevelCommand<T>>;
+macro_rules! impl_top_level_word {
+    ($(#[$attr:meta])* pub struct $Word:ident, $Cmd:ident) => {
+        $(#[$attr])*
+        #[derive(Debug, PartialEq, Eq, Clone)]
+        pub struct $Word<T = String>(pub ShellWord<T, $Word<T>, $Cmd<T>>);
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
+        impl<T> ops::Deref for $Word<T> {
+            type Target = ShellWord<T, $Word<T>, $Cmd<T>>;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl<T> ops::DerefMut for $Word<T> {
+            fn deref_mut(&mut self) -> &mut Self::Target {
+                &mut self.0
+            }
+        }
+
+        impl<T> PartialEq<ShellWord<T, $Word<T>, $Cmd<T>>> for $Word<T> where T: PartialEq<T> {
+            fn eq(&self, other: &ShellWord<T, $Word<T>, $Cmd<T>>) -> bool {
+                &self.0 == other
+            }
+        }
+
+        impl<T> From<ShellWord<T, $Word<T>, $Cmd<T>>> for $Word<T> {
+            fn from(inner: ShellWord<T, $Word<T>, $Cmd<T>>) -> Self {
+                $Word(inner)
+            }
+        }
+    };
 }
 
-impl<T> ops::DerefMut for TopLevelWord<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
+impl_top_level_word! {
+    /// A top-level representation of a shell word. Uses `Rc` wrappers for function declarations.
+    ///
+    /// This wrapper unifies the provided top-level word representation,
+    /// `ComplexWord`, and the top-level command representation, `Command`,
+    /// while allowing them to be generic on their own.
+    pub struct TopLevelWord,
+    TopLevelCommand
 }
 
-impl<T> PartialEq<ShellWord<T, TopLevelWord<T>, TopLevelCommand<T>>> for TopLevelWord<T>
-    where T: PartialEq<T>,
-{
-    fn eq(&self, other: &ShellWord<T, TopLevelWord<T>, TopLevelCommand<T>>) -> bool {
-        &self.0 == other
-    }
+impl_top_level_word! {
+    /// A top-level representation of a shell word. Uses `Arc` wrappers for function declarations.
+    ///
+    /// This wrapper unifies the provided top-level word representation,
+    /// `ComplexWord`, and the top-level command representation, `Command`,
+    /// while allowing them to be generic on their own.
+    pub struct AtomicTopLevelWord,
+    AtomicTopLevelCommand
 }
 
 impl<T: fmt::Display> fmt::Display for Parameter<T> {
