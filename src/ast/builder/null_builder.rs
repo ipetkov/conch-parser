@@ -147,8 +147,8 @@ impl Builder for NullBuilder {
         Ok(())
     }
 
-    fn compound_command_as_pipeable(&mut self,
-                                    _cmd: Self::CompoundCommand)
+    fn compound_command_into_pipeable(&mut self,
+                                      _cmd: Self::CompoundCommand)
         -> ParseResult<Self::PipeableCommand, Self::Error>
     {
         Ok(())

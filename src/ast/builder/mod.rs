@@ -404,8 +404,8 @@ pub trait Builder {
     ///
     /// # Arguments
     /// cmd: The `CompoundCommand` to convert into a `PipeableCommand`
-    fn compound_command_as_pipeable(&mut self,
-                                    cmd: Self::CompoundCommand)
+    fn compound_command_into_pipeable(&mut self,
+                                      cmd: Self::CompoundCommand)
         -> ParseResult<Self::PipeableCommand, Self::Error>;
 
     /// Invoked when a function declaration is parsed.
@@ -544,11 +544,11 @@ macro_rules! impl_builder_body {
             (**self).case_command(fragments, redirects)
         }
 
-        fn compound_command_as_pipeable(&mut self,
-                                        cmd: Self::CompoundCommand)
+        fn compound_command_into_pipeable(&mut self,
+                                          cmd: Self::CompoundCommand)
             -> ParseResult<Self::PipeableCommand, Self::Error>
         {
-            (**self).compound_command_as_pipeable(cmd)
+            (**self).compound_command_into_pipeable(cmd)
         }
 
         fn function_declaration(&mut self,

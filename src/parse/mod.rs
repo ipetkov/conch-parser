@@ -548,7 +548,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     pub fn command(&mut self) -> ParseResult<B::PipeableCommand, B::Error> {
         if let Some(kw) = self.next_compound_command_type() {
             let compound = try!(self.compound_command_internal(Some(kw)));
-            self.builder.compound_command_as_pipeable(compound)
+            self.builder.compound_command_into_pipeable(compound)
         } else if let Some(fn_def) = try!(self.maybe_function_declaration()) {
             Ok(fn_def)
         } else {

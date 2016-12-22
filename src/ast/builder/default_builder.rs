@@ -153,11 +153,11 @@ macro_rules! default_builder {
                 self.0.case_command(fragments, redirects)
             }
 
-            fn compound_command_as_pipeable(&mut self,
-                                            cmd: Self::CompoundCommand)
+            fn compound_command_into_pipeable(&mut self,
+                                              cmd: Self::CompoundCommand)
                 -> ParseResult<Self::PipeableCommand, Self::Error>
             {
-                self.0.compound_command_as_pipeable(cmd)
+                self.0.compound_command_into_pipeable(cmd)
             }
 
             fn function_declaration(&mut self,
@@ -514,8 +514,8 @@ impl<T, W, C, F> Builder for CoreBuilder<T, W, C, F>
     }
 
     /// Converts a `CompoundCommand` into a `PipeableCommand`.
-    fn compound_command_as_pipeable(&mut self,
-                                    cmd: Self::CompoundCommand)
+    fn compound_command_into_pipeable(&mut self,
+                                      cmd: Self::CompoundCommand)
         -> ParseResult<Self::PipeableCommand, Self::Error>
     {
         Ok(PipeableCommand::Compound(Box::new(cmd)))
