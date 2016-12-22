@@ -230,8 +230,8 @@ pub type AtomicCommandList<T, W, C>
 pub type ShellPipeableCommand<T, W, C> = PipeableCommand<
     T,
     Box<SimpleCommand<T, W, Redirect<W>>>,
-    Box<CompoundCommand<CompoundCommandKind<T, W, C>, Redirect<W>>>,
-    Rc<CompoundCommand<CompoundCommandKind<T, W, C>, Redirect<W>>>
+    Box<ShellCompoundCommand<T, W, C>>,
+    Rc<ShellCompoundCommand<T, W, C>>
 >;
 
 /// A type alias for the default hiearchy to represent pipeable commands,
@@ -239,8 +239,8 @@ pub type ShellPipeableCommand<T, W, C> = PipeableCommand<
 pub type AtomicShellPipeableCommand<T, W, C> = PipeableCommand<
     T,
     Box<SimpleCommand<T, W, Redirect<W>>>,
-    Box<CompoundCommand<CompoundCommandKind<T, W, C>, Redirect<W>>>,
-    Arc<CompoundCommand<CompoundCommandKind<T, W, C>, Redirect<W>>>
+    Box<ShellCompoundCommand<T, W, C>>,
+    Arc<ShellCompoundCommand<T, W, C>>
 >;
 
 /// A command which conditionally runs based on the exit status of the previous command.
@@ -304,8 +304,12 @@ pub enum PipeableCommand<N, S, C, F> {
     FunctionDef(N, F),
 }
 
+/// A type alias for the default hiearchy for representing compound shell commands.
+pub type ShellCompoundCommand<T, W, C>
+    = CompoundCommand<CompoundCommandKind<T, W, C>, Redirect<W>>;
+
 /// Type alias for the default `CompoundCommandKind` representation.
-pub type DefaultCompoundCommand = CompoundCommand<DefaultCompoundCommandKind, DefaultRedirect>;
+pub type DefaultCompoundCommand = ShellCompoundCommand<String, TopLevelWord, TopLevelCommand>;
 
 /// A class of commands where redirection is applied to a command group.
 ///

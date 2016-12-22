@@ -1,18 +1,220 @@
+use ast::*;
+use ast::builder::*;
+use parse::ParseResult;
+use std::default::Default;
+use std::fmt;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
-use ast::{self, AndOr, AndOrList, Arithmetic, Command, CompoundCommand, CompoundCommandKind,
-          ComplexWord, DefaultArithmetic, DefaultParameter, ListableCommand, Parameter,
-          ParameterSubstitution, PipeableCommand, Redirect, ShellPipeableCommand, SimpleCommand,
-          SimpleWord, TopLevelCommand, TopLevelWord, Word};
-use ast::builder::*;
-use parse::ParseResult;
 use void::Void;
 
-/// A `Builder` implementation which builds shell commands
-/// using the AST definitions in the `ast` module.
-#[derive(Debug, Copy, Clone)]
-pub struct DefaultBuilder<T>(PhantomData<T>);
+/// A macro for defining a default builder, its boilerplate, and delegating
+/// the `Builder` trait to its respective `CoreBuilder` type.
+///
+/// This allows us to create concrete atomic/non-atomic builders which
+/// wrap a concrete `CoreBuilder` implementation so we can hide its type
+/// complexity from the consumer.
+///
+/// We could accomplish this by using a public type alias to the private
+/// builder type, however, rustdoc will only generate docs for the alias
+/// definition is, and the docs for the inner builder will be rendered in
+/// their entire complexity.
+// FIXME: might be good to revisit this complexity/indirection
+macro_rules! default_builder {
+    ($(#[$attr:meta])*
+     pub struct $Builder:ident,
+     $CoreBuilder:ident,
+     $Word:ident,
+     $Cmd:ident,
+     $PipeableCmd:ident,
+    ) => {
+        $(#[$attr])*
+        pub struct $Builder<T>($CoreBuilder<T, $Word<T>, $Cmd<T>>);
+
+        impl<T> $Builder<T> {
+            /// Constructs a builder.
+            pub fn new() -> Self {
+                $Builder($CoreBuilder::new())
+            }
+        }
+
+        impl<T> fmt::Debug for $Builder<T> {
+            fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+                fmt.debug_struct(stringify!($Builder))
+                    .finish()
+            }
+        }
+
+        impl<T> Default for $Builder<T> {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        impl<T> Clone for $Builder<T> {
+            fn clone(&self) -> Self {
+                *self
+            }
+        }
+
+        impl<T> Copy for $Builder<T> {}
+
+        impl<T: From<String>> Builder for $Builder<T> {
+            type Command         = $Cmd<T>;
+            type CommandList     = AndOrList<Self::ListableCommand>;
+            type ListableCommand = ListableCommand<Self::PipeableCommand>;
+            type PipeableCommand = $PipeableCmd<T, Self::Word, Self::Command>;
+            type CompoundCommand = ShellCompoundCommand<T, Self::Word, Self::Command>;
+            type Word            = $Word<T>;
+            type Redirect        = Redirect<Self::Word>;
+            type Error           = Void;
+
+            fn complete_command(&mut self,
+                                pre_cmd_comments: Vec<Newline>,
+                                list: Self::CommandList,
+                                separator: SeparatorKind,
+                                cmd_comment: Option<Newline>)
+                -> ParseResult<Self::Command, Self::Error>
+            {
+                self.0.complete_command(pre_cmd_comments, list, separator, cmd_comment)
+            }
+
+            fn and_or_list(&mut self,
+                      first: Self::ListableCommand,
+                      rest: Vec<(Vec<Newline>, AndOr<Self::ListableCommand>)>)
+                -> ParseResult<Self::CommandList, Self::Error>
+            {
+                self.0.and_or_list(first, rest)
+            }
+
+            fn pipeline(&mut self,
+                        bang: bool,
+                        cmds: Vec<(Vec<Newline>, Self::PipeableCommand)>)
+                -> ParseResult<Self::ListableCommand, Self::Error>
+            {
+                self.0.pipeline(bang, cmds)
+            }
+
+            fn simple_command(&mut self,
+                              env_vars: Vec<(String, Option<Self::Word>)>,
+                              cmd: Option<(Self::Word, Vec<Self::Word>)>,
+                              redirects: Vec<Self::Redirect>)
+                -> ParseResult<Self::PipeableCommand, Self::Error>
+            {
+                self.0.simple_command(env_vars, cmd, redirects)
+            }
+
+            fn brace_group(&mut self,
+                           cmds: CommandGroup<Self::Command>,
+                           redirects: Vec<Self::Redirect>)
+                -> ParseResult<Self::CompoundCommand, Self::Error>
+            {
+                self.0.brace_group(cmds, redirects)
+            }
+
+            fn subshell(&mut self,
+                        cmds: CommandGroup<Self::Command>,
+                        redirects: Vec<Self::Redirect>)
+                -> ParseResult<Self::CompoundCommand, Self::Error>
+            {
+                self.0.subshell(cmds, redirects)
+            }
+
+            fn loop_command(&mut self,
+                            kind: LoopKind,
+                            guard_body_pair: GuardBodyPairGroup<Self::Command>,
+                            redirects: Vec<Self::Redirect>)
+                -> ParseResult<Self::CompoundCommand, Self::Error>
+            {
+                self.0.loop_command(kind, guard_body_pair, redirects)
+            }
+
+            fn if_command(&mut self,
+                          fragments: IfFragments<Self::Command>,
+                          redirects: Vec<Self::Redirect>)
+                -> ParseResult<Self::CompoundCommand, Self::Error>
+            {
+                self.0.if_command(fragments, redirects)
+            }
+
+            fn for_command(&mut self,
+                           fragments: ForFragments<Self::Word, Self::Command>,
+                           redirects: Vec<Self::Redirect>)
+                -> ParseResult<Self::CompoundCommand, Self::Error>
+            {
+                self.0.for_command(fragments, redirects)
+            }
+
+            fn case_command(&mut self,
+                            fragments: CaseFragments<Self::Word, Self::Command>,
+                            redirects: Vec<Self::Redirect>)
+                -> ParseResult<Self::CompoundCommand, Self::Error>
+            {
+                self.0.case_command(fragments, redirects)
+            }
+
+            fn compound_command_as_pipeable(&mut self,
+                                            cmd: Self::CompoundCommand)
+                -> ParseResult<Self::PipeableCommand, Self::Error>
+            {
+                self.0.compound_command_as_pipeable(cmd)
+            }
+
+            fn function_declaration(&mut self,
+                                    name: String,
+                                    post_name_comments: Vec<Newline>,
+                                    body: Self::CompoundCommand)
+                -> ParseResult<Self::PipeableCommand, Self::Error>
+            {
+                self.0.function_declaration(name, post_name_comments, body)
+            }
+
+            fn comments(&mut self,
+                        comments: Vec<Newline>)
+                -> ParseResult<(), Self::Error>
+            {
+                self.0.comments(comments)
+            }
+
+            fn word(&mut self,
+                    kind: ComplexWordKind<Self::Command>)
+                -> ParseResult<Self::Word, Self::Error>
+            {
+                self.0.word(kind)
+            }
+
+            fn redirect(&mut self,
+                        kind: RedirectKind<Self::Word>)
+                -> ParseResult<Self::Redirect, Self::Error>
+            {
+                self.0.redirect(kind)
+            }
+        }
+    };
+}
+
+type RcCoreBuilder<T, W, C> = CoreBuilder<T, W, C, Rc<ShellCompoundCommand<T, W, C>>>;
+type ArcCoreBuilder<T, W, C> = CoreBuilder<T, W, C, Arc<ShellCompoundCommand<T, W, C>>>;
+
+default_builder! {
+    /// A `Builder` implementation which builds shell commands
+    /// using the (non-atomic) AST definitions in the `ast` module.
+    pub struct DefaultBuilder,
+    RcCoreBuilder,
+    TopLevelWord,
+    TopLevelCommand,
+    ShellPipeableCommand,
+}
+
+default_builder! {
+    /// A `Builder` implementation which builds shell commands
+    /// using the (atomic) AST definitions in the `ast` module.
+    pub struct AtomicDefaultBuilder,
+    ArcCoreBuilder,
+    AtomicTopLevelWord,
+    AtomicTopLevelCommand,
+    AtomicShellPipeableCommand,
+}
 
 /// A `DefaultBuilder` implementation which uses regular `String`s when
 /// representing shell words.
@@ -24,28 +226,63 @@ pub type RcBuilder = DefaultBuilder<Rc<String>>;
 
 /// A `DefaultBuilder` implementation which uses `Arc<String>`s when
 /// representing shell words.
-pub type ArcBuilder = DefaultBuilder<Arc<String>>;
+pub type ArcBuilder = AtomicDefaultBuilder<Arc<String>>;
 
-impl<T> ::std::default::Default for DefaultBuilder<T> {
-    fn default() -> Self {
-        DefaultBuilder::new()
+/// The actual provided `Builder` implementation.
+/// The various type parameters are used to swap out {non,}-atomic AST versions.
+pub struct CoreBuilder<T, W, C, F> {
+    phantom_data: PhantomData<(T, W, C, F)>,
+}
+
+impl<T, W, C, F> fmt::Debug for CoreBuilder<T, W, C, F> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.debug_struct("CoreBuilder")
+            .finish()
     }
 }
 
-impl<T> DefaultBuilder<T> {
+impl<T, W, C, F> Clone for CoreBuilder<T, W, C, F> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T, W, C, F> Copy for CoreBuilder<T, W, C, F> {}
+
+impl<T, W, C, F> Default for CoreBuilder<T, W, C, F> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T, W, C, F> CoreBuilder<T, W, C, F> {
     /// Constructs a builder.
     pub fn new() -> Self {
-        DefaultBuilder(PhantomData)
+        CoreBuilder {
+            phantom_data: PhantomData,
+        }
     }
 }
 
-impl<T: From<String>> Builder for DefaultBuilder<T> {
-    type Command         = TopLevelCommand<T>;
+type BuilderPipeableCommand<T, W, C, F> = PipeableCommand<
+    T,
+    Box<SimpleCommand<T, W, Redirect<W>>>,
+    Box<ShellCompoundCommand<T, W, C>>,
+    F,
+>;
+
+impl<T, W, C, F> Builder for CoreBuilder<T, W, C, F>
+    where T: From<String>,
+          W: From<ShellWord<T, W, C>>,
+          C: From<Command<AndOrList<ListableCommand<BuilderPipeableCommand<T, W, C, F>>>>>,
+          F: From<ShellCompoundCommand<T, W, C>>,
+{
+    type Command         = C;
     type CommandList     = AndOrList<Self::ListableCommand>;
     type ListableCommand = ListableCommand<Self::PipeableCommand>;
-    type PipeableCommand = ShellPipeableCommand<T, Self::Word, Self::Command>;
-    type CompoundCommand = CompoundCommand<CompoundCommandKind<T, Self::Word, Self::Command>, Self::Redirect>;
-    type Word            = TopLevelWord<T>;
+    type PipeableCommand = BuilderPipeableCommand<T, W, C, F>;
+    type CompoundCommand = ShellCompoundCommand<T, Self::Word, Self::Command>;
+    type Word            = W;
     type Redirect        = Redirect<Self::Word>;
     type Error           = Void;
 
@@ -65,7 +302,7 @@ impl<T: From<String>> Builder for DefaultBuilder<T> {
             SeparatorKind::Amp => Command::Job(list),
         };
 
-        Ok(TopLevelCommand(cmd))
+        Ok(cmd.into())
     }
 
     /// Constructs a `Command::List` node with the provided inputs.
@@ -165,7 +402,7 @@ impl<T: From<String>> Builder for DefaultBuilder<T> {
         body.shrink_to_fit();
         redirects.shrink_to_fit();
 
-        let guard_body_pair = ast::GuardBodyPair {
+        let guard_body_pair = GuardBodyPair {
             guard: guard,
             body: body,
         };
@@ -197,7 +434,7 @@ impl<T: From<String>> Builder for DefaultBuilder<T> {
                 guard.shrink_to_fit();
                 body.shrink_to_fit();
 
-                ast::GuardBodyPair {
+                GuardBodyPair {
                     guard: guard,
                     body: body,
                 }
@@ -291,7 +528,7 @@ impl<T: From<String>> Builder for DefaultBuilder<T> {
                             body: Self::CompoundCommand)
         -> ParseResult<Self::PipeableCommand, Self::Error>
     {
-        Ok(PipeableCommand::FunctionDef(name.into(), Rc::new(body)))
+        Ok(PipeableCommand::FunctionDef(name.into(), body.into()))
     }
 
     /// Ignored by the builder.
@@ -300,9 +537,8 @@ impl<T: From<String>> Builder for DefaultBuilder<T> {
     }
 
     /// Constructs a `ast::Word` from the provided input.
-    fn word(&mut self, kind: ComplexWordKind<Self::Command>) -> ParseResult<Self::Word, Self::Error> {
-        use ast::builder::ParameterSubstitutionKind::*;
-
+    fn word(&mut self, kind: ComplexWordKind<Self::Command>) -> ParseResult<Self::Word, Self::Error>
+    {
         macro_rules! map {
             ($pat:expr) => {
                 match $pat {
@@ -367,6 +603,8 @@ impl<T: From<String>> Builder for DefaultBuilder<T> {
         };
 
         let mut map_simple = |kind| {
+            use ast::builder::ParameterSubstitutionKind::*;
+
             let simple = match kind {
                 SimpleWordKind::Literal(s)      => SimpleWord::Literal(s.into()),
                 SimpleWordKind::Escaped(s)      => SimpleWord::Escaped(s.into()),
@@ -435,7 +673,7 @@ impl<T: From<String>> Builder for DefaultBuilder<T> {
             )),
         };
 
-        Ok(TopLevelWord(word))
+        Ok(word.into())
     }
 
     /// Constructs a `ast::Redirect` from the provided input.
@@ -466,9 +704,11 @@ struct Coalesce<I: Iterator, F> {
 }
 
 impl<I: Iterator, F> Coalesce<I, F> {
-    fn new(iter: I, func: F) -> Self {
+    fn new<T>(iter: T, func: F) -> Self
+        where T: IntoIterator<IntoIter = I, Item = I::Item>
+    {
         Coalesce {
-            iter: iter,
+            iter: iter.into_iter(),
             cur: None,
             func: func,
         }
@@ -530,8 +770,9 @@ fn compress<C>(word: ComplexWordKind<C>) -> ComplexWordKind<C> {
 
     fn coalesce_word<C>(a: WordKind<C>, b: WordKind<C>) -> CoalesceResult<WordKind<C>> {
         match (a, b) {
-            (Simple(a), Simple(b)) => coalesce_simple(a, b).map(Simple)
-                                                           .map_err(|(a, b)| (Simple(a), Simple(b))),
+            (Simple(a), Simple(b)) => coalesce_simple(a, b)
+                .map(Simple)
+                .map_err(|(a, b)| (Simple(a), Simple(b))),
             (SingleQuoted(mut a), SingleQuoted(b)) => {
                 a.push_str(&b);
                 Ok(SingleQuoted(a))
@@ -548,7 +789,7 @@ fn compress<C>(word: ComplexWordKind<C>) -> ComplexWordKind<C> {
         Single(s) => Single(match s {
             s@Simple(_) |
             s@SingleQuoted(_) => s,
-            DoubleQuoted(v) => DoubleQuoted(Coalesce::new(v.into_iter(), coalesce_simple).collect()),
+            DoubleQuoted(v) => DoubleQuoted(Coalesce::new(v, coalesce_simple).collect()),
         }),
         Concat(v) => {
             let mut body: Vec<_> = Coalesce::new(v.into_iter(), coalesce_word).collect();
@@ -560,4 +801,3 @@ fn compress<C>(word: ComplexWordKind<C>) -> ComplexWordKind<C> {
         }
     }
 }
-
