@@ -1,4 +1,7 @@
 //! The definition of a parser (and related methods) for the shell language.
+// FIXME: consider parsing [[ exr ]] as keywords? otherwise [[ foo && bar ]] won't get parsed right
+// FIXME: consider parsing out array index syntax? (e.g. ${array[some index]}
+// FIXME: arithmetic substitutions don't currently support param/comand substitutions
 
 use std::convert::From;
 use std::error::Error;
