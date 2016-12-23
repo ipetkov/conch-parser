@@ -36,8 +36,8 @@ pub enum Parameter<T> {
 /// Type alias for the default `ParameterSubstitution` representation.
 pub type DefaultParameterSubstitution = ParameterSubstitution<
     DefaultParameter,
-    TopLevelWord,
-    TopLevelCommand,
+    TopLevelWord<String>,
+    TopLevelCommand<String>,
     DefaultArithmetic
 >;
 
@@ -155,7 +155,7 @@ pub enum SimpleWord<L, P, S> {
 }
 
 /// Type alias for the default `Redirect` representation.
-pub type DefaultRedirect = Redirect<TopLevelWord>;
+pub type DefaultRedirect = Redirect<TopLevelWord<String>>;
 
 /// Represents redirecting a command's file descriptors.
 ///
@@ -309,7 +309,11 @@ pub type ShellCompoundCommand<T, W, C>
     = CompoundCommand<CompoundCommandKind<T, W, C>, Redirect<W>>;
 
 /// Type alias for the default `CompoundCommandKind` representation.
-pub type DefaultCompoundCommand = ShellCompoundCommand<String, TopLevelWord, TopLevelCommand>;
+pub type DefaultCompoundCommand = ShellCompoundCommand<
+    String,
+    TopLevelWord<String>,
+    TopLevelCommand<String>
+>;
 
 /// A class of commands where redirection is applied to a command group.
 ///
@@ -324,7 +328,11 @@ pub struct CompoundCommand<T, R> {
 }
 
 /// Type alias for the default `CompoundCommandKind` representation.
-pub type DefaultCompoundCommandKind = CompoundCommandKind<String, TopLevelWord, TopLevelCommand>;
+pub type DefaultCompoundCommandKind = CompoundCommandKind<
+    String,
+    TopLevelWord<String>,
+    TopLevelCommand<String>
+>;
 
 /// A specific kind of a `CompoundCommand`.
 ///
@@ -369,7 +377,11 @@ pub enum CompoundCommandKind<V, W, C> {
 }
 
 /// Type alias for the default `SimpleCommand` representation.
-pub type DefaultSimpleCommand = SimpleCommand<String, TopLevelWord, Redirect<TopLevelWord>>;
+pub type DefaultSimpleCommand = SimpleCommand<
+    String,
+    TopLevelWord<String>,
+    Redirect<TopLevelWord<String>>
+>;
 
 /// The simplest possible command: an executable with arguments,
 /// environment variable assignments, and redirections.
@@ -469,7 +481,7 @@ macro_rules! impl_top_level_cmd {
     ($(#[$attr:meta])* pub struct $Cmd:ident, $CmdList:ident, $Word:ident) => {
         $(#[$attr])*
         #[derive(Debug, PartialEq, Eq, Clone)]
-        pub struct $Cmd<T = String>(pub Command<$CmdList<T, $Word<T>, $Cmd<T>>>);
+        pub struct $Cmd<T>(pub Command<$CmdList<T, $Word<T>, $Cmd<T>>>);
 
         impl<T> ops::Deref for $Cmd<T> {
             type Target = Command<$CmdList<T, $Word<T>, $Cmd<T>>>;
@@ -526,7 +538,7 @@ macro_rules! impl_top_level_word {
     ($(#[$attr:meta])* pub struct $Word:ident, $Cmd:ident) => {
         $(#[$attr])*
         #[derive(Debug, PartialEq, Eq, Clone)]
-        pub struct $Word<T = String>(pub ShellWord<T, $Word<T>, $Cmd<T>>);
+        pub struct $Word<T>(pub ShellWord<T, $Word<T>, $Cmd<T>>);
 
         impl<T> ops::Deref for $Word<T> {
             type Target = ShellWord<T, $Word<T>, $Cmd<T>>;

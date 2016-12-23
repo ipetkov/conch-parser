@@ -8,8 +8,8 @@ mod parse_support;
 use parse_support::*;
 
 pub struct SimpleCommandFragments {
-    cmd: Option<(TopLevelWord, Vec<TopLevelWord>)>,
-    vars: Vec<(String, Option<TopLevelWord>)>,
+    cmd: Option<(TopLevelWord<String>, Vec<TopLevelWord<String>>)>,
+    vars: Vec<(String, Option<TopLevelWord<String>>)>,
     io: Vec<DefaultRedirect>,
 }
 

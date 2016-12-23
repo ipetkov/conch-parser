@@ -2876,12 +2876,8 @@ mod tests {
         DefaultParser::new(Lexer::new(src.chars()))
     }
 
-    fn lit(s: &str) -> DefaultWord {
-        Word::Simple(SimpleWord::Literal(String::from(s)))
-    }
-
-    fn word(s: &str) -> TopLevelWord {
-        TopLevelWord(ComplexWord::Single(lit(s)))
+    fn word(s: &str) -> TopLevelWord<String> {
+        TopLevelWord(ComplexWord::Single(Word::Simple(SimpleWord::Literal(String::from(s)))))
     }
 
     fn cmd_args_simple(cmd: &str, args: &[&str]) -> Box<DefaultSimpleCommand> {
@@ -2895,11 +2891,11 @@ mod tests {
         })
     }
 
-    fn cmd(cmd: &str) -> TopLevelCommand {
+    fn cmd(cmd: &str) -> TopLevelCommand<String> {
         cmd_args(cmd, &[])
     }
 
-    fn cmd_args(cmd: &str, args: &[&str]) -> TopLevelCommand {
+    fn cmd_args(cmd: &str, args: &[&str]) -> TopLevelCommand<String> {
         TopLevelCommand(List(CommandList {
             first: ListableCommand::Single(PipeableCommand::Simple(cmd_args_simple(cmd, args))),
             rest: vec!(),

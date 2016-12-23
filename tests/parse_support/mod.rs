@@ -24,27 +24,27 @@ pub fn subst(s: DefaultParameterSubstitution) -> DefaultWord {
     Word::Simple(Subst(Box::new(s)))
 }
 
-pub fn single_quoted(s: &str) -> TopLevelWord {
+pub fn single_quoted(s: &str) -> TopLevelWord<String> {
     TopLevelWord(Single(Word::SingleQuoted(String::from(s))))
 }
 
-pub fn double_quoted(s: &str) -> TopLevelWord {
+pub fn double_quoted(s: &str) -> TopLevelWord<String> {
     TopLevelWord(Single(Word::DoubleQuoted(vec!(Literal(String::from(s))))))
 }
 
-pub fn word(s: &str) -> TopLevelWord {
+pub fn word(s: &str) -> TopLevelWord<String> {
     TopLevelWord(Single(lit(s)))
 }
 
-pub fn word_escaped(s: &str) -> TopLevelWord {
+pub fn word_escaped(s: &str) -> TopLevelWord<String> {
     TopLevelWord(Single(escaped(s)))
 }
 
-pub fn word_subst(s: DefaultParameterSubstitution) -> TopLevelWord {
+pub fn word_subst(s: DefaultParameterSubstitution) -> TopLevelWord<String> {
     TopLevelWord(Single(subst(s)))
 }
 
-pub fn word_param(p: DefaultParameter) -> TopLevelWord {
+pub fn word_param(p: DefaultParameter) -> TopLevelWord<String> {
     TopLevelWord(Single(Word::Simple(Param(p))))
 }
 
@@ -71,18 +71,18 @@ pub fn cmd_simple(cmd: &str) -> Box<DefaultSimpleCommand> {
     cmd_args_simple(cmd, &[])
 }
 
-pub fn cmd_args(cmd: &str, args: &[&str]) -> TopLevelCommand {
+pub fn cmd_args(cmd: &str, args: &[&str]) -> TopLevelCommand<String> {
     TopLevelCommand(List(CommandList {
         first: ListableCommand::Single(Simple(cmd_args_simple(cmd, args))),
         rest: vec!(),
     }))
 }
 
-pub fn cmd(cmd: &str) -> TopLevelCommand {
+pub fn cmd(cmd: &str) -> TopLevelCommand<String> {
     cmd_args(cmd, &[])
 }
 
-pub fn cmd_from_simple(cmd: DefaultSimpleCommand) -> TopLevelCommand {
+pub fn cmd_from_simple(cmd: DefaultSimpleCommand) -> TopLevelCommand<String> {
     TopLevelCommand(List(CommandList {
         first: ListableCommand::Single(Simple(Box::new(cmd))),
         rest: vec!(),
