@@ -10,7 +10,7 @@ use void::Void;
 #[derive(Debug, Copy, Clone)]
 pub struct NullBuilder;
 
-impl ::std::default::Default for NullBuilder {
+impl Default for NullBuilder {
     fn default() -> Self {
         NullBuilder::new()
     }
