@@ -165,13 +165,6 @@ impl<T: fmt::Display> fmt::Display for ParseError<T> {
 
 impl<T> From<T> for ParseError<T> {
     fn from(err: T) -> Self {
-        Self::custom(err)
-    }
-}
-
-impl<T> ParseError<T> {
-    /// Create a new ParseError which wraps any custom error type.
-    pub fn custom(err: T) -> Self {
         ParseError::Custom(err)
     }
 }
@@ -481,7 +474,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             }
         });
 
-        self.builder.complete_command(pre_cmd_comments, cmd, sep, cmd_comment)
+        Ok(try!(self.builder.complete_command(pre_cmd_comments, cmd, sep, cmd_comment)))
     }
 
     /// Parses compound AND/OR commands.
@@ -512,7 +505,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             rest.push((post_sep_comments, next));
         }
 
-        self.builder.and_or_list(first, rest)
+        Ok(try!(self.builder.and_or_list(first, rest)))
     }
 
     /// Parses either a single command or a pipeline of commands.
@@ -551,7 +544,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     pub fn command(&mut self) -> ParseResult<B::PipeableCommand, B::Error> {
         if let Some(kw) = self.next_compound_command_type() {
             let compound = try!(self.compound_command_internal(Some(kw)));
-            self.builder.compound_command_into_pipeable(compound)
+            Ok(try!(self.builder.compound_command_into_pipeable(compound)))
         } else if let Some(fn_def) = try!(self.maybe_function_declaration()) {
             Ok(fn_def)
         } else {
@@ -2207,7 +2200,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// the name and `(`, and whitespace is allowed between `()`.
     pub fn function_declaration(&mut self) -> ParseResult<B::PipeableCommand, B::Error> {
         let (name, post_name_comments, body) = try!(self.function_declaration_internal());
-        self.builder.function_declaration(name, post_name_comments, body)
+        Ok(try!(self.builder.function_declaration(name, post_name_comments, body)))
     }
 
     /// Like `Parser::function_declaration`, but does not pass the result to the builder

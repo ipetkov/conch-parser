@@ -1,6 +1,5 @@
 use ast::AndOr;
 use ast::builder::*;
-use parse::ParseResult;
 use void::Void;
 
 /// A no-op `Builder` which ignores all inputs and always returns `()`.
@@ -38,7 +37,7 @@ impl Builder for NullBuilder {
                         _cmd: Self::Command,
                         _separator: SeparatorKind,
                         _cmd_comment: Option<Newline>)
-        -> ParseResult<Self::Command, Self::Error>
+        -> Result<Self::Command, Self::Error>
     {
         Ok(())
     }
@@ -46,7 +45,7 @@ impl Builder for NullBuilder {
     fn and_or_list(&mut self,
               _first: Self::ListableCommand,
               _rest: Vec<(Vec<Newline>, AndOr<Self::ListableCommand>)>)
-        -> ParseResult<Self::CommandList, Self::Error>
+        -> Result<Self::CommandList, Self::Error>
     {
         Ok(())
     }
@@ -54,7 +53,7 @@ impl Builder for NullBuilder {
     fn pipeline(&mut self,
                 _bang: bool,
                 _cmds: Vec<(Vec<Newline>, Self::Command)>)
-        -> ParseResult<Self::Command, Self::Error>
+        -> Result<Self::Command, Self::Error>
     {
         Ok(())
     }
@@ -63,7 +62,7 @@ impl Builder for NullBuilder {
                       _env_vars: Vec<(String, Option<Self::Word>)>,
                       _cmd: Option<(Self::Word, Vec<Self::Word>)>,
                       _redirects: Vec<Self::Redirect>)
-        -> ParseResult<Self::Command, Self::Error>
+        -> Result<Self::Command, Self::Error>
     {
         Ok(())
     }
@@ -71,7 +70,7 @@ impl Builder for NullBuilder {
     fn brace_group(&mut self,
                    _cmds: CommandGroup<Self::Command>,
                    _redirects: Vec<Self::Redirect>)
-        -> ParseResult<Self::Command, Self::Error>
+        -> Result<Self::Command, Self::Error>
     {
         Ok(())
     }
@@ -79,7 +78,7 @@ impl Builder for NullBuilder {
     fn subshell(&mut self,
                 _cmds: CommandGroup<Self::Command>,
                 _redirects: Vec<Self::Redirect>)
-        -> ParseResult<Self::Command, Self::Error>
+        -> Result<Self::Command, Self::Error>
     {
         Ok(())
     }
@@ -88,7 +87,7 @@ impl Builder for NullBuilder {
                     __kind: LoopKind,
                     __guard_body_pair: GuardBodyPairGroup<Self::Command>,
                     __redirects: Vec<Self::Redirect>)
-        -> ParseResult<Self::CompoundCommand, Self::Error>
+        -> Result<Self::CompoundCommand, Self::Error>
     {
         Ok(())
     }
@@ -96,7 +95,7 @@ impl Builder for NullBuilder {
     fn if_command(&mut self,
                   _fragments: IfFragments<Self::Command>,
                   _redirects: Vec<Self::Redirect>)
-        -> ParseResult<Self::Command, Self::Error>
+        -> Result<Self::Command, Self::Error>
     {
         Ok(())
     }
@@ -104,7 +103,7 @@ impl Builder for NullBuilder {
     fn for_command(&mut self,
                    _fragments: ForFragments<Self::Word, Self::Command>,
                    _redirects: Vec<Self::Redirect>)
-        -> ParseResult<Self::Command, Self::Error>
+        -> Result<Self::Command, Self::Error>
     {
         Ok(())
     }
@@ -112,7 +111,7 @@ impl Builder for NullBuilder {
     fn case_command(&mut self,
                     _fragments: CaseFragments<Self::Word, Self::Command>,
                     _redirects: Vec<Self::Redirect>)
-        -> ParseResult<Self::Command, Self::Error>
+        -> Result<Self::Command, Self::Error>
     {
         Ok(())
     }
@@ -121,35 +120,35 @@ impl Builder for NullBuilder {
                             _name: String,
                             _post_name_comments: Vec<Newline>,
                             _body: Self::CompoundCommand)
-        -> ParseResult<Self::Command, Self::Error>
+        -> Result<Self::Command, Self::Error>
     {
         Ok(())
     }
 
     fn comments(&mut self,
                 _comments: Vec<Newline>)
-        -> ParseResult<(), Self::Error>
+        -> Result<(), Self::Error>
     {
         Ok(())
     }
 
     fn word(&mut self,
             _kind: ComplexWordKind<Self::Command>)
-        -> ParseResult<Self::Word, Self::Error>
+        -> Result<Self::Word, Self::Error>
     {
         Ok(())
     }
 
     fn redirect(&mut self,
                 _kind: RedirectKind<Self::Word>)
-        -> ParseResult<Self::Redirect, Self::Error>
+        -> Result<Self::Redirect, Self::Error>
     {
         Ok(())
     }
 
     fn compound_command_into_pipeable(&mut self,
                                       _cmd: Self::CompoundCommand)
-        -> ParseResult<Self::PipeableCommand, Self::Error>
+        -> Result<Self::PipeableCommand, Self::Error>
     {
         Ok(())
     }
