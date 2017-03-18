@@ -7,22 +7,22 @@ use void::Void;
 /// Useful for validation of correct programs (i.e. parsing input without
 /// caring about the actual AST representations).
 #[derive(Debug, Copy, Clone)]
-pub struct NullBuilder;
+pub struct EmptyBuilder;
 
-impl Default for NullBuilder {
+impl Default for EmptyBuilder {
     fn default() -> Self {
-        NullBuilder::new()
+        EmptyBuilder::new()
     }
 }
 
-impl NullBuilder {
+impl EmptyBuilder {
     /// Constructs a builder.
     pub fn new() -> Self {
-        NullBuilder
+        EmptyBuilder
     }
 }
 
-impl Builder for NullBuilder {
+impl Builder for EmptyBuilder {
     type Command         = ();
     type CommandList     = ();
     type ListableCommand = ();
