@@ -102,9 +102,9 @@ pub enum Token {
     Backslash,
     /// %
     Percent,
-    /// -
+    /// \-
     Dash,
-    /// =
+    /// \=
     Equals,
     /// +
     Plus,
@@ -171,7 +171,7 @@ pub enum Token {
 
     /// Any literal delimited by whitespace.
     Literal(String),
-    /// A Literal capable of being used as a variable or function name. According to the POSIX
+    /// A `Literal` capable of being used as a variable or function name. According to the POSIX
     /// standard it should only contain alphanumerics or underscores, and does not start with a digit.
     Name(String),
 }

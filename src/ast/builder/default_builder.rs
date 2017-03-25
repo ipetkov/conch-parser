@@ -228,7 +228,7 @@ pub type RcBuilder = DefaultBuilder<Rc<String>>;
 pub type ArcBuilder = AtomicDefaultBuilder<Arc<String>>;
 
 /// The actual provided `Builder` implementation.
-/// The various type parameters are used to swap out {non,}-atomic AST versions.
+/// The various type parameters are used to swap out atomic/non-atomic AST versions.
 pub struct CoreBuilder<T, W, C, F> {
     phantom_data: PhantomData<(T, W, C, F)>,
 }
