@@ -1,10 +1,10 @@
 //! An module for easily iterating over a `Token` stream.
 
-use std::iter as std_iter;
-use std::mem;
 use parse::SourcePos;
 use token::Token;
 use token::Token::*;
+use std::iter as std_iter;
+use std::mem;
 
 /// Indicates an error such that EOF was encountered while some unmatched
 /// tokens were still pending. The error stores the unmatched token
@@ -668,6 +668,12 @@ impl<I: PeekablePositionIterator<Item = Token>> BacktickBackslashRemover<I> {
         }
         Ok(tok_iter)
     }
+}
+
+if_nightly! {
+    impl<I> ::std::iter::FusedIterator for BacktickBackslashRemover<I>
+        where I: PeekablePositionIterator<Item = Token>
+    {}
 }
 
 impl<I: PeekablePositionIterator<Item = Token>> Iterator for BacktickBackslashRemover<I> {
