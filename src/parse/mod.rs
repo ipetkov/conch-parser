@@ -84,6 +84,12 @@ impl SourcePos {
         self.line += newlines;
         self.col = if newlines == 0 { self.col + tok_len } else { 1 };
     }
+
+    /// Increments self by `num_tab` tab characters
+    fn advance_tabs(&mut self, num_tab: usize) {
+        self.byte += num_tab;
+        self.col += num_tab;
+    }
 }
 
 /// The error type which is returned from parsing shell commands.
@@ -427,7 +433,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     }
 
     /// Creates a new Parser from a Token iterator and provided AST builder.
-    pub fn with_builder(iter: I, builder: B) -> Parser<I, B> {
+    pub fn with_builder(iter: I, builder: B) -> Self {
         Parser {
             iter: TokenIterWrapper::Regular(TokenIter::new(iter)),
             builder: builder,
@@ -975,27 +981,25 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         let mut heredoc = Vec::new();
         'heredoc: loop {
             let mut line_start_pos = self.iter.pos();
-            let mut line: Vec<Token> = Vec::new();
+            let mut line = Vec::new();
             'line: loop {
                 if strip_tabs {
-                    if let Some(&Whitespace(_)) = self.iter.peek() {
-                        if let Some(Whitespace(w)) = self.iter.next() {
-                            let mut w_iter = w.chars().peekable();
-                            let mut tabs: String = String::with_capacity(w.len());
+                    let skip_next = if let Some(&Whitespace(ref w)) = self.iter.peek() {
+                        let stripped = w.trim_left_matches('\t');
+                        let num_tabs = w.len() - stripped.len();
+                        line_start_pos.advance_tabs(num_tabs);
 
-                            while let Some(&'\t') = w_iter.peek() {
-                                tabs.push(w_iter.next().unwrap());
-                            }
-
-                            line_start_pos.advance(&Whitespace(tabs));
-
-                            let s: String = w_iter.collect();
-                            if !s.is_empty() {
-                                line.push(Whitespace(s));
-                            }
-                        } else {
-                            unreachable!()
+                        if !stripped.is_empty() {
+                            line.push(Whitespace(stripped.to_owned()));
                         }
+
+                        true
+                    } else {
+                        false
+                    };
+
+                    if skip_next {
+                        self.iter.next();
                     }
                 }
 
@@ -1336,9 +1340,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             match self.iter.next() {
                 // Backslashes only escape a few tokens when double-quoted-type words
                 Some(Backslash) => {
-                    let special = {
-                        let peeked = self.iter.peek();
-                        [Dollar, Backtick, DoubleQuote, Backslash, Newline].iter().any(|t| Some(t) == peeked)
+                    let special = match self.iter.peek() {
+                        Some(&Dollar)      |
+                        Some(&Backtick)    |
+                        Some(&DoubleQuote) |
+                        Some(&Backslash)   |
+                        Some(&Newline)     => true,
+                        _ => false,
                     };
 
                     if special || self.iter.peek() == delim_close.as_ref() {
