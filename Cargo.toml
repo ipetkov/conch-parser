@@ -10,3 +10,6 @@ nightly = []
 [dependencies]
 clippy = { version = "~0.0.80", optional = true }
 void = "1"
+
+[dev-dependencies]
+owned_chars = "0.2.1"
