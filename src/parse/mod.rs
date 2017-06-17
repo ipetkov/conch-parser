@@ -1763,7 +1763,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             .. Default::default()
         }));
         try!(self.reserved_word(&[DONE])
-             .or(Err(ParseError::IncompleteCmd(DO, start_pos, DONE, self.iter.pos()))));
+             .or_else(|()| Err(ParseError::IncompleteCmd(DO, start_pos, DONE, self.iter.pos()))));
         Ok(result)
     }
 
@@ -1778,7 +1778,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             reserved_tokens: &[CurlyClose],
             .. Default::default()
         }));
-        try!(self.reserved_token(&[CurlyClose]).or(Err(ParseError::Unmatched(CurlyOpen, start_pos))));
+        try!(self.reserved_token(&[CurlyClose])
+             .or_else(|_| Err(ParseError::Unmatched(CurlyOpen, start_pos))));
         Ok(cmds)
     }
 
@@ -2128,11 +2129,11 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 exact_tokens: &[DSemi]
             }));
 
-            let (may_have_more_arms, arm_comment) = if Some(&DSemi) == self.iter.peek() {
+            let (no_more_arms, arm_comment) = if Some(&DSemi) == self.iter.peek() {
                 self.iter.next();
-                (true, self.newline())
+                (false, self.newline())
             } else {
-                (false, None)
+                (true, None)
             };
 
             arms.push(builder::CaseArm {
@@ -2145,9 +2146,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 arm_comment: arm_comment,
             });
 
-            if may_have_more_arms {
-                continue;
-            } else {
+            if no_more_arms {
                 break;
             }
         }

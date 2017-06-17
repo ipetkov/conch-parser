@@ -5,11 +5,10 @@ use conch_parser::lexer::Lexer;
 use conch_parser::parse::DefaultParser;
 use owned_chars::OwnedCharsExt;
 
-use std::io::{self, Read};
-use std::io::{BufRead, BufReader, Lines};
+use std::io::{BufRead, BufReader, stdin};
 
 fn main() {
-    let stdin = BufReader::new(io::stdin()).lines()
+    let stdin = BufReader::new(stdin()).lines()
         .map(Result::unwrap)
         .flat_map(|mut line| {
             line.push_str("\n"); // BufRead::lines unfortunately strips \n and \r\n
