@@ -10,6 +10,16 @@ use conch_parser::token::Token;
 mod parse_support;
 use parse_support::*;
 
+fn simple_command_with_redirect(cmd: &str, redirect: DefaultRedirect) -> DefaultPipeableCommand {
+    Simple(Box::new(SimpleCommand {
+        redirects_or_env_vars: vec!(),
+        redirects_or_cmd_words: vec!(
+            RedirectOrCmdWord::CmdWord(word(cmd)),
+            RedirectOrCmdWord::Redirect(redirect),
+        ),
+    }))
+}
+
 #[test]
 fn test_redirect_valid_close_without_whitespace() {
     let mut p = make_parser(">&-");
@@ -109,55 +119,51 @@ fn test_redirect_invalid_close_with_whitespace() {
 fn test_redirect_fd_immediately_preceeding_redirection() {
     let mut p = make_parser("foo 1>>out");
     let cmd = p.simple_command().unwrap();
-    assert_eq!(cmd, Simple(Box::new(SimpleCommand {
-        cmd: Some((word("foo"), vec!())),
-        vars: vec!(),
-        io: vec!(Redirect::Append(Some(1), word("out"))),
-    })));
+    assert_eq!(cmd, simple_command_with_redirect("foo", Redirect::Append(Some(1), word("out"))));
 }
 
 #[test]
 fn test_redirect_fd_must_immediately_preceed_redirection() {
+    let correct = Simple(Box::new(SimpleCommand {
+        redirects_or_env_vars: vec!(),
+        redirects_or_cmd_words: vec!(
+            RedirectOrCmdWord::CmdWord(word("foo")),
+            RedirectOrCmdWord::CmdWord(word("1")),
+            RedirectOrCmdWord::Redirect(Redirect::ReadWrite(None, word("out"))),
+        ),
+    }));
+
     let mut p = make_parser("foo 1 <>out");
-    let cmd = p.simple_command().unwrap();
-    assert_eq!(cmd, Simple(Box::new(SimpleCommand {
-        cmd: Some((word("foo"), vec!(word("1")))),
-        vars: vec!(),
-        io: vec!(Redirect::ReadWrite(None, word("out"))),
-    })));
+    assert_eq!(p.simple_command().unwrap(), correct);
 }
 
 #[test]
 fn test_redirect_valid_dup_with_fd() {
     let mut p = make_parser("foo 1>&2");
     let cmd = p.simple_command().unwrap();
-    assert_eq!(cmd, Simple(Box::new(SimpleCommand {
-        cmd: Some((word("foo"), vec!())),
-        vars: vec!(),
-        io: vec!(Redirect::DupWrite(Some(1), word("2"))),
-    })));
+    assert_eq!(cmd, simple_command_with_redirect("foo", Redirect::DupWrite(Some(1), word("2"))));
 }
 
 #[test]
 fn test_redirect_valid_dup_without_fd() {
+    let correct = Simple(Box::new(SimpleCommand {
+        redirects_or_env_vars: vec!(),
+        redirects_or_cmd_words: vec!(
+            RedirectOrCmdWord::CmdWord(word("foo")),
+            RedirectOrCmdWord::CmdWord(word("1")),
+            RedirectOrCmdWord::Redirect(Redirect::DupRead(None, word("2"))),
+        ),
+    }));
+
     let mut p = make_parser("foo 1 <&2");
-    let cmd = p.simple_command().unwrap();
-    assert_eq!(cmd, Simple(Box::new(SimpleCommand {
-        cmd: Some((word("foo"), vec!(word("1")))),
-        vars: vec!(),
-        io: vec!(Redirect::DupRead(None, word("2"))),
-    })));
+    assert_eq!(p.simple_command().unwrap(), correct);
 }
 
 #[test]
 fn test_redirect_valid_dup_with_whitespace() {
     let mut p = make_parser("foo 1<& 2");
     let cmd = p.simple_command().unwrap();
-    assert_eq!(cmd, Simple(Box::new(SimpleCommand {
-        cmd: Some((word("foo"), vec!())),
-        vars: vec!(),
-        io: vec!(Redirect::DupRead(Some(1), word("2"))),
-    })));
+    assert_eq!(cmd, simple_command_with_redirect("foo", Redirect::DupRead(Some(1), word("2"))));
 }
 
 #[test]
@@ -184,11 +190,7 @@ fn test_redirect_src_fd_need_not_be_single_token() {
     ));
 
     let cmd = p.simple_command().unwrap();
-    assert_eq!(cmd, Simple(Box::new(SimpleCommand {
-        cmd: Some((word("foo"), vec!())),
-        vars: vec!(),
-        io: vec!(Redirect::DupRead(Some(1234), word("-"))),
-    })));
+    assert_eq!(cmd, simple_command_with_redirect("foo", Redirect::DupRead(Some(1234), word("-"))));
 }
 
 #[test]
@@ -235,4 +237,3 @@ fn test_redirect_list_rejects_non_fd_words() {
     assert_eq!(Err(BadFd(src(7,  1, 8),  src(10,  1, 11))), make_parser("1>>out abc<in 2>&-").redirect_list());
     assert_eq!(Err(BadFd(src(7,  1, 8),  src(10,  1, 11))), make_parser("1>>out abc <in 2>&-").redirect_list());
 }
-

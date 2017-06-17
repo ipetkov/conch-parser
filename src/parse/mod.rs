@@ -563,10 +563,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// A valid command is expected to have at least an executable name, or a single
     /// variable assignment or redirection. Otherwise an error will be returned.
     pub fn simple_command(&mut self) -> ParseResult<B::PipeableCommand, B::Error> {
-        let mut cmd: Option<B::Word> = None;
-        let mut args = Vec::new();
+        use ast::{RedirectOrCmdWord, RedirectOrEnvVar};
+
         let mut vars = Vec::new();
-        let mut io = Vec::new();
+        let mut cmd_args = Vec::new();
 
         loop {
             self.skip_whitespace();
@@ -588,7 +588,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     } else {
                         try!(self.word())
                     };
-                    vars.push((var, value));
+                    vars.push(RedirectOrEnvVar::EnvVar(var, value));
 
                     // Make sure we continue checking for assignments,
                     // otherwise it they can be interpreted as literal words.
@@ -602,41 +602,39 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             // more redirects or assignments. Otherwise we will either
             // run into the command name or the end of the simple command.
             let exec = match try!(self.redirect()) {
-                Some(Ok(redirect)) => { io.push(redirect); continue; },
+                Some(Ok(redirect)) => {
+                    vars.push(RedirectOrEnvVar::Redirect(redirect));
+                    continue;
+                },
                 Some(Err(w)) => w,
                 None => break,
             };
 
             // Since there are no more assignments or redirects present
             // it must be the first real word, and thus the executable name.
-            cmd = Some(exec);
+            cmd_args.push(RedirectOrCmdWord::CmdWord(exec));
             break;
         }
+
+        let vars = vars;
 
         // Now that all assignments are taken care of, any other occurances of `=` will be
         // treated as literals when we attempt to parse a word out.
         loop {
             match try!(self.redirect()) {
-                Some(Ok(redirect)) => { io.push(redirect); continue; },
-                Some(Err(w)) => if cmd.is_none() { cmd = Some(w); } else { args.push(w) },
+                Some(Ok(redirect)) => cmd_args.push(RedirectOrCmdWord::Redirect(redirect)),
+                Some(Err(w)) => cmd_args.push(RedirectOrCmdWord::CmdWord(w)),
                 None => break,
             }
         }
 
         // "Blank" commands are only allowed if redirection occurs
         // or if there is some variable assignment
-        let cmd = match cmd {
-            Some(cmd) => Some((cmd, args)),
-            None => {
-                debug_assert!(args.is_empty());
-                if vars.is_empty() && io.is_empty() {
-                    try!(Err(self.make_unexpected_err()));
-                }
-                None
-            },
-        };
-
-        Ok(try!(self.builder.simple_command(vars, cmd, io)))
+        if vars.is_empty() && cmd_args.is_empty() {
+            Err(self.make_unexpected_err())
+        } else {
+            Ok(try!(self.builder.simple_command(vars, cmd_args)))
+        }
     }
 
     /// Parses a continuous list of redirections and will error if any words
@@ -2885,13 +2883,13 @@ mod tests {
     }
 
     fn cmd_args_simple(cmd: &str, args: &[&str]) -> Box<DefaultSimpleCommand> {
-        let cmd = word(cmd);
-        let args = args.iter().map(|&a| word(a)).collect();
+        let mut cmd_args = Vec::with_capacity(args.len() + 1);
+        cmd_args.push(RedirectOrCmdWord::CmdWord(word(cmd)));
+        cmd_args.extend(args.iter().map(|&a| RedirectOrCmdWord::CmdWord(word(a))));
 
         Box::new(SimpleCommand {
-            cmd: Some((cmd, args)),
-            vars: vec!(),
-            io: vec!(),
+            redirects_or_env_vars: vec!(),
+            redirects_or_cmd_words: cmd_args,
         })
     }
 

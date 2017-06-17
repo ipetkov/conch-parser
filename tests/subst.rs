@@ -1,7 +1,7 @@
 extern crate conch_parser;
 
 use conch_parser::ast::ComplexWord::*;
-use conch_parser::ast::{SimpleWord, SimpleCommand, Word, TopLevelWord};
+use conch_parser::ast::{RedirectOrCmdWord, SimpleWord, SimpleCommand, Word, TopLevelWord};
 use conch_parser::ast::Parameter::*;
 use conch_parser::ast::ParameterSubstitution::*;
 use conch_parser::parse::ParseError::*;
@@ -613,11 +613,15 @@ fn test_parameter_substitution_words_can_be_parameters_or_substitutions_as_well(
 #[test]
 fn test_parameter_substitution_command_close_paren_need_not_be_followed_by_word_delimeter() {
     let correct = Some(cmd_from_simple(SimpleCommand {
-        vars: vec!(), io: vec!(),
-        cmd: Some((word("foo"), vec!(TopLevelWord(Single(Word::DoubleQuoted(vec!(
-            SimpleWord::Subst(Box::new(Command(vec!(cmd("bar")))))
-        ))))))),
+        redirects_or_env_vars: vec!(),
+        redirects_or_cmd_words: vec!(
+            RedirectOrCmdWord::CmdWord(word("foo")),
+            RedirectOrCmdWord::CmdWord(TopLevelWord(Single(Word::DoubleQuoted(vec!(
+                SimpleWord::Subst(Box::new(Command(vec!(cmd("bar")))))
+            ))))),
+        ),
     }));
+
     assert_eq!(correct, make_parser("foo \"$(bar)\"").complete_command().unwrap());
 }
 

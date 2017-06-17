@@ -9,7 +9,7 @@
 //! the `Builder` trait for your AST. Otherwise you can provide the `DefaultBuilder`
 //! struct to the parser if you wish to use the default AST implementation.
 
-use ast::{AndOr, DefaultArithmetic, DefaultParameter};
+use ast::{AndOr, DefaultArithmetic, DefaultParameter, RedirectOrCmdWord, RedirectOrEnvVar};
 
 mod default_builder;
 mod empty_builder;
@@ -313,16 +313,13 @@ pub trait Builder {
     /// Invoked when the "simplest" possible command is parsed: an executable with arguments.
     ///
     /// # Arguments
-    /// * env_vars: environment variables to be defined only for the command before it is run.
-    /// * cmd: a tuple of the name of the command to be run and any arguments. This value is
-    /// optional since the shell grammar permits that a simple command be made up of only env
-    /// var definitions or redirects (or both).
-    /// * redirects: redirection of any file descriptors to/from other file descriptors or files.
-    fn simple_command(&mut self,
-                      env_vars: Vec<(String, Option<Self::Word>)>,
-                      cmd: Option<(Self::Word, Vec<Self::Word>)>,
-                      redirects: Vec<Self::Redirect>)
-        -> Result<Self::PipeableCommand, Self::Error>;
+    /// * redirects_or_env_vars: redirections or environment variables that occur before any command
+    /// * redirects_or_cmd_words: redirections or any command or argument
+    fn simple_command(
+        &mut self,
+        redirects_or_env_vars: Vec<RedirectOrEnvVar<Self::Redirect, String, Self::Word>>,
+        redirects_or_cmd_words: Vec<RedirectOrCmdWord<Self::Redirect, Self::Word>>
+    ) -> Result<Self::PipeableCommand, Self::Error>;
 
     /// Invoked when a non-zero number of commands were parsed between balanced curly braces.
     /// Typically these commands should run within the current shell environment.
@@ -485,13 +482,13 @@ macro_rules! impl_builder_body {
             (**self).pipeline(bang, cmds)
         }
 
-        fn simple_command(&mut self,
-                          env_vars: Vec<(String, Option<Self::Word>)>,
-                          cmd: Option<(Self::Word, Vec<Self::Word>)>,
-                          redirects: Vec<Self::Redirect>)
-            -> Result<Self::PipeableCommand, Self::Error>
+        fn simple_command(
+            &mut self,
+            redirects_or_env_vars: Vec<RedirectOrEnvVar<Self::Redirect, String, Self::Word>>,
+            redirects_or_cmd_words: Vec<RedirectOrCmdWord<Self::Redirect, Self::Word>>
+        ) -> Result<Self::PipeableCommand, Self::Error>
         {
-            (**self).simple_command(env_vars, cmd, redirects)
+            (**self).simple_command(redirects_or_env_vars, redirects_or_cmd_words)
         }
 
         fn brace_group(&mut self,

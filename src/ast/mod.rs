@@ -376,6 +376,35 @@ pub enum CompoundCommandKind<V, W, C> {
     },
 }
 
+/// Represents a parsed redirect or a defined environment variable at the start
+/// of a command.
+///
+/// Because the order in which redirects are defined may be significant for
+/// execution, the parser will preserve the order in which they were parsed.
+/// Thus we need a wrapper like this to disambiguate what was encountered in
+/// the source program.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum RedirectOrEnvVar<R, V, W> {
+    /// A parsed redirect before a command was encountered.
+    Redirect(R),
+    /// A parsed environment variable, e.g. `foo=[bar]`.
+    EnvVar(V, Option<W>),
+}
+
+/// Represents a parsed redirect or a defined command or command argument.
+///
+/// Because the order in which redirects are defined may be significant for
+/// execution, the parser will preserve the order in which they were parsed.
+/// Thus we need a wrapper like this to disambiguate what was encountered in
+/// the source program.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum RedirectOrCmdWord<R, W> {
+    /// A parsed redirect after a command was encountered.
+    Redirect(R),
+    /// A parsed command name or argument.
+    CmdWord(W),
+}
+
 /// Type alias for the default `SimpleCommand` representation.
 pub type DefaultSimpleCommand = SimpleCommand<
     String,
@@ -389,15 +418,11 @@ pub type DefaultSimpleCommand = SimpleCommand<
 /// Generic over representations of variable names, shell words, and redirects.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SimpleCommand<V, W, R> {
-    /// Name or path of the executable along with any arguments. It's possible to
-    /// have to have a command that is only an assigment which would set a value
-    /// in the global environment, making the executable optional.
-    pub cmd: Option<(W, Vec<W>)>,
-    /// Environment variable assignments for this command, bound as
-    /// tuples of (var name, value).
-    pub vars: Vec<(V, Option<W>)>,
-    /// All redirections that should be applied before running the command.
-    pub io: Vec<R>,
+    /// Redirections or environment variables that occur before any command
+    /// in the order they were parsed.
+    pub redirects_or_env_vars: Vec<RedirectOrEnvVar<R, V, W>>,
+    /// Redirections or command name/argumetns in the order they were parsed.
+    pub redirects_or_cmd_words: Vec<RedirectOrCmdWord<R, W>>,
 }
 
 /// Type alias for the default `Arithmetic` representation.

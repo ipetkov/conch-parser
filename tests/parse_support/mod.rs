@@ -57,13 +57,13 @@ pub fn make_parser_from_tokens(src: Vec<Token>) -> DefaultParser<::std::vec::Int
 }
 
 pub fn cmd_args_simple(cmd: &str, args: &[&str]) -> Box<DefaultSimpleCommand> {
-    let cmd = word(cmd);
-    let args = args.iter().map(|&a| word(a)).collect();
+    let mut cmd_args = Vec::with_capacity(args.len() + 1);
+    cmd_args.push(RedirectOrCmdWord::CmdWord(word(cmd)));
+    cmd_args.extend(args.iter().map(|&a| RedirectOrCmdWord::CmdWord(word(a))));
 
     Box::new(SimpleCommand {
-        cmd: Some((cmd, args)),
-        vars: vec!(),
-        io: vec!(),
+        redirects_or_env_vars: vec!(),
+        redirects_or_cmd_words: cmd_args,
     })
 }
 

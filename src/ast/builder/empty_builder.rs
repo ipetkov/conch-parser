@@ -58,11 +58,11 @@ impl Builder for EmptyBuilder {
         Ok(())
     }
 
-    fn simple_command(&mut self,
-                      _env_vars: Vec<(String, Option<Self::Word>)>,
-                      _cmd: Option<(Self::Word, Vec<Self::Word>)>,
-                      _redirects: Vec<Self::Redirect>)
-        -> Result<Self::Command, Self::Error>
+    fn simple_command(
+        &mut self,
+        _redirects_or_env_vars: Vec<RedirectOrEnvVar<Self::Redirect, String, Self::Word>>,
+        _redirects_or_cmd_words: Vec<RedirectOrCmdWord<Self::Redirect, Self::Word>>
+    ) -> Result<Self::PipeableCommand, Self::Error>
     {
         Ok(())
     }

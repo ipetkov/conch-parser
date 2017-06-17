@@ -94,13 +94,13 @@ macro_rules! default_builder {
                 self.0.pipeline(bang, cmds)
             }
 
-            fn simple_command(&mut self,
-                              env_vars: Vec<(String, Option<Self::Word>)>,
-                              cmd: Option<(Self::Word, Vec<Self::Word>)>,
-                              redirects: Vec<Self::Redirect>)
-                -> Result<Self::PipeableCommand, Self::Error>
+            fn simple_command(
+                &mut self,
+                redirects_or_env_vars: Vec<RedirectOrEnvVar<Self::Redirect, String, Self::Word>>,
+                redirects_or_cmd_words: Vec<RedirectOrCmdWord<Self::Redirect, Self::Word>>
+            ) -> Result<Self::PipeableCommand, Self::Error>
             {
-                self.0.simple_command(env_vars, cmd, redirects)
+                self.0.simple_command(redirects_or_env_vars, redirects_or_cmd_words)
             }
 
             fn brace_group(&mut self,
@@ -338,22 +338,24 @@ impl<T, W, C, F> Builder for CoreBuilder<T, W, C, F>
     }
 
     /// Constructs a `Command::Simple` node with the provided inputs.
-    fn simple_command(&mut self,
-                      env_vars: Vec<(String, Option<Self::Word>)>,
-                      mut cmd: Option<(Self::Word, Vec<Self::Word>)>,
-                      mut redirects: Vec<Self::Redirect>)
-        -> Result<Self::PipeableCommand, Self::Error>
+    fn simple_command(
+        &mut self,
+        redirects_or_env_vars: Vec<RedirectOrEnvVar<Self::Redirect, String, Self::Word>>,
+        mut redirects_or_cmd_words: Vec<RedirectOrCmdWord<Self::Redirect, Self::Word>>
+    ) -> Result<Self::PipeableCommand, Self::Error>
     {
-        redirects.shrink_to_fit();
+        let redirects_or_env_vars = redirects_or_env_vars.into_iter()
+            .map(|roev| match roev {
+                RedirectOrEnvVar::Redirect(red) => RedirectOrEnvVar::Redirect(red),
+                RedirectOrEnvVar::EnvVar(k, v) => RedirectOrEnvVar::EnvVar(k.into(), v),
+            })
+            .collect();
 
-        if let Some(&mut (_, ref mut args)) = cmd.as_mut() {
-            args.shrink_to_fit();
-        }
+        redirects_or_cmd_words.shrink_to_fit();
 
         Ok(PipeableCommand::Simple(Box::new(SimpleCommand {
-            cmd: cmd,
-            vars: env_vars.into_iter().map(|(k, v)| (k.into(), v)).collect(),
-            io: redirects,
+            redirects_or_env_vars: redirects_or_env_vars,
+            redirects_or_cmd_words: redirects_or_cmd_words,
         })))
     }
 
