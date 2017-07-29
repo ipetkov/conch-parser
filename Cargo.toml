@@ -3,6 +3,15 @@ name = "conch-parser"
 version = "0.1.0"
 authors = ["Ivan Petkov <ivanppetkov@gmail.com>"]
 license = "MIT/Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/ipetkov/conch-parser"
+homepage = "https://github.com/ipetkov/conch-parser"
+documentation = "https://docs.rs/conch-parser/"
+keywords = ["shell", "parser", "parsing"]
+categories = ["parser-implementations"]
+description = """
+A library for parsing programs written in the shell programming language.
+"""
 
 [features]
 nightly = []

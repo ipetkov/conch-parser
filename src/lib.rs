@@ -33,6 +33,8 @@
 //! * `clippy`: compile with clippy lints enabled
 //! * `nightly`: enable unstable features/optimizations which require a nightly compiler
 
+#![doc(html_root_url = "https://docs.rs/conch-parser/0.1")]
+
 #![cfg_attr(feature = "clippy", feature(plugin))]
 #![cfg_attr(feature = "clippy", plugin(clippy))]
 
