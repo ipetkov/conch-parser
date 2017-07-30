@@ -18,7 +18,7 @@ script:
   - cargo doc --no-deps
 after_success:
   # NB: only upload linux master docs to avoid conflicting with the osx build
-  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then $travis-cargo --only stable doc-upload; fi
+  - [[ "$TRAVIS_OS_NAME" == "linux" ]] && travis-cargo --only stable doc-upload
 
 env:
   global:

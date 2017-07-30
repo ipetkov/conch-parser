@@ -2,6 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/conch-parser.svg)](https://crates.io/crates/conch-parser)
 [![Documentation](https://docs.rs/conch-parser/badge.svg)](https://docs.rs/conch-parser)
+[![Documentation Master](https://img.shields.io/badge/docs-master-blue.svg)](https://ipetkov.github.io/conch-parser)
 [![Status](https://travis-ci.org/ipetkov/conch-parser.svg?branch=master)](https://travis-ci.org/ipetkov/conch-parser)
 
 A Rust library for parsing Unix shell commands.
