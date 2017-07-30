@@ -1,11 +1,12 @@
 sudo: false
 language: rust
+cache: cargo
 
 rust:
   - nightly
   - beta
   - stable
-  - 1.12.0
+    #- 1.12.0 # FIXME: revisit earliest supported compiler
 
 before_script:
   - pip install 'travis-cargo<0.2' --user && export PATH=$HOME/.local/bin:$PATH
@@ -16,9 +17,9 @@ before_script:
   - export PATH=$PATH:~/.cargo/bin
 
 script:
-  - travis-cargo build
-  - travis-cargo test
-  - travis-cargo doc --no-deps
+  - cargo build
+  - cargo test
+  - cargo doc --no-deps
   - if [[ "$TRAVIS_RUST_VERSION" == "nightly" && $CLIPPY ]]; then cargo clippy; fi
 after_success:
   - travis-cargo --only stable doc-upload
