@@ -10,6 +10,7 @@ addons:
       - libelf-dev
       - libdw-dev
       - binutils-dev # required for the --verify flag of kcov
+      - libiberty-dev
 
 rust:
   - nightly
