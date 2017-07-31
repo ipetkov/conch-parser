@@ -2,6 +2,15 @@ sudo: false
 language: rust
 cache: cargo
 
+# necessary for kcov
+addons:
+  apt:
+    packages:
+      - libcurl4-openssl-dev
+      - libelf-dev
+      - libdw-dev
+      - binutils-dev # required for the --verify flag of kcov
+
 rust:
   - nightly
   - beta
@@ -19,10 +28,29 @@ script:
 after_success:
   # NB: only upload linux master docs to avoid conflicting with the osx build
   - [[ "$TRAVIS_OS_NAME" == "linux" ]] && travis-cargo --only stable doc-upload
+  # Coverage script
+  - |
+      wget https://github.com/SimonKagstrom/kcov/archive/master.tar.gz &&
+      tar xzf master.tar.gz &&
+      cd kcov-master &&
+      mkdir build &&
+      cd build &&
+      cmake .. &&
+      make &&
+      make install DESTDIR=../../kcov-build &&
+      cd ../.. &&
+      rm -rf kcov-master &&
+      for file in $(find target/debug/deps -maxdepth 1 -type f -executable -name '*-*'); do
+        mkdir -p "target/cov/$(basename $file)";
+        ./kcov-build/usr/local/bin/kcov --exclude-pattern=/.cargo,/usr/lib --verify "target/cov/$(basename $file)" "$file";
+      done &&
+      bash <(curl -s https://codecov.io/bash) &&
+      echo "Uploaded code coverage"
 
 env:
   global:
     - TRAVIS_CARGO_NIGHTLY_FEATURE=nightly
+    - RUSTFLAGS="-C link-dead-code" # Enable better code coverage at the cost of binary size
 
 notifications:
   email:
