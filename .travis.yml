@@ -46,7 +46,7 @@ after_success:
         ./kcov-build/usr/local/bin/kcov --exclude-pattern=/.cargo,/usr/lib --verify "target/cov/$(basename $file)" "$file";
       done &&
       bash <(curl -s https://codecov.io/bash) &&
-      echo "Uploaded code coverage"
+      echo "Uploaded code coverage";
     fi
 
 env:
