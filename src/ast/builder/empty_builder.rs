@@ -1,4 +1,4 @@
-use ast::AndOr;
+use ast::{AndOr, RedirectOrCmdWord, RedirectOrEnvVar};
 use ast::builder::*;
 use void::Void;
 

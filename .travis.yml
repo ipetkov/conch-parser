@@ -16,7 +16,7 @@ rust:
   - nightly
   - beta
   - stable
-    #- 1.12.0 # FIXME: revisit earliest supported compiler
+  - 1.12.0
 
 before_script:
   - pip install 'travis-cargo<0.2' --user && export PATH=$PATH:$HOME/.local/bin
