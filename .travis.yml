@@ -19,7 +19,6 @@ rust:
   - 1.12.0
 
 before_script:
-  - pip install 'travis-cargo<0.2' --user && export PATH=$PATH:$HOME/.local/bin
   - export PATH=$PATH:~/.cargo/bin
 
 script:
@@ -27,8 +26,6 @@ script:
   - cargo test
   - cargo doc --no-deps
 after_success:
-  # NB: only upload linux master docs to avoid conflicting with the osx build
-  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then travis-cargo --only stable doc-upload; fi
   # NB: kcov only works on linux
   - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then ./ci/install-kcov.sh && ./ci/coverage.sh; fi
 
