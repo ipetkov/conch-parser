@@ -4,8 +4,8 @@
 [![Documentation](https://docs.rs/conch-parser/badge.svg)](https://docs.rs/conch-parser)
 [![Documentation Master](https://img.shields.io/badge/docs-master-blue.svg)](https://ipetkov.github.io/conch-parser)
 [![Build Status](https://travis-ci.org/ipetkov/conch-parser.svg?branch=master)](https://travis-ci.org/ipetkov/conch-parser)
-[![Build Status](https://img.shields.io/appveyor/ci/ipetkov/conch-parser.svg)](https://ci.appveyor.com/project/ipetkov/conch-parser)
-[![Coverage](https://img.shields.io/codecov/c/github/ipetkov/conch-parser.svg)](https://codecov.io/gh/ipetkov/conch-parser)
+[![Build Status](https://img.shields.io/appveyor/ci/ipetkov/conch-parser/master.svg)](https://ci.appveyor.com/project/ipetkov/conch-parser)
+[![Coverage](https://img.shields.io/codecov/c/github/ipetkov/conch-parser/master.svg)](https://codecov.io/gh/ipetkov/conch-parser)
 
 A Rust library for parsing Unix shell commands.
 
