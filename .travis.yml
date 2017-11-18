@@ -18,6 +18,11 @@ rust:
   - stable
   - 1.12.0
 
+branches:
+  only:
+    - master
+    - /v?\d(\.\d)*/
+
 before_script:
   - export PATH=$PATH:~/.cargo/bin
 

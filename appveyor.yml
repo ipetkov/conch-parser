@@ -9,6 +9,11 @@ environment:
   - TARGET: x86_64-pc-windows-msvc
     RUST_VERSION: 1.12.0
 
+branches:
+  only:
+    - master
+    - /v?\d(\.\d)*/
+
 install:
   - set PATH=C:\Program Files\Git\mingw64\bin;%PATH%
   - curl -sSf -o rustup-init.exe https://win.rustup.rs/
