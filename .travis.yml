@@ -15,15 +15,14 @@ addons:
 matrix:
   include:
     - rust: nightly
-    - rust: beta
-
-    - rust: stable
       env:
         - FEATURE_FLAGS="--features nightly"
         - RUSTFLAGS="-C link-dead-code" # Enable better code coverage at the cost of binary size
       after_success:
         - ./ci/install-kcov.sh && ./ci/coverage.sh
 
+    - rust: beta
+    - rust: stable
     - rust: 1.12.0
     - os: osx
       rust: stable
