@@ -12,11 +12,21 @@ addons:
       - binutils-dev # required for the --verify flag of kcov
       - libiberty-dev
 
-rust:
-  - nightly
-  - beta
-  - stable
-  - 1.12.0
+matrix:
+  include:
+    - rust: nightly
+    - rust: beta
+
+    - rust: stable
+      env:
+        - FEATURE_FLAGS="--features nightly"
+        - RUSTFLAGS="-C link-dead-code" # Enable better code coverage at the cost of binary size
+      after_success:
+        - ./ci/install-kcov.sh && ./ci/coverage.sh
+
+    - rust: 1.12.0
+    - os: osx
+      rust: stable
 
 branches:
   only:
@@ -27,22 +37,10 @@ before_script:
   - export PATH=$PATH:~/.cargo/bin
 
 script:
-  - cargo build
-  - cargo test
-  - cargo doc --no-deps
-after_success:
-  # NB: kcov only works on linux
-  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then ./ci/install-kcov.sh && ./ci/coverage.sh; fi
-
-env:
-  global:
-    - TRAVIS_CARGO_NIGHTLY_FEATURE=nightly
-    - RUSTFLAGS="-C link-dead-code" # Enable better code coverage at the cost of binary size
+  - cargo build $FEATURE_FLAGS
+  - cargo test $FEATURE_FLAGS
+  - cargo doc $FEATURE_FLAGS --no-deps
 
 notifications:
   email:
     on_success: never
-
-os:
-  - linux
-  - osx
