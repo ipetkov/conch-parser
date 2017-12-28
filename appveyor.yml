@@ -25,5 +25,5 @@ install:
 build: false
 
 test_script:
-  - cargo build
+  - cargo check
   - cargo test
