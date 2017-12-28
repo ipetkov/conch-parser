@@ -3,11 +3,7 @@ environment:
   - TARGET: x86_64-pc-windows-msvc
     RUST_VERSION: nightly
   - TARGET: x86_64-pc-windows-msvc
-    RUST_VERSION: beta
-  - TARGET: x86_64-pc-windows-msvc
     RUST_VERSION: stable
-  - TARGET: x86_64-pc-windows-msvc
-    RUST_VERSION: 1.12.0
 
 branches:
   only:
