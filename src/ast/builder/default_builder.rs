@@ -51,7 +51,7 @@ macro_rules! default_builder {
         }
 
         // See https://github.com/Manishearth/rust-clippy/issues/1254
-        #[cfg_attr(feature = "clippy", allow(expl_impl_clone_on_copy))]
+        #[cfg_attr(feature = "cargo-clippy", allow(expl_impl_clone_on_copy))]
         impl<T> Clone for $Builder<T> {
             fn clone(&self) -> Self {
                 *self
@@ -243,7 +243,7 @@ impl<T, W, C, F> fmt::Debug for CoreBuilder<T, W, C, F> {
 }
 
 // See https://github.com/Manishearth/rust-clippy/issues/1254
-#[cfg_attr(feature = "clippy", allow(expl_impl_clone_on_copy))]
+#[cfg_attr(feature = "cargo-clippy", allow(expl_impl_clone_on_copy))]
 impl<T, W, C, F> Clone for CoreBuilder<T, W, C, F> {
     fn clone(&self) -> Self {
         *self

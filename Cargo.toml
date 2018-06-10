@@ -15,9 +15,9 @@ A library for parsing programs written in the shell programming language.
 
 [features]
 nightly = []
+clippy = [] # FIXME(breaking): technically breaking if we remove this feature
 
 [dependencies]
-clippy = { version = "~0.0.80", optional = true }
 void = "1"
 
 [dev-dependencies]

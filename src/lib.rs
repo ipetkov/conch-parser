@@ -30,16 +30,12 @@
 //!
 //! # Supported Cargo Features
 //!
-//! * `clippy`: compile with clippy lints enabled
 //! * `nightly`: enable unstable features/optimizations which require a nightly compiler
 
 #![doc(html_root_url = "https://docs.rs/conch-parser/0.1")]
 
-#![cfg_attr(feature = "clippy", feature(plugin))]
-#![cfg_attr(feature = "clippy", plugin(clippy))]
-
-#![cfg_attr(all(not(test), feature = "clippy"), deny(print_stdout))]
-#![cfg_attr(feature = "clippy", deny(wrong_self_convention))]
+#![cfg_attr(all(not(test), feature = "cargo-clippy"), deny(print_stdout))]
+#![cfg_attr(feature = "cargo-clippy", deny(wrong_self_convention))]
 
 #![deny(missing_copy_implementations)]
 #![deny(missing_debug_implementations)]
