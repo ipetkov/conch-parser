@@ -493,8 +493,6 @@ impl<T, W, C, F> Builder for CoreBuilder<T, W, C, F>
                     mut redirects: Vec<Self::Redirect>)
         -> Result<Self::CompoundCommand, Self::Error>
     {
-        use ast::PatternBodyPair;
-
         let arms = fragments.arms.into_iter().map(|arm| {
             let mut patterns = arm.patterns.pattern_alternatives;
             patterns.shrink_to_fit();
