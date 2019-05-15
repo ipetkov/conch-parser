@@ -1,3 +1,5 @@
+#![recursion_limit="128"]
+
 extern crate conch_parser;
 
 use conch_parser::ast::builder::*;
