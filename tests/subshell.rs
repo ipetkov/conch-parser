@@ -58,7 +58,7 @@ fn test_subshell_invalid_quoted() {
         ("( foo\nbar; baz; \")\"", Unmatched(Token::ParenOpen, src(0,1,1))),
     ];
 
-    for &(c, ref e) in cmds.into_iter() {
+    for &(c, ref e) in cmds.iter() {
         match make_parser(c).subshell() {
             Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
             Err(ref err) => if err != e {
