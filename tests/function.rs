@@ -1,5 +1,3 @@
-extern crate conch_parser;
-
 use conch_parser::ast::CompoundCommandKind::*;
 use conch_parser::ast::PipeableCommand::*;
 use conch_parser::ast::*;
@@ -9,7 +7,7 @@ use conch_parser::token::Token;
 use std::rc::Rc;
 
 mod parse_support;
-use parse_support::*;
+use crate::parse_support::*;
 
 #[test]
 fn test_function_declaration_valid() {

@@ -1,5 +1,3 @@
-extern crate conch_parser;
-
 use conch_parser::ast::ComplexWord::*;
 use conch_parser::ast::PipeableCommand::*;
 use conch_parser::ast::SimpleWord::*;
@@ -8,7 +6,7 @@ use conch_parser::parse::ParseError::*;
 use conch_parser::token::Token;
 
 mod parse_support;
-use parse_support::*;
+use crate::parse_support::*;
 
 fn simple_command_with_redirect(cmd: &str, redirect: DefaultRedirect) -> DefaultPipeableCommand {
     Simple(Box::new(SimpleCommand {

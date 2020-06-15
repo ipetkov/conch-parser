@@ -1,6 +1,3 @@
-extern crate conch_parser;
-extern crate owned_chars;
-
 use conch_parser::lexer::Lexer;
 use conch_parser::parse::DefaultParser;
 use owned_chars::OwnedCharsExt;

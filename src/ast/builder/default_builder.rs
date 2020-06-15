@@ -1,5 +1,5 @@
-use ast::builder::*;
-use ast::*;
+use crate::ast::builder::*;
+use crate::ast::*;
 use std::default::Default;
 use std::fmt;
 use std::marker::PhantomData;
@@ -563,7 +563,7 @@ where
         }
 
         fn map_arith<T: From<String>>(kind: DefaultArithmetic) -> Arithmetic<T> {
-            use ast::Arithmetic::*;
+            use crate::ast::Arithmetic::*;
             match kind {
                 Var(v) => Var(v.into()),
                 Literal(l) => Literal(l.into()),
@@ -605,7 +605,7 @@ where
         }
 
         let map_param = |kind: DefaultParameter| -> Parameter<T> {
-            use ast::Parameter::*;
+            use crate::ast::Parameter::*;
             match kind {
                 At => At,
                 Star => Star,
@@ -620,7 +620,7 @@ where
         };
 
         let mut map_simple = |kind| {
-            use ast::builder::ParameterSubstitutionKind::*;
+            use crate::ast::builder::ParameterSubstitutionKind::*;
 
             let simple = match kind {
                 SimpleWordKind::Literal(s) => SimpleWord::Literal(s.into()),
@@ -772,9 +772,9 @@ where
 }
 
 fn compress<C>(word: ComplexWordKind<C>) -> ComplexWordKind<C> {
-    use ast::builder::ComplexWordKind::*;
-    use ast::builder::SimpleWordKind::*;
-    use ast::builder::WordKind::*;
+    use crate::ast::builder::ComplexWordKind::*;
+    use crate::ast::builder::SimpleWordKind::*;
+    use crate::ast::builder::WordKind::*;
 
     fn coalesce_simple<C>(
         a: SimpleWordKind<C>,

@@ -1,5 +1,5 @@
-use ast::builder::*;
-use ast::{AndOr, RedirectOrCmdWord, RedirectOrEnvVar};
+use crate::ast::builder::*;
+use crate::ast::{AndOr, RedirectOrCmdWord, RedirectOrEnvVar};
 use void::Void;
 
 /// A no-op `Builder` which ignores all inputs and always returns `()`.

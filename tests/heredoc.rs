@@ -1,5 +1,3 @@
-extern crate conch_parser;
-
 use conch_parser::ast::ComplexWord::*;
 use conch_parser::ast::Redirect::Heredoc;
 use conch_parser::ast::SimpleWord::*;
@@ -8,7 +6,7 @@ use conch_parser::parse::ParseError::*;
 use conch_parser::token::Token;
 
 mod parse_support;
-use parse_support::*;
+use crate::parse_support::*;
 
 fn cat_heredoc(fd: Option<u16>, body: &'static str) -> TopLevelCommand<String> {
     cmd_from_simple(SimpleCommand {

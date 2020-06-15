@@ -1,5 +1,3 @@
-extern crate conch_parser;
-
 use conch_parser::ast::Arithmetic::*;
 use conch_parser::ast::DefaultArithmetic as Arithmetic;
 use conch_parser::ast::ParameterSubstitution::Arith;
@@ -7,7 +5,7 @@ use conch_parser::parse::ParseError::*;
 use conch_parser::token::Token;
 
 mod parse_support;
-use parse_support::*;
+use crate::parse_support::*;
 
 #[test]
 fn test_arithmetic_substitution_valid() {

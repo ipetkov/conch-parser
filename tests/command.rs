@@ -1,5 +1,3 @@
-extern crate conch_parser;
-
 use std::rc::Rc;
 
 use conch_parser::ast::Command::*;
@@ -9,7 +7,7 @@ use conch_parser::ast::*;
 use conch_parser::token::Token;
 
 mod parse_support;
-use parse_support::*;
+use crate::parse_support::*;
 
 #[test]
 fn test_complete_command_job() {

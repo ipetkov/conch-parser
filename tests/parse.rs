@@ -1,12 +1,10 @@
 #![recursion_limit = "128"]
 
-extern crate conch_parser;
-
 use conch_parser::ast::builder::*;
 use conch_parser::parse::*;
 
 mod parse_support;
-use parse_support::*;
+use crate::parse_support::*;
 
 #[test]
 fn test_parser_should_yield_none_after_error() {

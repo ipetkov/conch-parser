@@ -11,12 +11,12 @@ use std::mem;
 use std::str::FromStr;
 
 use self::iter::{PeekableIterator, PositionIterator, TokenIter, TokenIterWrapper, TokenIterator};
-use ast::builder::ComplexWordKind::{self, Concat, Single};
-use ast::builder::WordKind::{self, DoubleQuoted, Simple, SingleQuoted};
-use ast::builder::{self, Builder, SimpleWordKind};
-use ast::{self, DefaultArithmetic, DefaultParameter};
-use token::Token;
-use token::Token::*;
+use crate::ast::builder::ComplexWordKind::{self, Concat, Single};
+use crate::ast::builder::WordKind::{self, DoubleQuoted, Simple, SingleQuoted};
+use crate::ast::builder::{self, Builder, SimpleWordKind};
+use crate::ast::{self, DefaultArithmetic, DefaultParameter};
+use crate::token::Token;
+use crate::token::Token::*;
 
 mod iter;
 
@@ -597,7 +597,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// A valid command is expected to have at least an executable name, or a single
     /// variable assignment or redirection. Otherwise an error will be returned.
     pub fn simple_command(&mut self) -> ParseResult<B::PipeableCommand, B::Error> {
-        use ast::{RedirectOrCmdWord, RedirectOrEnvVar};
+        use crate::ast::{RedirectOrCmdWord, RedirectOrEnvVar};
 
         let mut vars = Vec::new();
         let mut cmd_args = Vec::new();
@@ -1406,7 +1406,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Identical to `Parser::parameter()` but does not pass the result to the AST builder.
     fn parameter_raw(&mut self) -> ParseResult<SimpleWordKind<B::Command>, B::Error> {
-        use ast::Parameter;
+        use crate::ast::Parameter;
 
         let start_pos = self.iter.pos();
         match self.iter.next() {
@@ -1553,8 +1553,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         param: DefaultParameter,
         curly_open_pos: SourcePos,
     ) -> ParseResult<SimpleWordKind<B::Command>, B::Error> {
-        use ast::builder::ParameterSubstitutionKind::*;
-        use ast::Parameter;
+        use crate::ast::builder::ParameterSubstitutionKind::*;
+        use crate::ast::Parameter;
 
         let has_colon = eat_maybe!(self, {
             Colon => { true };
@@ -1595,8 +1595,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Parses a parameter substitution in the form of `${...}`, `$(...)`, or `$((...))`.
     /// Nothing is passed to the builder.
     fn parameter_substitution_raw(&mut self) -> ParseResult<SimpleWordKind<B::Command>, B::Error> {
-        use ast::builder::ParameterSubstitutionKind::*;
-        use ast::Parameter;
+        use crate::ast::builder::ParameterSubstitutionKind::*;
+        use crate::ast::Parameter;
 
         let start_pos = self.iter.pos();
         match self.iter.peek() {
@@ -1698,7 +1698,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses a valid parameter that can appear inside a set of curly braces.
     fn parameter_inner(&mut self) -> ParseResult<DefaultParameter, B::Error> {
-        use ast::Parameter;
+        use crate::ast::Parameter;
 
         let start_pos = self.iter.pos();
         let param = match self.iter.next() {
@@ -2573,7 +2573,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Parses expressions such as `var = expr` or `var op= expr`, where `op` is
     /// any of the following operators: *, /, %, +, -, <<, >>, &, |, ^.
     fn arith_assig(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
-        use ast::Arithmetic::*;
+        use crate::ast::Arithmetic::*;
 
         self.skip_whitespace();
 
@@ -2939,12 +2939,12 @@ fn concat_tokens(tokens: &[Token]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use ast::builder::Newline;
-    use ast::Command::*;
-    use ast::CompoundCommandKind::*;
-    use ast::*;
-    use lexer::Lexer;
-    use parse::*;
+    use crate::ast::builder::Newline;
+    use crate::ast::Command::*;
+    use crate::ast::CompoundCommandKind::*;
+    use crate::ast::*;
+    use crate::lexer::Lexer;
+    use crate::parse::*;
 
     fn make_parser(src: &str) -> DefaultParser<Lexer<::std::str::Chars>> {
         DefaultParser::new(Lexer::new(src.chars()))

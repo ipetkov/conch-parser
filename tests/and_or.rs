@@ -1,12 +1,10 @@
-extern crate conch_parser;
-
 use conch_parser::ast::PipeableCommand::*;
 use conch_parser::ast::*;
 use conch_parser::parse::ParseError::*;
 use conch_parser::token::Token;
 
 mod parse_support;
-use parse_support::*;
+use crate::parse_support::*;
 
 #[test]
 fn test_and_or_correct_associativity() {

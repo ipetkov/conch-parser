@@ -1,10 +1,10 @@
 //! An module for easily iterating over a `Token` stream.
 
-use parse::SourcePos;
+use crate::parse::SourcePos;
+use crate::token::Token;
+use crate::token::Token::*;
 use std::iter as std_iter;
 use std::mem;
-use token::Token;
-use token::Token::*;
 
 /// Indicates an error such that EOF was encountered while some unmatched
 /// tokens were still pending. The error stores the unmatched token
@@ -736,8 +736,8 @@ impl<I: PeekablePositionIterator<Item = Token>> Iterator for BacktickBackslashRe
 #[cfg(test)]
 mod tests {
     use super::{PositionIterator, TokenIter, TokenOrPos};
-    use parse::SourcePos;
-    use token::Token;
+    use crate::parse::SourcePos;
+    use crate::token::Token;
 
     #[test]
     fn test_multipeek() {

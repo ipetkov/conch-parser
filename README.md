@@ -19,8 +19,6 @@ conch-parser = "0.1.0"
 Next, you can get started with:
 
 ```rust
-extern crate conch_parser;
-
 use conch_parser::lexer::Lexer;
 use conch_parser::parse::DefaultParser;
 

@@ -48,7 +48,7 @@ pub fn word_param(p: DefaultParameter) -> TopLevelWord<String> {
     TopLevelWord(Single(Word::Simple(Param(p))))
 }
 
-pub fn make_parser(src: &str) -> DefaultParser<Lexer<::std::str::Chars>> {
+pub fn make_parser(src: &str) -> DefaultParser<Lexer<::std::str::Chars<'_>>> {
     DefaultParser::new(Lexer::new(src.chars()))
 }
 

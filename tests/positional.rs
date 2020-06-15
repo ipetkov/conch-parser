@@ -1,5 +1,3 @@
-extern crate conch_parser;
-
 use conch_parser::token::Positional;
 
 #[test]

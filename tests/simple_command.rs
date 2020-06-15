@@ -1,11 +1,9 @@
-extern crate conch_parser;
-
 use conch_parser::ast::PipeableCommand::*;
 use conch_parser::ast::Redirect::*;
 use conch_parser::ast::*;
 
 mod parse_support;
-use parse_support::*;
+use crate::parse_support::*;
 
 #[test]
 fn test_simple_command_valid_assignments_at_start_of_command() {

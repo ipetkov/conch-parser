@@ -1,5 +1,3 @@
-extern crate conch_parser;
-
 use conch_parser::ast::ComplexWord::*;
 use conch_parser::ast::Parameter::*;
 use conch_parser::ast::ParameterSubstitution::*;
@@ -8,7 +6,7 @@ use conch_parser::parse::ParseError::*;
 use conch_parser::token::Token;
 
 mod parse_support;
-use parse_support::*;
+use crate::parse_support::*;
 
 #[test]
 fn test_parameter_substitution() {

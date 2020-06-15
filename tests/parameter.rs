@@ -1,11 +1,9 @@
-extern crate conch_parser;
-
 use conch_parser::ast::Parameter::*;
 use conch_parser::ast::ParameterSubstitution::*;
 use conch_parser::parse::ParseError::*;
 
 mod parse_support;
-use parse_support::*;
+use crate::parse_support::*;
 
 #[test]
 fn test_parameter_short() {
