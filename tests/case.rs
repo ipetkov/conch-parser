@@ -221,7 +221,7 @@ fn test_case_command_invalid_quoted() {
         ("case foo in foo) echo foo;; bar) echo bar;; \"esac\"", IncompleteCmd("case", src(0,1,1), "esac", src(50,1,51))),
     ];
 
-    for &(c, ref e) in cmds.iter() {
+    for (c, e) in &cmds {
         match make_parser(c).case_command() {
             Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
             Err(ref err) => if err != e {

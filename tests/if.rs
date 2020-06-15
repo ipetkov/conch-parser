@@ -149,7 +149,7 @@ fn test_if_command_invalid_quoted() {
         ("if guard1; then body1; elif guard2; then body2; else else; \"fi\"", IncompleteCmd("if", src(0,1,1), "fi", src(63,1,64))),
     ];
 
-    for &(s, ref e) in cmds.iter() {
+    for (s, e) in &cmds {
         match make_parser(s).if_command() {
             Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", s, result),
             Err(ref err) => if err != e {

@@ -68,7 +68,7 @@ fn test_brace_group_invalid_quoted() {
         ("{ foo\nbar; baz; \"}\"", Unmatched(Token::CurlyOpen, src(0,1,1))),
     ];
 
-    for &(c, ref e) in cmds.into_iter() {
+    for (c, e) in &cmds {
         match make_parser(c).brace_group() {
             Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
             Err(ref err) => if err != e {

@@ -308,7 +308,7 @@ pub struct Multipeek<'a> {
     /// The underlying token iterator. This is pretty much just a `TokenIter`,
     /// but we use a trait object to avoid having a generic signature and
     /// make this wrapper more flexible.
-    iter: &'a mut RewindableTokenIterator,
+    iter: &'a mut dyn RewindableTokenIterator,
     /// A buffer of values taken from the underlying iterator, in the order
     /// they were pulled.
     buf: Vec<TokenOrPos>,
@@ -323,7 +323,7 @@ impl<'a> Drop for Multipeek<'a> {
 
 impl<'a> Multipeek<'a> {
     /// Wrap an iterator for arbitrary look-ahead.
-    fn new(iter: &'a mut RewindableTokenIterator) -> Self {
+    fn new(iter: &'a mut dyn RewindableTokenIterator) -> Self {
         Multipeek {
             iter: iter,
             buf: Vec::new(),

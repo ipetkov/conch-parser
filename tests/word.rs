@@ -159,7 +159,7 @@ fn test_word_delegate_parameters() {
         "${1000}",
     ];
 
-    for p in params.into_iter() {
+    for p in &params {
         match make_parser(p).word() {
             Ok(Some(TopLevelWord(Single(Word::Simple(w))))) => if let Param(_) = w {} else {
                 panic!("Unexpectedly parsed \"{}\" as a non-parameter word:\n{:#?}", p, w);
@@ -202,7 +202,7 @@ fn test_word_tokens_which_become_literal_words() {
         "1notname",
     ];
 
-    for w in words.into_iter() {
+    for w in &words {
         match make_parser(w).word() {
             Ok(Some(res)) => {
                 let correct = word(*w);
@@ -249,7 +249,7 @@ fn test_word_backslash_makes_things_literal() {
         "$",
     ];
 
-    for l in lit.into_iter() {
+    for l in &lit {
         let src = format!("\\{}", l);
         match make_parser(&src).word() {
             Ok(Some(res)) => {

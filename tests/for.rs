@@ -153,7 +153,7 @@ fn test_for_command_invalid_quoted() {
         ("for var \"in\" one two three\ndo echo $var; done", IncompleteCmd("for", src(0,1,1), "in", src(8,1,9))),
     ];
 
-    for &(c, ref e) in cmds.into_iter() {
+    for (c, e) in &cmds {
         match make_parser(c).for_command() {
             Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
             Err(ref err) => if err != e {

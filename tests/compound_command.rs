@@ -52,7 +52,7 @@ fn test_do_group_invalid_quoted() {
         ("do foo\nbar; baz; \"done\"", IncompleteCmd("do", src(0,1,1), "done", src(23,2,17))),
     ];
 
-    for &(c, ref e) in cmds.iter() {
+    for (c, e) in &cmds {
         match make_parser(c).do_group() {
             Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
             Err(ref err) => if err != e {

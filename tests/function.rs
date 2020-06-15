@@ -155,7 +155,7 @@ fn test_function_declaration_invalid_quoted() {
         ("name\"()\" { echo body; }", Unexpected(Token::DoubleQuote, src(4,1,5))),
     ];
 
-    for &(c, ref e) in cmds.iter() {
+    for (c, e) in &cmds {
         match make_parser(c).function_declaration() {
             Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
             Err(ref err) => if err != e {

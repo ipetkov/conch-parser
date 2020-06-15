@@ -132,7 +132,7 @@ impl<T: Error> Error for ParseError<T> {
         }
     }
 
-    fn cause(&self) -> Option<&Error> {
+    fn cause(&self) -> Option<&dyn Error> {
         match *self {
             ParseError::BadFd(..)        |
             ParseError::BadIdent(..)     |
@@ -983,7 +983,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             'line: loop {
                 if strip_tabs {
                     let skip_next = if let Some(&Whitespace(ref w)) = self.iter.peek() {
-                        let stripped = w.trim_left_matches('\t');
+                        let stripped = w.trim_start_matches('\t');
                         let num_tabs = w.len() - stripped.len();
                         line_start_pos.advance_tabs(num_tabs);
 

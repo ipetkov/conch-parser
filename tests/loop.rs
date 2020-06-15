@@ -83,7 +83,7 @@ fn test_loop_command_invalid_quoted() {
         ("\"until\" guard do foo\nbar; baz; done", Unexpected(Token::DoubleQuote, src(0,1,1))),
     ];
 
-    for &(c, ref e) in cmds.iter() {
+    for (c, e) in &cmds {
         match make_parser(c).loop_command() {
             Ok(result) => panic!("Unexpectedly parsed \"{}\" as\n{:#?}", c, result),
             Err(ref err) => if err != e {
