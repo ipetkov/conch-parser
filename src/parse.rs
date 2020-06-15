@@ -123,19 +123,8 @@ pub enum ParseError<T> {
 }
 
 impl<T: Error> Error for ParseError<T> {
-    fn description(&self) -> &str {
-        match *self {
-            ParseError::BadFd(..) => "bad file descriptor found",
-            ParseError::BadIdent(..) => "bad identifier found",
-            ParseError::BadSubst(..) => "bad substitution found",
-            ParseError::Unmatched(..) => "unmatched token",
-            ParseError::IncompleteCmd(..) => "incomplete command",
-            ParseError::Unexpected(..) => "unexpected token found",
-            ParseError::UnexpectedEOF => "unexpected end of input",
-            ParseError::Custom(ref e) => e.description(),
-        }
-    }
-
+    // FIXME(breaking): change this to be `source`, breaking because it
+    // would require a new 'static bound on T
     fn cause(&self) -> Option<&dyn Error> {
         match *self {
             ParseError::BadFd(..)
