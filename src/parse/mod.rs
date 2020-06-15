@@ -431,12 +431,12 @@ macro_rules! arith_parse {
     ($fn_name:ident, $next_expr:ident, $($tok:pat => $constructor:path),+) => {
         #[inline]
         fn $fn_name(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
-            let mut expr = try!(self.$next_expr());
+            let mut expr = self.$next_expr()?;
             loop {
                 self.skip_whitespace();
                 eat_maybe!(self, {
                     $($tok => {
-                        let next = try!(self.$next_expr());
+                        let next = self.$next_expr()?;
                         expr = $constructor(Box::new(expr), Box::new(next));
                     }),+;
                     _ => { break },
@@ -1645,11 +1645,11 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                         eat_maybe!(self, {
                             Percent => {
                                 let word = self.parameter_substitution_word_raw(curly_open_pos);
-                                RemoveLargestSuffix(param, try!(word))
+                                RemoveLargestSuffix(param, word?)
                             };
                             _ => {
                                 let word = self.parameter_substitution_word_raw(curly_open_pos);
-                                RemoveSmallestSuffix(param, try!(word))
+                                RemoveSmallestSuffix(param, word?)
                             }
                         })
                     }
@@ -1659,10 +1659,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                         eat_maybe!(self, {
                             Pound => {
                                 let word = self.parameter_substitution_word_raw(curly_open_pos);
-                                RemoveLargestPrefix(param, try!(word))
+                                RemoveLargestPrefix(param, word?)
                             };
                             _ => {
-                                match try!(self.parameter_substitution_word_raw(curly_open_pos)) {
+                                match self.parameter_substitution_word_raw(curly_open_pos)? {
                                     // Handle ${##} case
                                     None if Parameter::Pound == param => Len(Parameter::Pound),
                                     w => RemoveSmallestPrefix(param, w),
@@ -2647,10 +2647,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         self.skip_whitespace();
         eat_maybe!(self, {
             Question => {
-                let body = try!(self.arith_ternary());
+                let body = self.arith_ternary()?;
                 self.skip_whitespace();
                 eat!(self, { Colon => {} });
-                let els = try!(self.arith_ternary());
+                let els = self.arith_ternary()?;
                 Ok(ast::Arithmetic::Ternary(Box::new(guard), Box::new(body), Box::new(els)))
             };
             _ => { Ok(guard) },
@@ -2700,7 +2700,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             eat_maybe!(self, {
                 Less => {
                     let eq = eat_maybe!(self, { Equals => { true }; _ => { false } });
-                    let next = try!(self.arith_shift());
+                    let next = self.arith_shift()?;
 
                     expr = if eq {
                         ast::Arithmetic::LessEq(Box::new(expr), Box::new(next))
@@ -2710,7 +2710,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 },
                 Great => {
                     let eq = eat_maybe!(self, { Equals => { true }; _ => { false } });
-                    let next = try!(self.arith_shift());
+                    let next = self.arith_shift()?;
 
                     expr = if eq {
                         ast::Arithmetic::GreatEq(Box::new(expr), Box::new(next))
@@ -2774,18 +2774,18 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     fn arith_unary_misc(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
         self.skip_whitespace();
         let expr = eat_maybe!(self, {
-            Bang  => { ast::Arithmetic::LogicalNot(Box::new(try!(self.arith_unary_misc()))) },
-            Tilde => { ast::Arithmetic::BitwiseNot(Box::new(try!(self.arith_unary_misc()))) },
+            Bang  => { ast::Arithmetic::LogicalNot(Box::new(self.arith_unary_misc()?)) },
+            Tilde => { ast::Arithmetic::BitwiseNot(Box::new(self.arith_unary_misc()?)) },
             Plus  => {
                 eat_maybe!(self, {
                     // Although we can optimize this out, we'll let the AST builder handle
                     // optimizations, in case it is interested in such redundant situations.
                     Dash => {
-                        let next = try!(self.arith_unary_misc());
+                        let next = self.arith_unary_misc()?;
                         ast::Arithmetic::UnaryPlus(Box::new(ast::Arithmetic::UnaryMinus(Box::new(next))))
                     },
-                    Plus => { ast::Arithmetic::PreIncr(try!(self.arith_var())) };
-                    _ => { ast::Arithmetic::UnaryPlus(Box::new(try!(self.arith_unary_misc()))) }
+                    Plus => { ast::Arithmetic::PreIncr(self.arith_var()?) };
+                    _ => { ast::Arithmetic::UnaryPlus(Box::new(self.arith_unary_misc()?)) }
                 })
             },
 
@@ -2794,15 +2794,15 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     // Although we can optimize this out, we'll let the AST builder handle
                     // optimizations, in case it is interested in such redundant situations.
                     Plus => {
-                        let next = try!(self.arith_unary_misc());
+                        let next = self.arith_unary_misc()?;
                         ast::Arithmetic::UnaryMinus(Box::new(ast::Arithmetic::UnaryPlus(Box::new(next))))
                     },
-                    Dash => { ast::Arithmetic::PreDecr(try!(self.arith_var())) };
-                    _ => { ast::Arithmetic::UnaryMinus(Box::new(try!(self.arith_unary_misc()))) }
+                    Dash => { ast::Arithmetic::PreDecr(self.arith_var()?) };
+                    _ => { ast::Arithmetic::UnaryMinus(Box::new(self.arith_unary_misc()?)) }
                 })
             };
 
-            _ => { try!(self.arith_post_incr()) }
+            _ => { self.arith_post_incr()? }
         });
         Ok(expr)
     }
@@ -2815,7 +2815,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         self.skip_whitespace();
         eat_maybe!(self, {
             ParenOpen => {
-                let expr = try!(self.arithmetic_substitution());
+                let expr = self.arithmetic_substitution()?;
                 self.skip_whitespace();
                 eat!(self, { ParenClose => {} });
                 return Ok(expr);
