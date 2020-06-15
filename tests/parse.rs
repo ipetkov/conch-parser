@@ -157,7 +157,7 @@ fn test_braces_literal_unless_brace_group_expected() {
 #[test]
 fn ensure_parse_errors_are_send_and_sync() {
     fn send_and_sync<T: Send + Sync>() {}
-    send_and_sync::<ParseError<()>>();
+    send_and_sync::<ParseError>();
 }
 
 #[test]

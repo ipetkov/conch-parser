@@ -14,14 +14,6 @@ description = """
 A library for parsing programs written in the shell programming language.
 """
 
-[features]
-# FIXME(breaking): technically breaking if we remove any features
-nightly = []
-clippy = []
-
-[dependencies]
-void = "1"
-
 [dev-dependencies]
 owned_chars = "0.3"
 

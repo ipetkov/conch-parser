@@ -3,7 +3,6 @@
 // FIXME: consider parsing out array index syntax? (e.g. ${array[some index]}
 // FIXME: arithmetic substitutions don't currently support param/comand substitutions
 
-use std::convert::From;
 use std::error::Error;
 use std::fmt;
 use std::iter::empty as empty_iter;
@@ -98,7 +97,7 @@ impl SourcePos {
 
 /// The error type which is returned from parsing shell commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParseError<T> {
+pub enum ParseError {
     /// Encountered a word that could not be interpreted as a valid file descriptor.
     /// Stores the start and end position of the invalid word.
     BadFd(SourcePos, SourcePos),
@@ -118,28 +117,11 @@ pub enum ParseError<T> {
     Unexpected(Token, SourcePos),
     /// Encountered the end of input while expecting additional tokens.
     UnexpectedEOF,
-    /// A custom error returned by the AST builder.
-    Custom(T),
 }
 
-impl<T: Error> Error for ParseError<T> {
-    // FIXME(breaking): change this to be `source`, breaking because it
-    // would require a new 'static bound on T
-    fn cause(&self) -> Option<&dyn Error> {
-        match *self {
-            ParseError::BadFd(..)
-            | ParseError::BadIdent(..)
-            | ParseError::BadSubst(..)
-            | ParseError::Unmatched(..)
-            | ParseError::IncompleteCmd(..)
-            | ParseError::Unexpected(..)
-            | ParseError::UnexpectedEOF => None,
-            ParseError::Custom(ref e) => Some(e),
-        }
-    }
-}
+impl Error for ParseError {}
 
-impl<T: fmt::Display> fmt::Display for ParseError<T> {
+impl fmt::Display for ParseError {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             ParseError::BadFd(ref start, ref end) => write!(
@@ -172,14 +154,7 @@ impl<T: fmt::Display> fmt::Display for ParseError<T> {
             }
 
             ParseError::UnexpectedEOF => fmt.write_str("unexpected end of input"),
-            ParseError::Custom(ref e) => write!(fmt, "{}", e),
         }
-    }
-}
-
-impl<T> From<T> for ParseError<T> {
-    fn from(err: T) -> Self {
-        ParseError::Custom(err)
     }
 }
 
@@ -254,6 +229,7 @@ impl<I, B> std::iter::FusedIterator for ParserIterator<I, B>
 where
     I: Iterator<Item = Token>,
     B: Builder,
+    B::Error: From<ParseError>,
 {
 }
 
@@ -261,8 +237,9 @@ impl<I, B> Iterator for ParserIterator<I, B>
 where
     I: Iterator<Item = Token>,
     B: Builder,
+    B::Error: From<ParseError>,
 {
-    type Item = ParseResult<B::Command, B::Error>;
+    type Item = Result<B::Command, B::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.parser.as_mut().map(Parser::complete_command) {
@@ -286,6 +263,7 @@ impl<I, B> IntoIterator for Parser<I, B>
 where
     I: Iterator<Item = Token>,
     B: Builder,
+    B::Error: From<ParseError>,
 {
     type IntoIter = ParserIterator<I, B>;
     type Item = <Self::IntoIter as Iterator>::Item;
@@ -364,7 +342,12 @@ pub struct Parser<I, B> {
     builder: B,
 }
 
-impl<I: Iterator<Item = Token>, B: Builder + Default> Parser<I, B> {
+impl<I, B> Parser<I, B>
+where
+    I: Iterator<Item = Token>,
+    B: Builder + Default,
+    B::Error: From<ParseError>,
+{
     /// Creates a new Parser from a Token iterator or collection.
     pub fn new<T>(iter: T) -> Parser<I, B>
     where
@@ -420,7 +403,7 @@ macro_rules! arith_parse {
     ($(#[$fn_attr:meta])* fn $fn_name:ident, $next_expr:ident, $($tok:pat => $constructor:path),+) => {
         $(#[$fn_attr])*
         #[inline]
-        fn $fn_name(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
+        fn $fn_name(&mut self) -> Result<DefaultArithmetic, B::Error> {
             let mut expr = self.$next_expr()?;
             loop {
                 self.skip_whitespace();
@@ -437,15 +420,23 @@ macro_rules! arith_parse {
     }
 }
 
-impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
+impl<I, B> Parser<I, B>
+where
+    I: Iterator<Item = Token>,
+    B: Builder,
+    B::Error: From<ParseError>,
+{
     /// Construct an `Unexpected` error using the given token. If `None` specified, the next
     /// token in the iterator will be used (or `UnexpectedEOF` if none left).
     #[inline]
-    fn make_unexpected_err(&mut self) -> ParseError<B::Error> {
+    fn make_unexpected_err(&mut self) -> B::Error {
         let pos = self.iter.pos();
-        self.iter.next().map_or(ParseError::UnexpectedEOF, |t| {
-            ParseError::Unexpected(t, pos)
-        })
+        self.iter
+            .next()
+            .map_or(ParseError::UnexpectedEOF, |t| {
+                ParseError::Unexpected(t, pos)
+            })
+            .into()
     }
 
     /// Creates a new Parser from a Token iterator and provided AST builder.
@@ -465,7 +456,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     ///
     /// For example, `foo && bar; baz` will yield two complete
     /// commands: `And(foo, bar)`, and `Simple(baz)`.
-    pub fn complete_command(&mut self) -> ParseResult<Option<B::Command>, B::Error> {
+    pub fn complete_command(&mut self) -> Result<Option<B::Command>, B::Error> {
         let pre_cmd_comments = self.linebreak();
 
         if self.iter.peek().is_some() {
@@ -487,7 +478,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     fn complete_command_with_leading_comments(
         &mut self,
         pre_cmd_comments: Vec<builder::Newline>,
-    ) -> ParseResult<B::Command, B::Error> {
+    ) -> Result<B::Command, B::Error> {
         let cmd = self.and_or_list()?;
 
         let (sep, cmd_comment) = eat_maybe!(self, {
@@ -510,7 +501,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     ///
     /// Commands are left associative. For example `foo || bar && baz`
     /// parses to `And(Or(foo, bar), baz)`.
-    pub fn and_or_list(&mut self) -> ParseResult<B::CommandList, B::Error> {
+    pub fn and_or_list(&mut self) -> Result<B::CommandList, B::Error> {
         let first = self.pipeline()?;
         let mut rest = Vec::new();
 
@@ -540,7 +531,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Parses either a single command or a pipeline of commands.
     ///
     /// For example `[!] foo | bar`.
-    pub fn pipeline(&mut self) -> ParseResult<B::ListableCommand, B::Error> {
+    pub fn pipeline(&mut self) -> Result<B::ListableCommand, B::Error> {
         self.skip_whitespace();
         let bang = eat_maybe!(self, {
             Bang => { true };
@@ -570,7 +561,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     }
 
     /// Parses any compound or individual command.
-    pub fn command(&mut self) -> ParseResult<B::PipeableCommand, B::Error> {
+    pub fn command(&mut self) -> Result<B::PipeableCommand, B::Error> {
         if let Some(kw) = self.next_compound_command_type() {
             let compound = self.compound_command_internal(Some(kw))?;
             Ok(self.builder.compound_command_into_pipeable(compound)?)
@@ -585,7 +576,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     ///
     /// A valid command is expected to have at least an executable name, or a single
     /// variable assignment or redirection. Otherwise an error will be returned.
-    pub fn simple_command(&mut self) -> ParseResult<B::PipeableCommand, B::Error> {
+    pub fn simple_command(&mut self) -> Result<B::PipeableCommand, B::Error> {
         use crate::ast::{RedirectOrCmdWord, RedirectOrEnvVar};
 
         let mut vars = Vec::new();
@@ -663,14 +654,14 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Parses a continuous list of redirections and will error if any words
     /// that are not valid file descriptors are found. Essentially used for
     /// parsing redirection lists after a compound command like `while` or `if`.
-    pub fn redirect_list(&mut self) -> ParseResult<Vec<B::Redirect>, B::Error> {
+    pub fn redirect_list(&mut self) -> Result<Vec<B::Redirect>, B::Error> {
         let mut list = Vec::new();
         loop {
             self.skip_whitespace();
             let start_pos = self.iter.pos();
             match self.redirect()? {
                 Some(Ok(io)) => list.push(io),
-                Some(Err(_)) => return Err(ParseError::BadFd(start_pos, self.iter.pos())),
+                Some(Err(_)) => return Err(ParseError::BadFd(start_pos, self.iter.pos()).into()),
                 None => break,
             }
         }
@@ -690,7 +681,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// redirect or word if either is found. In other words, `Ok(Some(Ok(redirect)))`
     /// will result if a redirect is found, `Ok(Some(Err(word)))` if a word is found,
     /// or `Ok(None)` if neither is found.
-    pub fn redirect(&mut self) -> ParseResult<Option<Result<B::Redirect, B::Word>>, B::Error> {
+    pub fn redirect(&mut self) -> Result<Option<Result<B::Redirect, B::Word>>, B::Error> {
         fn could_be_numeric<C>(word: &WordKind<C>) -> bool {
             let simple_could_be_numeric = |word: &SimpleWordKind<C>| match *word {
                 SimpleWordKind::Star
@@ -788,7 +779,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     if is_numeric {
                         path
                     } else {
-                        return Err(ParseError::BadFd(path_start_pos, self.iter.pos()));
+                        return Err(ParseError::BadFd(path_start_pos, self.iter.pos()).into());
                     }
                 };
                 $parser.builder.word(path)?
@@ -836,7 +827,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     ///
     /// Note: this method expects that the caller provide a potential file
     /// descriptor for redirection.
-    pub fn redirect_heredoc(&mut self, src_fd: Option<u16>) -> ParseResult<B::Redirect, B::Error> {
+    pub fn redirect_heredoc(&mut self, src_fd: Option<u16>) -> Result<B::Redirect, B::Error> {
         use std::iter::FromIterator;
 
         macro_rules! try_map {
@@ -1112,14 +1103,14 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     ///
     /// Note that an error can still arise if partial tokens are present
     /// (e.g. malformed parameter).
-    pub fn word(&mut self) -> ParseResult<Option<B::Word>, B::Error> {
+    pub fn word(&mut self) -> Result<Option<B::Word>, B::Error> {
         let ret = self.word_preserve_trailing_whitespace()?;
         self.skip_whitespace();
         Ok(ret)
     }
 
     /// Identical to `Parser::word()` but preserves trailing whitespace after the word.
-    pub fn word_preserve_trailing_whitespace(&mut self) -> ParseResult<Option<B::Word>, B::Error> {
+    pub fn word_preserve_trailing_whitespace(&mut self) -> Result<Option<B::Word>, B::Error> {
         let w = match self.word_preserve_trailing_whitespace_raw()? {
             Some(w) => Some(self.builder.word(w)?),
             None => None,
@@ -1131,7 +1122,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// not pass the result to the AST builder.
     fn word_preserve_trailing_whitespace_raw(
         &mut self,
-    ) -> ParseResult<Option<ComplexWordKind<B::Command>>, B::Error> {
+    ) -> Result<Option<ComplexWordKind<B::Command>>, B::Error> {
         self.word_preserve_trailing_whitespace_raw_with_delim(None)
     }
 
@@ -1140,7 +1131,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     fn word_preserve_trailing_whitespace_raw_with_delim(
         &mut self,
         delim: Option<Token>,
-    ) -> ParseResult<Option<ComplexWordKind<B::Command>>, B::Error> {
+    ) -> Result<Option<ComplexWordKind<B::Command>>, B::Error> {
         self.skip_whitespace();
 
         // Make sure we don't consume comments,
@@ -1272,7 +1263,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         &mut self,
         delim: Option<(Token, Token)>,
         start_pos: SourcePos,
-    ) -> ParseResult<Vec<SimpleWordKind<B::Command>>, B::Error> {
+    ) -> Result<Vec<SimpleWordKind<B::Command>>, B::Error> {
         let (delim_open, delim_close) = match delim {
             Some((o, c)) => (Some(o), Some(c)),
             None => (None, None),
@@ -1335,7 +1326,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
                 Some(t) => buf.push_str(t.as_str()),
                 None => match delim_open {
-                    Some(delim) => return Err(ParseError::Unmatched(delim, start_pos)),
+                    Some(delim) => return Err(ParseError::Unmatched(delim, start_pos).into()),
                     None => break,
                 },
             }
@@ -1353,14 +1344,14 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Any backslashes that are immediately followed by \, $, or ` are removed
     /// before the contents inside the original backticks are recursively parsed
     /// as a command.
-    pub fn backticked_command_substitution(&mut self) -> ParseResult<B::Word, B::Error> {
+    pub fn backticked_command_substitution(&mut self) -> Result<B::Word, B::Error> {
         let word = self.backticked_raw()?;
         Ok(self.builder.word(Single(Simple(word)))?)
     }
 
     /// Identical to `Parser::backticked_command_substitution`, except but does not pass the
     /// result to the AST builder.
-    fn backticked_raw(&mut self) -> ParseResult<SimpleWordKind<B::Command>, B::Error> {
+    fn backticked_raw(&mut self) -> Result<SimpleWordKind<B::Command>, B::Error> {
         let backtick_pos = self.iter.pos();
         eat!(self, { Backtick => {} });
 
@@ -1390,13 +1381,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// parameter, the `$` should be treated as a literal. Thus this method
     /// returns an `Word`, which will capture both cases where a literal or
     /// parameter is parsed.
-    pub fn parameter(&mut self) -> ParseResult<B::Word, B::Error> {
+    pub fn parameter(&mut self) -> Result<B::Word, B::Error> {
         let param = self.parameter_raw()?;
         Ok(self.builder.word(Single(Simple(param)))?)
     }
 
     /// Identical to `Parser::parameter()` but does not pass the result to the AST builder.
-    fn parameter_raw(&mut self) -> ParseResult<SimpleWordKind<B::Command>, B::Error> {
+    fn parameter_raw(&mut self) -> Result<SimpleWordKind<B::Command>, B::Error> {
         use crate::ast::Parameter;
 
         let start_pos = self.iter.pos();
@@ -1414,8 +1405,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 _ => Ok(SimpleWordKind::Literal(Dollar.to_string())),
             },
 
-            Some(t) => Err(ParseError::Unexpected(t, start_pos)),
-            None => Err(ParseError::UnexpectedEOF),
+            Some(t) => Err(ParseError::Unexpected(t, start_pos).into()),
+            None => Err(ParseError::UnexpectedEOF.into()),
         }
     }
 
@@ -1427,7 +1418,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     fn parameter_substitution_word_raw(
         &mut self,
         curly_open_pos: SourcePos,
-    ) -> ParseResult<Option<ComplexWordKind<B::Command>>, B::Error> {
+    ) -> Result<Option<ComplexWordKind<B::Command>>, B::Error> {
         let mut words = Vec::new();
         'capture_words: loop {
             'capture_literals: loop {
@@ -1521,7 +1512,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         eat_maybe!(self, {
             CurlyClose => {};
-            _ => { return Err(ParseError::Unmatched(CurlyOpen, curly_open_pos)); }
+            _ => { return Err(ParseError::Unmatched(CurlyOpen, curly_open_pos).into()); }
         });
 
         if words.is_empty() {
@@ -1543,7 +1534,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         &mut self,
         param: DefaultParameter,
         curly_open_pos: SourcePos,
-    ) -> ParseResult<SimpleWordKind<B::Command>, B::Error> {
+    ) -> Result<SimpleWordKind<B::Command>, B::Error> {
         use crate::ast::builder::ParameterSubstitutionKind::*;
         use crate::ast::Parameter;
 
@@ -1558,8 +1549,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
             Some(CurlyClose) => return Ok(SimpleWordKind::Param(param)),
 
-            Some(t) => return Err(ParseError::BadSubst(t, op_pos)),
-            None => return Err(ParseError::Unmatched(CurlyOpen, curly_open_pos)),
+            Some(t) => return Err(ParseError::BadSubst(t, op_pos).into()),
+            None => return Err(ParseError::Unmatched(CurlyOpen, curly_open_pos).into()),
         };
 
         let word = self.parameter_substitution_word_raw(curly_open_pos)?;
@@ -1585,7 +1576,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses a parameter substitution in the form of `${...}`, `$(...)`, or `$((...))`.
     /// Nothing is passed to the builder.
-    fn parameter_substitution_raw(&mut self) -> ParseResult<SimpleWordKind<B::Command>, B::Error> {
+    fn parameter_substitution_raw(&mut self) -> Result<SimpleWordKind<B::Command>, B::Error> {
         use crate::ast::builder::ParameterSubstitutionKind::*;
         use crate::ast::Parameter;
 
@@ -1688,7 +1679,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     }
 
     /// Parses a valid parameter that can appear inside a set of curly braces.
-    fn parameter_inner(&mut self) -> ParseResult<DefaultParameter, B::Error> {
+    fn parameter_inner(&mut self) -> Result<DefaultParameter, B::Error> {
         use crate::ast::Parameter;
 
         let start_pos = self.iter.pos();
@@ -1704,11 +1695,11 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             Some(Name(n)) => Parameter::Var(n),
             Some(Literal(s)) => match u32::from_str(&s) {
                 Ok(n) => Parameter::Positional(n),
-                Err(_) => return Err(ParseError::BadSubst(Literal(s), start_pos)),
+                Err(_) => return Err(ParseError::BadSubst(Literal(s), start_pos).into()),
             },
 
-            Some(t) => return Err(ParseError::BadSubst(t, start_pos)),
-            None => return Err(ParseError::UnexpectedEOF),
+            Some(t) => return Err(ParseError::BadSubst(t, start_pos).into()),
+            None => return Err(ParseError::UnexpectedEOF.into()),
         };
 
         Ok(param)
@@ -1717,7 +1708,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Parses any number of sequential commands between the `do` and `done`
     /// reserved words. Each of the reserved words must be a literal token, and cannot be
     /// quoted or concatenated.
-    pub fn do_group(&mut self) -> ParseResult<builder::CommandGroup<B::Command>, B::Error> {
+    pub fn do_group(&mut self) -> Result<builder::CommandGroup<B::Command>, B::Error> {
         let start_pos = self.iter.pos();
         self.reserved_word(&[DO])
             .map_err(|_| self.make_unexpected_err())?;
@@ -1732,7 +1723,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses any number of sequential commands between balanced `{` and `}`
     /// reserved words. Each of the reserved words must be a literal token, and cannot be quoted.
-    pub fn brace_group(&mut self) -> ParseResult<builder::CommandGroup<B::Command>, B::Error> {
+    pub fn brace_group(&mut self) -> Result<builder::CommandGroup<B::Command>, B::Error> {
         // CurlyClose must be encountered as a stand alone word,
         // even though it is represented as its own token
         let start_pos = self.iter.pos();
@@ -1749,7 +1740,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Parses any number of sequential commands between balanced `(` and `)`.
     ///
     /// It is considered an error if no commands are present inside the subshell.
-    pub fn subshell(&mut self) -> ParseResult<builder::CommandGroup<B::Command>, B::Error> {
+    pub fn subshell(&mut self) -> Result<builder::CommandGroup<B::Command>, B::Error> {
         self.subshell_internal(false)
     }
 
@@ -1758,7 +1749,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     fn subshell_internal(
         &mut self,
         empty_body_ok: bool,
-    ) -> ParseResult<builder::CommandGroup<B::Command>, B::Error> {
+    ) -> Result<builder::CommandGroup<B::Command>, B::Error> {
         let start_pos = self.iter.pos();
         eat!(self, { ParenOpen => {} });
 
@@ -1774,7 +1765,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 Ok(body)
             }
             Some(_) => Err(self.make_unexpected_err()),
-            None => Err(ParseError::Unmatched(ParenOpen, start_pos)),
+            None => Err(ParseError::Unmatched(ParenOpen, start_pos).into()),
         }
     }
 
@@ -1800,7 +1791,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses compound commands like `for`, `case`, `if`, `while`, `until`,
     /// brace groups, or subshells, including any redirection lists to be applied to them.
-    pub fn compound_command(&mut self) -> ParseResult<B::CompoundCommand, B::Error> {
+    pub fn compound_command(&mut self) -> Result<B::CompoundCommand, B::Error> {
         self.compound_command_internal(None)
     }
 
@@ -1809,7 +1800,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     fn compound_command_internal(
         &mut self,
         kw: Option<CompoundCmdKeyword>,
-    ) -> ParseResult<B::CompoundCommand, B::Error> {
+    ) -> Result<B::CompoundCommand, B::Error> {
         let cmd = match kw.or_else(|| self.next_compound_command_type()) {
             Some(CompoundCmdKeyword::If) => {
                 let fragments = self.if_command()?;
@@ -1861,7 +1852,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// without constructing an AST node, it so that the caller can do so with redirections.
     pub fn loop_command(
         &mut self,
-    ) -> ParseResult<(builder::LoopKind, builder::GuardBodyPairGroup<B::Command>), B::Error> {
+    ) -> Result<(builder::LoopKind, builder::GuardBodyPairGroup<B::Command>), B::Error> {
         let start_pos = self.iter.pos();
         let kind = match self
             .reserved_word(&[WHILE, UNTIL])
@@ -1883,12 +1874,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     body: self.do_group()?,
                 },
             )),
-            None => Err(ParseError::IncompleteCmd(
-                WHILE,
-                start_pos,
-                DO,
-                self.iter.pos(),
-            )),
+            None => Err(ParseError::IncompleteCmd(WHILE, start_pos, DO, self.iter.pos()).into()),
         }
     }
 
@@ -1897,7 +1883,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Since `if` is a compound command (and can have redirections applied to it) this
     /// method returns the relevant parts of the `if` command, without constructing an
     /// AST node, it so that the caller can do so with redirections.
-    pub fn if_command(&mut self) -> ParseResult<builder::IfFragments<B::Command>, B::Error> {
+    pub fn if_command(&mut self) -> Result<builder::IfFragments<B::Command>, B::Error> {
         let start_pos = self.iter.pos();
         self.reserved_word(&[IF])
             .map_err(|_| self.make_unexpected_err())?;
@@ -1957,9 +1943,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Since `for` is a compound command (and can have redirections applied to it) this
     /// method returns the relevant parts of the `for` command, without constructing an
     /// AST node, it so that the caller can do so with redirections.
-    pub fn for_command(
-        &mut self,
-    ) -> ParseResult<builder::ForFragments<B::Word, B::Command>, B::Error> {
+    pub fn for_command(&mut self) -> Result<builder::ForFragments<B::Word, B::Command>, B::Error> {
         let start_pos = self.iter.pos();
         self.reserved_word(&[FOR])
             .map_err(|_| self.make_unexpected_err())?;
@@ -1974,7 +1958,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         let var_pos = self.iter.pos();
         let var = match self.iter.next() {
             Some(Name(v)) => v,
-            Some(Literal(s)) => return Err(ParseError::BadIdent(s, var_pos)),
+            Some(Literal(s)) => return Err(ParseError::BadIdent(s, var_pos).into()),
             _ => unreachable!(),
         };
 
@@ -2018,24 +2002,14 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             // If we didn't find an `in` keyword, and we havent hit the body
             // (a `do` keyword), then we can reasonably say the script has
             // words without an `in` keyword.
-            return Err(ParseError::IncompleteCmd(
-                FOR,
-                start_pos,
-                IN,
-                self.iter.pos(),
-            ));
+            return Err(ParseError::IncompleteCmd(FOR, start_pos, IN, self.iter.pos()).into());
         } else {
             // `for name \n* do_group`
             (None, post_var_comments)
         };
 
         if self.peek_reserved_word(&[DO]).is_none() {
-            return Err(ParseError::IncompleteCmd(
-                FOR,
-                start_pos,
-                DO,
-                self.iter.pos(),
-            ));
+            return Err(ParseError::IncompleteCmd(FOR, start_pos, DO, self.iter.pos()).into());
         }
 
         let body = self.do_group()?;
@@ -2055,7 +2029,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// AST node, it so that the caller can do so with redirections.
     pub fn case_command(
         &mut self,
-    ) -> ParseResult<builder::CaseFragments<B::Word, B::Command>, B::Error> {
+    ) -> Result<builder::CaseFragments<B::Word, B::Command>, B::Error> {
         let start_pos = self.iter.pos();
 
         macro_rules! missing_in {
@@ -2100,7 +2074,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             // Make sure we check for missing `esac` here, otherwise if we have EOF
             // trying to parse a word will result in an `UnexpectedEOF` error
             if self.iter.peek().is_none() {
-                return Err(()).map_err(missing_esac!());
+                Err(()).map_err(missing_esac!())?;
             }
 
             let mut patterns = Vec::new();
@@ -2123,7 +2097,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
                     // Make sure we check for missing `esac` here, otherwise if we have EOF
                     // trying to parse a word will result in an `UnexpectedEOF` error
-                    None => return Err(()).map_err(missing_esac!()),
+                    None => Err(()).map_err(missing_esac!())?,
                     _ => return Err(self.make_unexpected_err()),
                 }
             }
@@ -2179,9 +2153,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses a single function declaration if present. If no function is present,
     /// nothing is consumed from the token stream.
-    pub fn maybe_function_declaration(
-        &mut self,
-    ) -> ParseResult<Option<B::PipeableCommand>, B::Error> {
+    pub fn maybe_function_declaration(&mut self) -> Result<Option<B::PipeableCommand>, B::Error> {
         if self.peek_reserved_word(&[FUNCTION]).is_some() {
             return self.function_declaration().map(Some);
         }
@@ -2211,7 +2183,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// A function declaration must either begin with the `function` reserved word, or
     /// the name of the function must be followed by `()`. Whitespace is allowed between
     /// the name and `(`, and whitespace is allowed between `()`.
-    pub fn function_declaration(&mut self) -> ParseResult<B::PipeableCommand, B::Error> {
+    pub fn function_declaration(&mut self) -> Result<B::PipeableCommand, B::Error> {
         let (name, post_name_comments, body) = self.function_declaration_internal()?;
         Ok(self
             .builder
@@ -2221,7 +2193,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Like `Parser::function_declaration`, but does not pass the result to the builder
     fn function_declaration_internal(
         &mut self,
-    ) -> ParseResult<(String, Vec<builder::Newline>, B::CompoundCommand), B::Error> {
+    ) -> Result<(String, Vec<builder::Newline>, B::CompoundCommand), B::Error> {
         let found_fn = match self.peek_reserved_word(&[FUNCTION]) {
             Some(_) => {
                 self.iter.next();
@@ -2240,7 +2212,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         let ident_pos = self.iter.pos();
         let name = match self.iter.next() {
             Some(Name(n)) => n,
-            Some(Literal(s)) => return Err(ParseError::BadIdent(s, ident_pos)),
+            Some(Literal(s)) => return Err(ParseError::BadIdent(s, ident_pos).into()),
             _ => unreachable!(),
         };
 
@@ -2435,7 +2407,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Checks that one of the specified tokens appears as a reserved word
     /// and consumes it, returning the token it matched in case the caller
     /// cares which specific reserved word was found.
-    pub fn reserved_token(&mut self, tokens: &[Token]) -> ParseResult<Token, B::Error> {
+    pub fn reserved_token(&mut self, tokens: &[Token]) -> Result<Token, B::Error> {
         match self.peek_reserved_token(tokens) {
             Some(_) => Ok(self.iter.next().unwrap()),
             None => {
@@ -2480,7 +2452,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     pub fn command_group(
         &mut self,
         cfg: CommandGroupDelimiters<'_, '_, '_>,
-    ) -> ParseResult<builder::CommandGroup<B::Command>, B::Error> {
+    ) -> Result<builder::CommandGroup<B::Command>, B::Error> {
         let group = self.command_group_internal(cfg)?;
         if group.commands.is_empty() {
             Err(self.make_unexpected_err())
@@ -2493,7 +2465,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     fn command_group_internal(
         &mut self,
         cfg: CommandGroupDelimiters<'_, '_, '_>,
-    ) -> ParseResult<builder::CommandGroup<B::Command>, B::Error> {
+    ) -> Result<builder::CommandGroup<B::Command>, B::Error> {
         let found_delim = |slf: &mut Parser<_, _>| {
             let found_exact = !cfg.exact_tokens.is_empty()
                 && slf
@@ -2533,7 +2505,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses the body of any arbitrary arithmetic expression, e.g. `x + $y << 5`.
     /// The caller is responsible for parsing the external `$(( ))` tokens.
-    pub fn arithmetic_substitution(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
+    pub fn arithmetic_substitution(&mut self) -> Result<DefaultArithmetic, B::Error> {
         let mut exprs = Vec::new();
         loop {
             self.skip_whitespace();
@@ -2554,7 +2526,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses expressions such as `var = expr` or `var op= expr`, where `op` is
     /// any of the following operators: *, /, %, +, -, <<, >>, &, |, ^.
-    fn arith_assig(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
+    fn arith_assig(&mut self) -> Result<DefaultArithmetic, B::Error> {
         use crate::ast::Arithmetic::*;
 
         self.skip_whitespace();
@@ -2625,7 +2597,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     }
 
     /// Parses expressions such as `expr ? expr : expr`.
-    fn arith_ternary(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
+    fn arith_ternary(&mut self) -> Result<DefaultArithmetic, B::Error> {
         let guard = self.arith_logical_or()?;
         self.skip_whitespace();
         eat_maybe!(self, {
@@ -2677,7 +2649,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses expressions such as `expr == expr` or `expr != expr`.
     #[inline]
-    fn arith_eq(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
+    fn arith_eq(&mut self) -> Result<DefaultArithmetic, B::Error> {
         let mut expr = self.arith_ineq()?;
         loop {
             self.skip_whitespace();
@@ -2700,7 +2672,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses expressions such as `expr < expr`,`expr <= expr`,`expr > expr`,`expr >= expr`.
     #[inline]
-    fn arith_ineq(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
+    fn arith_ineq(&mut self) -> Result<DefaultArithmetic, B::Error> {
         let mut expr = self.arith_shift()?;
         loop {
             self.skip_whitespace();
@@ -2757,7 +2729,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     );
 
     /// Parses expressions such as `expr ** expr`.
-    fn arith_pow(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
+    fn arith_pow(&mut self) -> Result<DefaultArithmetic, B::Error> {
         let expr = self.arith_unary_misc()?;
         self.skip_whitespace();
 
@@ -2784,7 +2756,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     }
 
     /// Parses expressions such as `!expr`, `~expr`, `+expr`, `-expr`, `++var` and `--var`.
-    fn arith_unary_misc(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
+    fn arith_unary_misc(&mut self) -> Result<DefaultArithmetic, B::Error> {
         self.skip_whitespace();
         let expr = eat_maybe!(self, {
             Bang  => { ast::Arithmetic::LogicalNot(Box::new(self.arith_unary_misc()?)) },
@@ -2824,7 +2796,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Numeric literals must appear as a single `Literal` token. `Name` tokens will be
     /// treated as variables.
     #[inline]
-    fn arith_post_incr(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
+    fn arith_post_incr(&mut self) -> Result<DefaultArithmetic, B::Error> {
         self.skip_whitespace();
         eat_maybe!(self, {
             ParenOpen => {
@@ -2896,7 +2868,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses a variable name in the form `name` or `$name`.
     #[inline]
-    fn arith_var(&mut self) -> ParseResult<String, B::Error> {
+    fn arith_var(&mut self) -> Result<String, B::Error> {
         self.skip_whitespace();
         eat_maybe!(self, { Dollar => {} });
 

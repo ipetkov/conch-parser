@@ -1,6 +1,6 @@
 use crate::ast::builder::*;
 use crate::ast::{AndOr, RedirectOrCmdWord, RedirectOrEnvVar};
-use void::Void;
+use crate::parse::ParseError;
 
 /// A no-op `Builder` which ignores all inputs and always returns `()`.
 ///
@@ -30,7 +30,7 @@ impl Builder for EmptyBuilder {
     type CompoundCommand = ();
     type Word = ();
     type Redirect = ();
-    type Error = Void;
+    type Error = ParseError;
 
     fn complete_command(
         &mut self,

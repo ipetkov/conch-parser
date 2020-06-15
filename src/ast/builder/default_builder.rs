@@ -1,3 +1,4 @@
+use crate::parse::ParseError;
 use crate::ast::builder::*;
 use crate::ast::*;
 use std::default::Default;
@@ -5,7 +6,6 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
-use void::Void;
 
 /// A macro for defining a default builder, its boilerplate, and delegating
 /// the `Builder` trait to its respective `CoreBuilder` type.
@@ -66,7 +66,7 @@ macro_rules! default_builder {
             type CompoundCommand = ShellCompoundCommand<T, Self::Word, Self::Command>;
             type Word            = $Word<T>;
             type Redirect        = Redirect<Self::Word>;
-            type Error           = Void;
+            type Error           = ParseError;
 
             fn complete_command(&mut self,
                                 pre_cmd_comments: Vec<Newline>,
@@ -283,7 +283,7 @@ where
     type CompoundCommand = ShellCompoundCommand<T, Self::Word, Self::Command>;
     type Word = W;
     type Redirect = Redirect<Self::Word>;
-    type Error = Void;
+    type Error = ParseError;
 
     /// Constructs a `Command::Job` node with the provided inputs if the command
     /// was delimited by an ampersand or the command itself otherwise.
