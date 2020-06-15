@@ -1,10 +1,10 @@
 //! An module for easily iterating over a `Token` stream.
 
 use parse::SourcePos;
-use token::Token;
-use token::Token::*;
 use std::iter as std_iter;
 use std::mem;
+use token::Token;
+use token::Token::*;
 
 /// Indicates an error such that EOF was encountered while some unmatched
 /// tokens were still pending. The error stores the unmatched token
@@ -103,9 +103,10 @@ pub trait TokenIterator: Sized + PeekablePositionIterator<Item = Token> {
     /// is reached (assuming that the caller has reached the opening backtick and
     /// wishes to continue up to but not including the closing backtick).
     /// Any backslashes followed by \, $, or ` are removed from the stream.
-    fn backticked_remove_backslashes(&mut self, pos: SourcePos)
-        -> BacktickBackslashRemover<&mut Self>
-    {
+    fn backticked_remove_backslashes(
+        &mut self,
+        pos: SourcePos,
+    ) -> BacktickBackslashRemover<&mut Self> {
         BacktickBackslashRemover::new(self.backticked(pos))
     }
 }
@@ -178,7 +179,7 @@ impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
                     self.pos.advance(&next);
                     ret = Some(next);
                     break;
-                },
+                }
 
                 Some(TokenOrPos::Pos(_)) => panic!("unexpected state. This is a bug!"),
                 None => break,
@@ -211,7 +212,8 @@ impl<I: Iterator<Item = Token>> RewindableTokenIterator for TokenIter<I> {
     }
 
     fn next_token_or_pos(&mut self) -> Option<TokenOrPos> {
-        self.prev_buffered.pop()
+        self.prev_buffered
+            .pop()
             .or_else(|| self.iter.next().map(TokenOrPos::Tok))
     }
 }
@@ -259,7 +261,7 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
     fn buffer_tokens_and_positions_to_yield_first(
         &mut self,
         mut tokens: Vec<TokenOrPos>,
-        token_start: Option<SourcePos>
+        token_start: Option<SourcePos>,
     ) {
         self.prev_buffered.reserve(tokens.len() + 1);
 
@@ -294,9 +296,10 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
     /// and creates a `TokenIter` which will yield the collected tokens, and maintain
     /// the correct position of where each token appears in the original source,
     /// regardless of how many backslashes may have been removed since then.
-    pub fn token_iter_from_backticked_with_removed_backslashes(&mut self, pos: SourcePos)
-        -> Result<TokenIter<std_iter::Empty<Token>>, UnmatchedError>
-    {
+    pub fn token_iter_from_backticked_with_removed_backslashes(
+        &mut self,
+        pos: SourcePos,
+    ) -> Result<TokenIter<std_iter::Empty<Token>>, UnmatchedError> {
         BacktickBackslashRemover::create_token_iter(self.backticked(pos))
     }
 }
@@ -343,7 +346,7 @@ impl<'a> Multipeek<'a> {
                     if is_tok {
                         break;
                     }
-                },
+                }
                 None => return None,
             }
         }
@@ -412,20 +415,27 @@ impl<I: Iterator<Item = Token>> TokenIterWrapper<I> {
     /// Delegates to `TokenIter::buffer_tokens_to_yield_first`.
     pub fn buffer_tokens_to_yield_first(&mut self, buf: Vec<Token>, buf_start: SourcePos) {
         match *self {
-            TokenIterWrapper::Regular(ref mut inner) => inner.buffer_tokens_to_yield_first(buf, buf_start),
-            TokenIterWrapper::Buffered(ref mut inner) => inner.buffer_tokens_to_yield_first(buf, buf_start),
+            TokenIterWrapper::Regular(ref mut inner) => {
+                inner.buffer_tokens_to_yield_first(buf, buf_start)
+            }
+            TokenIterWrapper::Buffered(ref mut inner) => {
+                inner.buffer_tokens_to_yield_first(buf, buf_start)
+            }
         }
     }
 
     /// Delegates to `TokenIter::token_iter_from_backticked_with_removed_backslashes`.
-    pub fn token_iter_from_backticked_with_removed_backslashes(&mut self, pos: SourcePos)
-        -> Result<TokenIter<std_iter::Empty<Token>>, UnmatchedError>
-    {
+    pub fn token_iter_from_backticked_with_removed_backslashes(
+        &mut self,
+        pos: SourcePos,
+    ) -> Result<TokenIter<std_iter::Empty<Token>>, UnmatchedError> {
         match *self {
-            TokenIterWrapper::Regular(ref mut inner) =>
-                inner.token_iter_from_backticked_with_removed_backslashes(pos),
-            TokenIterWrapper::Buffered(ref mut inner) =>
-                inner.token_iter_from_backticked_with_removed_backslashes(pos),
+            TokenIterWrapper::Regular(ref mut inner) => {
+                inner.token_iter_from_backticked_with_removed_backslashes(pos)
+            }
+            TokenIterWrapper::Buffered(ref mut inner) => {
+                inner.token_iter_from_backticked_with_removed_backslashes(pos)
+            }
         }
     }
 }
@@ -465,7 +475,7 @@ impl<I: PositionIterator> Balanced<I> {
         Balanced {
             escaped: None,
             skip_last_delimeter: delim.is_some(),
-            stack: delim.map_or(Vec::new(), |d| vec!(d)),
+            stack: delim.map_or(Vec::new(), |d| vec![d]),
             done: false,
             pos: iter.pos(),
             iter: iter,
@@ -531,56 +541,61 @@ impl<I: PeekablePositionIterator<Item = Token>> Iterator for Balanced<I> {
                 // otherwise we risk consuming one token too many!
                 self.done |= self.stack.is_empty();
                 return Some(Ok(Backslash));
-            },
+            }
 
             Some(Backtick) => {
                 self.stack.push((Backtick, cur_pos));
                 Some(Ok(Backtick))
-            },
+            }
 
             Some(SingleQuote) => {
                 if self.stack.last().map(|t| &t.0) != Some(&DoubleQuote) {
                     self.stack.push((SingleQuote, cur_pos));
                 }
                 Some(Ok(SingleQuote))
-            },
+            }
 
             Some(DoubleQuote) => {
                 self.stack.push((DoubleQuote, cur_pos));
                 Some(Ok(DoubleQuote))
-            },
+            }
 
             Some(ParenOpen) => {
                 self.stack.push((ParenClose, cur_pos));
                 Some(Ok(ParenOpen))
-            },
+            }
 
             Some(Dollar) => {
                 let cur_pos = self.iter.pos(); // Want the pos of curly or paren, not $ here
                 match self.iter.peek() {
                     Some(&CurlyOpen) => self.stack.push((CurlyClose, cur_pos)),
-                    Some(&ParenOpen) => {}, // Already handled by paren case above
+                    Some(&ParenOpen) => {} // Already handled by paren case above
 
                     // We have nothing further to match
-                    _ => { self.done |= self.stack.is_empty(); },
+                    _ => {
+                        self.done |= self.stack.is_empty();
+                    }
                 }
                 Some(Ok(Dollar))
-            },
+            }
 
             Some(t) => {
                 // If we aren't looking for any more delimeters we should only
                 // consume a single token (since its balanced by nature)
                 self.done |= self.stack.is_empty();
                 Some(Ok(t))
-            },
+            }
 
             None => match self.stack.pop() {
                 // Its okay to hit EOF if everything is balanced so far
-                None => { self.done = true; None },
+                None => {
+                    self.done = true;
+                    None
+                }
                 // But its not okay otherwise
                 Some((ParenClose, pos)) => Some(Err(UnmatchedError(ParenOpen, pos))),
                 Some((CurlyClose, pos)) => Some(Err(UnmatchedError(CurlyOpen, pos))),
-                Some((delim, pos))      => Some(Err(UnmatchedError(delim, pos))),
+                Some((delim, pos)) => Some(Err(UnmatchedError(delim, pos))),
             },
         };
 
@@ -592,7 +607,6 @@ impl<I: PeekablePositionIterator<Item = Token>> Iterator for Balanced<I> {
         // Our best guess is as good as the internal token iterator's...
         self.iter.size_hint()
     }
-
 }
 
 /// A `Balanced` backtick `Token` iterator which removes all backslashes
@@ -624,9 +638,9 @@ impl<I: PeekablePositionIterator<Item = Token>> BacktickBackslashRemover<I> {
     /// and creates a `TokenIter` which will yield the collected tokens, and maintain
     /// the correct position of where each token appears in the original source,
     /// regardless of how many backslashes may have been removed since then.
-    fn create_token_iter(mut iter: Balanced<I>)
-        -> Result<TokenIter<std_iter::Empty<Token>>, UnmatchedError>
-    {
+    fn create_token_iter(
+        mut iter: Balanced<I>,
+    ) -> Result<TokenIter<std_iter::Empty<Token>>, UnmatchedError> {
         let mut all_chunks = Vec::new();
         let mut chunk_start = iter.pos();
         let mut chunk = Vec::new();
@@ -636,24 +650,24 @@ impl<I: PeekablePositionIterator<Item = Token>> BacktickBackslashRemover<I> {
                 Some(Ok(Backslash)) => {
                     let next_pos = iter.pos();
                     match iter.next() {
-                        Some(Ok(tok@Dollar))    |
-                        Some(Ok(tok@Backtick))  |
-                        Some(Ok(tok@Backslash)) => {
+                        Some(Ok(tok @ Dollar))
+                        | Some(Ok(tok @ Backtick))
+                        | Some(Ok(tok @ Backslash)) => {
                             all_chunks.push((chunk, chunk_start));
                             chunk_start = next_pos;
-                            chunk = vec!(tok);
-                        },
+                            chunk = vec![tok];
+                        }
 
                         Some(tok) => {
                             chunk.push(Backslash);
-                            chunk.push(try!(tok));
-                        },
+                            chunk.push(tok?);
+                        }
 
                         None => chunk.push(Backslash),
                     }
-                },
+                }
 
-                Some(tok) => chunk.push(try!(tok)),
+                Some(tok) => chunk.push(tok?),
                 None => break,
             }
         }
@@ -670,9 +684,10 @@ impl<I: PeekablePositionIterator<Item = Token>> BacktickBackslashRemover<I> {
     }
 }
 
-impl<I> ::std::iter::FusedIterator for BacktickBackslashRemover<I>
-where I: PeekablePositionIterator<Item = Token>
-{}
+impl<I> ::std::iter::FusedIterator for BacktickBackslashRemover<I> where
+    I: PeekablePositionIterator<Item = Token>
+{
+}
 
 impl<I: PeekablePositionIterator<Item = Token>> Iterator for BacktickBackslashRemover<I> {
     type Item = Result<Token, UnmatchedError>;
@@ -685,22 +700,20 @@ impl<I: PeekablePositionIterator<Item = Token>> Iterator for BacktickBackslashRe
         }
 
         match self.iter.next() {
-            Some(Ok(Backslash)) => {
-                match self.iter.next() {
-                    ret@Some(Ok(Dollar))    |
-                    ret@Some(Ok(Backtick))  |
-                    ret@Some(Ok(Backslash)) => ret,
+            Some(Ok(Backslash)) => match self.iter.next() {
+                ret @ Some(Ok(Dollar)) | ret @ Some(Ok(Backtick)) | ret @ Some(Ok(Backslash)) => {
+                    ret
+                }
 
-                    Some(t) => {
-                        debug_assert!(self.peeked.is_none());
-                        self.peeked = Some(t);
-                        Some(Ok(Backslash))
-                    },
+                Some(t) => {
+                    debug_assert!(self.peeked.is_none());
+                    self.peeked = Some(t);
+                    Some(Ok(Backslash))
+                }
 
-                    None => {
-                        self.done = true;
-                        Some(Ok(Backslash))
-                    },
+                None => {
+                    self.done = true;
+                    Some(Ok(Backslash))
                 }
             },
 
@@ -708,7 +721,7 @@ impl<I: PeekablePositionIterator<Item = Token>> Iterator for BacktickBackslashRe
             None => {
                 self.done = true;
                 None
-            },
+            }
         }
     }
 
@@ -722,13 +735,18 @@ impl<I: PeekablePositionIterator<Item = Token>> Iterator for BacktickBackslashRe
 
 #[cfg(test)]
 mod tests {
-    use parse::SourcePos;
     use super::{PositionIterator, TokenIter, TokenOrPos};
+    use parse::SourcePos;
     use token::Token;
 
     #[test]
     fn test_multipeek() {
-        let tokens = vec!(Token::ParenOpen, Token::Semi, Token::Dollar, Token::ParenClose);
+        let tokens = vec![
+            Token::ParenOpen,
+            Token::Semi,
+            Token::Dollar,
+            Token::ParenClose,
+        ];
 
         let mut tok_iter = TokenIter::new(tokens.clone().into_iter());
         {
@@ -761,12 +779,12 @@ mod tests {
         let pos = src(4, 4, 4);
 
         tok_iter.buffer_tokens_and_positions_to_yield_first(
-            vec!(
+            vec![
                 TokenOrPos::Pos(src(2, 2, 2)),
                 TokenOrPos::Pos(src(3, 3, 3)),
                 TokenOrPos::Pos(pos),
                 TokenOrPos::Tok(Token::Newline),
-            ),
+            ],
             Some(src(1, 1, 1)),
         );
 

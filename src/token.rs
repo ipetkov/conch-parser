@@ -1,7 +1,7 @@
 //! This module defines the tokens of the shell language.
 
-use std::fmt;
 use self::Token::*;
+use std::fmt;
 
 /// The inner representation of a positional parameter.
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
@@ -32,16 +32,16 @@ impl Positional {
     /// Converts a `Positional` as a numeric representation
     pub fn as_num(&self) -> u8 {
         match *self {
-            Positional::Zero  => 0,
-            Positional::One   => 1,
-            Positional::Two   => 2,
+            Positional::Zero => 0,
+            Positional::One => 1,
+            Positional::Two => 2,
             Positional::Three => 3,
-            Positional::Four  => 4,
-            Positional::Five  => 5,
-            Positional::Six   => 6,
+            Positional::Four => 4,
+            Positional::Five => 5,
+            Positional::Six => 6,
             Positional::Seven => 7,
             Positional::Eight => 8,
-            Positional::Nine  => 9,
+            Positional::Nine => 9,
         }
     }
 
@@ -197,114 +197,74 @@ impl Token {
     /// when the token is **not** quoted or escaped.
     pub fn is_word_delimiter(&self) -> bool {
         match *self {
-            Newline           |
-            ParenOpen         |
-            ParenClose        |
-            Semi              |
-            Amp               |
-            Less              |
-            Great             |
-            Pipe              |
-            AndIf             |
-            OrIf              |
-            DSemi             |
-            DLess             |
-            DGreat            |
-            GreatAnd          |
-            LessAnd           |
-            DLessDash         |
-            Clobber           |
-            LessGreat         |
-            Whitespace(_) => true,
+            Newline | ParenOpen | ParenClose | Semi | Amp | Less | Great | Pipe | AndIf | OrIf
+            | DSemi | DLess | DGreat | GreatAnd | LessAnd | DLessDash | Clobber | LessGreat
+            | Whitespace(_) => true,
 
-            Bang               |
-            Star               |
-            Question           |
-            Backslash          |
-            SingleQuote        |
-            DoubleQuote        |
-            Backtick           |
-            Percent            |
-            Dash               |
-            Equals             |
-            Plus               |
-            Colon              |
-            At                 |
-            Caret              |
-            Slash              |
-            Comma              |
-            CurlyOpen          |
-            CurlyClose         |
-            SquareOpen         |
-            SquareClose        |
-            Dollar             |
-            Tilde              |
-            Pound              |
-            Name(_)            |
-            Literal(_)         |
-            ParamPositional(_) => false,
+            Bang | Star | Question | Backslash | SingleQuote | DoubleQuote | Backtick | Percent
+            | Dash | Equals | Plus | Colon | At | Caret | Slash | Comma | CurlyOpen
+            | CurlyClose | SquareOpen | SquareClose | Dollar | Tilde | Pound | Name(_)
+            | Literal(_) | ParamPositional(_) => false,
         }
     }
 
     /// Gets a representation of the token as a string slice.
     pub fn as_str(&self) -> &str {
         match *self {
-            Newline     => "\n",
-            ParenOpen   => "(",
-            ParenClose  => ")",
-            CurlyOpen   => "{",
-            CurlyClose  => "}",
-            SquareOpen  => "[",
+            Newline => "\n",
+            ParenOpen => "(",
+            ParenClose => ")",
+            CurlyOpen => "{",
+            CurlyClose => "}",
+            SquareOpen => "[",
             SquareClose => "]",
-            Dollar      => "$",
-            Bang        => "!",
-            Semi        => ";",
-            Amp         => "&",
-            Less        => "<",
-            Great       => ">",
-            Pipe        => "|",
-            Tilde       => "~",
-            Pound       => "#",
-            Star        => "*",
-            Question    => "?",
-            Backslash   => "\\",
-            Percent     => "%",
-            Dash        => "-",
-            Equals      => "=",
-            Plus        => "+",
-            Colon       => ":",
-            At          => "@",
-            Caret       => "^",
-            Slash       => "/",
-            Comma       => ",",
+            Dollar => "$",
+            Bang => "!",
+            Semi => ";",
+            Amp => "&",
+            Less => "<",
+            Great => ">",
+            Pipe => "|",
+            Tilde => "~",
+            Pound => "#",
+            Star => "*",
+            Question => "?",
+            Backslash => "\\",
+            Percent => "%",
+            Dash => "-",
+            Equals => "=",
+            Plus => "+",
+            Colon => ":",
+            At => "@",
+            Caret => "^",
+            Slash => "/",
+            Comma => ",",
             SingleQuote => "\'",
             DoubleQuote => "\"",
-            Backtick    => "`",
-            AndIf       => "&&",
-            OrIf        => "||",
-            DSemi       => ";;",
-            DLess       => "<<",
-            DGreat      => ">>",
-            GreatAnd    => ">&",
-            LessAnd     => "<&",
-            DLessDash   => "<<-",
-            Clobber     => ">|",
-            LessGreat   => "<>",
+            Backtick => "`",
+            AndIf => "&&",
+            OrIf => "||",
+            DSemi => ";;",
+            DLess => "<<",
+            DGreat => ">>",
+            GreatAnd => ">&",
+            LessAnd => "<&",
+            DLessDash => "<<-",
+            Clobber => ">|",
+            LessGreat => "<>",
 
-            ParamPositional(Positional::Zero)  => "$0",
-            ParamPositional(Positional::One)   => "$1",
-            ParamPositional(Positional::Two)   => "$2",
+            ParamPositional(Positional::Zero) => "$0",
+            ParamPositional(Positional::One) => "$1",
+            ParamPositional(Positional::Two) => "$2",
             ParamPositional(Positional::Three) => "$3",
-            ParamPositional(Positional::Four)  => "$4",
-            ParamPositional(Positional::Five)  => "$5",
-            ParamPositional(Positional::Six)   => "$6",
+            ParamPositional(Positional::Four) => "$4",
+            ParamPositional(Positional::Five) => "$5",
+            ParamPositional(Positional::Six) => "$6",
             ParamPositional(Positional::Seven) => "$7",
             ParamPositional(Positional::Eight) => "$8",
-            ParamPositional(Positional::Nine)  => "$9",
+            ParamPositional(Positional::Nine) => "$9",
 
-            Whitespace(ref s) |
-            Name(ref s)       |
-            Literal(ref s)    => s,
+            Whitespace(ref s) | Name(ref s) | Literal(ref s) => s,
         }
     }
 }

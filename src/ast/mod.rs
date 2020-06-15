@@ -1,7 +1,7 @@
 //! Defines abstract representations of the shell source.
-use std::{fmt, ops};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::{fmt, ops};
 
 pub mod builder;
 
@@ -38,7 +38,7 @@ pub type DefaultParameterSubstitution = ParameterSubstitution<
     DefaultParameter,
     TopLevelWord<String>,
     TopLevelCommand<String>,
-    DefaultArithmetic
+    DefaultArithmetic,
 >;
 
 /// A parameter substitution, e.g. `${param-word}`.
@@ -84,9 +84,12 @@ pub enum ParameterSubstitution<P, W, C, A> {
 }
 
 /// A type alias for the default hiearchy for representing shell words.
-pub type ShellWord<T, W, C> = ComplexWord<Word<T, SimpleWord<T, Parameter<T>,
-    Box<ParameterSubstitution<Parameter<T>, W, C, Arithmetic<T>>
->>>>;
+pub type ShellWord<T, W, C> = ComplexWord<
+    Word<
+        T,
+        SimpleWord<T, Parameter<T>, Box<ParameterSubstitution<Parameter<T>, W, C, Arithmetic<T>>>>,
+    >,
+>;
 
 /// Type alias for the default `ComplexWord` representation.
 pub type DefaultComplexWord = ComplexWord<DefaultWord>;
@@ -120,11 +123,8 @@ pub enum Word<L, W> {
 }
 
 /// Type alias for the default `SimpleWord` representation.
-pub type DefaultSimpleWord = SimpleWord<
-    String,
-    DefaultParameter,
-    Box<DefaultParameterSubstitution>
->;
+pub type DefaultSimpleWord =
+    SimpleWord<String, DefaultParameter, Box<DefaultParameterSubstitution>>;
 
 /// Represents the smallest fragment of any text.
 ///
@@ -222,8 +222,8 @@ pub type CommandList<T, W, C> = AndOrList<ListableCommand<ShellPipeableCommand<T
 ///
 /// Generic over the representation of literals, shell words, commands, and redirects.
 /// Uses `Arc` wrappers around function declarations.
-pub type AtomicCommandList<T, W, C>
-    = AndOrList<ListableCommand<AtomicShellPipeableCommand<T, W, C>>>;
+pub type AtomicCommandList<T, W, C> =
+    AndOrList<ListableCommand<AtomicShellPipeableCommand<T, W, C>>>;
 
 /// A type alias for the default hiearchy to represent pipeable commands,
 /// using `Rc` wrappers around function declarations.
@@ -231,7 +231,7 @@ pub type ShellPipeableCommand<T, W, C> = PipeableCommand<
     T,
     Box<SimpleCommand<T, W, Redirect<W>>>,
     Box<ShellCompoundCommand<T, W, C>>,
-    Rc<ShellCompoundCommand<T, W, C>>
+    Rc<ShellCompoundCommand<T, W, C>>,
 >;
 
 /// A type alias for the default hiearchy to represent pipeable commands,
@@ -240,7 +240,7 @@ pub type AtomicShellPipeableCommand<T, W, C> = PipeableCommand<
     T,
     Box<SimpleCommand<T, W, Redirect<W>>>,
     Box<ShellCompoundCommand<T, W, C>>,
-    Arc<ShellCompoundCommand<T, W, C>>
+    Arc<ShellCompoundCommand<T, W, C>>,
 >;
 
 /// A command which conditionally runs based on the exit status of the previous command.
@@ -282,11 +282,8 @@ pub enum ListableCommand<T> {
 }
 
 /// Type alias for the default `PipeableCommand` representation.
-pub type DefaultPipeableCommand = ShellPipeableCommand<
-    String,
-    TopLevelWord<String>,
-    TopLevelCommand<String>
->;
+pub type DefaultPipeableCommand =
+    ShellPipeableCommand<String, TopLevelWord<String>, TopLevelCommand<String>>;
 
 /// Commands that can be used within a pipeline.
 ///
@@ -305,15 +302,11 @@ pub enum PipeableCommand<N, S, C, F> {
 }
 
 /// A type alias for the default hiearchy for representing compound shell commands.
-pub type ShellCompoundCommand<T, W, C>
-    = CompoundCommand<CompoundCommandKind<T, W, C>, Redirect<W>>;
+pub type ShellCompoundCommand<T, W, C> = CompoundCommand<CompoundCommandKind<T, W, C>, Redirect<W>>;
 
 /// Type alias for the default `CompoundCommandKind` representation.
-pub type DefaultCompoundCommand = ShellCompoundCommand<
-    String,
-    TopLevelWord<String>,
-    TopLevelCommand<String>
->;
+pub type DefaultCompoundCommand =
+    ShellCompoundCommand<String, TopLevelWord<String>, TopLevelCommand<String>>;
 
 /// A class of commands where redirection is applied to a command group.
 ///
@@ -328,11 +321,8 @@ pub struct CompoundCommand<T, R> {
 }
 
 /// Type alias for the default `CompoundCommandKind` representation.
-pub type DefaultCompoundCommandKind = CompoundCommandKind<
-    String,
-    TopLevelWord<String>,
-    TopLevelCommand<String>
->;
+pub type DefaultCompoundCommandKind =
+    CompoundCommandKind<String, TopLevelWord<String>, TopLevelCommand<String>>;
 
 /// A specific kind of a `CompoundCommand`.
 ///
@@ -406,11 +396,8 @@ pub enum RedirectOrCmdWord<R, W> {
 }
 
 /// Type alias for the default `SimpleCommand` representation.
-pub type DefaultSimpleCommand = SimpleCommand<
-    String,
-    TopLevelWord<String>,
-    Redirect<TopLevelWord<String>>
->;
+pub type DefaultSimpleCommand =
+    SimpleCommand<String, TopLevelWord<String>, Redirect<TopLevelWord<String>>>;
 
 /// The simplest possible command: an executable with arguments,
 /// environment variable assignments, and redirections.
@@ -618,20 +605,22 @@ impl<T: fmt::Display> fmt::Display for Parameter<T> {
         use self::Parameter::*;
 
         match *self {
-            At       => fmt.write_str("$@"),
-            Star     => fmt.write_str("$*"),
-            Pound    => fmt.write_str("$#"),
+            At => fmt.write_str("$@"),
+            Star => fmt.write_str("$*"),
+            Pound => fmt.write_str("$#"),
             Question => fmt.write_str("$?"),
-            Dash     => fmt.write_str("$-"),
-            Dollar   => fmt.write_str("$$"),
-            Bang     => fmt.write_str("$!"),
+            Dash => fmt.write_str("$-"),
+            Dollar => fmt.write_str("$$"),
+            Bang => fmt.write_str("$!"),
 
-            Var(ref p)    => write!(fmt, "${{{}}}", p),
-            Positional(p) => if p <= 9 {
-                write!(fmt, "${}", p)
-            } else {
-                write!(fmt, "${{{}}}", p)
-            },
+            Var(ref p) => write!(fmt, "${{{}}}", p),
+            Positional(p) => {
+                if p <= 9 {
+                    write!(fmt, "${}", p)
+                } else {
+                    write!(fmt, "${{{}}}", p)
+                }
+            }
         }
     }
 }
@@ -640,15 +629,15 @@ impl<T: fmt::Display> fmt::Display for Parameter<T> {
 mod tests {
     #[test]
     fn test_display_parameter() {
-        use lexer::Lexer;
-        use parse::DefaultParser;
-        use super::Parameter::*;
         use super::ComplexWord::Single;
+        use super::Parameter::*;
         use super::SimpleWord::Param;
         use super::TopLevelWord;
         use super::Word::Simple;
+        use lexer::Lexer;
+        use parse::DefaultParser;
 
-        let params = vec!(
+        let params = vec![
             At,
             Star,
             Pound,
@@ -660,7 +649,7 @@ mod tests {
             Positional(10),
             Positional(100),
             Var(String::from("foo_bar123")),
-        );
+        ];
 
         for p in params {
             let src = p.to_string();
@@ -673,7 +662,10 @@ mod tests {
             };
 
             if correct != parsed {
-                panic!("The source \"{}\" generated from the command `{:#?}` was parsed as `{:#?}`", src, correct, parsed);
+                panic!(
+                    "The source \"{}\" generated from the command `{:#?}` was parsed as `{:#?}`",
+                    src, correct, parsed
+                );
             }
         }
     }

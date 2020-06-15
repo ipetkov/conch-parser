@@ -1,7 +1,7 @@
 extern crate conch_parser;
 
-use conch_parser::ast::*;
 use conch_parser::ast::PipeableCommand::*;
+use conch_parser::ast::*;
 use conch_parser::parse::ParseError::*;
 use conch_parser::token::Token;
 
@@ -12,12 +12,15 @@ use parse_support::*;
 fn test_pipeline_valid_bang() {
     let mut p = make_parser("! foo | bar | baz");
     let correct = CommandList {
-        first: ListableCommand::Pipe(true, vec!(
-            Simple(cmd_simple("foo")),
-            Simple(cmd_simple("bar")),
-            Simple(cmd_simple("baz")),
-        )),
-        rest: vec!(),
+        first: ListableCommand::Pipe(
+            true,
+            vec![
+                Simple(cmd_simple("foo")),
+                Simple(cmd_simple("bar")),
+                Simple(cmd_simple("baz")),
+            ],
+        ),
+        rest: vec![],
     };
     assert_eq!(correct, p.and_or_list().unwrap());
 }
@@ -26,18 +29,17 @@ fn test_pipeline_valid_bang() {
 fn test_pipeline_valid_bangs_in_and_or() {
     let mut p = make_parser("! foo | bar || ! baz && ! foobar");
     let correct = CommandList {
-        first: ListableCommand::Pipe(true, vec!(
-            Simple(cmd_simple("foo")),
-            Simple(cmd_simple("bar"))
-        )),
-        rest: vec!(
-            AndOr::Or(ListableCommand::Pipe(true, vec!(
-                Simple(cmd_simple("baz")),
-            ))),
-            AndOr::And(ListableCommand::Pipe(true, vec!(
-                Simple(cmd_simple("foobar")),
-            ))),
+        first: ListableCommand::Pipe(
+            true,
+            vec![Simple(cmd_simple("foo")), Simple(cmd_simple("bar"))],
         ),
+        rest: vec![
+            AndOr::Or(ListableCommand::Pipe(true, vec![Simple(cmd_simple("baz"))])),
+            AndOr::And(ListableCommand::Pipe(
+                true,
+                vec![Simple(cmd_simple("foobar"))],
+            )),
+        ],
     };
     assert_eq!(correct, p.and_or_list().unwrap());
 }

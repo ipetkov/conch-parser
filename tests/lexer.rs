@@ -1,8 +1,8 @@
 extern crate conch_parser;
 
 use conch_parser::lexer::Lexer;
-use conch_parser::token::{Positional, Token};
 use conch_parser::token::Token::*;
+use conch_parser::token::{Positional, Token};
 
 macro_rules! check_tok {
     ($fn_name:ident, $tok:expr) => {
@@ -13,7 +13,7 @@ macro_rules! check_tok {
             let mut lex = Lexer::new(s.chars());
             assert_eq!($tok, lex.next().unwrap());
         }
-    }
+    };
 }
 
 macro_rules! lex_str {
@@ -72,42 +72,76 @@ check_tok!(check_Name, Name(String::from("abc_23_defg")));
 check_tok!(check_Literal, Literal(String::from("5abcdefg80hijklmnop")));
 check_tok!(check_ParamPositional, ParamPositional(Positional::Nine));
 
-lex_str!(check_greedy_Amp,    "&&&",  AndIf, Amp);
-lex_str!(check_greedy_Pipe,   "|||",  OrIf, Pipe);
-lex_str!(check_greedy_Semi,   ";;;",  DSemi, Semi);
-lex_str!(check_greedy_Less,   "<<<",  DLess, Less);
-lex_str!(check_greedy_Great,  ">>>",  DGreat, Great);
-lex_str!(check_greedy_Less2,  "<<<-", DLess, Less, Dash);
+lex_str!(check_greedy_Amp, "&&&", AndIf, Amp);
+lex_str!(check_greedy_Pipe, "|||", OrIf, Pipe);
+lex_str!(check_greedy_Semi, ";;;", DSemi, Semi);
+lex_str!(check_greedy_Less, "<<<", DLess, Less);
+lex_str!(check_greedy_Great, ">>>", DGreat, Great);
+lex_str!(check_greedy_Less2, "<<<-", DLess, Less, Dash);
 
-lex_str!(check_bad_Assigmnent_and_value, "5foobar=test",
+lex_str!(
+    check_bad_Assigmnent_and_value,
+    "5foobar=test",
     Literal(String::from("5foobar")),
     Equals,
     Name(String::from("test"))
 );
 
-lex_str!(check_Literal_and_Name_combo, "hello 5asdf5_ 6world __name ^.abc _test2",
-         Name(String::from("hello")),
-         Whitespace(String::from(" ")),
-         Literal(String::from("5asdf5_")),
-         Whitespace(String::from(" ")),
-         Literal(String::from("6world")),
-         Whitespace(String::from(" ")),
-         Name(String::from("__name")),
-         Whitespace(String::from(" ")),
-         Caret,
-         Literal(String::from(".abc")),
-         Whitespace(String::from(" ")),
-         Name(String::from("_test2"))
- );
+lex_str!(
+    check_Literal_and_Name_combo,
+    "hello 5asdf5_ 6world __name ^.abc _test2",
+    Name(String::from("hello")),
+    Whitespace(String::from(" ")),
+    Literal(String::from("5asdf5_")),
+    Whitespace(String::from(" ")),
+    Literal(String::from("6world")),
+    Whitespace(String::from(" ")),
+    Name(String::from("__name")),
+    Whitespace(String::from(" ")),
+    Caret,
+    Literal(String::from(".abc")),
+    Whitespace(String::from(" ")),
+    Name(String::from("_test2"))
+);
 
-lex_str!(check_escape_Backslash,       "\\\\",  Backslash, Backslash);
-lex_str!(check_escape_AndIf,           "\\&&",  Backslash, Amp, Amp);
-lex_str!(check_escape_DSemi,           "\\;;",  Backslash, Semi, Semi);
-lex_str!(check_escape_DLess,           "\\<<",  Backslash, Less, Less);
-lex_str!(check_escape_DLessDash,       "\\<<-", Backslash, Less, Less, Dash);
-lex_str!(check_escape_ParamPositional, "\\$0",  Backslash, Dollar, Literal(String::from("0")));
-lex_str!(check_escape_Whitespace,      "\\  ",  Backslash, Whitespace(String::from(" ")), Whitespace(String::from(" ")));
-lex_str!(check_escape_Name,            "\\ab",  Backslash, Name(String::from("a")), Name(String::from("b")));
-lex_str!(check_escape_Literal,         "\\13",  Backslash, Literal(String::from("1")), Literal(String::from("3")));
+lex_str!(check_escape_Backslash, "\\\\", Backslash, Backslash);
+lex_str!(check_escape_AndIf, "\\&&", Backslash, Amp, Amp);
+lex_str!(check_escape_DSemi, "\\;;", Backslash, Semi, Semi);
+lex_str!(check_escape_DLess, "\\<<", Backslash, Less, Less);
+lex_str!(check_escape_DLessDash, "\\<<-", Backslash, Less, Less, Dash);
+lex_str!(
+    check_escape_ParamPositional,
+    "\\$0",
+    Backslash,
+    Dollar,
+    Literal(String::from("0"))
+);
+lex_str!(
+    check_escape_Whitespace,
+    "\\  ",
+    Backslash,
+    Whitespace(String::from(" ")),
+    Whitespace(String::from(" "))
+);
+lex_str!(
+    check_escape_Name,
+    "\\ab",
+    Backslash,
+    Name(String::from("a")),
+    Name(String::from("b"))
+);
+lex_str!(
+    check_escape_Literal,
+    "\\13",
+    Backslash,
+    Literal(String::from("1")),
+    Literal(String::from("3"))
+);
 
-lex_str!(check_no_tokens_lost, "word\\'", Name(String::from("word")), Backslash, SingleQuote);
+lex_str!(
+    check_no_tokens_lost,
+    "word\\'",
+    Name(String::from("word")),
+    Backslash,
+    SingleQuote
+);

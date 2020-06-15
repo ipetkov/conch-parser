@@ -9,16 +9,7 @@ use parse_support::*;
 
 #[test]
 fn test_parameter_short() {
-    let words = vec!(
-        At,
-        Star,
-        Pound,
-        Question,
-        Dash,
-        Dollar,
-        Bang,
-        Positional(3),
-    );
+    let words = vec![At, Star, Pound, Question, Dash, Dollar, Bang, Positional(3)];
 
     let mut p = make_parser("$@$*$#$?$-$$$!$3$");
     for param in words {
@@ -31,7 +22,7 @@ fn test_parameter_short() {
 
 #[test]
 fn test_parameter_short_in_curlies() {
-    let words = vec!(
+    let words = vec![
         At,
         Star,
         Pound,
@@ -42,7 +33,7 @@ fn test_parameter_short_in_curlies() {
         Var(String::from("foo")),
         Positional(3),
         Positional(1000),
-    );
+    ];
 
     let mut p = make_parser("${@}${*}${#}${?}${-}${$}${!}${foo}${3}${1000}");
     for param in words {
@@ -54,17 +45,22 @@ fn test_parameter_short_in_curlies() {
 
 #[test]
 fn test_parameter_command_substitution() {
-    let correct = word_subst(Command(vec!(
+    let correct = word_subst(Command(vec![
         cmd_args("echo", &["hello"]),
         cmd_args("echo", &["world"]),
-    )));
+    ]));
 
-    assert_eq!(correct, make_parser("$(echo hello; echo world)").parameter().unwrap());
+    assert_eq!(
+        correct,
+        make_parser("$(echo hello; echo world)")
+            .parameter()
+            .unwrap()
+    );
 }
 
 #[test]
 fn test_parameter_command_substitution_valid_empty_substitution() {
-    let correct = word_subst(Command(vec!()));
+    let correct = word_subst(Command(vec![]));
     assert_eq!(correct, make_parser("$()").parameter().unwrap());
     assert_eq!(correct, make_parser("$(     )").parameter().unwrap());
     assert_eq!(correct, make_parser("$(\n\n)").parameter().unwrap());
@@ -76,4 +72,3 @@ fn test_parameter_literal_dollar_if_no_param() {
     assert_eq!(word("$"), p.parameter().unwrap());
     assert_eq!(p.word().unwrap().unwrap(), word("%asdf"));
 }
-

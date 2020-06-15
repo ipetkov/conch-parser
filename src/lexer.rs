@@ -1,9 +1,9 @@
 //! This module defines a lexer to recognize tokens of the shell language.
 
 use self::TokenOrLiteral::*;
-use std::iter::{Fuse, Peekable};
-use super::token::{Positional, Token};
 use super::token::Token::*;
+use super::token::{Positional, Token};
+use std::iter::{Fuse, Peekable};
 
 #[derive(PartialEq, Eq, Debug, Clone)]
 enum TokenOrLiteral {
@@ -32,7 +32,9 @@ impl<I: Iterator<Item = char>> Lexer<I> {
     #[inline]
     fn next_is(&mut self, c: char) -> bool {
         let is = self.inner.peek() == Some(&c);
-        if is { self.inner.next(); }
+        if is {
+            self.inner.next();
+        }
         is
     }
 
@@ -68,17 +70,39 @@ impl<I: Iterator<Item = char>> Lexer<I> {
             // important because something like `\&&` would mean that the
             // first & is a literal while the second retains its properties.
             // We will let the parser deal with what actually becomes a literal.
-            '\\' => return Some(Escaped(self.inner.next().and_then(|c| {
-                Lexer::new(::std::iter::once(c)).next()
-            }))),
+            '\\' => {
+                return Some(Escaped(
+                    self.inner
+                        .next()
+                        .and_then(|c| Lexer::new(::std::iter::once(c)).next()),
+                ))
+            }
 
             '\'' => SingleQuote,
             '"' => DoubleQuote,
             '`' => Backtick,
 
-            ';' => if self.next_is(';') { DSemi } else { Semi },
-            '&' => if self.next_is('&') { AndIf } else { Amp  },
-            '|' => if self.next_is('|') { OrIf  } else { Pipe },
+            ';' => {
+                if self.next_is(';') {
+                    DSemi
+                } else {
+                    Semi
+                }
+            }
+            '&' => {
+                if self.next_is('&') {
+                    AndIf
+                } else {
+                    Amp
+                }
+            }
+            '|' => {
+                if self.next_is('|') {
+                    OrIf
+                } else {
+                    Pipe
+                }
+            }
 
             '(' => ParenOpen,
             ')' => ParenClose,
@@ -108,30 +132,38 @@ impl<I: Iterator<Item = char>> Lexer<I> {
                     Some(p) => {
                         self.inner.next(); // Consume the character we just peeked
                         ParamPositional(p)
-                    },
+                    }
                     None => Dollar,
                 }
-            },
+            }
 
-            '<' => if self.next_is('<') {
-                if self.next_is('-') { DLessDash } else { DLess }
-            } else if self.next_is('&') {
-                LessAnd
-            } else if self.next_is('>') {
-                LessGreat
-            } else {
-                Less
-            },
+            '<' => {
+                if self.next_is('<') {
+                    if self.next_is('-') {
+                        DLessDash
+                    } else {
+                        DLess
+                    }
+                } else if self.next_is('&') {
+                    LessAnd
+                } else if self.next_is('>') {
+                    LessGreat
+                } else {
+                    Less
+                }
+            }
 
-            '>' => if self.next_is('&') {
-                GreatAnd
-            } else if self.next_is('>') {
-                DGreat
-            } else if self.next_is('|') {
-                Clobber
-            } else {
-                Great
-            },
+            '>' => {
+                if self.next_is('&') {
+                    GreatAnd
+                } else if self.next_is('>') {
+                    DGreat
+                } else if self.next_is('|') {
+                    Clobber
+                } else {
+                    Great
+                }
+            }
 
             // Newlines are valid whitespace, however, we want to tokenize them separately!
             c if c.is_whitespace() => {
@@ -144,12 +176,12 @@ impl<I: Iterator<Item = char>> Lexer<I> {
                         self.inner.next();
                         buf.push(c);
                     } else {
-                        break
+                        break;
                     }
                 }
 
                 Whitespace(buf)
-            },
+            }
 
             c => return Some(Lit(c)),
         };
@@ -181,7 +213,7 @@ impl<I: Iterator<Item = char>> Iterator for Lexer<I> {
                 debug_assert_eq!(self.peeked, None);
                 self.peeked = t.map(Tok);
                 Some(Backslash)
-            },
+            }
 
             Some(Lit(c)) => {
                 let is_name = name_start_char(c);
@@ -191,19 +223,18 @@ impl<I: Iterator<Item = char>> Iterator for Lexer<I> {
                 loop {
                     match self.next_internal() {
                         // If we hit a token, delimit the current word w/o losing the token
-                        Some(tok@Tok(_)) |
-                        Some(tok@Escaped(_)) => {
+                        Some(tok @ Tok(_)) | Some(tok @ Escaped(_)) => {
                             debug_assert_eq!(self.peeked, None);
                             self.peeked = Some(tok);
                             break;
-                        },
+                        }
 
                         // Make sure we delimit valid names whenever a non-name char comes along
                         Some(Lit(c)) if is_name && !name_char(c) => {
                             debug_assert_eq!(self.peeked, None);
                             self.peeked = Some(Lit(c));
                             return Some(Name(word));
-                        },
+                        }
 
                         // Otherwise, keep consuming characters for the literal
                         Some(Lit(c)) => word.push(c),
@@ -217,7 +248,7 @@ impl<I: Iterator<Item = char>> Iterator for Lexer<I> {
                 } else {
                     Some(Literal(word))
                 }
-            },
+            }
         }
     }
 

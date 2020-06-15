@@ -29,10 +29,8 @@
 //!  * **Not yet implemented**: Other inner abitrary parameter/substitution expansion
 
 #![doc(html_root_url = "https://docs.rs/conch-parser/0.1")]
-
 #![cfg_attr(not(test), deny(clippy::print_stdout))]
 #![deny(clippy::wrong_self_convention)]
-
 #![deny(missing_copy_implementations)]
 #![deny(missing_debug_implementations)]
 #![deny(missing_docs)]
@@ -40,7 +38,6 @@
 #![deny(trivial_numeric_casts)]
 #![deny(unused_import_braces)]
 #![deny(unused_qualifications)]
-
 #![forbid(unsafe_code)]
 
 extern crate void;

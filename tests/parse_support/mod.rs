@@ -3,11 +3,11 @@
 // see our intent
 #![allow(dead_code)]
 
-use conch_parser::ast::*;
 use conch_parser::ast::Command::*;
 use conch_parser::ast::ComplexWord::*;
 use conch_parser::ast::PipeableCommand::*;
 use conch_parser::ast::SimpleWord::*;
+use conch_parser::ast::*;
 use conch_parser::lexer::Lexer;
 use conch_parser::parse::*;
 use conch_parser::token::Token;
@@ -29,7 +29,7 @@ pub fn single_quoted(s: &str) -> TopLevelWord<String> {
 }
 
 pub fn double_quoted(s: &str) -> TopLevelWord<String> {
-    TopLevelWord(Single(Word::DoubleQuoted(vec!(Literal(String::from(s))))))
+    TopLevelWord(Single(Word::DoubleQuoted(vec![Literal(String::from(s))])))
 }
 
 pub fn word(s: &str) -> TopLevelWord<String> {
@@ -62,7 +62,7 @@ pub fn cmd_args_simple(cmd: &str, args: &[&str]) -> Box<DefaultSimpleCommand> {
     cmd_args.extend(args.iter().map(|&a| RedirectOrCmdWord::CmdWord(word(a))));
 
     Box::new(SimpleCommand {
-        redirects_or_env_vars: vec!(),
+        redirects_or_env_vars: vec![],
         redirects_or_cmd_words: cmd_args,
     })
 }
@@ -74,7 +74,7 @@ pub fn cmd_simple(cmd: &str) -> Box<DefaultSimpleCommand> {
 pub fn cmd_args(cmd: &str, args: &[&str]) -> TopLevelCommand<String> {
     TopLevelCommand(List(CommandList {
         first: ListableCommand::Single(Simple(cmd_args_simple(cmd, args))),
-        rest: vec!(),
+        rest: vec![],
     }))
 }
 
@@ -85,7 +85,7 @@ pub fn cmd(cmd: &str) -> TopLevelCommand<String> {
 pub fn cmd_from_simple(cmd: DefaultSimpleCommand) -> TopLevelCommand<String> {
     TopLevelCommand(List(CommandList {
         first: ListableCommand::Single(Simple(Box::new(cmd))),
-        rest: vec!(),
+        rest: vec![],
     }))
 }
 

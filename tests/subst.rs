@@ -1,9 +1,9 @@
 extern crate conch_parser;
 
 use conch_parser::ast::ComplexWord::*;
-use conch_parser::ast::{RedirectOrCmdWord, SimpleWord, SimpleCommand, Word, TopLevelWord};
 use conch_parser::ast::Parameter::*;
 use conch_parser::ast::ParameterSubstitution::*;
+use conch_parser::ast::{RedirectOrCmdWord, SimpleCommand, SimpleWord, TopLevelWord, Word};
 use conch_parser::parse::ParseError::*;
 use conch_parser::token::Token;
 
@@ -12,7 +12,7 @@ use parse_support::*;
 
 #[test]
 fn test_parameter_substitution() {
-    let words = vec!(
+    let words = vec![
         Len(At),
         Len(Star),
         Len(Pound),
@@ -23,8 +23,8 @@ fn test_parameter_substitution() {
         Len(Var(String::from("foo"))),
         Len(Positional(3)),
         Len(Positional(1000)),
-        Command(vec!(cmd_args("echo", &["foo"]))),
-    );
+        Command(vec![cmd_args("echo", &["foo"])]),
+    ];
 
     let mut p = make_parser("${#@}${#*}${##}${#?}${#-}${#$}${#!}${#foo}${#3}${#1000}$(echo foo)");
     for param in words {
@@ -39,7 +39,7 @@ fn test_parameter_substitution() {
 fn test_parameter_substitution_smallest_suffix() {
     let word = word("foo");
 
-    let substs = vec!(
+    let substs = vec![
         RemoveSmallestSuffix(At, Some(word.clone())),
         RemoveSmallestSuffix(Star, Some(word.clone())),
         RemoveSmallestSuffix(Pound, Some(word.clone())),
@@ -51,7 +51,6 @@ fn test_parameter_substitution_smallest_suffix() {
         RemoveSmallestSuffix(Positional(10), Some(word.clone())),
         RemoveSmallestSuffix(Positional(100), Some(word.clone())),
         RemoveSmallestSuffix(Var(String::from("foo_bar123")), Some(word.clone())),
-
         RemoveSmallestSuffix(At, None),
         RemoveSmallestSuffix(Star, None),
         RemoveSmallestSuffix(Pound, None),
@@ -63,7 +62,7 @@ fn test_parameter_substitution_smallest_suffix() {
         RemoveSmallestSuffix(Positional(10), None),
         RemoveSmallestSuffix(Positional(100), None),
         RemoveSmallestSuffix(Var(String::from("foo_bar123")), None),
-    );
+    ];
 
     let src = "${@%foo}${*%foo}${#%foo}${?%foo}${-%foo}${$%foo}${!%foo}${0%foo}${10%foo}${100%foo}${foo_bar123%foo}${@%}${*%}${#%}${?%}${-%}${$%}${!%}${0%}${10%}${100%}${foo_bar123%}";
     let mut p = make_parser(src);
@@ -79,7 +78,7 @@ fn test_parameter_substitution_smallest_suffix() {
 fn test_parameter_substitution_largest_suffix() {
     let word = word("foo");
 
-    let substs = vec!(
+    let substs = vec![
         RemoveLargestSuffix(At, Some(word.clone())),
         RemoveLargestSuffix(Star, Some(word.clone())),
         RemoveLargestSuffix(Pound, Some(word.clone())),
@@ -91,7 +90,6 @@ fn test_parameter_substitution_largest_suffix() {
         RemoveLargestSuffix(Positional(10), Some(word.clone())),
         RemoveLargestSuffix(Positional(100), Some(word.clone())),
         RemoveLargestSuffix(Var(String::from("foo_bar123")), Some(word.clone())),
-
         RemoveLargestSuffix(At, None),
         RemoveLargestSuffix(Star, None),
         RemoveLargestSuffix(Pound, None),
@@ -103,7 +101,7 @@ fn test_parameter_substitution_largest_suffix() {
         RemoveLargestSuffix(Positional(10), None),
         RemoveLargestSuffix(Positional(100), None),
         RemoveLargestSuffix(Var(String::from("foo_bar123")), None),
-    );
+    ];
 
     let src = "${@%%foo}${*%%foo}${#%%foo}${?%%foo}${-%%foo}${$%%foo}${!%%foo}${0%%foo}${10%%foo}${100%%foo}${foo_bar123%%foo}${@%%}${*%%}${#%%}${?%%}${-%%}${$%%}${!%%}${0%%}${10%%}${100%%}${foo_bar123%%}";
     let mut p = make_parser(src);
@@ -119,7 +117,7 @@ fn test_parameter_substitution_largest_suffix() {
 fn test_parameter_substitution_smallest_prefix() {
     let word = word("foo");
 
-    let substs = vec!(
+    let substs = vec![
         RemoveSmallestPrefix(At, Some(word.clone())),
         RemoveSmallestPrefix(Star, Some(word.clone())),
         RemoveSmallestPrefix(Pound, Some(word.clone())),
@@ -131,7 +129,6 @@ fn test_parameter_substitution_smallest_prefix() {
         RemoveSmallestPrefix(Positional(10), Some(word.clone())),
         RemoveSmallestPrefix(Positional(100), Some(word.clone())),
         RemoveSmallestPrefix(Var(String::from("foo_bar123")), Some(word.clone())),
-
         RemoveSmallestPrefix(At, None),
         RemoveSmallestPrefix(Star, None),
         //RemoveSmallestPrefix(Pound, None), // ${##} should parse as Len(#)
@@ -143,7 +140,7 @@ fn test_parameter_substitution_smallest_prefix() {
         RemoveSmallestPrefix(Positional(10), None),
         RemoveSmallestPrefix(Positional(100), None),
         RemoveSmallestPrefix(Var(String::from("foo_bar123")), None),
-    );
+    ];
 
     let src = "${@#foo}${*#foo}${##foo}${?#foo}${-#foo}${$#foo}${!#foo}${0#foo}${10#foo}${100#foo}${foo_bar123#foo}${@#}${*#}${?#}${-#}${$#}${!#}${0#}${10#}${100#}${foo_bar123#}";
     let mut p = make_parser(src);
@@ -159,7 +156,7 @@ fn test_parameter_substitution_smallest_prefix() {
 fn test_parameter_substitution_largest_prefix() {
     let word = word("foo");
 
-    let substs = vec!(
+    let substs = vec![
         RemoveLargestPrefix(At, Some(word.clone())),
         RemoveLargestPrefix(Star, Some(word.clone())),
         RemoveLargestPrefix(Pound, Some(word.clone())),
@@ -171,7 +168,6 @@ fn test_parameter_substitution_largest_prefix() {
         RemoveLargestPrefix(Positional(10), Some(word.clone())),
         RemoveLargestPrefix(Positional(100), Some(word.clone())),
         RemoveLargestPrefix(Var(String::from("foo_bar123")), Some(word.clone())),
-
         RemoveLargestPrefix(At, None),
         RemoveLargestPrefix(Star, None),
         RemoveLargestPrefix(Pound, None),
@@ -183,7 +179,7 @@ fn test_parameter_substitution_largest_prefix() {
         RemoveLargestPrefix(Positional(10), None),
         RemoveLargestPrefix(Positional(100), None),
         RemoveLargestPrefix(Var(String::from("foo_bar123")), None),
-    );
+    ];
 
     let src = "${@##foo}${*##foo}${###foo}${?##foo}${-##foo}${$##foo}${!##foo}${0##foo}${10##foo}${100##foo}${foo_bar123##foo}${@##}${*##}${###}${?##}${-##}${$##}${!##}${0##}${10##}${100##}${foo_bar123##}";
     let mut p = make_parser(src);
@@ -199,7 +195,7 @@ fn test_parameter_substitution_largest_prefix() {
 fn test_parameter_substitution_default() {
     let word = word("foo");
 
-    let substs = vec!(
+    let substs = vec![
         Default(true, At, Some(word.clone())),
         Default(true, Star, Some(word.clone())),
         Default(true, Pound, Some(word.clone())),
@@ -211,7 +207,6 @@ fn test_parameter_substitution_default() {
         Default(true, Positional(10), Some(word.clone())),
         Default(true, Positional(100), Some(word.clone())),
         Default(true, Var(String::from("foo_bar123")), Some(word.clone())),
-
         Default(true, At, None),
         Default(true, Star, None),
         Default(true, Pound, None),
@@ -223,14 +218,16 @@ fn test_parameter_substitution_default() {
         Default(true, Positional(10), None),
         Default(true, Positional(100), None),
         Default(true, Var(String::from("foo_bar123")), None),
-    );
+    ];
 
     let src = "${@:-foo}${*:-foo}${#:-foo}${?:-foo}${-:-foo}${$:-foo}${!:-foo}${0:-foo}${10:-foo}${100:-foo}${foo_bar123:-foo}${@:-}${*:-}${#:-}${?:-}${-:-}${$:-}${!:-}${0:-}${10:-}${100:-}${foo_bar123:-}";
     let mut p = make_parser(src);
-    for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
+    for s in substs {
+        assert_eq!(word_subst(s), p.parameter().unwrap());
+    }
     assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
 
-    let substs = vec!(
+    let substs = vec![
         Default(false, At, Some(word.clone())),
         Default(false, Star, Some(word.clone())),
         Default(false, Pound, Some(word.clone())),
@@ -242,7 +239,6 @@ fn test_parameter_substitution_default() {
         Default(false, Positional(10), Some(word.clone())),
         Default(false, Positional(100), Some(word.clone())),
         Default(false, Var(String::from("foo_bar123")), Some(word.clone())),
-
         Default(false, At, None),
         Default(false, Star, None),
         //Default(false, Pound, None), // ${#-} should be a length check of the `-` parameter
@@ -254,11 +250,13 @@ fn test_parameter_substitution_default() {
         Default(false, Positional(10), None),
         Default(false, Positional(100), None),
         Default(false, Var(String::from("foo_bar123")), None),
-    );
+    ];
 
     let src = "${@-foo}${*-foo}${#-foo}${?-foo}${--foo}${$-foo}${!-foo}${0-foo}${10-foo}${100-foo}${foo_bar123-foo}${@-}${*-}${?-}${--}${$-}${!-}${0-}${10-}${100-}${foo_bar123-}";
     let mut p = make_parser(src);
-    for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
+    for s in substs {
+        assert_eq!(word_subst(s), p.parameter().unwrap());
+    }
     assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
 }
 
@@ -266,7 +264,7 @@ fn test_parameter_substitution_default() {
 fn test_parameter_substitution_error() {
     let word = word("foo");
 
-    let substs = vec!(
+    let substs = vec![
         Error(true, At, Some(word.clone())),
         Error(true, Star, Some(word.clone())),
         Error(true, Pound, Some(word.clone())),
@@ -278,7 +276,6 @@ fn test_parameter_substitution_error() {
         Error(true, Positional(10), Some(word.clone())),
         Error(true, Positional(100), Some(word.clone())),
         Error(true, Var(String::from("foo_bar123")), Some(word.clone())),
-
         Error(true, At, None),
         Error(true, Star, None),
         Error(true, Pound, None),
@@ -290,14 +287,16 @@ fn test_parameter_substitution_error() {
         Error(true, Positional(10), None),
         Error(true, Positional(100), None),
         Error(true, Var(String::from("foo_bar123")), None),
-    );
+    ];
 
     let src = "${@:?foo}${*:?foo}${#:?foo}${?:?foo}${-:?foo}${$:?foo}${!:?foo}${0:?foo}${10:?foo}${100:?foo}${foo_bar123:?foo}${@:?}${*:?}${#:?}${?:?}${-:?}${$:?}${!:?}${0:?}${10:?}${100:?}${foo_bar123:?}";
     let mut p = make_parser(src);
-    for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
+    for s in substs {
+        assert_eq!(word_subst(s), p.parameter().unwrap());
+    }
     assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
 
-    let substs = vec!(
+    let substs = vec![
         Error(false, At, Some(word.clone())),
         Error(false, Star, Some(word.clone())),
         Error(false, Pound, Some(word.clone())),
@@ -309,7 +308,6 @@ fn test_parameter_substitution_error() {
         Error(false, Positional(10), Some(word.clone())),
         Error(false, Positional(100), Some(word.clone())),
         Error(false, Var(String::from("foo_bar123")), Some(word.clone())),
-
         Error(false, At, None),
         Error(false, Star, None),
         //Error(false, Pound, None), // ${#?} should be a length check of the `?` parameter
@@ -321,11 +319,13 @@ fn test_parameter_substitution_error() {
         Error(false, Positional(10), None),
         Error(false, Positional(100), None),
         Error(false, Var(String::from("foo_bar123")), None),
-    );
+    ];
 
     let src = "${@?foo}${*?foo}${#?foo}${??foo}${-?foo}${$?foo}${!?foo}${0?foo}${10?foo}${100?foo}${foo_bar123?foo}${@?}${*?}${??}${-?}${$?}${!?}${0?}${10?}${100?}${foo_bar123?}";
     let mut p = make_parser(src);
-    for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
+    for s in substs {
+        assert_eq!(word_subst(s), p.parameter().unwrap());
+    }
     assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
 }
 
@@ -333,7 +333,7 @@ fn test_parameter_substitution_error() {
 fn test_parameter_substitution_assign() {
     let word = word("foo");
 
-    let substs = vec!(
+    let substs = vec![
         Assign(true, At, Some(word.clone())),
         Assign(true, Star, Some(word.clone())),
         Assign(true, Pound, Some(word.clone())),
@@ -345,7 +345,6 @@ fn test_parameter_substitution_assign() {
         Assign(true, Positional(10), Some(word.clone())),
         Assign(true, Positional(100), Some(word.clone())),
         Assign(true, Var(String::from("foo_bar123")), Some(word.clone())),
-
         Assign(true, At, None),
         Assign(true, Star, None),
         Assign(true, Pound, None),
@@ -357,14 +356,16 @@ fn test_parameter_substitution_assign() {
         Assign(true, Positional(10), None),
         Assign(true, Positional(100), None),
         Assign(true, Var(String::from("foo_bar123")), None),
-    );
+    ];
 
     let src = "${@:=foo}${*:=foo}${#:=foo}${?:=foo}${-:=foo}${$:=foo}${!:=foo}${0:=foo}${10:=foo}${100:=foo}${foo_bar123:=foo}${@:=}${*:=}${#:=}${?:=}${-:=}${$:=}${!:=}${0:=}${10:=}${100:=}${foo_bar123:=}";
     let mut p = make_parser(src);
-    for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
+    for s in substs {
+        assert_eq!(word_subst(s), p.parameter().unwrap());
+    }
     assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
 
-    let substs = vec!(
+    let substs = vec![
         Assign(false, At, Some(word.clone())),
         Assign(false, Star, Some(word.clone())),
         Assign(false, Pound, Some(word.clone())),
@@ -376,7 +377,6 @@ fn test_parameter_substitution_assign() {
         Assign(false, Positional(10), Some(word.clone())),
         Assign(false, Positional(100), Some(word.clone())),
         Assign(false, Var(String::from("foo_bar123")), Some(word.clone())),
-
         Assign(false, At, None),
         Assign(false, Star, None),
         Assign(false, Pound, None),
@@ -388,11 +388,13 @@ fn test_parameter_substitution_assign() {
         Assign(false, Positional(10), None),
         Assign(false, Positional(100), None),
         Assign(false, Var(String::from("foo_bar123")), None),
-    );
+    ];
 
     let src = "${@=foo}${*=foo}${#=foo}${?=foo}${-=foo}${$=foo}${!=foo}${0=foo}${10=foo}${100=foo}${foo_bar123=foo}${@=}${*=}${#=}${?=}${-=}${$=}${!=}${0=}${10=}${100=}${foo_bar123=}";
     let mut p = make_parser(src);
-    for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
+    for s in substs {
+        assert_eq!(word_subst(s), p.parameter().unwrap());
+    }
     assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
 }
 
@@ -400,7 +402,7 @@ fn test_parameter_substitution_assign() {
 fn test_parameter_substitution_alternative() {
     let word = word("foo");
 
-    let substs = vec!(
+    let substs = vec![
         Alternative(true, At, Some(word.clone())),
         Alternative(true, Star, Some(word.clone())),
         Alternative(true, Pound, Some(word.clone())),
@@ -412,7 +414,6 @@ fn test_parameter_substitution_alternative() {
         Alternative(true, Positional(10), Some(word.clone())),
         Alternative(true, Positional(100), Some(word.clone())),
         Alternative(true, Var(String::from("foo_bar123")), Some(word.clone())),
-
         Alternative(true, At, None),
         Alternative(true, Star, None),
         Alternative(true, Pound, None),
@@ -424,14 +425,16 @@ fn test_parameter_substitution_alternative() {
         Alternative(true, Positional(10), None),
         Alternative(true, Positional(100), None),
         Alternative(true, Var(String::from("foo_bar123")), None),
-    );
+    ];
 
     let src = "${@:+foo}${*:+foo}${#:+foo}${?:+foo}${-:+foo}${$:+foo}${!:+foo}${0:+foo}${10:+foo}${100:+foo}${foo_bar123:+foo}${@:+}${*:+}${#:+}${?:+}${-:+}${$:+}${!:+}${0:+}${10:+}${100:+}${foo_bar123:+}";
     let mut p = make_parser(src);
-    for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
+    for s in substs {
+        assert_eq!(word_subst(s), p.parameter().unwrap());
+    }
     assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
 
-    let substs = vec!(
+    let substs = vec![
         Alternative(false, At, Some(word.clone())),
         Alternative(false, Star, Some(word.clone())),
         Alternative(false, Pound, Some(word.clone())),
@@ -443,7 +446,6 @@ fn test_parameter_substitution_alternative() {
         Alternative(false, Positional(10), Some(word.clone())),
         Alternative(false, Positional(100), Some(word.clone())),
         Alternative(false, Var(String::from("foo_bar123")), Some(word.clone())),
-
         Alternative(false, At, None),
         Alternative(false, Star, None),
         Alternative(false, Pound, None),
@@ -455,26 +457,28 @@ fn test_parameter_substitution_alternative() {
         Alternative(false, Positional(10), None),
         Alternative(false, Positional(100), None),
         Alternative(false, Var(String::from("foo_bar123")), None),
-    );
+    ];
 
     let src = "${@+foo}${*+foo}${#+foo}${?+foo}${-+foo}${$+foo}${!+foo}${0+foo}${10+foo}${100+foo}${foo_bar123+foo}${@+}${*+}${#+}${?+}${-+}${$+}${!+}${0+}${10+}${100+}${foo_bar123+}";
     let mut p = make_parser(src);
-    for s in substs { assert_eq!(word_subst(s), p.parameter().unwrap()); }
+    for s in substs {
+        assert_eq!(word_subst(s), p.parameter().unwrap());
+    }
     assert_eq!(Err(UnexpectedEOF), p.parameter()); // Stream should be exhausted
 }
 
 #[test]
 fn test_parameter_substitution_words_can_have_spaces_and_escaped_curlies() {
     let var = Var(String::from("foo_bar123"));
-    let word = TopLevelWord(Concat(vec!(
+    let word = TopLevelWord(Concat(vec![
         lit("foo{"),
         escaped("}"),
         lit(" \t\r "),
         escaped("\n"),
         lit("bar \t\r "),
-    )));
+    ]));
 
-    let substs = vec!(
+    let substs = vec![
         RemoveSmallestSuffix(var.clone(), Some(word.clone())),
         RemoveLargestSuffix(var.clone(), Some(word.clone())),
         RemoveSmallestPrefix(var.clone(), Some(word.clone())),
@@ -487,22 +491,11 @@ fn test_parameter_substitution_words_can_have_spaces_and_escaped_curlies() {
         Error(false, var.clone(), Some(word.clone())),
         Alternative(true, var.clone(), Some(word.clone())),
         Alternative(false, var.clone(), Some(word.clone())),
-    );
+    ];
 
-    let src = vec!(
-        "%",
-        "%%",
-        "#",
-        "##",
-        ":-",
-        "-",
-        ":=",
-        "=",
-        ":?",
-        "?",
-        ":+",
-        "+",
-    );
+    let src = vec![
+        "%", "%%", "#", "##", ":-", "-", ":=", "=", ":?", "?", ":+", "+",
+    ];
 
     for (i, s) in substs.into_iter().enumerate() {
         let src = format!("${{foo_bar123{}foo{{\\}} \t\r \\\nbar \t\r }}", src[i]);
@@ -515,15 +508,15 @@ fn test_parameter_substitution_words_can_have_spaces_and_escaped_curlies() {
 #[test]
 fn test_parameter_substitution_words_can_start_with_pound() {
     let var = Var(String::from("foo_bar123"));
-    let word = TopLevelWord(Concat(vec!(
+    let word = TopLevelWord(Concat(vec![
         lit("#foo{"),
         escaped("}"),
         lit(" \t\r "),
         escaped("\n"),
         lit("bar \t\r "),
-    )));
+    ]));
 
-    let substs = vec!(
+    let substs = vec![
         RemoveSmallestSuffix(var.clone(), Some(word.clone())),
         RemoveLargestSuffix(var.clone(), Some(word.clone())),
         //RemoveSmallestPrefix(var.clone(), Some(word.clone())),
@@ -536,22 +529,12 @@ fn test_parameter_substitution_words_can_start_with_pound() {
         Error(false, var.clone(), Some(word.clone())),
         Alternative(true, var.clone(), Some(word.clone())),
         Alternative(false, var.clone(), Some(word.clone())),
-    );
+    ];
 
-    let src = vec!(
-        "%",
-        "%%",
-        //"#", // Let's not confuse the pound in the word with a substitution
-        "##",
-        ":-",
-        "-",
-        ":=",
-        "=",
-        ":?",
-        "?",
-        ":+",
-        "+",
-    );
+    let src = vec![
+        "%", "%%", //"#", // Let's not confuse the pound in the word with a substitution
+        "##", ":-", "-", ":=", "=", ":?", "?", ":+", "+",
+    ];
 
     for (i, s) in substs.into_iter().enumerate() {
         let src = format!("${{foo_bar123{}#foo{{\\}} \t\r \\\nbar \t\r }}", src[i]);
@@ -564,15 +547,15 @@ fn test_parameter_substitution_words_can_start_with_pound() {
 #[test]
 fn test_parameter_substitution_words_can_be_parameters_or_substitutions_as_well() {
     let var = Var(String::from("foo_bar123"));
-    let word = TopLevelWord(Concat(vec!(
+    let word = TopLevelWord(Concat(vec![
         Word::Simple(SimpleWord::Param(At)),
         subst(RemoveLargestPrefix(
             Var(String::from("foo")),
-            Some(word("bar"))
+            Some(word("bar")),
         )),
-    )));
+    ]));
 
-    let substs = vec!(
+    let substs = vec![
         RemoveSmallestSuffix(var.clone(), Some(word.clone())),
         RemoveLargestSuffix(var.clone(), Some(word.clone())),
         RemoveSmallestPrefix(var.clone(), Some(word.clone())),
@@ -585,22 +568,11 @@ fn test_parameter_substitution_words_can_be_parameters_or_substitutions_as_well(
         Error(false, var.clone(), Some(word.clone())),
         Alternative(true, var.clone(), Some(word.clone())),
         Alternative(false, var.clone(), Some(word.clone())),
-    );
+    ];
 
-    let src = vec!(
-        "%",
-        "%%",
-        "#",
-        "##",
-        ":-",
-        "-",
-        ":=",
-        "=",
-        ":?",
-        "?",
-        ":+",
-        "+",
-    );
+    let src = vec![
+        "%", "%%", "#", "##", ":-", "-", ":=", "=", ":?", "?", ":+", "+",
+    ];
 
     for (i, s) in substs.into_iter().enumerate() {
         let src = format!("${{foo_bar123{}$@${{foo##bar}}}}", src[i]);
@@ -613,52 +585,107 @@ fn test_parameter_substitution_words_can_be_parameters_or_substitutions_as_well(
 #[test]
 fn test_parameter_substitution_command_close_paren_need_not_be_followed_by_word_delimeter() {
     let correct = Some(cmd_from_simple(SimpleCommand {
-        redirects_or_env_vars: vec!(),
-        redirects_or_cmd_words: vec!(
+        redirects_or_env_vars: vec![],
+        redirects_or_cmd_words: vec![
             RedirectOrCmdWord::CmdWord(word("foo")),
-            RedirectOrCmdWord::CmdWord(TopLevelWord(Single(Word::DoubleQuoted(vec!(
-                SimpleWord::Subst(Box::new(Command(vec!(cmd("bar")))))
-            ))))),
-        ),
+            RedirectOrCmdWord::CmdWord(TopLevelWord(Single(Word::DoubleQuoted(vec![
+                SimpleWord::Subst(Box::new(Command(vec![cmd("bar")]))),
+            ])))),
+        ],
     }));
 
-    assert_eq!(correct, make_parser("foo \"$(bar)\"").complete_command().unwrap());
+    assert_eq!(
+        correct,
+        make_parser("foo \"$(bar)\"").complete_command().unwrap()
+    );
 }
 
 #[test]
 fn test_parameter_substitution_invalid() {
-    let cases = vec!(
-        ("$(( x",     UnexpectedEOF),
-        ("${foo",     Unmatched(Token::CurlyOpen, src(1, 1, 2))),
-        ("${ foo}",   BadSubst(Token::Whitespace(String::from(" ")), src(2,1,3))),
-        ("${foo }",   BadSubst(Token::Whitespace(String::from(" ")), src(5,1,6))),
-        ("${foo -}",  BadSubst(Token::Whitespace(String::from(" ")), src(5,1,6))),
-        ("${foo =}",  BadSubst(Token::Whitespace(String::from(" ")), src(5,1,6))),
-        ("${foo ?}",  BadSubst(Token::Whitespace(String::from(" ")), src(5,1,6))),
-        ("${foo +}",  BadSubst(Token::Whitespace(String::from(" ")), src(5,1,6))),
-        ("${foo :-}", BadSubst(Token::Whitespace(String::from(" ")), src(5,1,6))),
-        ("${foo :=}", BadSubst(Token::Whitespace(String::from(" ")), src(5,1,6))),
-        ("${foo :?}", BadSubst(Token::Whitespace(String::from(" ")), src(5,1,6))),
-        ("${foo :+}", BadSubst(Token::Whitespace(String::from(" ")), src(5,1,6))),
-        ("${foo: -}", BadSubst(Token::Whitespace(String::from(" ")), src(6,1,7))),
-        ("${foo: =}", BadSubst(Token::Whitespace(String::from(" ")), src(6,1,7))),
-        ("${foo: ?}", BadSubst(Token::Whitespace(String::from(" ")), src(6,1,7))),
-        ("${foo: +}", BadSubst(Token::Whitespace(String::from(" ")), src(6,1,7))),
-        ("${foo: %}", BadSubst(Token::Whitespace(String::from(" ")), src(6,1,7))),
-        ("${foo: #}", BadSubst(Token::Whitespace(String::from(" ")), src(6,1,7))),
+    let cases = vec![
+        ("$(( x", UnexpectedEOF),
+        ("${foo", Unmatched(Token::CurlyOpen, src(1, 1, 2))),
+        (
+            "${ foo}",
+            BadSubst(Token::Whitespace(String::from(" ")), src(2, 1, 3)),
+        ),
+        (
+            "${foo }",
+            BadSubst(Token::Whitespace(String::from(" ")), src(5, 1, 6)),
+        ),
+        (
+            "${foo -}",
+            BadSubst(Token::Whitespace(String::from(" ")), src(5, 1, 6)),
+        ),
+        (
+            "${foo =}",
+            BadSubst(Token::Whitespace(String::from(" ")), src(5, 1, 6)),
+        ),
+        (
+            "${foo ?}",
+            BadSubst(Token::Whitespace(String::from(" ")), src(5, 1, 6)),
+        ),
+        (
+            "${foo +}",
+            BadSubst(Token::Whitespace(String::from(" ")), src(5, 1, 6)),
+        ),
+        (
+            "${foo :-}",
+            BadSubst(Token::Whitespace(String::from(" ")), src(5, 1, 6)),
+        ),
+        (
+            "${foo :=}",
+            BadSubst(Token::Whitespace(String::from(" ")), src(5, 1, 6)),
+        ),
+        (
+            "${foo :?}",
+            BadSubst(Token::Whitespace(String::from(" ")), src(5, 1, 6)),
+        ),
+        (
+            "${foo :+}",
+            BadSubst(Token::Whitespace(String::from(" ")), src(5, 1, 6)),
+        ),
+        (
+            "${foo: -}",
+            BadSubst(Token::Whitespace(String::from(" ")), src(6, 1, 7)),
+        ),
+        (
+            "${foo: =}",
+            BadSubst(Token::Whitespace(String::from(" ")), src(6, 1, 7)),
+        ),
+        (
+            "${foo: ?}",
+            BadSubst(Token::Whitespace(String::from(" ")), src(6, 1, 7)),
+        ),
+        (
+            "${foo: +}",
+            BadSubst(Token::Whitespace(String::from(" ")), src(6, 1, 7)),
+        ),
+        (
+            "${foo: %}",
+            BadSubst(Token::Whitespace(String::from(" ")), src(6, 1, 7)),
+        ),
+        (
+            "${foo: #}",
+            BadSubst(Token::Whitespace(String::from(" ")), src(6, 1, 7)),
+        ),
         ("${foo-bar", Unmatched(Token::CurlyOpen, src(1, 1, 2))),
-        ("${'foo'}",  BadSubst(Token::SingleQuote, src(2,1,3))),
-        ("${\"foo\"}", BadSubst(Token::DoubleQuote, src(2,1,3))),
-        ("${`foo`}",  BadSubst(Token::Backtick, src(2,1,3))),
-    );
+        ("${'foo'}", BadSubst(Token::SingleQuote, src(2, 1, 3))),
+        ("${\"foo\"}", BadSubst(Token::DoubleQuote, src(2, 1, 3))),
+        ("${`foo`}", BadSubst(Token::Backtick, src(2, 1, 3))),
+    ];
 
     for (s, correct) in cases.into_iter() {
         match make_parser(s).parameter() {
             Ok(w) => panic!("Unexpectedly parsed the source \"{}\" as\n{:?}", s, w),
-            Err(ref err) => if err != &correct {
-                panic!("Expected the source \"{}\" to return the error `{:?}`, but got `{:?}`",
-                       s, correct, err);
-            },
+            Err(ref err) => {
+                if err != &correct {
+                    panic!(
+                        "Expected the source \"{}\" to return the error `{:?}`, but got `{:?}`",
+                        s, correct, err
+                    );
+                }
+            }
         }
     }
 }
@@ -666,19 +693,33 @@ fn test_parameter_substitution_invalid() {
 #[test]
 fn test_parameter_substitution_nested_quoted() {
     let param = Var("foo".to_owned());
-    let cases = vec!(
-        ("${foo:+'bar'}",   Alternative(true, param.clone(), Some(single_quoted("bar")))),
-        ("${foo:+\"bar\"}", Alternative(true, param.clone(), Some(double_quoted("bar")))),
-        ("${foo:+`bar`}",   Alternative(true, param.clone(), Some(
-            word_subst(Command(vec!(cmd("bar")))))
-        )),
-    );
+    let cases = vec![
+        (
+            "${foo:+'bar'}",
+            Alternative(true, param.clone(), Some(single_quoted("bar"))),
+        ),
+        (
+            "${foo:+\"bar\"}",
+            Alternative(true, param.clone(), Some(double_quoted("bar"))),
+        ),
+        (
+            "${foo:+`bar`}",
+            Alternative(
+                true,
+                param.clone(),
+                Some(word_subst(Command(vec![cmd("bar")]))),
+            ),
+        ),
+    ];
 
     for (src, subst) in cases.into_iter() {
         let correct = word_subst(subst);
         let parsed = make_parser(src).parameter();
         if parsed.as_ref() != Ok(&correct) {
-            panic!("Expected \"{}\" to parse as `{:?}`, but got `{:?}`", src, correct, parsed);
+            panic!(
+                "Expected \"{}\" to parse as `{:?}`, but got `{:?}`",
+                src, correct, parsed
+            );
         }
     }
 }
@@ -687,9 +728,15 @@ fn test_parameter_substitution_nested_quoted() {
 fn test_parameter_substitution_can_have_nested_substitution_and_parameter() {
     let param_foo = Var("foo".to_owned());
     let param_bar = Var("bar".to_owned());
-    let correct = word_subst(Alternative(true, param_foo, Some(
-        word_subst(Alternative(true, param_bar, Some(word_param(Dollar))))
-    )));
+    let correct = word_subst(Alternative(
+        true,
+        param_foo,
+        Some(word_subst(Alternative(
+            true,
+            param_bar,
+            Some(word_param(Dollar)),
+        ))),
+    ));
 
     let mut p = make_parser("${foo:+${bar:+$$}}");
     assert_eq!(Ok(correct), p.parameter());
@@ -697,11 +744,15 @@ fn test_parameter_substitution_can_have_nested_substitution_and_parameter() {
 
 #[test]
 fn test_parameter_substitution_special_tokens_in_words_become_literals() {
-    let correct = word_subst(Default(true, Var("foo".to_owned()), Some(TopLevelWord(Concat(vec!(
-        lit("#(bar);&|&&||;; << >> <& >& <<- "),
-        escaped("\n"),
-        lit("\n\t"),
-    ))))));
+    let correct = word_subst(Default(
+        true,
+        Var("foo".to_owned()),
+        Some(TopLevelWord(Concat(vec![
+            lit("#(bar);&|&&||;; << >> <& >& <<- "),
+            escaped("\n"),
+            lit("\n\t"),
+        ]))),
+    ));
 
     let mut p = make_parser("${foo:-#(bar);&|&&||;; << >> <& >& <<- \\\n\n\t}");
     assert_eq!(Ok(correct), p.parameter());
