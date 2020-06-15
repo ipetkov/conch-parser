@@ -14,8 +14,9 @@ A library for parsing programs written in the shell programming language.
 """
 
 [features]
+# FIXME(breaking): technically breaking if we remove any features
 nightly = []
-clippy = [] # FIXME(breaking): technically breaking if we remove this feature
+clippy = []
 
 [dependencies]
 void = "1"

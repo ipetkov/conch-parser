@@ -27,15 +27,11 @@
 //!  * Common arithmetic operations required by the POSIX standard
 //!  * Variable expansion
 //!  * **Not yet implemented**: Other inner abitrary parameter/substitution expansion
-//!
-//! # Supported Cargo Features
-//!
-//! * `nightly`: enable unstable features/optimizations which require a nightly compiler
 
 #![doc(html_root_url = "https://docs.rs/conch-parser/0.1")]
 
-#![cfg_attr(all(not(test), feature = "cargo-clippy"), deny(print_stdout))]
-#![cfg_attr(feature = "cargo-clippy", deny(wrong_self_convention))]
+#![cfg_attr(not(test), deny(clippy::print_stdout))]
+#![deny(clippy::wrong_self_convention)]
 
 #![deny(missing_copy_implementations)]
 #![deny(missing_debug_implementations)]
@@ -46,16 +42,6 @@
 #![deny(unused_qualifications)]
 
 #![forbid(unsafe_code)]
-
-// Nightly optimizations that don't need their own feature
-#![cfg_attr(feature = "nightly", feature(fused))]
-
-macro_rules! if_nightly {
-    ($($i:item)*) => ($(
-        #[cfg(feature = "nightly")]
-        $i
-    )*)
-}
 
 extern crate void;
 

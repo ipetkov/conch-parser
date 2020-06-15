@@ -242,12 +242,10 @@ impl<I, B> ParserIterator<I, B> {
     }
 }
 
-if_nightly! {
-    impl<I, B> ::std::iter::FusedIterator for ParserIterator<I, B>
-        where I: Iterator<Item = Token>,
-              B: Builder,
-    {}
-}
+impl<I, B> ::std::iter::FusedIterator for ParserIterator<I, B>
+where I: Iterator<Item = Token>,
+      B: Builder,
+{}
 
 impl<I, B> Iterator for ParserIterator<I, B>
     where I: Iterator<Item = Token>,

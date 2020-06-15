@@ -670,11 +670,9 @@ impl<I: PeekablePositionIterator<Item = Token>> BacktickBackslashRemover<I> {
     }
 }
 
-if_nightly! {
-    impl<I> ::std::iter::FusedIterator for BacktickBackslashRemover<I>
-        where I: PeekablePositionIterator<Item = Token>
-    {}
-}
+impl<I> ::std::iter::FusedIterator for BacktickBackslashRemover<I>
+where I: PeekablePositionIterator<Item = Token>
+{}
 
 impl<I: PeekablePositionIterator<Item = Token>> Iterator for BacktickBackslashRemover<I> {
     type Item = Result<Token, UnmatchedError>;
