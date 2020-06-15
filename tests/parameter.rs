@@ -1,3 +1,4 @@
+#![deny(rust_2018_idioms)]
 use conch_parser::ast::Parameter::*;
 use conch_parser::ast::ParameterSubstitution::*;
 use conch_parser::parse::ParseError::*;

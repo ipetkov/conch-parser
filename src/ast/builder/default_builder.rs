@@ -38,7 +38,7 @@ macro_rules! default_builder {
         }
 
         impl<T> fmt::Debug for $Builder<T> {
-            fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+            fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
                 fmt.debug_struct(stringify!($Builder))
                     .finish()
             }
@@ -234,7 +234,7 @@ pub struct CoreBuilder<T, W, C, F> {
 }
 
 impl<T, W, C, F> fmt::Debug for CoreBuilder<T, W, C, F> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("CoreBuilder").finish()
     }
 }

@@ -1,3 +1,4 @@
+#![deny(rust_2018_idioms)]
 use conch_parser::ast::Arithmetic::*;
 use conch_parser::ast::DefaultArithmetic as Arithmetic;
 use conch_parser::ast::ParameterSubstitution::Arith;

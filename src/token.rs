@@ -177,7 +177,7 @@ pub enum Token {
 }
 
 impl fmt::Display for Token {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(fmt, "{}", self.as_str())
     }
 }

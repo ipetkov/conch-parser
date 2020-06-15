@@ -1,3 +1,4 @@
+#![deny(rust_2018_idioms)]
 use conch_parser::ast::PipeableCommand::*;
 use conch_parser::ast::*;
 use conch_parser::parse::ParseError::*;

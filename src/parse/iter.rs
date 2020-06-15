@@ -233,7 +233,7 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
 
     /// Return a wrapper which allows for arbitrary look ahead. Dropping the
     /// wrapper will restore the internal stream back to what it was.
-    pub fn multipeek(&mut self) -> Multipeek {
+    pub fn multipeek(&mut self) -> Multipeek<'_> {
         Multipeek::new(self)
     }
 
@@ -399,7 +399,7 @@ impl<I: Iterator<Item = Token>> TokenIterator for TokenIterWrapper<I> {}
 impl<I: Iterator<Item = Token>> TokenIterWrapper<I> {
     /// Return a wrapper which allows for arbitrary look ahead. Dropping the
     /// wrapper will restore the internal stream back to what it was.
-    pub fn multipeek(&mut self) -> Multipeek {
+    pub fn multipeek(&mut self) -> Multipeek<'_> {
         match *self {
             TokenIterWrapper::Regular(ref mut inner) => inner.multipeek(),
             TokenIterWrapper::Buffered(ref mut inner) => inner.multipeek(),
@@ -678,7 +678,7 @@ impl<I: PeekablePositionIterator<Item = Token>> BacktickBackslashRemover<I> {
     }
 }
 
-impl<I> ::std::iter::FusedIterator for BacktickBackslashRemover<I> where
+impl<I> std::iter::FusedIterator for BacktickBackslashRemover<I> where
     I: PeekablePositionIterator<Item = Token>
 {
 }
@@ -764,7 +764,7 @@ mod tests {
             SourcePos { byte, line, col }
         }
 
-        let mut tok_iter = TokenIter::new(::std::iter::empty());
+        let mut tok_iter = TokenIter::new(std::iter::empty());
 
         let pos = src(4, 4, 4);
 

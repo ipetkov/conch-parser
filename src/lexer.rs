@@ -74,7 +74,7 @@ impl<I: Iterator<Item = char>> Lexer<I> {
                 return Some(Escaped(
                     self.inner
                         .next()
-                        .and_then(|c| Lexer::new(::std::iter::once(c)).next()),
+                        .and_then(|c| Lexer::new(std::iter::once(c)).next()),
                 ))
             }
 

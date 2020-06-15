@@ -34,6 +34,7 @@
 #![deny(missing_copy_implementations)]
 #![deny(missing_debug_implementations)]
 #![deny(missing_docs)]
+#![deny(rust_2018_idioms)]
 #![deny(trivial_casts)]
 #![deny(trivial_numeric_casts)]
 #![deny(unused_import_braces)]

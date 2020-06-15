@@ -151,7 +151,7 @@ impl<T: Error> Error for ParseError<T> {
 }
 
 impl<T: fmt::Display> fmt::Display for ParseError<T> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             ParseError::BadFd(ref start, ref end) => write!(
                 fmt,
@@ -195,7 +195,7 @@ impl<T> From<T> for ParseError<T> {
 }
 
 impl fmt::Display for SourcePos {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(fmt, "{}:{}", self.line, self.col)
     }
 }
@@ -261,7 +261,7 @@ impl<I, B> ParserIterator<I, B> {
     }
 }
 
-impl<I, B> ::std::iter::FusedIterator for ParserIterator<I, B>
+impl<I, B> std::iter::FusedIterator for ParserIterator<I, B>
 where
     I: Iterator<Item = Token>,
     B: Builder,
@@ -2490,7 +2490,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// It is considered an error if no commands are present.
     pub fn command_group(
         &mut self,
-        cfg: CommandGroupDelimiters,
+        cfg: CommandGroupDelimiters<'_, '_, '_>,
     ) -> ParseResult<builder::CommandGroup<B::Command>, B::Error> {
         let group = self.command_group_internal(cfg)?;
         if group.commands.is_empty() {
@@ -2503,7 +2503,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Like `compound_list`, but allows for the list of commands to be empty.
     fn command_group_internal(
         &mut self,
-        cfg: CommandGroupDelimiters,
+        cfg: CommandGroupDelimiters<'_, '_, '_>,
     ) -> ParseResult<builder::CommandGroup<B::Command>, B::Error> {
         let found_delim = |slf: &mut Parser<_, _>| {
             let found_exact = !cfg.exact_tokens.is_empty()
@@ -2939,7 +2939,7 @@ mod tests {
     use crate::lexer::Lexer;
     use crate::parse::*;
 
-    fn make_parser(src: &str) -> DefaultParser<Lexer<::std::str::Chars>> {
+    fn make_parser(src: &str) -> DefaultParser<Lexer<std::str::Chars<'_>>> {
         DefaultParser::new(Lexer::new(src.chars()))
     }
 

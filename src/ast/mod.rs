@@ -601,7 +601,7 @@ impl_top_level_word! {
 }
 
 impl<T: fmt::Display> fmt::Display for Parameter<T> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         use self::Parameter::*;
 
         match *self {

@@ -1,3 +1,4 @@
+#![deny(rust_2018_idioms)]
 #![recursion_limit = "128"]
 
 use conch_parser::ast::builder::*;
@@ -164,5 +165,5 @@ fn ensure_parser_could_be_send_and_sync() {
     use conch_parser::token::Token;
 
     fn send_and_sync<T: Send + Sync>() {}
-    send_and_sync::<Parser<::std::vec::IntoIter<Token>, ArcBuilder>>();
+    send_and_sync::<Parser<std::vec::IntoIter<Token>, ArcBuilder>>();
 }

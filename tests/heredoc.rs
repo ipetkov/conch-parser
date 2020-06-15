@@ -1,3 +1,4 @@
+#![deny(rust_2018_idioms)]
 use conch_parser::ast::ComplexWord::*;
 use conch_parser::ast::Redirect::Heredoc;
 use conch_parser::ast::SimpleWord::*;

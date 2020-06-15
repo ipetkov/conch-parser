@@ -1,3 +1,4 @@
+#![deny(rust_2018_idioms)]
 use std::rc::Rc;
 
 use conch_parser::ast::Command::*;
