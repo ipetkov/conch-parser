@@ -20,20 +20,20 @@ use crate::token::Token::*;
 
 mod iter;
 
-const CASE: &'static str = "case";
-const DO: &'static str = "do";
-const DONE: &'static str = "done";
-const ELIF: &'static str = "elif";
-const ELSE: &'static str = "else";
-const ESAC: &'static str = "esac";
-const FI: &'static str = "fi";
-const FOR: &'static str = "for";
-const FUNCTION: &'static str = "function";
-const IF: &'static str = "if";
-const IN: &'static str = "in";
-const THEN: &'static str = "then";
-const UNTIL: &'static str = "until";
-const WHILE: &'static str = "while";
+const CASE: &str = "case";
+const DO: &str = "do";
+const DONE: &str = "done";
+const ELIF: &str = "elif";
+const ELSE: &str = "else";
+const ESAC: &str = "esac";
+const FI: &str = "fi";
+const FOR: &str = "for";
+const FUNCTION: &str = "function";
+const IF: &str = "if";
+const IN: &str = "in";
+const THEN: &str = "then";
+const UNTIL: &str = "until";
+const WHILE: &str = "while";
 
 /// A parser which will use a default AST builder implementation,
 /// yielding results in terms of types defined in the `ast` module.
@@ -463,7 +463,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     pub fn with_builder(iter: I, builder: B) -> Self {
         Parser {
             iter: TokenIterWrapper::Regular(TokenIter::new(iter)),
-            builder: builder,
+            builder,
         }
     }
 
@@ -901,7 +901,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             match iter.next() {
                 Some(Backslash) => {
                     quoted = true;
-                    iter.next().map(|t| delim.push_str(t.as_str()));
+                    if let Some(t) = iter.next() {
+                        delim.push_str(t.as_str())
+                    }
                 }
 
                 Some(SingleQuote) => {
@@ -1734,14 +1736,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             reserved_words: &[DONE],
             ..Default::default()
         })?;
-        self.reserved_word(&[DONE]).or_else(|()| {
-            Err(ParseError::IncompleteCmd(
-                DO,
-                start_pos,
-                DONE,
-                self.iter.pos(),
-            ))
-        })?;
+        self.reserved_word(&[DONE])
+            .map_err(|()| ParseError::IncompleteCmd(DO, start_pos, DONE, self.iter.pos()))?;
         Ok(result)
     }
 
@@ -1757,7 +1753,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             ..Default::default()
         })?;
         self.reserved_token(&[CurlyClose])
-            .or_else(|_| Err(ParseError::Unmatched(CurlyOpen, start_pos)))?;
+            .map_err(|_| ParseError::Unmatched(CurlyOpen, start_pos))?;
         Ok(cmds)
     }
 
@@ -1894,7 +1890,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             Some(_) => Ok((
                 kind,
                 builder::GuardBodyPairGroup {
-                    guard: guard,
+                    guard,
                     body: self.do_group()?,
                 },
             )),
@@ -1941,10 +1937,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 reserved_words: &[ELIF, ELSE, FI],
                 ..Default::default()
             })?;
-            conditionals.push(builder::GuardBodyPairGroup {
-                guard: guard,
-                body: body,
-            });
+            conditionals.push(builder::GuardBodyPairGroup { guard, body });
 
             let els = match self
                 .reserved_word(&[ELIF, ELSE, FI])
@@ -1964,7 +1957,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             };
 
             return Ok(builder::IfFragments {
-                conditionals: conditionals,
+                conditionals,
                 else_branch: els,
             });
         }
@@ -2058,11 +2051,11 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         let body = self.do_group()?;
         Ok(builder::ForFragments {
-            var: var,
-            var_comment: var_comment,
-            words: words,
-            pre_body_comments: pre_body_comments,
-            body: body,
+            var,
+            var_comment,
+            words,
+            pre_body_comments,
+            body,
         })
     }
 
@@ -2162,12 +2155,12 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
             arms.push(builder::CaseArm {
                 patterns: builder::CasePatternFragments {
-                    pre_pattern_comments: pre_pattern_comments,
+                    pre_pattern_comments,
                     pattern_alternatives: patterns,
-                    pattern_comment: pattern_comment,
+                    pattern_comment,
                 },
-                body: body,
-                arm_comment: arm_comment,
+                body,
+                arm_comment,
             });
 
             if no_more_arms {
@@ -2187,10 +2180,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         self.reserved_word(&[ESAC]).map_err(missing_esac!())?;
 
         Ok(builder::CaseFragments {
-            word: word,
-            post_word_comments: post_word_comments,
-            in_comment: in_comment,
-            arms: arms,
+            word,
+            post_word_comments,
+            in_comment,
+            arms,
             post_arms_comments: pre_esac_comments,
         })
     }
@@ -2438,7 +2431,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         let mut peeked = self.iter.multipeek();
         let found_tok = match peeked.peek_next() {
             Some(&Name(ref kw)) | Some(&Literal(ref kw)) => {
-                words.iter().find(|&w| w == kw).map(|kw| *kw)
+                words.iter().find(|&w| w == kw).copied()
             }
             _ => None,
         };
@@ -2545,7 +2538,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         Ok(builder::CommandGroup {
             commands: cmds,
-            trailing_comments: trailing_comments,
+            trailing_comments,
         })
     }
 
@@ -2925,7 +2918,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 unreachable!()
             }
         } else {
-            return Err(self.make_unexpected_err());
+            Err(self.make_unexpected_err())
         }
     }
 }

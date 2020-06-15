@@ -90,9 +90,5 @@ pub fn cmd_from_simple(cmd: DefaultSimpleCommand) -> TopLevelCommand<String> {
 }
 
 pub fn src(byte: usize, line: usize, col: usize) -> SourcePos {
-    SourcePos {
-        byte: byte,
-        line: line,
-        col: col,
-    }
+    SourcePos { byte, line, col }
 }

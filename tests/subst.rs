@@ -48,7 +48,7 @@ fn test_parameter_substitution_smallest_suffix() {
         RemoveSmallestSuffix(Positional(0), Some(word.clone())),
         RemoveSmallestSuffix(Positional(10), Some(word.clone())),
         RemoveSmallestSuffix(Positional(100), Some(word.clone())),
-        RemoveSmallestSuffix(Var(String::from("foo_bar123")), Some(word.clone())),
+        RemoveSmallestSuffix(Var(String::from("foo_bar123")), Some(word)),
         RemoveSmallestSuffix(At, None),
         RemoveSmallestSuffix(Star, None),
         RemoveSmallestSuffix(Pound, None),
@@ -87,7 +87,7 @@ fn test_parameter_substitution_largest_suffix() {
         RemoveLargestSuffix(Positional(0), Some(word.clone())),
         RemoveLargestSuffix(Positional(10), Some(word.clone())),
         RemoveLargestSuffix(Positional(100), Some(word.clone())),
-        RemoveLargestSuffix(Var(String::from("foo_bar123")), Some(word.clone())),
+        RemoveLargestSuffix(Var(String::from("foo_bar123")), Some(word)),
         RemoveLargestSuffix(At, None),
         RemoveLargestSuffix(Star, None),
         RemoveLargestSuffix(Pound, None),
@@ -126,7 +126,7 @@ fn test_parameter_substitution_smallest_prefix() {
         RemoveSmallestPrefix(Positional(0), Some(word.clone())),
         RemoveSmallestPrefix(Positional(10), Some(word.clone())),
         RemoveSmallestPrefix(Positional(100), Some(word.clone())),
-        RemoveSmallestPrefix(Var(String::from("foo_bar123")), Some(word.clone())),
+        RemoveSmallestPrefix(Var(String::from("foo_bar123")), Some(word)),
         RemoveSmallestPrefix(At, None),
         RemoveSmallestPrefix(Star, None),
         //RemoveSmallestPrefix(Pound, None), // ${##} should parse as Len(#)
@@ -165,7 +165,7 @@ fn test_parameter_substitution_largest_prefix() {
         RemoveLargestPrefix(Positional(0), Some(word.clone())),
         RemoveLargestPrefix(Positional(10), Some(word.clone())),
         RemoveLargestPrefix(Positional(100), Some(word.clone())),
-        RemoveLargestPrefix(Var(String::from("foo_bar123")), Some(word.clone())),
+        RemoveLargestPrefix(Var(String::from("foo_bar123")), Some(word)),
         RemoveLargestPrefix(At, None),
         RemoveLargestPrefix(Star, None),
         RemoveLargestPrefix(Pound, None),
@@ -236,7 +236,7 @@ fn test_parameter_substitution_default() {
         Default(false, Positional(0), Some(word.clone())),
         Default(false, Positional(10), Some(word.clone())),
         Default(false, Positional(100), Some(word.clone())),
-        Default(false, Var(String::from("foo_bar123")), Some(word.clone())),
+        Default(false, Var(String::from("foo_bar123")), Some(word)),
         Default(false, At, None),
         Default(false, Star, None),
         //Default(false, Pound, None), // ${#-} should be a length check of the `-` parameter
@@ -305,7 +305,7 @@ fn test_parameter_substitution_error() {
         Error(false, Positional(0), Some(word.clone())),
         Error(false, Positional(10), Some(word.clone())),
         Error(false, Positional(100), Some(word.clone())),
-        Error(false, Var(String::from("foo_bar123")), Some(word.clone())),
+        Error(false, Var(String::from("foo_bar123")), Some(word)),
         Error(false, At, None),
         Error(false, Star, None),
         //Error(false, Pound, None), // ${#?} should be a length check of the `?` parameter
@@ -374,7 +374,7 @@ fn test_parameter_substitution_assign() {
         Assign(false, Positional(0), Some(word.clone())),
         Assign(false, Positional(10), Some(word.clone())),
         Assign(false, Positional(100), Some(word.clone())),
-        Assign(false, Var(String::from("foo_bar123")), Some(word.clone())),
+        Assign(false, Var(String::from("foo_bar123")), Some(word)),
         Assign(false, At, None),
         Assign(false, Star, None),
         Assign(false, Pound, None),
@@ -443,7 +443,7 @@ fn test_parameter_substitution_alternative() {
         Alternative(false, Positional(0), Some(word.clone())),
         Alternative(false, Positional(10), Some(word.clone())),
         Alternative(false, Positional(100), Some(word.clone())),
-        Alternative(false, Var(String::from("foo_bar123")), Some(word.clone())),
+        Alternative(false, Var(String::from("foo_bar123")), Some(word)),
         Alternative(false, At, None),
         Alternative(false, Star, None),
         Alternative(false, Pound, None),
@@ -488,7 +488,7 @@ fn test_parameter_substitution_words_can_have_spaces_and_escaped_curlies() {
         Error(true, var.clone(), Some(word.clone())),
         Error(false, var.clone(), Some(word.clone())),
         Alternative(true, var.clone(), Some(word.clone())),
-        Alternative(false, var.clone(), Some(word.clone())),
+        Alternative(false, var, Some(word)),
     ];
 
     let src = vec![
@@ -526,7 +526,7 @@ fn test_parameter_substitution_words_can_start_with_pound() {
         Error(true, var.clone(), Some(word.clone())),
         Error(false, var.clone(), Some(word.clone())),
         Alternative(true, var.clone(), Some(word.clone())),
-        Alternative(false, var.clone(), Some(word.clone())),
+        Alternative(false, var, Some(word)),
     ];
 
     let src = vec![
@@ -565,7 +565,7 @@ fn test_parameter_substitution_words_can_be_parameters_or_substitutions_as_well(
         Error(true, var.clone(), Some(word.clone())),
         Error(false, var.clone(), Some(word.clone())),
         Alternative(true, var.clone(), Some(word.clone())),
-        Alternative(false, var.clone(), Some(word.clone())),
+        Alternative(false, var, Some(word)),
     ];
 
     let src = vec![
@@ -702,11 +702,7 @@ fn test_parameter_substitution_nested_quoted() {
         ),
         (
             "${foo:+`bar`}",
-            Alternative(
-                true,
-                param.clone(),
-                Some(word_subst(Command(vec![cmd("bar")]))),
-            ),
+            Alternative(true, param, Some(word_subst(Command(vec![cmd("bar")])))),
         ),
     ];
 

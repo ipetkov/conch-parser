@@ -50,8 +50,6 @@ macro_rules! default_builder {
             }
         }
 
-        // See https://github.com/Manishearth/rust-clippy/issues/1254
-        #[cfg_attr(feature = "cargo-clippy", allow(expl_impl_clone_on_copy))]
         impl<T> Clone for $Builder<T> {
             fn clone(&self) -> Self {
                 *self
@@ -241,8 +239,6 @@ impl<T, W, C, F> fmt::Debug for CoreBuilder<T, W, C, F> {
     }
 }
 
-// See https://github.com/Manishearth/rust-clippy/issues/1254
-#[cfg_attr(feature = "cargo-clippy", allow(expl_impl_clone_on_copy))]
 impl<T, W, C, F> Clone for CoreBuilder<T, W, C, F> {
     fn clone(&self) -> Self {
         *self
@@ -315,7 +311,7 @@ where
         rest: Vec<(Vec<Newline>, AndOr<Self::ListableCommand>)>,
     ) -> Result<Self::CommandList, Self::Error> {
         Ok(AndOrList {
-            first: first,
+            first,
             rest: rest.into_iter().map(|(_, c)| c).collect(),
         })
     }
@@ -358,8 +354,8 @@ where
         redirects_or_cmd_words.shrink_to_fit();
 
         Ok(PipeableCommand::Simple(Box::new(SimpleCommand {
-            redirects_or_env_vars: redirects_or_env_vars,
-            redirects_or_cmd_words: redirects_or_cmd_words,
+            redirects_or_env_vars,
+            redirects_or_cmd_words,
         })))
     }
 
@@ -407,10 +403,7 @@ where
         body.shrink_to_fit();
         redirects.shrink_to_fit();
 
-        let guard_body_pair = GuardBodyPair {
-            guard: guard,
-            body: body,
-        };
+        let guard_body_pair = GuardBodyPair { guard, body };
 
         let loop_cmd = match kind {
             LoopKind::While => CompoundCommandKind::While(guard_body_pair),
@@ -443,10 +436,7 @@ where
                 guard.shrink_to_fit();
                 body.shrink_to_fit();
 
-                GuardBodyPair {
-                    guard: guard,
-                    body: body,
-                }
+                GuardBodyPair { guard, body }
             })
             .collect();
 
@@ -463,8 +453,8 @@ where
 
         Ok(CompoundCommand {
             kind: CompoundCommandKind::If {
-                conditionals: conditionals,
-                else_branch: else_branch,
+                conditionals,
+                else_branch,
             },
             io: redirects,
         })
@@ -488,8 +478,8 @@ where
         Ok(CompoundCommand {
             kind: CompoundCommandKind::For {
                 var: fragments.var.into(),
-                words: words,
-                body: body,
+                words,
+                body,
             },
             io: redirects,
         })
@@ -511,10 +501,7 @@ where
                 let mut body = arm.body.commands;
                 body.shrink_to_fit();
 
-                PatternBodyPair {
-                    patterns: patterns,
-                    body: body,
-                }
+                PatternBodyPair { patterns, body }
             })
             .collect();
 
@@ -522,7 +509,7 @@ where
         Ok(CompoundCommand {
             kind: CompoundCommandKind::Case {
                 word: fragments.word,
-                arms: arms,
+                arms,
             },
             io: redirects,
         })
@@ -566,7 +553,7 @@ where
             use crate::ast::Arithmetic::*;
             match kind {
                 Var(v) => Var(v.into()),
-                Literal(l) => Literal(l.into()),
+                Literal(l) => Literal(l),
                 Pow(a, b) => Pow(Box::new(map_arith(*a)), Box::new(map_arith(*b))),
                 PostIncr(p) => PostIncr(p.into()),
                 PostDecr(p) => PostDecr(p.into()),
@@ -730,7 +717,7 @@ impl<I: Iterator, F> Coalesce<I, F> {
         Coalesce {
             iter: iter.into_iter(),
             cur: None,
-            func: func,
+            func,
         }
     }
 }

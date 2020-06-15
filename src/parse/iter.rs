@@ -148,16 +148,10 @@ impl<I: Iterator<Item = Token>> PositionIterator for TokenIter<I> {
 
 impl<I: Iterator<Item = Token>> PeekableIterator for TokenIter<I> {
     fn peek(&mut self) -> Option<&Self::Item> {
-        {
-            // Peek the next token, then drop the wrapper to get the token pushed
-            // back on our buffer. Not the clearest solution, but gets around
-            // the borrow checker.
-            let mut peeked = self.multipeek();
-            if peeked.peek_next().is_none() {
-                // Didn't buffer anything, nothing to peek
-                return None;
-            }
-        }
+        // Peek the next token, then drop the wrapper to get the token pushed
+        // back on our buffer. Not the clearest solution, but gets around
+        // the borrow checker.
+        let _ = self.multipeek().peek_next()?;
 
         if let Some(&TokenOrPos::Tok(ref t)) = self.prev_buffered.last() {
             Some(t)
@@ -328,7 +322,7 @@ impl<'a> Multipeek<'a> {
     /// Wrap an iterator for arbitrary look-ahead.
     fn new(iter: &'a mut dyn RewindableTokenIterator) -> Self {
         Multipeek {
-            iter: iter,
+            iter,
             buf: Vec::new(),
         }
     }
@@ -478,7 +472,7 @@ impl<I: PositionIterator> Balanced<I> {
             stack: delim.map_or(Vec::new(), |d| vec![d]),
             done: false,
             pos: iter.pos(),
-            iter: iter,
+            iter,
         }
     }
 }
@@ -626,7 +620,7 @@ impl<I> BacktickBackslashRemover<I> {
     /// from the stream that are followed by \, $, or `.
     pub fn new(iter: Balanced<I>) -> Self {
         BacktickBackslashRemover {
-            iter: iter,
+            iter,
             peeked: None,
             done: false,
         }
@@ -767,11 +761,7 @@ mod tests {
     #[test]
     fn test_buffering_tokens_should_immediately_update_position() {
         fn src(byte: usize, line: usize, col: usize) -> SourcePos {
-            SourcePos {
-                byte: byte,
-                line: line,
-                col: col,
-            }
+            SourcePos { byte, line, col }
         }
 
         let mut tok_iter = TokenIter::new(::std::iter::empty());

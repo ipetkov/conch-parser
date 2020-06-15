@@ -44,7 +44,7 @@ fn test_redirect_valid_start_with_dash_if_not_dup() {
         ("4>-test", Redirect::Write(Some(4), path.clone())),
         ("4<>-test", Redirect::ReadWrite(Some(4), path.clone())),
         ("4>>-test", Redirect::Append(Some(4), path.clone())),
-        ("4>|-test", Redirect::Clobber(Some(4), path.clone())),
+        ("4>|-test", Redirect::Clobber(Some(4), path)),
     ];
 
     for (s, correct) in cases.into_iter() {

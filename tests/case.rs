@@ -351,10 +351,7 @@ fn test_case_command_should_recognize_literals_and_names() {
     let case_str = String::from("case");
     let in_str = String::from("in");
     let esac_str = String::from("esac");
-    for case_tok in vec![
-        Token::Literal(case_str.clone()),
-        Token::Name(case_str.clone()),
-    ] {
+    for case_tok in vec![Token::Literal(case_str.clone()), Token::Name(case_str)] {
         for in_tok in vec![Token::Literal(in_str.clone()), Token::Name(in_str.clone())] {
             for esac_tok in vec![
                 Token::Literal(esac_str.clone()),
