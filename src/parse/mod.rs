@@ -428,7 +428,8 @@ macro_rules! eat {
 /// the definition are considered to have identical precedence and are left-to-right
 /// associative.
 macro_rules! arith_parse {
-    ($fn_name:ident, $next_expr:ident, $($tok:pat => $constructor:path),+) => {
+    ($(#[$fn_attr:meta])* fn $fn_name:ident, $next_expr:ident, $($tok:pat => $constructor:path),+) => {
+        $(#[$fn_attr])*
         #[inline]
         fn $fn_name(&mut self) -> ParseResult<DefaultArithmetic, B::Error> {
             let mut expr = self.$next_expr()?;
@@ -2657,16 +2658,40 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         })
     }
 
-    /// Parses expressions such as `expr || expr`.
-    arith_parse!(arith_logical_or,  arith_logical_and, OrIf  => ast::Arithmetic::LogicalOr);
-    /// Parses expressions such as `expr && expr`.
-    arith_parse!(arith_logical_and, arith_bitwise_or,  AndIf => ast::Arithmetic::LogicalAnd);
-    /// Parses expressions such as `expr | expr`.
-    arith_parse!(arith_bitwise_or,  arith_bitwise_xor, Pipe  => ast::Arithmetic::BitwiseOr);
-    /// Parses expressions such as `expr ^ expr`.
-    arith_parse!(arith_bitwise_xor, arith_bitwise_and, Caret => ast::Arithmetic::BitwiseXor);
-    /// Parses expressions such as `expr & expr`.
-    arith_parse!(arith_bitwise_and, arith_eq,          Amp   => ast::Arithmetic::BitwiseAnd);
+    arith_parse!(
+        /// Parses expressions such as `expr || expr`.
+        fn arith_logical_or,
+        arith_logical_and,
+        OrIf  => ast::Arithmetic::LogicalOr
+    );
+
+    arith_parse!(
+        /// Parses expressions such as `expr && expr`.
+        fn arith_logical_and,
+        arith_bitwise_or,
+        AndIf => ast::Arithmetic::LogicalAnd
+    );
+
+    arith_parse!(
+        /// Parses expressions such as `expr | expr`.
+        fn arith_bitwise_or,
+        arith_bitwise_xor,
+        Pipe  => ast::Arithmetic::BitwiseOr
+    );
+
+    arith_parse!(
+        /// Parses expressions such as `expr ^ expr`.
+        fn arith_bitwise_xor,
+        arith_bitwise_and,
+        Caret => ast::Arithmetic::BitwiseXor
+    );
+
+    arith_parse!(
+        /// Parses expressions such as `expr & expr`.
+        fn arith_bitwise_and,
+        arith_eq,
+        Amp   => ast::Arithmetic::BitwiseAnd
+    );
 
     /// Parses expressions such as `expr == expr` or `expr != expr`.
     #[inline]
@@ -2724,23 +2749,29 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         Ok(expr)
     }
 
-    /// Parses expressions such as `expr << expr` or `expr >> expr`.
-    arith_parse!(arith_shift, arith_add,
-                 DLess  => ast::Arithmetic::ShiftLeft,
-                 DGreat => ast::Arithmetic::ShiftRight
+    arith_parse!(
+        /// Parses expressions such as `expr << expr` or `expr >> expr`.
+        fn arith_shift,
+        arith_add,
+        DLess  => ast::Arithmetic::ShiftLeft,
+        DGreat => ast::Arithmetic::ShiftRight
     );
 
-    /// Parses expressions such as `expr + expr` or `expr - expr`.
-    arith_parse!(arith_add, arith_mult,
-                 Plus => ast::Arithmetic::Add,
-                 Dash => ast::Arithmetic::Sub
+    arith_parse!(
+        /// Parses expressions such as `expr + expr` or `expr - expr`.
+        fn arith_add,
+        arith_mult,
+        Plus => ast::Arithmetic::Add,
+        Dash => ast::Arithmetic::Sub
     );
 
-    /// Parses expressions such as `expr * expr`, `expr / expr`, or `expr % expr`.
-    arith_parse!(arith_mult, arith_pow,
-                 Star    => ast::Arithmetic::Mult,
-                 Slash   => ast::Arithmetic::Div,
-                 Percent => ast::Arithmetic::Modulo
+    arith_parse!(
+        /// Parses expressions such as `expr * expr`, `expr / expr`, or `expr % expr`.
+        fn arith_mult,
+        arith_pow,
+        Star    => ast::Arithmetic::Mult,
+        Slash   => ast::Arithmetic::Div,
+        Percent => ast::Arithmetic::Modulo
     );
 
     /// Parses expressions such as `expr ** expr`.
