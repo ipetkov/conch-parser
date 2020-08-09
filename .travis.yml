@@ -1,6 +1,6 @@
 sudo: false
 language: rust
-cache: cargo
+#cache: cargo
 
 # necessary for kcov
 addons:
@@ -16,7 +16,7 @@ matrix:
   include:
     - rust: nightly
       sudo: required # Work around for travis-ci/travis-ci#9061
-      cache: false
+      #cache: false
       env:
         - FEATURE_FLAGS="--features nightly"
         - RUSTFLAGS="-C link-dead-code" # Enable better code coverage at the cost of binary size
