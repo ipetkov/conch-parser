@@ -12,10 +12,8 @@
 use crate::ast::{AndOr, DefaultArithmetic, DefaultParameter, RedirectOrCmdWord, RedirectOrEnvVar};
 
 mod default_builder;
-mod empty_builder;
 
 pub use self::default_builder::*;
-pub use self::empty_builder::EmptyBuilder;
 
 /// An indicator to the builder of how complete commands are separated.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
