@@ -39,7 +39,7 @@ const WHILE: &str = "while";
 pub type DefaultParser<I> = Parser<I, builder::StringBuilder>;
 
 /// A specialized `Result` type for parsing shell commands.
-pub type ParseResult<T, E> = Result<T, ParseError<E>>;
+pub type ParseResult<T> = Result<T, ParseError>;
 
 /// Indicates a character/token position in the original source.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -229,7 +229,6 @@ impl<I, B> std::iter::FusedIterator for ParserIterator<I, B>
 where
     I: Iterator<Item = Token>,
     B: Builder,
-    B::Error: From<ParseError>,
 {
 }
 
@@ -237,9 +236,8 @@ impl<I, B> Iterator for ParserIterator<I, B>
 where
     I: Iterator<Item = Token>,
     B: Builder,
-    B::Error: From<ParseError>,
 {
-    type Item = Result<B::Command, B::Error>;
+    type Item = ParseResult<B::Command>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.parser.as_mut().map(Parser::complete_command) {
@@ -263,7 +261,6 @@ impl<I, B> IntoIterator for Parser<I, B>
 where
     I: Iterator<Item = Token>,
     B: Builder,
-    B::Error: From<ParseError>,
 {
     type IntoIter = ParserIterator<I, B>;
     type Item = <Self::IntoIter as Iterator>::Item;
@@ -346,7 +343,6 @@ impl<I, B> Parser<I, B>
 where
     I: Iterator<Item = Token>,
     B: Builder + Default,
-    B::Error: From<ParseError>,
 {
     /// Creates a new Parser from a Token iterator or collection.
     pub fn new<T>(iter: T) -> Parser<I, B>
@@ -403,7 +399,7 @@ macro_rules! arith_parse {
     ($(#[$fn_attr:meta])* fn $fn_name:ident, $next_expr:ident, $($tok:pat => $constructor:path),+) => {
         $(#[$fn_attr])*
         #[inline]
-        fn $fn_name(&mut self) -> Result<DefaultArithmetic, B::Error> {
+        fn $fn_name(&mut self) -> ParseResult<DefaultArithmetic> {
             let mut expr = self.$next_expr()?;
             loop {
                 self.skip_whitespace();
@@ -424,19 +420,15 @@ impl<I, B> Parser<I, B>
 where
     I: Iterator<Item = Token>,
     B: Builder,
-    B::Error: From<ParseError>,
 {
     /// Construct an `Unexpected` error using the given token. If `None` specified, the next
     /// token in the iterator will be used (or `UnexpectedEOF` if none left).
     #[inline]
-    fn make_unexpected_err(&mut self) -> B::Error {
+    fn make_unexpected_err(&mut self) -> ParseError {
         let pos = self.iter.pos();
-        self.iter
-            .next()
-            .map_or(ParseError::UnexpectedEOF, |t| {
-                ParseError::Unexpected(t, pos)
-            })
-            .into()
+        self.iter.next().map_or(ParseError::UnexpectedEOF, |t| {
+            ParseError::Unexpected(t, pos)
+        })
     }
 
     /// Creates a new Parser from a Token iterator and provided AST builder.
@@ -456,7 +448,7 @@ where
     ///
     /// For example, `foo && bar; baz` will yield two complete
     /// commands: `And(foo, bar)`, and `Simple(baz)`.
-    pub fn complete_command(&mut self) -> Result<Option<B::Command>, B::Error> {
+    pub fn complete_command(&mut self) -> ParseResult<Option<B::Command>> {
         let pre_cmd_comments = self.linebreak();
 
         if self.iter.peek().is_some() {
@@ -465,7 +457,7 @@ where
             )?))
         } else {
             if !pre_cmd_comments.is_empty() {
-                self.builder.comments(pre_cmd_comments)?;
+                self.builder.comments(pre_cmd_comments);
             }
             Ok(None)
         }
@@ -478,7 +470,7 @@ where
     fn complete_command_with_leading_comments(
         &mut self,
         pre_cmd_comments: Vec<builder::Newline>,
-    ) -> Result<B::Command, B::Error> {
+    ) -> ParseResult<B::Command> {
         let cmd = self.and_or_list()?;
 
         let (sep, cmd_comment) = eat_maybe!(self, {
@@ -494,14 +486,14 @@ where
 
         Ok(self
             .builder
-            .complete_command(pre_cmd_comments, cmd, sep, cmd_comment)?)
+            .complete_command(pre_cmd_comments, cmd, sep, cmd_comment))
     }
 
     /// Parses compound AND/OR commands.
     ///
     /// Commands are left associative. For example `foo || bar && baz`
     /// parses to `And(Or(foo, bar), baz)`.
-    pub fn and_or_list(&mut self) -> Result<B::CommandList, B::Error> {
+    pub fn and_or_list(&mut self) -> ParseResult<B::CommandList> {
         let first = self.pipeline()?;
         let mut rest = Vec::new();
 
@@ -525,13 +517,13 @@ where
             rest.push((post_sep_comments, next));
         }
 
-        Ok(self.builder.and_or_list(first, rest)?)
+        Ok(self.builder.and_or_list(first, rest))
     }
 
     /// Parses either a single command or a pipeline of commands.
     ///
     /// For example `[!] foo | bar`.
-    pub fn pipeline(&mut self) -> Result<B::ListableCommand, B::Error> {
+    pub fn pipeline(&mut self) -> ParseResult<B::ListableCommand> {
         self.skip_whitespace();
         let bang = eat_maybe!(self, {
             Bang => { true };
@@ -557,14 +549,14 @@ where
             });
         }
 
-        Ok(self.builder.pipeline(bang, cmds)?)
+        Ok(self.builder.pipeline(bang, cmds))
     }
 
     /// Parses any compound or individual command.
-    pub fn command(&mut self) -> Result<B::PipeableCommand, B::Error> {
+    pub fn command(&mut self) -> ParseResult<B::PipeableCommand> {
         if let Some(kw) = self.next_compound_command_type() {
             let compound = self.compound_command_internal(Some(kw))?;
-            Ok(self.builder.compound_command_into_pipeable(compound)?)
+            Ok(self.builder.compound_command_into_pipeable(compound))
         } else if let Some(fn_def) = self.maybe_function_declaration()? {
             Ok(fn_def)
         } else {
@@ -576,7 +568,7 @@ where
     ///
     /// A valid command is expected to have at least an executable name, or a single
     /// variable assignment or redirection. Otherwise an error will be returned.
-    pub fn simple_command(&mut self) -> Result<B::PipeableCommand, B::Error> {
+    pub fn simple_command(&mut self) -> ParseResult<B::PipeableCommand> {
         use crate::ast::{RedirectOrCmdWord, RedirectOrEnvVar};
 
         let mut vars = Vec::new();
@@ -647,14 +639,14 @@ where
         if vars.is_empty() && cmd_args.is_empty() {
             Err(self.make_unexpected_err())
         } else {
-            Ok(self.builder.simple_command(vars, cmd_args)?)
+            Ok(self.builder.simple_command(vars, cmd_args))
         }
     }
 
     /// Parses a continuous list of redirections and will error if any words
     /// that are not valid file descriptors are found. Essentially used for
     /// parsing redirection lists after a compound command like `while` or `if`.
-    pub fn redirect_list(&mut self) -> Result<Vec<B::Redirect>, B::Error> {
+    pub fn redirect_list(&mut self) -> ParseResult<Vec<B::Redirect>> {
         let mut list = Vec::new();
         loop {
             self.skip_whitespace();
@@ -681,7 +673,7 @@ where
     /// redirect or word if either is found. In other words, `Ok(Some(Ok(redirect)))`
     /// will result if a redirect is found, `Ok(Some(Err(word)))` if a word is found,
     /// or `Ok(None)` if neither is found.
-    pub fn redirect(&mut self) -> Result<Option<Result<B::Redirect, B::Word>>, B::Error> {
+    pub fn redirect(&mut self) -> ParseResult<Option<Result<B::Redirect, B::Word>>> {
         fn could_be_numeric<C>(word: &WordKind<C>) -> bool {
             let simple_could_be_numeric = |word: &SimpleWordKind<C>| match *word {
                 SimpleWordKind::Star
@@ -733,7 +725,7 @@ where
             None => (None, None),
             Some(w) => match as_num(&w) {
                 Some(num) => (Some(num), Some(w)),
-                None => return Ok(Some(Err(self.builder.word(w)?))),
+                None => return Ok(Some(Err(self.builder.word(w)))),
             },
         };
 
@@ -744,7 +736,7 @@ where
             Some(&DLess) | Some(&DLessDash) => return Ok(Some(Ok(self.redirect_heredoc(src_fd)?))),
 
             _ => match src_fd_as_word {
-                Some(w) => return Ok(Some(Err(self.builder.word(w)?))),
+                Some(w) => return Ok(Some(Err(self.builder.word(w)))),
                 None => return Ok(None),
             },
         };
@@ -754,7 +746,7 @@ where
         macro_rules! get_path {
             ($parser:expr) => {
                 match $parser.word_preserve_trailing_whitespace_raw()? {
-                    Some(p) => $parser.builder.word(p)?,
+                    Some(p) => $parser.builder.word(p),
                     None => return Err(self.make_unexpected_err()),
                 }
             };
@@ -782,7 +774,7 @@ where
                         return Err(ParseError::BadFd(path_start_pos, self.iter.pos()).into());
                     }
                 };
-                $parser.builder.word(path)?
+                $parser.builder.word(path)
             }};
         }
 
@@ -799,7 +791,7 @@ where
             _ => unreachable!(),
         };
 
-        Ok(Some(Ok(self.builder.redirect(redirect)?)))
+        Ok(Some(Ok(self.builder.redirect(redirect))))
     }
 
     /// Parses a heredoc redirection and the heredoc's body.
@@ -827,7 +819,7 @@ where
     ///
     /// Note: this method expects that the caller provide a potential file
     /// descriptor for redirection.
-    pub fn redirect_heredoc(&mut self, src_fd: Option<u16>) -> Result<B::Redirect, B::Error> {
+    pub fn redirect_heredoc(&mut self, src_fd: Option<u16>) -> ParseResult<B::Redirect> {
         use std::iter::FromIterator;
 
         macro_rules! try_map {
@@ -1087,10 +1079,10 @@ where
             }
         };
 
-        let word = self.builder.word(body)?;
+        let word = self.builder.word(body);
         Ok(self
             .builder
-            .redirect(builder::RedirectKind::Heredoc(src_fd, word))?)
+            .redirect(builder::RedirectKind::Heredoc(src_fd, word)))
     }
 
     /// Parses a whitespace delimited chunk of text, honoring space quoting rules,
@@ -1103,16 +1095,16 @@ where
     ///
     /// Note that an error can still arise if partial tokens are present
     /// (e.g. malformed parameter).
-    pub fn word(&mut self) -> Result<Option<B::Word>, B::Error> {
+    pub fn word(&mut self) -> ParseResult<Option<B::Word>> {
         let ret = self.word_preserve_trailing_whitespace()?;
         self.skip_whitespace();
         Ok(ret)
     }
 
     /// Identical to `Parser::word()` but preserves trailing whitespace after the word.
-    pub fn word_preserve_trailing_whitespace(&mut self) -> Result<Option<B::Word>, B::Error> {
+    pub fn word_preserve_trailing_whitespace(&mut self) -> ParseResult<Option<B::Word>> {
         let w = match self.word_preserve_trailing_whitespace_raw()? {
-            Some(w) => Some(self.builder.word(w)?),
+            Some(w) => Some(self.builder.word(w)),
             None => None,
         };
         Ok(w)
@@ -1122,7 +1114,7 @@ where
     /// not pass the result to the AST builder.
     fn word_preserve_trailing_whitespace_raw(
         &mut self,
-    ) -> Result<Option<ComplexWordKind<B::Command>>, B::Error> {
+    ) -> ParseResult<Option<ComplexWordKind<B::Command>>> {
         self.word_preserve_trailing_whitespace_raw_with_delim(None)
     }
 
@@ -1131,7 +1123,7 @@ where
     fn word_preserve_trailing_whitespace_raw_with_delim(
         &mut self,
         delim: Option<Token>,
-    ) -> Result<Option<ComplexWordKind<B::Command>>, B::Error> {
+    ) -> ParseResult<Option<ComplexWordKind<B::Command>>> {
         self.skip_whitespace();
 
         // Make sure we don't consume comments,
@@ -1263,7 +1255,7 @@ where
         &mut self,
         delim: Option<(Token, Token)>,
         start_pos: SourcePos,
-    ) -> Result<Vec<SimpleWordKind<B::Command>>, B::Error> {
+    ) -> ParseResult<Vec<SimpleWordKind<B::Command>>> {
         let (delim_open, delim_close) = match delim {
             Some((o, c)) => (Some(o), Some(c)),
             None => (None, None),
@@ -1344,14 +1336,14 @@ where
     /// Any backslashes that are immediately followed by \, $, or ` are removed
     /// before the contents inside the original backticks are recursively parsed
     /// as a command.
-    pub fn backticked_command_substitution(&mut self) -> Result<B::Word, B::Error> {
+    pub fn backticked_command_substitution(&mut self) -> ParseResult<B::Word> {
         let word = self.backticked_raw()?;
-        Ok(self.builder.word(Single(Simple(word)))?)
+        Ok(self.builder.word(Single(Simple(word))))
     }
 
     /// Identical to `Parser::backticked_command_substitution`, except but does not pass the
     /// result to the AST builder.
-    fn backticked_raw(&mut self) -> Result<SimpleWordKind<B::Command>, B::Error> {
+    fn backticked_raw(&mut self) -> ParseResult<SimpleWordKind<B::Command>> {
         let backtick_pos = self.iter.pos();
         eat!(self, { Backtick => {} });
 
@@ -1381,13 +1373,13 @@ where
     /// parameter, the `$` should be treated as a literal. Thus this method
     /// returns an `Word`, which will capture both cases where a literal or
     /// parameter is parsed.
-    pub fn parameter(&mut self) -> Result<B::Word, B::Error> {
+    pub fn parameter(&mut self) -> ParseResult<B::Word> {
         let param = self.parameter_raw()?;
-        Ok(self.builder.word(Single(Simple(param)))?)
+        Ok(self.builder.word(Single(Simple(param))))
     }
 
     /// Identical to `Parser::parameter()` but does not pass the result to the AST builder.
-    fn parameter_raw(&mut self) -> Result<SimpleWordKind<B::Command>, B::Error> {
+    fn parameter_raw(&mut self) -> ParseResult<SimpleWordKind<B::Command>> {
         use crate::ast::Parameter;
 
         let start_pos = self.iter.pos();
@@ -1418,7 +1410,7 @@ where
     fn parameter_substitution_word_raw(
         &mut self,
         curly_open_pos: SourcePos,
-    ) -> Result<Option<ComplexWordKind<B::Command>>, B::Error> {
+    ) -> ParseResult<Option<ComplexWordKind<B::Command>>> {
         let mut words = Vec::new();
         'capture_words: loop {
             'capture_literals: loop {
@@ -1534,7 +1526,7 @@ where
         &mut self,
         param: DefaultParameter,
         curly_open_pos: SourcePos,
-    ) -> Result<SimpleWordKind<B::Command>, B::Error> {
+    ) -> ParseResult<SimpleWordKind<B::Command>> {
         use crate::ast::builder::ParameterSubstitutionKind::*;
         use crate::ast::Parameter;
 
@@ -1576,7 +1568,7 @@ where
 
     /// Parses a parameter substitution in the form of `${...}`, `$(...)`, or `$((...))`.
     /// Nothing is passed to the builder.
-    fn parameter_substitution_raw(&mut self) -> Result<SimpleWordKind<B::Command>, B::Error> {
+    fn parameter_substitution_raw(&mut self) -> ParseResult<SimpleWordKind<B::Command>> {
         use crate::ast::builder::ParameterSubstitutionKind::*;
         use crate::ast::Parameter;
 
@@ -1679,7 +1671,7 @@ where
     }
 
     /// Parses a valid parameter that can appear inside a set of curly braces.
-    fn parameter_inner(&mut self) -> Result<DefaultParameter, B::Error> {
+    fn parameter_inner(&mut self) -> ParseResult<DefaultParameter> {
         use crate::ast::Parameter;
 
         let start_pos = self.iter.pos();
@@ -1708,7 +1700,7 @@ where
     /// Parses any number of sequential commands between the `do` and `done`
     /// reserved words. Each of the reserved words must be a literal token, and cannot be
     /// quoted or concatenated.
-    pub fn do_group(&mut self) -> Result<builder::CommandGroup<B::Command>, B::Error> {
+    pub fn do_group(&mut self) -> ParseResult<builder::CommandGroup<B::Command>> {
         let start_pos = self.iter.pos();
         self.reserved_word(&[DO])
             .map_err(|_| self.make_unexpected_err())?;
@@ -1723,7 +1715,7 @@ where
 
     /// Parses any number of sequential commands between balanced `{` and `}`
     /// reserved words. Each of the reserved words must be a literal token, and cannot be quoted.
-    pub fn brace_group(&mut self) -> Result<builder::CommandGroup<B::Command>, B::Error> {
+    pub fn brace_group(&mut self) -> ParseResult<builder::CommandGroup<B::Command>> {
         // CurlyClose must be encountered as a stand alone word,
         // even though it is represented as its own token
         let start_pos = self.iter.pos();
@@ -1740,7 +1732,7 @@ where
     /// Parses any number of sequential commands between balanced `(` and `)`.
     ///
     /// It is considered an error if no commands are present inside the subshell.
-    pub fn subshell(&mut self) -> Result<builder::CommandGroup<B::Command>, B::Error> {
+    pub fn subshell(&mut self) -> ParseResult<builder::CommandGroup<B::Command>> {
         self.subshell_internal(false)
     }
 
@@ -1749,7 +1741,7 @@ where
     fn subshell_internal(
         &mut self,
         empty_body_ok: bool,
-    ) -> Result<builder::CommandGroup<B::Command>, B::Error> {
+    ) -> ParseResult<builder::CommandGroup<B::Command>> {
         let start_pos = self.iter.pos();
         eat!(self, { ParenOpen => {} });
 
@@ -1791,7 +1783,7 @@ where
 
     /// Parses compound commands like `for`, `case`, `if`, `while`, `until`,
     /// brace groups, or subshells, including any redirection lists to be applied to them.
-    pub fn compound_command(&mut self) -> Result<B::CompoundCommand, B::Error> {
+    pub fn compound_command(&mut self) -> ParseResult<B::CompoundCommand> {
         self.compound_command_internal(None)
     }
 
@@ -1800,42 +1792,42 @@ where
     fn compound_command_internal(
         &mut self,
         kw: Option<CompoundCmdKeyword>,
-    ) -> Result<B::CompoundCommand, B::Error> {
+    ) -> ParseResult<B::CompoundCommand> {
         let cmd = match kw.or_else(|| self.next_compound_command_type()) {
             Some(CompoundCmdKeyword::If) => {
                 let fragments = self.if_command()?;
                 let io = self.redirect_list()?;
-                self.builder.if_command(fragments, io)?
+                self.builder.if_command(fragments, io)
             }
 
             Some(CompoundCmdKeyword::While) | Some(CompoundCmdKeyword::Until) => {
                 let (until, guard_body_pair) = self.loop_command()?;
                 let io = self.redirect_list()?;
-                self.builder.loop_command(until, guard_body_pair, io)?
+                self.builder.loop_command(until, guard_body_pair, io)
             }
 
             Some(CompoundCmdKeyword::For) => {
                 let for_fragments = self.for_command()?;
                 let io = self.redirect_list()?;
-                self.builder.for_command(for_fragments, io)?
+                self.builder.for_command(for_fragments, io)
             }
 
             Some(CompoundCmdKeyword::Case) => {
                 let fragments = self.case_command()?;
                 let io = self.redirect_list()?;
-                self.builder.case_command(fragments, io)?
+                self.builder.case_command(fragments, io)
             }
 
             Some(CompoundCmdKeyword::Brace) => {
                 let cmds = self.brace_group()?;
                 let io = self.redirect_list()?;
-                self.builder.brace_group(cmds, io)?
+                self.builder.brace_group(cmds, io)
             }
 
             Some(CompoundCmdKeyword::Subshell) => {
                 let cmds = self.subshell()?;
                 let io = self.redirect_list()?;
-                self.builder.subshell(cmds, io)?
+                self.builder.subshell(cmds, io)
             }
 
             None => return Err(self.make_unexpected_err()),
@@ -1852,7 +1844,7 @@ where
     /// without constructing an AST node, it so that the caller can do so with redirections.
     pub fn loop_command(
         &mut self,
-    ) -> Result<(builder::LoopKind, builder::GuardBodyPairGroup<B::Command>), B::Error> {
+    ) -> ParseResult<(builder::LoopKind, builder::GuardBodyPairGroup<B::Command>)> {
         let start_pos = self.iter.pos();
         let kind = match self
             .reserved_word(&[WHILE, UNTIL])
@@ -1883,7 +1875,7 @@ where
     /// Since `if` is a compound command (and can have redirections applied to it) this
     /// method returns the relevant parts of the `if` command, without constructing an
     /// AST node, it so that the caller can do so with redirections.
-    pub fn if_command(&mut self) -> Result<builder::IfFragments<B::Command>, B::Error> {
+    pub fn if_command(&mut self) -> ParseResult<builder::IfFragments<B::Command>> {
         let start_pos = self.iter.pos();
         self.reserved_word(&[IF])
             .map_err(|_| self.make_unexpected_err())?;
@@ -1943,7 +1935,7 @@ where
     /// Since `for` is a compound command (and can have redirections applied to it) this
     /// method returns the relevant parts of the `for` command, without constructing an
     /// AST node, it so that the caller can do so with redirections.
-    pub fn for_command(&mut self) -> Result<builder::ForFragments<B::Word, B::Command>, B::Error> {
+    pub fn for_command(&mut self) -> ParseResult<builder::ForFragments<B::Word, B::Command>> {
         let start_pos = self.iter.pos();
         self.reserved_word(&[FOR])
             .map_err(|_| self.make_unexpected_err())?;
@@ -2027,9 +2019,7 @@ where
     /// Since `case` is a compound command (and can have redirections applied to it) this
     /// method returns the relevant parts of the `case` command, without constructing an
     /// AST node, it so that the caller can do so with redirections.
-    pub fn case_command(
-        &mut self,
-    ) -> Result<builder::CaseFragments<B::Word, B::Command>, B::Error> {
+    pub fn case_command(&mut self) -> ParseResult<builder::CaseFragments<B::Word, B::Command>> {
         let start_pos = self.iter.pos();
 
         macro_rules! missing_in {
@@ -2153,7 +2143,7 @@ where
 
     /// Parses a single function declaration if present. If no function is present,
     /// nothing is consumed from the token stream.
-    pub fn maybe_function_declaration(&mut self) -> Result<Option<B::PipeableCommand>, B::Error> {
+    pub fn maybe_function_declaration(&mut self) -> ParseResult<Option<B::PipeableCommand>> {
         if self.peek_reserved_word(&[FUNCTION]).is_some() {
             return self.function_declaration().map(Some);
         }
@@ -2183,17 +2173,17 @@ where
     /// A function declaration must either begin with the `function` reserved word, or
     /// the name of the function must be followed by `()`. Whitespace is allowed between
     /// the name and `(`, and whitespace is allowed between `()`.
-    pub fn function_declaration(&mut self) -> Result<B::PipeableCommand, B::Error> {
+    pub fn function_declaration(&mut self) -> ParseResult<B::PipeableCommand> {
         let (name, post_name_comments, body) = self.function_declaration_internal()?;
         Ok(self
             .builder
-            .function_declaration(name, post_name_comments, body)?)
+            .function_declaration(name, post_name_comments, body))
     }
 
     /// Like `Parser::function_declaration`, but does not pass the result to the builder
     fn function_declaration_internal(
         &mut self,
-    ) -> Result<(String, Vec<builder::Newline>, B::CompoundCommand), B::Error> {
+    ) -> ParseResult<(String, Vec<builder::Newline>, B::CompoundCommand)> {
         let found_fn = match self.peek_reserved_word(&[FUNCTION]) {
             Some(_) => {
                 self.iter.next();
@@ -2245,7 +2235,7 @@ where
                     None
                 } else {
                     // Case like `function foo (subshell)`
-                    Some(self.builder.subshell(subshell, Vec::new())?)
+                    Some(self.builder.subshell(subshell, Vec::new()))
                 }
             } else {
                 None
@@ -2407,7 +2397,7 @@ where
     /// Checks that one of the specified tokens appears as a reserved word
     /// and consumes it, returning the token it matched in case the caller
     /// cares which specific reserved word was found.
-    pub fn reserved_token(&mut self, tokens: &[Token]) -> Result<Token, B::Error> {
+    pub fn reserved_token(&mut self, tokens: &[Token]) -> ParseResult<Token> {
         match self.peek_reserved_token(tokens) {
             Some(_) => Ok(self.iter.next().unwrap()),
             None => {
@@ -2452,7 +2442,7 @@ where
     pub fn command_group(
         &mut self,
         cfg: CommandGroupDelimiters<'_, '_, '_>,
-    ) -> Result<builder::CommandGroup<B::Command>, B::Error> {
+    ) -> ParseResult<builder::CommandGroup<B::Command>> {
         let group = self.command_group_internal(cfg)?;
         if group.commands.is_empty() {
             Err(self.make_unexpected_err())
@@ -2465,7 +2455,7 @@ where
     fn command_group_internal(
         &mut self,
         cfg: CommandGroupDelimiters<'_, '_, '_>,
-    ) -> Result<builder::CommandGroup<B::Command>, B::Error> {
+    ) -> ParseResult<builder::CommandGroup<B::Command>> {
         let found_delim = |slf: &mut Parser<_, _>| {
             let found_exact = !cfg.exact_tokens.is_empty()
                 && slf
@@ -2505,7 +2495,7 @@ where
 
     /// Parses the body of any arbitrary arithmetic expression, e.g. `x + $y << 5`.
     /// The caller is responsible for parsing the external `$(( ))` tokens.
-    pub fn arithmetic_substitution(&mut self) -> Result<DefaultArithmetic, B::Error> {
+    pub fn arithmetic_substitution(&mut self) -> ParseResult<DefaultArithmetic> {
         let mut exprs = Vec::new();
         loop {
             self.skip_whitespace();
@@ -2526,7 +2516,7 @@ where
 
     /// Parses expressions such as `var = expr` or `var op= expr`, where `op` is
     /// any of the following operators: *, /, %, +, -, <<, >>, &, |, ^.
-    fn arith_assig(&mut self) -> Result<DefaultArithmetic, B::Error> {
+    fn arith_assig(&mut self) -> ParseResult<DefaultArithmetic> {
         use crate::ast::Arithmetic::*;
 
         self.skip_whitespace();
@@ -2597,7 +2587,7 @@ where
     }
 
     /// Parses expressions such as `expr ? expr : expr`.
-    fn arith_ternary(&mut self) -> Result<DefaultArithmetic, B::Error> {
+    fn arith_ternary(&mut self) -> ParseResult<DefaultArithmetic> {
         let guard = self.arith_logical_or()?;
         self.skip_whitespace();
         eat_maybe!(self, {
@@ -2649,7 +2639,7 @@ where
 
     /// Parses expressions such as `expr == expr` or `expr != expr`.
     #[inline]
-    fn arith_eq(&mut self) -> Result<DefaultArithmetic, B::Error> {
+    fn arith_eq(&mut self) -> ParseResult<DefaultArithmetic> {
         let mut expr = self.arith_ineq()?;
         loop {
             self.skip_whitespace();
@@ -2672,7 +2662,7 @@ where
 
     /// Parses expressions such as `expr < expr`,`expr <= expr`,`expr > expr`,`expr >= expr`.
     #[inline]
-    fn arith_ineq(&mut self) -> Result<DefaultArithmetic, B::Error> {
+    fn arith_ineq(&mut self) -> ParseResult<DefaultArithmetic> {
         let mut expr = self.arith_shift()?;
         loop {
             self.skip_whitespace();
@@ -2729,7 +2719,7 @@ where
     );
 
     /// Parses expressions such as `expr ** expr`.
-    fn arith_pow(&mut self) -> Result<DefaultArithmetic, B::Error> {
+    fn arith_pow(&mut self) -> ParseResult<DefaultArithmetic> {
         let expr = self.arith_unary_misc()?;
         self.skip_whitespace();
 
@@ -2756,7 +2746,7 @@ where
     }
 
     /// Parses expressions such as `!expr`, `~expr`, `+expr`, `-expr`, `++var` and `--var`.
-    fn arith_unary_misc(&mut self) -> Result<DefaultArithmetic, B::Error> {
+    fn arith_unary_misc(&mut self) -> ParseResult<DefaultArithmetic> {
         self.skip_whitespace();
         let expr = eat_maybe!(self, {
             Bang  => { ast::Arithmetic::LogicalNot(Box::new(self.arith_unary_misc()?)) },
@@ -2796,7 +2786,7 @@ where
     /// Numeric literals must appear as a single `Literal` token. `Name` tokens will be
     /// treated as variables.
     #[inline]
-    fn arith_post_incr(&mut self) -> Result<DefaultArithmetic, B::Error> {
+    fn arith_post_incr(&mut self) -> ParseResult<DefaultArithmetic> {
         self.skip_whitespace();
         eat_maybe!(self, {
             ParenOpen => {
@@ -2868,7 +2858,7 @@ where
 
     /// Parses a variable name in the form `name` or `$name`.
     #[inline]
-    fn arith_var(&mut self) -> Result<String, B::Error> {
+    fn arith_var(&mut self) -> ParseResult<String> {
         self.skip_whitespace();
         eat_maybe!(self, { Dollar => {} });
 

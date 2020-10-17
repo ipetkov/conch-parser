@@ -1,4 +1,3 @@
-use crate::parse::ParseError;
 use crate::ast::builder::*;
 use crate::ast::*;
 use std::default::Default;
@@ -66,14 +65,13 @@ macro_rules! default_builder {
             type CompoundCommand = ShellCompoundCommand<T, Self::Word, Self::Command>;
             type Word            = $Word<T>;
             type Redirect        = Redirect<Self::Word>;
-            type Error           = ParseError;
 
             fn complete_command(&mut self,
                                 pre_cmd_comments: Vec<Newline>,
                                 list: Self::CommandList,
                                 separator: SeparatorKind,
                                 cmd_comment: Option<Newline>)
-                -> Result<Self::Command, Self::Error>
+                -> Self::Command
             {
                 self.0.complete_command(pre_cmd_comments, list, separator, cmd_comment)
             }
@@ -81,7 +79,7 @@ macro_rules! default_builder {
             fn and_or_list(&mut self,
                       first: Self::ListableCommand,
                       rest: Vec<(Vec<Newline>, AndOr<Self::ListableCommand>)>)
-                -> Result<Self::CommandList, Self::Error>
+                -> Self::CommandList
             {
                 self.0.and_or_list(first, rest)
             }
@@ -89,7 +87,7 @@ macro_rules! default_builder {
             fn pipeline(&mut self,
                         bang: bool,
                         cmds: Vec<(Vec<Newline>, Self::PipeableCommand)>)
-                -> Result<Self::ListableCommand, Self::Error>
+                -> Self::ListableCommand
             {
                 self.0.pipeline(bang, cmds)
             }
@@ -98,7 +96,7 @@ macro_rules! default_builder {
                 &mut self,
                 redirects_or_env_vars: Vec<RedirectOrEnvVar<Self::Redirect, String, Self::Word>>,
                 redirects_or_cmd_words: Vec<RedirectOrCmdWord<Self::Redirect, Self::Word>>
-            ) -> Result<Self::PipeableCommand, Self::Error>
+            ) -> Self::PipeableCommand
             {
                 self.0.simple_command(redirects_or_env_vars, redirects_or_cmd_words)
             }
@@ -106,7 +104,7 @@ macro_rules! default_builder {
             fn brace_group(&mut self,
                            cmds: CommandGroup<Self::Command>,
                            redirects: Vec<Self::Redirect>)
-                -> Result<Self::CompoundCommand, Self::Error>
+                -> Self::CompoundCommand
             {
                 self.0.brace_group(cmds, redirects)
             }
@@ -114,7 +112,7 @@ macro_rules! default_builder {
             fn subshell(&mut self,
                         cmds: CommandGroup<Self::Command>,
                         redirects: Vec<Self::Redirect>)
-                -> Result<Self::CompoundCommand, Self::Error>
+                -> Self::CompoundCommand
             {
                 self.0.subshell(cmds, redirects)
             }
@@ -123,7 +121,7 @@ macro_rules! default_builder {
                             kind: LoopKind,
                             guard_body_pair: GuardBodyPairGroup<Self::Command>,
                             redirects: Vec<Self::Redirect>)
-                -> Result<Self::CompoundCommand, Self::Error>
+                -> Self::CompoundCommand
             {
                 self.0.loop_command(kind, guard_body_pair, redirects)
             }
@@ -131,7 +129,7 @@ macro_rules! default_builder {
             fn if_command(&mut self,
                           fragments: IfFragments<Self::Command>,
                           redirects: Vec<Self::Redirect>)
-                -> Result<Self::CompoundCommand, Self::Error>
+                -> Self::CompoundCommand
             {
                 self.0.if_command(fragments, redirects)
             }
@@ -139,7 +137,7 @@ macro_rules! default_builder {
             fn for_command(&mut self,
                            fragments: ForFragments<Self::Word, Self::Command>,
                            redirects: Vec<Self::Redirect>)
-                -> Result<Self::CompoundCommand, Self::Error>
+                -> Self::CompoundCommand
             {
                 self.0.for_command(fragments, redirects)
             }
@@ -147,14 +145,14 @@ macro_rules! default_builder {
             fn case_command(&mut self,
                             fragments: CaseFragments<Self::Word, Self::Command>,
                             redirects: Vec<Self::Redirect>)
-                -> Result<Self::CompoundCommand, Self::Error>
+                -> Self::CompoundCommand
             {
                 self.0.case_command(fragments, redirects)
             }
 
             fn compound_command_into_pipeable(&mut self,
                                               cmd: Self::CompoundCommand)
-                -> Result<Self::PipeableCommand, Self::Error>
+                -> Self::PipeableCommand
             {
                 self.0.compound_command_into_pipeable(cmd)
             }
@@ -163,28 +161,28 @@ macro_rules! default_builder {
                                     name: String,
                                     post_name_comments: Vec<Newline>,
                                     body: Self::CompoundCommand)
-                -> Result<Self::PipeableCommand, Self::Error>
+                -> Self::PipeableCommand
             {
                 self.0.function_declaration(name, post_name_comments, body)
             }
 
             fn comments(&mut self,
                         comments: Vec<Newline>)
-                -> Result<(), Self::Error>
+                -> ()
             {
                 self.0.comments(comments)
             }
 
             fn word(&mut self,
                     kind: ComplexWordKind<Self::Command>)
-                -> Result<Self::Word, Self::Error>
+                -> Self::Word
             {
                 self.0.word(kind)
             }
 
             fn redirect(&mut self,
                         kind: RedirectKind<Self::Word>)
-                -> Result<Self::Redirect, Self::Error>
+                -> Self::Redirect
             {
                 self.0.redirect(kind)
             }
@@ -283,7 +281,6 @@ where
     type CompoundCommand = ShellCompoundCommand<T, Self::Word, Self::Command>;
     type Word = W;
     type Redirect = Redirect<Self::Word>;
-    type Error = ParseError;
 
     /// Constructs a `Command::Job` node with the provided inputs if the command
     /// was delimited by an ampersand or the command itself otherwise.
@@ -293,7 +290,7 @@ where
         list: Self::CommandList,
         separator: SeparatorKind,
         _cmd_comment: Option<Newline>,
-    ) -> Result<Self::Command, Self::Error> {
+    ) -> Self::Command {
         let cmd = match separator {
             SeparatorKind::Semi | SeparatorKind::Other | SeparatorKind::Newline => {
                 Command::List(list)
@@ -301,7 +298,7 @@ where
             SeparatorKind::Amp => Command::Job(list),
         };
 
-        Ok(cmd.into())
+        cmd.into()
     }
 
     /// Constructs a `Command::List` node with the provided inputs.
@@ -309,11 +306,11 @@ where
         &mut self,
         first: Self::ListableCommand,
         rest: Vec<(Vec<Newline>, AndOr<Self::ListableCommand>)>,
-    ) -> Result<Self::CommandList, Self::Error> {
-        Ok(AndOrList {
+    ) -> Self::CommandList {
+        AndOrList {
             first,
             rest: rest.into_iter().map(|(_, c)| c).collect(),
-        })
+        }
     }
 
     /// Constructs a `Command::Pipe` node with the provided inputs or a `Command::Simple`
@@ -322,7 +319,7 @@ where
         &mut self,
         bang: bool,
         cmds: Vec<(Vec<Newline>, Self::PipeableCommand)>,
-    ) -> Result<Self::ListableCommand, Self::Error> {
+    ) -> Self::ListableCommand {
         debug_assert_eq!(cmds.is_empty(), false);
         let mut cmds: Vec<_> = cmds.into_iter().map(|(_, c)| c).collect();
 
@@ -331,9 +328,9 @@ where
         // command. Otherwise there is no need to wrap it further.
         if bang || cmds.len() > 1 {
             cmds.shrink_to_fit();
-            Ok(ListableCommand::Pipe(bang, cmds))
+            ListableCommand::Pipe(bang, cmds)
         } else {
-            Ok(ListableCommand::Single(cmds.pop().unwrap()))
+            ListableCommand::Single(cmds.pop().unwrap())
         }
     }
 
@@ -342,7 +339,7 @@ where
         &mut self,
         redirects_or_env_vars: Vec<RedirectOrEnvVar<Self::Redirect, String, Self::Word>>,
         mut redirects_or_cmd_words: Vec<RedirectOrCmdWord<Self::Redirect, Self::Word>>,
-    ) -> Result<Self::PipeableCommand, Self::Error> {
+    ) -> Self::PipeableCommand {
         let redirects_or_env_vars = redirects_or_env_vars
             .into_iter()
             .map(|roev| match roev {
@@ -353,10 +350,10 @@ where
 
         redirects_or_cmd_words.shrink_to_fit();
 
-        Ok(PipeableCommand::Simple(Box::new(SimpleCommand {
+        PipeableCommand::Simple(Box::new(SimpleCommand {
             redirects_or_env_vars,
             redirects_or_cmd_words,
-        })))
+        }))
     }
 
     /// Constructs a `CompoundCommand::Brace` node with the provided inputs.
@@ -364,14 +361,14 @@ where
         &mut self,
         cmd_group: CommandGroup<Self::Command>,
         mut redirects: Vec<Self::Redirect>,
-    ) -> Result<Self::CompoundCommand, Self::Error> {
+    ) -> Self::CompoundCommand {
         let mut cmds = cmd_group.commands;
         cmds.shrink_to_fit();
         redirects.shrink_to_fit();
-        Ok(CompoundCommand {
+        CompoundCommand {
             kind: CompoundCommandKind::Brace(cmds),
             io: redirects,
-        })
+        }
     }
 
     /// Constructs a `CompoundCommand::Subshell` node with the provided inputs.
@@ -379,14 +376,14 @@ where
         &mut self,
         cmd_group: CommandGroup<Self::Command>,
         mut redirects: Vec<Self::Redirect>,
-    ) -> Result<Self::CompoundCommand, Self::Error> {
+    ) -> Self::CompoundCommand {
         let mut cmds = cmd_group.commands;
         cmds.shrink_to_fit();
         redirects.shrink_to_fit();
-        Ok(CompoundCommand {
+        CompoundCommand {
             kind: CompoundCommandKind::Subshell(cmds),
             io: redirects,
-        })
+        }
     }
 
     /// Constructs a `CompoundCommand::Loop` node with the provided inputs.
@@ -395,7 +392,7 @@ where
         kind: LoopKind,
         guard_body_pair: GuardBodyPairGroup<Self::Command>,
         mut redirects: Vec<Self::Redirect>,
-    ) -> Result<Self::CompoundCommand, Self::Error> {
+    ) -> Self::CompoundCommand {
         let mut guard = guard_body_pair.guard.commands;
         let mut body = guard_body_pair.body.commands;
 
@@ -410,10 +407,10 @@ where
             LoopKind::Until => CompoundCommandKind::Until(guard_body_pair),
         };
 
-        Ok(CompoundCommand {
+        CompoundCommand {
             kind: loop_cmd,
             io: redirects,
-        })
+        }
     }
 
     /// Constructs a `CompoundCommand::If` node with the provided inputs.
@@ -421,7 +418,7 @@ where
         &mut self,
         fragments: IfFragments<Self::Command>,
         mut redirects: Vec<Self::Redirect>,
-    ) -> Result<Self::CompoundCommand, Self::Error> {
+    ) -> Self::CompoundCommand {
         let IfFragments {
             conditionals,
             else_branch,
@@ -451,13 +448,13 @@ where
 
         redirects.shrink_to_fit();
 
-        Ok(CompoundCommand {
+        CompoundCommand {
             kind: CompoundCommandKind::If {
                 conditionals,
                 else_branch,
             },
             io: redirects,
-        })
+        }
     }
 
     /// Constructs a `CompoundCommand::For` node with the provided inputs.
@@ -465,7 +462,7 @@ where
         &mut self,
         fragments: ForFragments<Self::Word, Self::Command>,
         mut redirects: Vec<Self::Redirect>,
-    ) -> Result<Self::CompoundCommand, Self::Error> {
+    ) -> Self::CompoundCommand {
         let words = fragments.words.map(|(_, mut words, _)| {
             words.shrink_to_fit();
             words
@@ -475,14 +472,14 @@ where
         body.shrink_to_fit();
         redirects.shrink_to_fit();
 
-        Ok(CompoundCommand {
+        CompoundCommand {
             kind: CompoundCommandKind::For {
                 var: fragments.var.into(),
                 words,
                 body,
             },
             io: redirects,
-        })
+        }
     }
 
     /// Constructs a `CompoundCommand::Case` node with the provided inputs.
@@ -490,7 +487,7 @@ where
         &mut self,
         fragments: CaseFragments<Self::Word, Self::Command>,
         mut redirects: Vec<Self::Redirect>,
-    ) -> Result<Self::CompoundCommand, Self::Error> {
+    ) -> Self::CompoundCommand {
         let arms = fragments
             .arms
             .into_iter()
@@ -506,21 +503,21 @@ where
             .collect();
 
         redirects.shrink_to_fit();
-        Ok(CompoundCommand {
+        CompoundCommand {
             kind: CompoundCommandKind::Case {
                 word: fragments.word,
                 arms,
             },
             io: redirects,
-        })
+        }
     }
 
     /// Converts a `CompoundCommand` into a `PipeableCommand`.
     fn compound_command_into_pipeable(
         &mut self,
         cmd: Self::CompoundCommand,
-    ) -> Result<Self::PipeableCommand, Self::Error> {
-        Ok(PipeableCommand::Compound(Box::new(cmd)))
+    ) -> Self::PipeableCommand {
+        PipeableCommand::Compound(Box::new(cmd))
     }
 
     /// Constructs a `Command::FunctionDef` node with the provided inputs.
@@ -529,21 +526,19 @@ where
         name: String,
         _post_name_comments: Vec<Newline>,
         body: Self::CompoundCommand,
-    ) -> Result<Self::PipeableCommand, Self::Error> {
-        Ok(PipeableCommand::FunctionDef(name.into(), body.into()))
+    ) -> Self::PipeableCommand {
+        PipeableCommand::FunctionDef(name.into(), body.into())
     }
 
     /// Ignored by the builder.
-    fn comments(&mut self, _comments: Vec<Newline>) -> Result<(), Self::Error> {
-        Ok(())
-    }
+    fn comments(&mut self, _comments: Vec<Newline>) -> () {}
 
     /// Constructs a `ast::Word` from the provided input.
-    fn word(&mut self, kind: ComplexWordKind<Self::Command>) -> Result<Self::Word, Self::Error> {
+    fn word(&mut self, kind: ComplexWordKind<Self::Command>) -> Self::Word {
         macro_rules! map {
             ($pat:expr) => {
                 match $pat {
-                    Some(w) => Some(self.word(w)?),
+                    Some(w) => Some(self.word(w)),
                     None => None,
                 }
             };
@@ -656,37 +651,32 @@ where
                     SimpleWord::Subst(Box::new(subst))
                 }
             };
-            Ok(simple)
+            simple
         };
 
         let mut map_word = |kind| {
             let word = match kind {
-                WordKind::Simple(s) => Word::Simple(map_simple(s)?),
+                WordKind::Simple(s) => Word::Simple(map_simple(s)),
                 WordKind::SingleQuoted(s) => Word::SingleQuoted(s.into()),
-                WordKind::DoubleQuoted(v) => Word::DoubleQuoted(
-                    v.into_iter()
-                        .map(&mut map_simple)
-                        .collect::<Result<Vec<_>, _>>()?,
-                ),
+                WordKind::DoubleQuoted(v) => {
+                    Word::DoubleQuoted(v.into_iter().map(&mut map_simple).collect::<Vec<_>>())
+                }
             };
-            Ok(word)
+            word
         };
 
         let word = match compress(kind) {
-            ComplexWordKind::Single(s) => ComplexWord::Single(map_word(s)?),
-            ComplexWordKind::Concat(words) => ComplexWord::Concat(
-                words
-                    .into_iter()
-                    .map(map_word)
-                    .collect::<Result<Vec<_>, _>>()?,
-            ),
+            ComplexWordKind::Single(s) => ComplexWord::Single(map_word(s)),
+            ComplexWordKind::Concat(words) => {
+                ComplexWord::Concat(words.into_iter().map(map_word).collect::<Vec<_>>())
+            }
         };
 
-        Ok(word.into())
+        word.into()
     }
 
     /// Constructs a `ast::Redirect` from the provided input.
-    fn redirect(&mut self, kind: RedirectKind<Self::Word>) -> Result<Self::Redirect, Self::Error> {
+    fn redirect(&mut self, kind: RedirectKind<Self::Word>) -> Self::Redirect {
         let io = match kind {
             RedirectKind::Read(fd, path) => Redirect::Read(fd, path),
             RedirectKind::Write(fd, path) => Redirect::Write(fd, path),
@@ -698,7 +688,7 @@ where
             RedirectKind::DupWrite(src, dst) => Redirect::DupWrite(src, dst),
         };
 
-        Ok(io)
+        io
     }
 }
 

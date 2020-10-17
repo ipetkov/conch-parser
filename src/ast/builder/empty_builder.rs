@@ -1,6 +1,5 @@
 use crate::ast::builder::*;
 use crate::ast::{AndOr, RedirectOrCmdWord, RedirectOrEnvVar};
-use crate::parse::ParseError;
 
 /// A no-op `Builder` which ignores all inputs and always returns `()`.
 ///
@@ -30,7 +29,6 @@ impl Builder for EmptyBuilder {
     type CompoundCommand = ();
     type Word = ();
     type Redirect = ();
-    type Error = ParseError;
 
     fn complete_command(
         &mut self,
@@ -38,48 +36,42 @@ impl Builder for EmptyBuilder {
         _cmd: Self::Command,
         _separator: SeparatorKind,
         _cmd_comment: Option<Newline>,
-    ) -> Result<Self::Command, Self::Error> {
-        Ok(())
+    ) -> Self::Command {
     }
 
     fn and_or_list(
         &mut self,
         _first: Self::ListableCommand,
         _rest: Vec<(Vec<Newline>, AndOr<Self::ListableCommand>)>,
-    ) -> Result<Self::CommandList, Self::Error> {
-        Ok(())
+    ) -> Self::CommandList {
     }
 
     fn pipeline(
         &mut self,
         _bang: bool,
         _cmds: Vec<(Vec<Newline>, Self::Command)>,
-    ) -> Result<Self::Command, Self::Error> {
-        Ok(())
+    ) -> Self::Command {
     }
 
     fn simple_command(
         &mut self,
         _redirects_or_env_vars: Vec<RedirectOrEnvVar<Self::Redirect, String, Self::Word>>,
         _redirects_or_cmd_words: Vec<RedirectOrCmdWord<Self::Redirect, Self::Word>>,
-    ) -> Result<Self::PipeableCommand, Self::Error> {
-        Ok(())
+    ) -> Self::PipeableCommand {
     }
 
     fn brace_group(
         &mut self,
         _cmds: CommandGroup<Self::Command>,
         _redirects: Vec<Self::Redirect>,
-    ) -> Result<Self::Command, Self::Error> {
-        Ok(())
+    ) -> Self::Command {
     }
 
     fn subshell(
         &mut self,
         _cmds: CommandGroup<Self::Command>,
         _redirects: Vec<Self::Redirect>,
-    ) -> Result<Self::Command, Self::Error> {
-        Ok(())
+    ) -> Self::Command {
     }
 
     fn loop_command(
@@ -87,32 +79,28 @@ impl Builder for EmptyBuilder {
         __kind: LoopKind,
         __guard_body_pair: GuardBodyPairGroup<Self::Command>,
         __redirects: Vec<Self::Redirect>,
-    ) -> Result<Self::CompoundCommand, Self::Error> {
-        Ok(())
+    ) -> Self::CompoundCommand {
     }
 
     fn if_command(
         &mut self,
         _fragments: IfFragments<Self::Command>,
         _redirects: Vec<Self::Redirect>,
-    ) -> Result<Self::Command, Self::Error> {
-        Ok(())
+    ) -> Self::Command {
     }
 
     fn for_command(
         &mut self,
         _fragments: ForFragments<Self::Word, Self::Command>,
         _redirects: Vec<Self::Redirect>,
-    ) -> Result<Self::Command, Self::Error> {
-        Ok(())
+    ) -> Self::Command {
     }
 
     fn case_command(
         &mut self,
         _fragments: CaseFragments<Self::Word, Self::Command>,
         _redirects: Vec<Self::Redirect>,
-    ) -> Result<Self::Command, Self::Error> {
-        Ok(())
+    ) -> Self::Command {
     }
 
     fn function_declaration(
@@ -120,26 +108,18 @@ impl Builder for EmptyBuilder {
         _name: String,
         _post_name_comments: Vec<Newline>,
         _body: Self::CompoundCommand,
-    ) -> Result<Self::Command, Self::Error> {
-        Ok(())
+    ) -> Self::Command {
     }
 
-    fn comments(&mut self, _comments: Vec<Newline>) -> Result<(), Self::Error> {
-        Ok(())
-    }
+    fn comments(&mut self, _comments: Vec<Newline>) {}
 
-    fn word(&mut self, _kind: ComplexWordKind<Self::Command>) -> Result<Self::Word, Self::Error> {
-        Ok(())
-    }
+    fn word(&mut self, _kind: ComplexWordKind<Self::Command>) -> Self::Word {}
 
-    fn redirect(&mut self, _kind: RedirectKind<Self::Word>) -> Result<Self::Redirect, Self::Error> {
-        Ok(())
-    }
+    fn redirect(&mut self, _kind: RedirectKind<Self::Word>) -> Self::Redirect {}
 
     fn compound_command_into_pipeable(
         &mut self,
         _cmd: Self::CompoundCommand,
-    ) -> Result<Self::PipeableCommand, Self::Error> {
-        Ok(())
+    ) -> Self::PipeableCommand {
     }
 }
