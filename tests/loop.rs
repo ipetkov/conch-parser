@@ -52,12 +52,22 @@ fn test_loop_command_until_valid() {
 fn test_loop_command_invalid_missing_separator() {
     let mut p = make_parser("while guard do foo\nbar; baz; done");
     assert_eq!(
-        Err(IncompleteCmd("while", src(0, 1, 1), "do", src(33, 2, 15))),
+        Err(IncompleteCmd {
+            cmd: "while",
+            cmd_pos: src(0, 1, 1),
+            kw: "do",
+            kw_pos: src(33, 2, 15)
+        }),
         p.loop_command()
     );
     let mut p = make_parser("while guard; do foo\nbar; baz done");
     assert_eq!(
-        Err(IncompleteCmd("do", src(13, 1, 14), "done", src(33, 2, 14))),
+        Err(IncompleteCmd {
+            cmd: "do",
+            cmd_pos: src(13, 1, 14),
+            kw: "done",
+            kw_pos: src(33, 2, 14)
+        }),
         p.loop_command()
     );
 }

@@ -10,7 +10,12 @@ use std::fmt;
 pub enum ParseError {
     /// Encountered a word that could not be interpreted as a valid file descriptor.
     /// Stores the start and end position of the invalid word.
-    BadFd(SourcePos, SourcePos),
+    BadFd {
+        /// Starting position of the invalid word.
+        start: SourcePos,
+        /// Ending position of the invalid word.
+        end: SourcePos,
+    },
     /// Encountered a `Token::Literal` where expecting a `Token::Name`.
     BadIdent(String, SourcePos),
     /// Encountered a bad token inside of `${...}`.
@@ -22,7 +27,16 @@ pub enum ParseError {
     /// command being parsed, followed by the position of where it starts. Next
     /// is the missing keyword followed by the position of where the parse
     /// expected to have encountered it.
-    IncompleteCmd(&'static str, SourcePos, &'static str, SourcePos),
+    IncompleteCmd {
+        /// The command being parsed.
+        cmd: &'static str,
+        /// The starting position of the command.
+        cmd_pos: SourcePos,
+        /// The keyword which we failed to find as expected.
+        kw: &'static str,
+        /// The position of where the missing keyword was expected.
+        kw_pos: SourcePos,
+    },
     /// Encountered a token not appropriate for the current context.
     Unexpected(Token, SourcePos),
     /// Encountered the end of input while expecting additional tokens.
@@ -34,10 +48,10 @@ impl Error for ParseError {
         match self {
             ParseError::Unmatched(e) => Some(e),
 
-            ParseError::BadFd(..)
+            ParseError::BadFd { .. }
             | ParseError::BadIdent(..)
             | ParseError::BadSubst(..)
-            | ParseError::IncompleteCmd(..)
+            | ParseError::IncompleteCmd { .. }
             | ParseError::Unexpected(..)
             | ParseError::UnexpectedEOF => None,
         }
@@ -53,7 +67,7 @@ impl From<UnmatchedError> for ParseError {
 impl fmt::Display for ParseError {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ParseError::BadFd(start, end) => write!(
+            ParseError::BadFd { start, end } => write!(
                 fmt,
                 "file descriptor found between lines {} - {} cannot possibly be a valid",
                 start, end
@@ -64,10 +78,15 @@ impl fmt::Display for ParseError {
             }
             ParseError::Unmatched(e) => e.fmt(fmt),
 
-            ParseError::IncompleteCmd(c, start, kw, kw_pos) => write!(
+            ParseError::IncompleteCmd {
+                cmd,
+                cmd_pos,
+                kw,
+                kw_pos,
+            } => write!(
                 fmt,
                 "did not find `{}` keyword on line {}, in `{}` command which starts on line {}",
-                kw, kw_pos, c, start
+                kw, kw_pos, cmd, cmd_pos
             ),
 
             // When printing unexpected newlines, print \n instead to avoid confusingly formatted messages

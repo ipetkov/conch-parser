@@ -114,7 +114,12 @@ fn test_for_command_valid_with_separator() {
 fn test_for_command_invalid_with_in_no_words_no_with_separator() {
     let mut p = make_parser("for var in do echo $var; done");
     assert_eq!(
-        Err(IncompleteCmd("for", src(0, 1, 1), "do", src(25, 1, 26))),
+        Err(IncompleteCmd {
+            cmd: "for",
+            cmd_pos: src(0, 1, 1),
+            kw: "do",
+            kw_pos: src(25, 1, 26)
+        }),
         p.for_command()
     );
 }
@@ -123,7 +128,12 @@ fn test_for_command_invalid_with_in_no_words_no_with_separator() {
 fn test_for_command_invalid_missing_separator() {
     let mut p = make_parser("for var in one two three do echo $var; done");
     assert_eq!(
-        Err(IncompleteCmd("for", src(0, 1, 1), "do", src(39, 1, 40))),
+        Err(IncompleteCmd {
+            cmd: "for",
+            cmd_pos: src(0, 1, 1),
+            kw: "do",
+            kw_pos: src(39, 1, 40)
+        }),
         p.for_command()
     );
 }
@@ -147,7 +157,12 @@ fn test_for_command_invalid_missing_keyword() {
 fn test_for_command_invalid_missing_var() {
     let mut p = make_parser("for in one two three\ndo echo $var; done");
     assert_eq!(
-        Err(IncompleteCmd("for", src(0, 1, 1), "in", src(7, 1, 8))),
+        Err(IncompleteCmd {
+            cmd: "for",
+            cmd_pos: src(0, 1, 1),
+            kw: "in",
+            kw_pos: src(7, 1, 8)
+        }),
         p.for_command()
     );
 }
@@ -156,7 +171,12 @@ fn test_for_command_invalid_missing_var() {
 fn test_for_command_invalid_missing_body() {
     let mut p = make_parser("for var in one two three\n");
     assert_eq!(
-        Err(IncompleteCmd("for", src(0, 1, 1), "do", src(25, 2, 1))),
+        Err(IncompleteCmd {
+            cmd: "for",
+            cmd_pos: src(0, 1, 1),
+            kw: "do",
+            kw_pos: src(25, 2, 1)
+        }),
         p.for_command()
     );
 }
@@ -170,7 +190,12 @@ fn test_for_command_invalid_quoted() {
         ),
         (
             "for var 'in' one two three\ndo echo $var; done",
-            IncompleteCmd("for", src(0, 1, 1), "in", src(8, 1, 9)),
+            IncompleteCmd {
+                cmd: "for",
+                cmd_pos: src(0, 1, 1),
+                kw: "in",
+                kw_pos: src(8, 1, 9),
+            },
         ),
         (
             "\"for\" var in one two three\ndo echo $var; done",
@@ -178,7 +203,12 @@ fn test_for_command_invalid_quoted() {
         ),
         (
             "for var \"in\" one two three\ndo echo $var; done",
-            IncompleteCmd("for", src(0, 1, 1), "in", src(8, 1, 9)),
+            IncompleteCmd {
+                cmd: "for",
+                cmd_pos: src(0, 1, 1),
+                kw: "in",
+                kw_pos: src(8, 1, 9),
+            },
         ),
     ];
 
@@ -216,7 +246,12 @@ fn test_for_command_invalid_var_must_be_name() {
     );
     let mut p = make_parser("for var*% in one two three\ndo echo $var; done");
     assert_eq!(
-        Err(IncompleteCmd("for", src(0, 1, 1), "in", src(7, 1, 8))),
+        Err(IncompleteCmd {
+            cmd: "for",
+            cmd_pos: src(0, 1, 1),
+            kw: "in",
+            kw_pos: src(7, 1, 8)
+        }),
         p.for_command()
     );
 }
@@ -275,7 +310,12 @@ fn test_for_command_invalid_concat() {
         Token::Literal(String::from("done")),
     ]);
     assert_eq!(
-        Err(IncompleteCmd("for", src(0, 1, 1), "in", src(8, 1, 9))),
+        Err(IncompleteCmd {
+            cmd: "for",
+            cmd_pos: src(0, 1, 1),
+            kw: "in",
+            kw_pos: src(8, 1, 9)
+        }),
         p.for_command()
     );
 }

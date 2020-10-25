@@ -587,10 +587,15 @@ where
         let mut list = Vec::new();
         loop {
             self.skip_whitespace();
-            let start_pos = self.iter.pos();
+            let start = self.iter.pos();
             match self.redirect()? {
                 Some(Ok(io)) => list.push(io),
-                Some(Err(_)) => return Err(ParseError::BadFd(start_pos, self.iter.pos()).into()),
+                Some(Err(_)) => {
+                    return Err(ParseError::BadFd {
+                        start,
+                        end: self.iter.pos(),
+                    })
+                }
                 None => break,
             }
         }
@@ -708,7 +713,10 @@ where
                     if is_numeric {
                         path
                     } else {
-                        return Err(ParseError::BadFd(path_start_pos, self.iter.pos()).into());
+                        return Err(ParseError::BadFd {
+                            start: path_start_pos,
+                            end: self.iter.pos(),
+                        });
                     }
                 };
                 $parser.builder.word(path)
@@ -1651,7 +1659,12 @@ where
             ..Default::default()
         })?;
         self.reserved_word(&[DONE])
-            .map_err(|()| ParseError::IncompleteCmd(DO, start_pos, DONE, self.iter.pos()))?;
+            .map_err(|()| ParseError::IncompleteCmd {
+                cmd: DO,
+                cmd_pos: start_pos,
+                kw: DONE,
+                kw_pos: self.iter.pos(),
+            })?;
         Ok(result)
     }
 
@@ -1815,7 +1828,13 @@ where
                     body: self.do_group()?,
                 },
             )),
-            None => Err(ParseError::IncompleteCmd(WHILE, start_pos, DO, self.iter.pos()).into()),
+            None => Err(ParseError::IncompleteCmd {
+                cmd: WHILE,
+                cmd_pos: start_pos,
+                kw: DO,
+                kw_pos: self.iter.pos(),
+            }
+            .into()),
         }
     }
 
@@ -1831,13 +1850,23 @@ where
 
         macro_rules! missing_fi {
             () => {
-                |_| ParseError::IncompleteCmd(IF, start_pos, FI, self.iter.pos())
+                |_| ParseError::IncompleteCmd {
+                    cmd: IF,
+                    cmd_pos: start_pos,
+                    kw: FI,
+                    kw_pos: self.iter.pos(),
+                }
             };
         }
 
         macro_rules! missing_then {
             () => {
-                |_| ParseError::IncompleteCmd(IF, start_pos, THEN, self.iter.pos())
+                |_| ParseError::IncompleteCmd {
+                    cmd: IF,
+                    cmd_pos: start_pos,
+                    kw: THEN,
+                    kw_pos: self.iter.pos(),
+                }
             };
         }
 
@@ -1943,14 +1972,26 @@ where
             // If we didn't find an `in` keyword, and we havent hit the body
             // (a `do` keyword), then we can reasonably say the script has
             // words without an `in` keyword.
-            return Err(ParseError::IncompleteCmd(FOR, start_pos, IN, self.iter.pos()).into());
+            return Err(ParseError::IncompleteCmd {
+                cmd: FOR,
+                cmd_pos: start_pos,
+                kw: IN,
+                kw_pos: self.iter.pos(),
+            }
+            .into());
         } else {
             // `for name \n* do_group`
             (None, post_var_comments)
         };
 
         if self.peek_reserved_word(&[DO]).is_none() {
-            return Err(ParseError::IncompleteCmd(FOR, start_pos, DO, self.iter.pos()).into());
+            return Err(ParseError::IncompleteCmd {
+                cmd: FOR,
+                cmd_pos: start_pos,
+                kw: DO,
+                kw_pos: self.iter.pos(),
+            }
+            .into());
         }
 
         let body = self.do_group()?;
@@ -1973,13 +2014,23 @@ where
 
         macro_rules! missing_in {
             () => {
-                |_| ParseError::IncompleteCmd(CASE, start_pos, IN, self.iter.pos());
+                |_| ParseError::IncompleteCmd {
+                    cmd: CASE,
+                    cmd_pos: start_pos,
+                    kw: IN,
+                    kw_pos: self.iter.pos(),
+                };
             };
         }
 
         macro_rules! missing_esac {
             () => {
-                |_| ParseError::IncompleteCmd(CASE, start_pos, ESAC, self.iter.pos());
+                |_| ParseError::IncompleteCmd {
+                    cmd: CASE,
+                    cmd_pos: start_pos,
+                    kw: ESAC,
+                    kw_pos: self.iter.pos(),
+                };
             };
         }
 

@@ -22,7 +22,12 @@ fn test_do_group_valid() {
 fn test_do_group_invalid_missing_separator() {
     let mut p = make_parser("do foo\nbar; baz done");
     assert_eq!(
-        Err(IncompleteCmd("do", src(0, 1, 1), "done", src(20, 2, 14))),
+        Err(IncompleteCmd {
+            cmd: "do",
+            cmd_pos: src(0, 1, 1),
+            kw: "done",
+            kw_pos: src(20, 2, 14)
+        }),
         p.do_group()
     );
 }
@@ -46,7 +51,12 @@ fn test_do_group_invalid_missing_keyword() {
     );
     let mut p = make_parser("do foo\nbar; baz");
     assert_eq!(
-        Err(IncompleteCmd("do", src(0, 1, 1), "done", src(15, 2, 9))),
+        Err(IncompleteCmd {
+            cmd: "do",
+            cmd_pos: src(0, 1, 1),
+            kw: "done",
+            kw_pos: src(15, 2, 9)
+        }),
         p.do_group()
     );
 }
@@ -60,7 +70,12 @@ fn test_do_group_invalid_quoted() {
         ),
         (
             "do foo\nbar; baz; 'done'",
-            IncompleteCmd("do", src(0, 1, 1), "done", src(23, 2, 17)),
+            IncompleteCmd {
+                cmd: "do",
+                cmd_pos: src(0, 1, 1),
+                kw: "done",
+                kw_pos: src(23, 2, 17),
+            },
         ),
         (
             "\"do\" foo\nbar; baz; done",
@@ -68,7 +83,12 @@ fn test_do_group_invalid_quoted() {
         ),
         (
             "do foo\nbar; baz; \"done\"",
-            IncompleteCmd("do", src(0, 1, 1), "done", src(23, 2, 17)),
+            IncompleteCmd {
+                cmd: "do",
+                cmd_pos: src(0, 1, 1),
+                kw: "done",
+                kw_pos: src(23, 2, 17),
+            },
         ),
     ];
 
@@ -110,7 +130,12 @@ fn test_do_group_invalid_concat() {
         Token::Literal(String::from("ne")),
     ]);
     assert_eq!(
-        Err(IncompleteCmd("do", src(0, 1, 1), "done", src(11, 3, 5))),
+        Err(IncompleteCmd {
+            cmd: "do",
+            cmd_pos: src(0, 1, 1),
+            kw: "done",
+            kw_pos: src(11, 3, 5)
+        }),
         p.do_group()
     );
 }

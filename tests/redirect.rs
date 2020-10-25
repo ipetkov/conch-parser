@@ -94,7 +94,10 @@ fn test_redirect_valid_dst_fd_can_have_escaped_numerics() {
 #[test]
 fn test_redirect_invalid_dup_if_dst_fd_is_definitely_non_numeric() {
     assert_eq!(
-        Err(BadFd(src(2, 1, 3), src(12, 1, 13))),
+        Err(BadFd {
+            start: src(2, 1, 3),
+            end: src(12, 1, 13),
+        }),
         make_parser(">&123$$'foo'").redirect()
     );
 }
@@ -123,7 +126,10 @@ fn test_redirect_valid_dup_return_redirect_if_dst_fd_is_possibly_numeric() {
 #[test]
 fn test_redirect_invalid_close_without_whitespace() {
     assert_eq!(
-        Err(BadFd(src(2, 1, 3), src(7, 1, 8))),
+        Err(BadFd {
+            start: src(2, 1, 3),
+            end: src(7, 1, 8),
+        }),
         make_parser(">&-asdf").redirect()
     );
 }
@@ -131,7 +137,10 @@ fn test_redirect_invalid_close_without_whitespace() {
 #[test]
 fn test_redirect_invalid_close_with_whitespace() {
     assert_eq!(
-        Err(BadFd(src(9, 1, 10), src(14, 1, 15))),
+        Err(BadFd {
+            start: src(9, 1, 10),
+            end: src(14, 1, 15),
+        }),
         make_parser("<&       -asdf").redirect()
     );
 }
@@ -273,15 +282,24 @@ fn test_redirect_list_valid() {
 #[test]
 fn test_redirect_list_rejects_non_fd_words() {
     assert_eq!(
-        Err(BadFd(src(16, 1, 17), src(19, 1, 20))),
+        Err(BadFd {
+            start: src(16, 1, 17),
+            end: src(19, 1, 20),
+        }),
         make_parser("1>>out <in 2>&- abc").redirect_list()
     );
     assert_eq!(
-        Err(BadFd(src(7, 1, 8), src(10, 1, 11))),
+        Err(BadFd {
+            start: src(7, 1, 8),
+            end: src(10, 1, 11),
+        }),
         make_parser("1>>out abc<in 2>&-").redirect_list()
     );
     assert_eq!(
-        Err(BadFd(src(7, 1, 8), src(10, 1, 11))),
+        Err(BadFd {
+            start: src(7, 1, 8),
+            end: src(10, 1, 11),
+        }),
         make_parser("1>>out abc <in 2>&-").redirect_list()
     );
 }

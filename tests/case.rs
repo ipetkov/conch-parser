@@ -191,12 +191,22 @@ fn test_case_command_invalid_missing_keyword() {
     );
     let mut p = make_parser("case foo foo) echo foo;; bar) echo bar;; esac");
     assert_eq!(
-        Err(IncompleteCmd("case", src(0, 1, 1), "in", src(9, 1, 10))),
+        Err(IncompleteCmd {
+            cmd: "case",
+            cmd_pos: src(0, 1, 1),
+            kw: "in",
+            kw_pos: src(9, 1, 10)
+        }),
         p.case_command()
     );
     let mut p = make_parser("case foo in foo) echo foo;; bar) echo bar;;");
     assert_eq!(
-        Err(IncompleteCmd("case", src(0, 1, 1), "esac", src(43, 1, 44))),
+        Err(IncompleteCmd {
+            cmd: "case",
+            cmd_pos: src(0, 1, 1),
+            kw: "esac",
+            kw_pos: src(43, 1, 44)
+        }),
         p.case_command()
     );
 }
@@ -205,7 +215,12 @@ fn test_case_command_invalid_missing_keyword() {
 fn test_case_command_invalid_missing_word() {
     let mut p = make_parser("case in foo) echo foo;; bar) echo bar;; esac");
     assert_eq!(
-        Err(IncompleteCmd("case", src(0, 1, 1), "in", src(8, 1, 9))),
+        Err(IncompleteCmd {
+            cmd: "case",
+            cmd_pos: src(0, 1, 1),
+            kw: "in",
+            kw_pos: src(8, 1, 9)
+        }),
         p.case_command()
     );
 }
@@ -219,7 +234,12 @@ fn test_case_command_invalid_quoted() {
         ),
         (
             "case foo 'in' foo) echo foo;; bar) echo bar;; esac",
-            IncompleteCmd("case", src(0, 1, 1), "in", src(9, 1, 10)),
+            IncompleteCmd {
+                cmd: "case",
+                cmd_pos: src(0, 1, 1),
+                kw: "in",
+                kw_pos: src(9, 1, 10),
+            },
         ),
         (
             "case foo in foo) echo foo;; bar')' echo bar;; esac",
@@ -227,7 +247,12 @@ fn test_case_command_invalid_quoted() {
         ),
         (
             "case foo in foo) echo foo;; bar) echo bar;; 'esac'",
-            IncompleteCmd("case", src(0, 1, 1), "esac", src(50, 1, 51)),
+            IncompleteCmd {
+                cmd: "case",
+                cmd_pos: src(0, 1, 1),
+                kw: "esac",
+                kw_pos: src(50, 1, 51),
+            },
         ),
         (
             "\"case\" foo in foo) echo foo;; bar) echo bar;; esac",
@@ -235,7 +260,12 @@ fn test_case_command_invalid_quoted() {
         ),
         (
             "case foo \"in\" foo) echo foo;; bar) echo bar;; esac",
-            IncompleteCmd("case", src(0, 1, 1), "in", src(9, 1, 10)),
+            IncompleteCmd {
+                cmd: "case",
+                cmd_pos: src(0, 1, 1),
+                kw: "in",
+                kw_pos: src(9, 1, 10),
+            },
         ),
         (
             "case foo in foo) echo foo;; bar\")\" echo bar;; esac",
@@ -243,7 +273,12 @@ fn test_case_command_invalid_quoted() {
         ),
         (
             "case foo in foo) echo foo;; bar) echo bar;; \"esac\"",
-            IncompleteCmd("case", src(0, 1, 1), "esac", src(50, 1, 51)),
+            IncompleteCmd {
+                cmd: "case",
+                cmd_pos: src(0, 1, 1),
+                kw: "esac",
+                kw_pos: src(50, 1, 51),
+            },
         ),
     ];
 
@@ -317,7 +352,12 @@ fn test_case_command_invalid_concat() {
         Token::Literal(String::from("esac")),
     ]);
     assert_eq!(
-        Err(IncompleteCmd("case", src(0, 1, 1), "in", src(12, 1, 13))),
+        Err(IncompleteCmd {
+            cmd: "case",
+            cmd_pos: src(0, 1, 1),
+            kw: "in",
+            kw_pos: src(12, 1, 13)
+        }),
         p.case_command()
     );
 
@@ -342,7 +382,12 @@ fn test_case_command_invalid_concat() {
         Token::Literal(String::from("ac")),
     ]);
     assert_eq!(
-        Err(IncompleteCmd("case", src(0, 1, 1), "esac", src(36, 4, 7))),
+        Err(IncompleteCmd {
+            cmd: "case",
+            cmd_pos: src(0, 1, 1),
+            kw: "esac",
+            kw_pos: src(36, 4, 7)
+        }),
         p.case_command()
     );
 }

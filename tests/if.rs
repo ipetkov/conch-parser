@@ -117,7 +117,12 @@ fn test_if_command_valid_without_else() {
 fn test_if_command_invalid_missing_separator() {
     let mut p = make_parser("if guard; then body1; elif guard2; then body2; else else fi");
     assert_eq!(
-        Err(IncompleteCmd("if", src(0, 1, 1), "fi", src(59, 1, 60))),
+        Err(IncompleteCmd {
+            cmd: "if",
+            cmd_pos: src(0, 1, 1),
+            kw: "fi",
+            kw_pos: src(59, 1, 60)
+        }),
         p.if_command()
     );
 }
@@ -134,7 +139,12 @@ fn test_if_command_invalid_missing_keyword() {
     );
     let mut p = make_parser("if guard1; then body1; elif guard2; then body2; else else;");
     assert_eq!(
-        Err(IncompleteCmd("if", src(0, 1, 1), "fi", src(58, 1, 59))),
+        Err(IncompleteCmd {
+            cmd: "if",
+            cmd_pos: src(0, 1, 1),
+            kw: "fi",
+            kw_pos: src(58, 1, 59)
+        }),
         p.if_command()
     );
 }
@@ -164,7 +174,12 @@ fn test_if_command_invalid_quoted() {
         ),
         (
             "if guard1; then body1; elif guard2; then body2; else else; 'fi'",
-            IncompleteCmd("if", src(0, 1, 1), "fi", src(63, 1, 64)),
+            IncompleteCmd {
+                cmd: "if",
+                cmd_pos: src(0, 1, 1),
+                kw: "fi",
+                kw_pos: src(63, 1, 64),
+            },
         ),
         (
             "\"if\" guard1; then body1; elif guard2; then body2; else else; fi",
@@ -172,7 +187,12 @@ fn test_if_command_invalid_quoted() {
         ),
         (
             "if guard1; then body1; elif guard2; then body2; else else; \"fi\"",
-            IncompleteCmd("if", src(0, 1, 1), "fi", src(63, 1, 64)),
+            IncompleteCmd {
+                cmd: "if",
+                cmd_pos: src(0, 1, 1),
+                kw: "fi",
+                kw_pos: src(63, 1, 64),
+            },
         ),
     ];
 
@@ -251,7 +271,12 @@ fn test_if_command_invalid_concat() {
         Token::Literal(String::from("i")),
     ]);
     assert_eq!(
-        Err(IncompleteCmd("if", src(0, 1, 1), "fi", src(61, 11, 3))),
+        Err(IncompleteCmd {
+            cmd: "if",
+            cmd_pos: src(0, 1, 1),
+            kw: "fi",
+            kw_pos: src(61, 11, 3)
+        }),
         p.if_command()
     );
 }
