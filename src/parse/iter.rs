@@ -1,7 +1,7 @@
 //! An module for easily iterating over a `Token` stream.
 
 use crate::error::UnmatchedError;
-use crate::iter::{PeekableIterator, PeekablePositionIterator, PositionIterator};
+use crate::iter::{Balanced, PeekableIterator, PeekablePositionIterator, PositionIterator};
 use crate::parse::SourcePos;
 use crate::token::Token;
 use crate::token::Token::*;
@@ -34,30 +34,30 @@ impl TokenOrPos {
 pub trait TokenIterator: Sized + PeekablePositionIterator<Item = Token> {
     /// Returns an iterator that yields at least one token, but continues to yield
     /// tokens until all matching cases of single/double quotes, backticks,
-    /// ${ }, $( ), or ( ) are found.
+    /// `${ }`, `$( )`, or `( )` are found.
     fn balanced(&mut self) -> Balanced<&mut Self> {
-        Balanced::new(self, None)
+        Balanced::balanced(self)
     }
 
     /// Returns an iterator that yields tokens up to when a (closing) single quote
     /// is reached (assuming that the caller has reached the opening quote and
     /// wishes to continue up to but not including the closing quote).
     fn single_quoted(&mut self, pos: SourcePos) -> Balanced<&mut Self> {
-        Balanced::new(self, Some((SingleQuote, pos)))
+        Balanced::single_quoted(self, pos)
     }
 
     /// Returns an iterator that yields tokens up to when a (closing) double quote
     /// is reached (assuming that the caller has reached the opening quote and
     /// wishes to continue up to but not including the closing quote).
     fn double_quoted(&mut self, pos: SourcePos) -> Balanced<&mut Self> {
-        Balanced::new(self, Some((DoubleQuote, pos)))
+        Balanced::double_quoted(self, pos)
     }
 
     /// Returns an iterator that yields tokens up to when a (closing) backtick
     /// is reached (assuming that the caller has reached the opening backtick and
     /// wishes to continue up to but not including the closing backtick).
     fn backticked(&mut self, pos: SourcePos) -> Balanced<&mut Self> {
-        Balanced::new(self, Some((Backtick, pos)))
+        Balanced::backticked(self, pos)
     }
 
     /// Returns an iterator that yields tokens up to when a (closing) backtick
@@ -392,184 +392,6 @@ impl<I: Iterator<Item = Token>> TokenIterWrapper<I> {
                 inner.token_iter_from_backticked_with_removed_backslashes(pos)
             }
         }
-    }
-}
-
-/// An iterator that yields at least one token, but continues to yield
-/// tokens until all matching cases of single/double quotes, backticks,
-/// ${ }, $( ), or ( ) are found.
-#[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
-#[derive(Debug)]
-pub struct Balanced<I> {
-    /// The underlying token iterator.
-    iter: I,
-    /// Any token we had to peek after a backslash but haven't yielded yet,
-    /// as well as the position after it.
-    escaped: Option<(Token, SourcePos)>,
-    /// A stack of pending unmatched tokens we still must encounter.
-    stack: Vec<(Token, SourcePos)>,
-    /// Indicates if we should yield the final, outermost delimeter.
-    skip_last_delimeter: bool,
-    /// Makes the iterator *fused* by yielding None forever after we are done.
-    done: bool,
-    /// The current position of the iterator.
-    pos: SourcePos,
-}
-
-impl<I: PositionIterator> Balanced<I> {
-    /// Constructs a new balanced iterator.
-    ///
-    /// If no delimeter is given, a single token will be yielded, unless the
-    /// first found token is an opening one (e.g. "), making the iterator yield
-    /// tokens until its matching delimeter is found (the matching delimeter *will*
-    /// be consumed).
-    ///
-    /// If a delimeter (and its position) is specified, tokens are yielded *up to*
-    /// the delimeter, but the delimeter will be silently consumed.
-    pub fn new(iter: I, delim: Option<(Token, SourcePos)>) -> Self {
-        Balanced {
-            escaped: None,
-            skip_last_delimeter: delim.is_some(),
-            stack: delim.map_or(Vec::new(), |d| vec![d]),
-            done: false,
-            pos: iter.pos(),
-            iter,
-        }
-    }
-}
-
-impl<I: PeekablePositionIterator<Item = Token>> PositionIterator for Balanced<I> {
-    fn pos(&self) -> SourcePos {
-        self.pos
-    }
-}
-
-impl<I: PeekablePositionIterator<Item = Token>> Iterator for Balanced<I> {
-    type Item = Result<Token, UnmatchedError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some((tok, pos)) = self.escaped.take() {
-            self.pos = pos;
-            return Some(Ok(tok));
-        } else if self.done {
-            return None;
-        }
-
-        if self.stack.last().map(|t| &t.0) == self.iter.peek() {
-            let ret = self.iter.next().map(Ok);
-            self.stack.pop();
-            let stack_empty = self.stack.is_empty();
-            self.done |= stack_empty;
-            self.pos = self.iter.pos();
-            if self.skip_last_delimeter && stack_empty {
-                return None;
-            } else {
-                return ret;
-            };
-        }
-
-        // Tokens between single quotes have no special meaning
-        // so we should make sure we don't treat anything specially.
-        if let Some(&(SingleQuote, pos)) = self.stack.last() {
-            let ret = match self.iter.next() {
-                // Closing SingleQuote should have been captured above
-                Some(t) => Some(Ok(t)),
-                // Make sure we indicate errors on missing closing quotes
-                None => Some(Err(UnmatchedError {
-                    token: SingleQuote,
-                    pos,
-                })),
-            };
-
-            self.pos = self.iter.pos();
-            return ret;
-        }
-
-        let cur_pos = self.iter.pos();
-        let ret = match self.iter.next() {
-            Some(Backslash) => {
-                // Make sure that we indicate our position as before the escaped token,
-                // and NOT as the underlying iterator's position, which will indicate the
-                // position AFTER the escaped token (which we are buffering ourselves)
-                self.pos = self.iter.pos();
-
-                debug_assert_eq!(self.escaped, None);
-                self.escaped = self.iter.next().map(|t| (t, self.iter.pos()));
-                // Make sure we stop yielding tokens after the stored escaped token
-                // otherwise we risk consuming one token too many!
-                self.done |= self.stack.is_empty();
-                return Some(Ok(Backslash));
-            }
-
-            Some(Backtick) => {
-                self.stack.push((Backtick, cur_pos));
-                Some(Ok(Backtick))
-            }
-
-            Some(SingleQuote) => {
-                if self.stack.last().map(|t| &t.0) != Some(&DoubleQuote) {
-                    self.stack.push((SingleQuote, cur_pos));
-                }
-                Some(Ok(SingleQuote))
-            }
-
-            Some(DoubleQuote) => {
-                self.stack.push((DoubleQuote, cur_pos));
-                Some(Ok(DoubleQuote))
-            }
-
-            Some(ParenOpen) => {
-                self.stack.push((ParenClose, cur_pos));
-                Some(Ok(ParenOpen))
-            }
-
-            Some(Dollar) => {
-                let cur_pos = self.iter.pos(); // Want the pos of curly or paren, not $ here
-                match self.iter.peek() {
-                    Some(&CurlyOpen) => self.stack.push((CurlyClose, cur_pos)),
-                    Some(&ParenOpen) => {} // Already handled by paren case above
-
-                    // We have nothing further to match
-                    _ => {
-                        self.done |= self.stack.is_empty();
-                    }
-                }
-                Some(Ok(Dollar))
-            }
-
-            Some(t) => {
-                // If we aren't looking for any more delimeters we should only
-                // consume a single token (since its balanced by nature)
-                self.done |= self.stack.is_empty();
-                Some(Ok(t))
-            }
-
-            None => match self.stack.pop() {
-                // Its okay to hit EOF if everything is balanced so far
-                None => {
-                    self.done = true;
-                    None
-                }
-                // But its not okay otherwise
-                Some((ParenClose, pos)) => Some(Err(UnmatchedError {
-                    token: ParenOpen,
-                    pos,
-                })),
-                Some((CurlyClose, pos)) => Some(Err(UnmatchedError {
-                    token: CurlyOpen,
-                    pos,
-                })),
-                Some((delim, pos)) => Some(Err(UnmatchedError { token: delim, pos })),
-            },
-        };
-
-        self.pos = self.iter.pos();
-        ret
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        // Our best guess is as good as the internal token iterator's...
-        self.iter.size_hint()
     }
 }
 

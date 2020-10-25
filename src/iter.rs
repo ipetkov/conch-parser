@@ -2,6 +2,10 @@
 
 use crate::parse::SourcePos;
 
+mod balanced;
+
+pub use self::balanced::Balanced;
+
 /// An iterator that can track its internal position in the stream.
 pub trait PositionIterator: Iterator {
     /// Get the current position of the iterator.
