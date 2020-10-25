@@ -1,7 +1,10 @@
 //! An module for easily iterating over a `Token` stream.
 
 use crate::error::UnmatchedError;
-use crate::iter::{Balanced, PeekableIterator, PeekablePositionIterator, PositionIterator};
+use crate::iter::{
+    BacktickBackslashRemover, Balanced, PeekableIterator, PeekablePositionIterator,
+    PositionIterator,
+};
 use crate::parse::SourcePos;
 use crate::token::Token;
 use crate::token::Token::*;
@@ -63,12 +66,12 @@ pub trait TokenIterator: Sized + PeekablePositionIterator<Item = Token> {
     /// Returns an iterator that yields tokens up to when a (closing) backtick
     /// is reached (assuming that the caller has reached the opening backtick and
     /// wishes to continue up to but not including the closing backtick).
-    /// Any backslashes followed by \, $, or ` are removed from the stream.
+    /// from the stream that are followed by `\`, `$`, or `` ` ``.
     fn backticked_remove_backslashes(
         &mut self,
         pos: SourcePos,
     ) -> BacktickBackslashRemover<&mut Self> {
-        BacktickBackslashRemover::new(self.backticked(pos))
+        BacktickBackslashRemover::new(self, pos)
     }
 }
 
@@ -395,30 +398,6 @@ impl<I: Iterator<Item = Token>> TokenIterWrapper<I> {
     }
 }
 
-/// A `Balanced` backtick `Token` iterator which removes all backslashes
-/// from the stream that are followed by \, $, or `.
-#[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
-#[derive(Debug)]
-pub struct BacktickBackslashRemover<I> {
-    /// The underlying token iterator.
-    iter: Balanced<I>,
-    peeked: Option<Result<Token, UnmatchedError>>,
-    /// Makes the iterator *fused* by yielding None forever after we are done.
-    done: bool,
-}
-
-impl<I> BacktickBackslashRemover<I> {
-    /// Constructs a new balanced backtick iterator which removes all backslashes
-    /// from the stream that are followed by \, $, or `.
-    pub fn new(iter: Balanced<I>) -> Self {
-        BacktickBackslashRemover {
-            iter,
-            peeked: None,
-            done: false,
-        }
-    }
-}
-
 impl<I: PeekablePositionIterator<Item = Token>> BacktickBackslashRemover<I> {
     /// Collects all tokens yielded by `TokenIter::backticked_remove_backslashes`
     /// and creates a `TokenIter` which will yield the collected tokens, and maintain
@@ -467,55 +446,6 @@ impl<I: PeekablePositionIterator<Item = Token>> BacktickBackslashRemover<I> {
             tok_iter.buffer_tokens_to_yield_first(chunk, chunk_end);
         }
         Ok(tok_iter)
-    }
-}
-
-impl<I> std::iter::FusedIterator for BacktickBackslashRemover<I> where
-    I: PeekablePositionIterator<Item = Token>
-{
-}
-
-impl<I: PeekablePositionIterator<Item = Token>> Iterator for BacktickBackslashRemover<I> {
-    type Item = Result<Token, UnmatchedError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.peeked.is_some() {
-            return self.peeked.take();
-        } else if self.done {
-            return None;
-        }
-
-        match self.iter.next() {
-            Some(Ok(Backslash)) => match self.iter.next() {
-                ret @ Some(Ok(Dollar)) | ret @ Some(Ok(Backtick)) | ret @ Some(Ok(Backslash)) => {
-                    ret
-                }
-
-                Some(t) => {
-                    debug_assert!(self.peeked.is_none());
-                    self.peeked = Some(t);
-                    Some(Ok(Backslash))
-                }
-
-                None => {
-                    self.done = true;
-                    Some(Ok(Backslash))
-                }
-            },
-
-            Some(t) => Some(t),
-            None => {
-                self.done = true;
-                None
-            }
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        // The number of tokens we actually yield will never be
-        // more than those of the underlying iterator, and will
-        // probably be less, but this is a good enough estimate.
-        self.iter.size_hint()
     }
 }
 

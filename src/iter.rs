@@ -2,8 +2,10 @@
 
 use crate::parse::SourcePos;
 
+mod backtick;
 mod balanced;
 
+pub use self::backtick::BacktickBackslashRemover;
 pub use self::balanced::Balanced;
 
 /// An iterator that can track its internal position in the stream.
