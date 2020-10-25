@@ -1,6 +1,7 @@
 //! An module for easily iterating over a `Token` stream.
 
 use crate::error::UnmatchedError;
+use crate::iter::{PeekableIterator, PeekablePositionIterator, PositionIterator};
 use crate::parse::SourcePos;
 use crate::token::Token;
 use crate::token::Token::*;
@@ -28,42 +29,6 @@ impl TokenOrPos {
         }
     }
 }
-
-/// An iterator that can track its internal position in the stream.
-pub trait PositionIterator: Iterator {
-    /// Get the current position of the iterator.
-    fn pos(&self) -> SourcePos;
-}
-
-impl<'a, T: PositionIterator> PositionIterator for &'a mut T {
-    fn pos(&self) -> SourcePos {
-        (**self).pos()
-    }
-}
-
-/// An iterator that supports peeking a single element in the stream.
-///
-/// Identical to `std::iter::Peekable` but in a trait form.
-pub trait PeekableIterator: Iterator {
-    /// Peek at the next item, identical to `std::iter::Peekable::peek`.
-    fn peek(&mut self) -> Option<&Self::Item>;
-}
-
-impl<'a, T: PeekableIterator> PeekableIterator for &'a mut T {
-    fn peek(&mut self) -> Option<&Self::Item> {
-        (**self).peek()
-    }
-}
-
-impl<I: Iterator> PeekableIterator for std_iter::Peekable<I> {
-    fn peek(&mut self) -> Option<&Self::Item> {
-        std_iter::Peekable::peek(self)
-    }
-}
-
-/// A marker trait that unifies `PeekableIterator` and `PositionIterator`.
-pub trait PeekablePositionIterator: PeekableIterator + PositionIterator {}
-impl<T: PeekableIterator + PositionIterator> PeekablePositionIterator for T {}
 
 /// A convenience trait for converting `Token` iterators into other sub-iterators.
 pub trait TokenIterator: Sized + PeekablePositionIterator<Item = Token> {

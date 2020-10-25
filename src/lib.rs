@@ -43,6 +43,7 @@
 
 pub mod ast;
 pub mod error;
+pub mod iter;
 pub mod lexer;
 pub mod parse;
 pub mod token;

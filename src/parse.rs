@@ -8,12 +8,13 @@ use std::iter::empty as empty_iter;
 use std::mem;
 use std::str::FromStr;
 
-use self::iter::{PeekableIterator, PositionIterator, TokenIter, TokenIterWrapper, TokenIterator};
+use self::iter::{TokenIter, TokenIterWrapper, TokenIterator};
 use crate::ast::builder::ComplexWordKind::{self, Concat, Single};
 use crate::ast::builder::WordKind::{self, DoubleQuoted, Simple, SingleQuoted};
 use crate::ast::builder::{self, Builder, SimpleWordKind};
 use crate::ast::{self, DefaultArithmetic, DefaultParameter};
 use crate::error::{ParseError, UnmatchedError};
+use crate::iter::{PeekableIterator, PositionIterator};
 use crate::token::Token;
 use crate::token::Token::*;
 
