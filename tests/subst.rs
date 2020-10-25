@@ -3,7 +3,7 @@ use conch_parser::ast::ComplexWord::*;
 use conch_parser::ast::Parameter::*;
 use conch_parser::ast::ParameterSubstitution::*;
 use conch_parser::ast::{RedirectOrCmdWord, SimpleCommand, SimpleWord, TopLevelWord, Word};
-use conch_parser::parse::ParseError::*;
+use conch_parser::error::ParseError::*;
 use conch_parser::token::Token;
 
 mod parse_support;

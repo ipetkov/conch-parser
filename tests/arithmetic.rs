@@ -2,7 +2,7 @@
 use conch_parser::ast::Arithmetic::*;
 use conch_parser::ast::DefaultArithmetic as Arithmetic;
 use conch_parser::ast::ParameterSubstitution::Arith;
-use conch_parser::parse::ParseError::*;
+use conch_parser::error::ParseError::*;
 use conch_parser::token::Token;
 
 mod parse_support;

@@ -1,16 +1,12 @@
 //! An module for easily iterating over a `Token` stream.
 
+use crate::error::UnmatchedError;
 use crate::parse::SourcePos;
 use crate::token::Token;
 use crate::token::Token::*;
 use std::iter as std_iter;
 use std::mem;
 
-/// Indicates an error such that EOF was encountered while some unmatched
-/// tokens were still pending. The error stores the unmatched token
-/// and the position where it appears in the source.
-#[derive(Debug)]
-pub struct UnmatchedError(pub Token, pub SourcePos);
 
 /// An internal variant that indicates if a token should be yielded
 /// or the current position updated to some value.

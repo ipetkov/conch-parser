@@ -2,7 +2,6 @@
 // suppress dead_code warnings since the compiler can't
 // see our intent
 #![allow(dead_code)]
-#![deny(rust_2018_idioms)]
 
 use conch_parser::ast::Command::*;
 use conch_parser::ast::ComplexWord::*;

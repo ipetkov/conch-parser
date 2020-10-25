@@ -42,6 +42,7 @@
 #![forbid(unsafe_code)]
 
 pub mod ast;
+pub mod error;
 pub mod lexer;
 pub mod parse;
 pub mod token;

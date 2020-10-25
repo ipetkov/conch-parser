@@ -2,7 +2,7 @@
 use conch_parser::ast::ComplexWord::*;
 use conch_parser::ast::SimpleWord::*;
 use conch_parser::ast::*;
-use conch_parser::parse::ParseError::*;
+use conch_parser::error::ParseError::*;
 use conch_parser::token::Token;
 
 mod parse_support;

@@ -2,7 +2,7 @@
 use conch_parser::ast::CompoundCommandKind::*;
 use conch_parser::ast::PipeableCommand::*;
 use conch_parser::ast::*;
-use conch_parser::parse::ParseError::*;
+use conch_parser::error::ParseError::*;
 use conch_parser::token::Token;
 
 use std::rc::Rc;
