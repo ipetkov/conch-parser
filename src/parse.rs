@@ -13,7 +13,7 @@ use crate::ast::builder::ComplexWordKind::{self, Concat, Single};
 use crate::ast::builder::WordKind::{self, DoubleQuoted, Simple, SingleQuoted};
 use crate::ast::builder::{self, Builder, SimpleWordKind};
 use crate::ast::{self, DefaultArithmetic, DefaultParameter};
-use crate::error::ParseError;
+use crate::error::{ParseError, UnmatchedError};
 use crate::token::Token;
 use crate::token::Token::*;
 
@@ -1249,7 +1249,13 @@ where
 
                 Some(t) => buf.push_str(t.as_str()),
                 None => match delim_open {
-                    Some(delim) => return Err(ParseError::Unmatched(delim, start_pos).into()),
+                    Some(delim) => {
+                        return Err(UnmatchedError {
+                            token: delim,
+                            pos: start_pos,
+                        }
+                        .into())
+                    }
                     None => break,
                 },
             }
@@ -1434,7 +1440,7 @@ where
 
         eat_maybe!(self, {
             CurlyClose => {};
-            _ => { return Err(ParseError::Unmatched(CurlyOpen, curly_open_pos).into()); }
+            _ => { return Err(UnmatchedError{ token: CurlyOpen, pos: curly_open_pos }.into()); }
         });
 
         if words.is_empty() {
@@ -1472,7 +1478,13 @@ where
             Some(CurlyClose) => return Ok(SimpleWordKind::Param(param)),
 
             Some(t) => return Err(ParseError::BadSubst(t, op_pos).into()),
-            None => return Err(ParseError::Unmatched(CurlyOpen, curly_open_pos).into()),
+            None => {
+                return Err(UnmatchedError {
+                    token: CurlyOpen,
+                    pos: curly_open_pos,
+                }
+                .into())
+            }
         };
 
         let word = self.parameter_substitution_word_raw(curly_open_pos)?;
@@ -1655,7 +1667,10 @@ where
             ..Default::default()
         })?;
         self.reserved_token(&[CurlyClose])
-            .map_err(|_| ParseError::Unmatched(CurlyOpen, start_pos))?;
+            .map_err(|_| UnmatchedError {
+                token: CurlyOpen,
+                pos: start_pos,
+            })?;
         Ok(cmds)
     }
 
@@ -1687,7 +1702,11 @@ where
                 Ok(body)
             }
             Some(_) => Err(self.make_unexpected_err()),
-            None => Err(ParseError::Unmatched(ParenOpen, start_pos).into()),
+            None => Err(UnmatchedError {
+                token: ParenOpen,
+                pos: start_pos,
+            }
+            .into()),
         }
     }
 

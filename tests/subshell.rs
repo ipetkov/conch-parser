@@ -1,6 +1,7 @@
 #![deny(rust_2018_idioms)]
 use conch_parser::ast::builder::*;
 use conch_parser::error::ParseError::*;
+use conch_parser::error::UnmatchedError;
 use conch_parser::token::Token;
 
 mod parse_support;
@@ -47,7 +48,11 @@ fn test_subshell_space_between_parens_not_needed() {
 #[test]
 fn test_subshell_invalid_missing_keyword() {
     assert_eq!(
-        Err(Unmatched(Token::ParenOpen, src(0, 1, 1))),
+        Err(UnmatchedError {
+            token: Token::ParenOpen,
+            pos: src(0, 1, 1)
+        }
+        .into()),
         make_parser("( foo\nbar; baz").subshell()
     );
     assert_eq!(
@@ -65,7 +70,11 @@ fn test_subshell_invalid_quoted() {
         ),
         (
             "( foo\nbar; baz; ')'",
-            Unmatched(Token::ParenOpen, src(0, 1, 1)),
+            UnmatchedError {
+                token: Token::ParenOpen,
+                pos: src(0, 1, 1),
+            }
+            .into(),
         ),
         (
             "\"(\" foo\nbar; baz; )",
@@ -73,7 +82,11 @@ fn test_subshell_invalid_quoted() {
         ),
         (
             "( foo\nbar; baz; \")\"",
-            Unmatched(Token::ParenOpen, src(0, 1, 1)),
+            UnmatchedError {
+                token: Token::ParenOpen,
+                pos: src(0, 1, 1),
+            }
+            .into(),
         ),
     ];
 

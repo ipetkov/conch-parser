@@ -3,6 +3,7 @@ use conch_parser::ast::ComplexWord::*;
 use conch_parser::ast::SimpleWord::*;
 use conch_parser::ast::*;
 use conch_parser::error::ParseError::*;
+use conch_parser::error::UnmatchedError;
 use conch_parser::token::Token;
 
 mod parse_support;
@@ -202,8 +203,12 @@ fn test_backticked_invalid_missing_closing_backtick() {
         ),
     ];
 
-    for &(s, p) in &src {
-        let correct = Unmatched(Token::Backtick, p);
+    for &(s, pos) in &src {
+        let correct = UnmatchedError {
+            token: Token::Backtick,
+            pos,
+        }
+        .into();
         match make_parser(s).backticked_command_substitution() {
             Ok(w) => panic!("Unexpectedly parsed the source \"{}\" as\n{:?}", s, w),
             Err(ref err) => {

@@ -4,6 +4,7 @@ use conch_parser::ast::Redirect::Heredoc;
 use conch_parser::ast::SimpleWord::*;
 use conch_parser::ast::*;
 use conch_parser::error::ParseError::*;
+use conch_parser::error::UnmatchedError;
 use conch_parser::token::Token;
 
 mod parse_support;
@@ -455,27 +456,51 @@ fn test_heredoc_invalid_missing_delimeter() {
 #[test]
 fn test_heredoc_invalid_unbalanced_quoting() {
     assert_eq!(
-        Err(Unmatched(Token::SingleQuote, src(6, 1, 7))),
+        Err(UnmatchedError {
+            token: Token::SingleQuote,
+            pos: src(6, 1, 7)
+        }
+        .into()),
         make_parser("cat <<'eof").complete_command()
     );
     assert_eq!(
-        Err(Unmatched(Token::Backtick, src(6, 1, 7))),
+        Err(UnmatchedError {
+            token: Token::Backtick,
+            pos: src(6, 1, 7)
+        }
+        .into()),
         make_parser("cat <<`eof").complete_command()
     );
     assert_eq!(
-        Err(Unmatched(Token::DoubleQuote, src(6, 1, 7))),
+        Err(UnmatchedError {
+            token: Token::DoubleQuote,
+            pos: src(6, 1, 7)
+        }
+        .into()),
         make_parser("cat <<\"eof").complete_command()
     );
     assert_eq!(
-        Err(Unmatched(Token::ParenOpen, src(9, 1, 10))),
+        Err(UnmatchedError {
+            token: Token::ParenOpen,
+            pos: src(9, 1, 10)
+        }
+        .into()),
         make_parser("cat <<eof(").complete_command()
     );
     assert_eq!(
-        Err(Unmatched(Token::ParenOpen, src(10, 1, 11))),
+        Err(UnmatchedError {
+            token: Token::ParenOpen,
+            pos: src(10, 1, 11)
+        }
+        .into()),
         make_parser("cat <<eof$(").complete_command()
     );
     assert_eq!(
-        Err(Unmatched(Token::CurlyOpen, src(10, 1, 11))),
+        Err(UnmatchedError {
+            token: Token::CurlyOpen,
+            pos: src(10, 1, 11)
+        }
+        .into()),
         make_parser("cat <<eof${").complete_command()
     );
 }

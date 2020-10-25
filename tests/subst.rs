@@ -4,6 +4,7 @@ use conch_parser::ast::Parameter::*;
 use conch_parser::ast::ParameterSubstitution::*;
 use conch_parser::ast::{RedirectOrCmdWord, SimpleCommand, SimpleWord, TopLevelWord, Word};
 use conch_parser::error::ParseError::*;
+use conch_parser::error::UnmatchedError;
 use conch_parser::token::Token;
 
 mod parse_support;
@@ -603,7 +604,14 @@ fn test_parameter_substitution_command_close_paren_need_not_be_followed_by_word_
 fn test_parameter_substitution_invalid() {
     let cases = vec![
         ("$(( x", UnexpectedEOF),
-        ("${foo", Unmatched(Token::CurlyOpen, src(1, 1, 2))),
+        (
+            "${foo",
+            UnmatchedError {
+                token: Token::CurlyOpen,
+                pos: src(1, 1, 2),
+            }
+            .into(),
+        ),
         (
             "${ foo}",
             BadSubst(Token::Whitespace(String::from(" ")), src(2, 1, 3)),
@@ -668,7 +676,14 @@ fn test_parameter_substitution_invalid() {
             "${foo: #}",
             BadSubst(Token::Whitespace(String::from(" ")), src(6, 1, 7)),
         ),
-        ("${foo-bar", Unmatched(Token::CurlyOpen, src(1, 1, 2))),
+        (
+            "${foo-bar",
+            UnmatchedError {
+                token: Token::CurlyOpen,
+                pos: src(1, 1, 2),
+            }
+            .into(),
+        ),
         ("${'foo'}", BadSubst(Token::SingleQuote, src(2, 1, 3))),
         ("${\"foo\"}", BadSubst(Token::DoubleQuote, src(2, 1, 3))),
         ("${`foo`}", BadSubst(Token::Backtick, src(2, 1, 3))),

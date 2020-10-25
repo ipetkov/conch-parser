@@ -17,7 +17,7 @@ pub enum ParseError {
     BadSubst(Token, SourcePos),
     /// Encountered EOF while looking for a match for the specified token.
     /// Stores position of opening token.
-    Unmatched(Token, SourcePos),
+    Unmatched(UnmatchedError),
     /// Did not find a reserved keyword within a command. The first String is the
     /// command being parsed, followed by the position of where it starts. Next
     /// is the missing keyword followed by the position of where the parse
@@ -29,31 +29,40 @@ pub enum ParseError {
     UnexpectedEOF,
 }
 
-impl Error for ParseError {}
+impl Error for ParseError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            ParseError::Unmatched(e) => Some(e),
+
+            ParseError::BadFd(..)
+            | ParseError::BadIdent(..)
+            | ParseError::BadSubst(..)
+            | ParseError::IncompleteCmd(..)
+            | ParseError::Unexpected(..)
+            | ParseError::UnexpectedEOF => None,
+        }
+    }
+}
 
 impl From<UnmatchedError> for ParseError {
     fn from(e: UnmatchedError) -> Self {
-        Self::Unmatched(e.token, e.pos)
+        Self::Unmatched(e)
     }
 }
 
 impl fmt::Display for ParseError {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ParseError::BadFd(ref start, ref end) => write!(
+            ParseError::BadFd(start, end) => write!(
                 fmt,
                 "file descriptor found between lines {} - {} cannot possibly be a valid",
                 start, end
             ),
-            ParseError::BadIdent(ref id, pos) => {
-                write!(fmt, "not a valid identifier {}: {}", pos, id)
-            }
-            ParseError::BadSubst(ref t, pos) => {
+            ParseError::BadIdent(id, pos) => write!(fmt, "not a valid identifier {}: {}", pos, id),
+            ParseError::BadSubst(t, pos) => {
                 write!(fmt, "bad substitution {}: invalid token: {}", pos, t)
             }
-            ParseError::Unmatched(ref t, pos) => {
-                write!(fmt, "unmatched `{}` starting on line {}", t, pos)
-            }
+            ParseError::Unmatched(e) => e.fmt(fmt),
 
             ParseError::IncompleteCmd(c, start, kw, kw_pos) => write!(
                 fmt,
@@ -65,7 +74,7 @@ impl fmt::Display for ParseError {
             ParseError::Unexpected(Token::Newline, pos) => {
                 write!(fmt, "found unexpected token on line {}: \\n", pos)
             }
-            ParseError::Unexpected(ref t, pos) => {
+            ParseError::Unexpected(t, pos) => {
                 write!(fmt, "found unexpected token on line {}: {}", pos, t)
             }
 
@@ -77,7 +86,7 @@ impl fmt::Display for ParseError {
 /// Indicates an error such that EOF was encountered while some unmatched
 /// tokens were still pending. The error stores the unmatched token
 /// and the position where it appears in the source.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnmatchedError {
     /// The token opening token we were expecting to match.
     pub token: Token,
@@ -89,7 +98,11 @@ impl Error for UnmatchedError {}
 
 impl fmt::Display for UnmatchedError {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "unmatched {} at {}", self.token, self.pos)
+        write!(
+            fmt,
+            "unmatched `{}` starting on line {}",
+            self.token, self.pos
+        )
     }
 }
 
