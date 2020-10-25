@@ -31,6 +31,12 @@ pub enum ParseError {
 
 impl Error for ParseError {}
 
+impl From<UnmatchedError> for ParseError {
+    fn from(e: UnmatchedError) -> Self {
+        Self::Unmatched(e.token, e.pos)
+    }
+}
+
 impl fmt::Display for ParseError {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -72,13 +78,18 @@ impl fmt::Display for ParseError {
 /// tokens were still pending. The error stores the unmatched token
 /// and the position where it appears in the source.
 #[derive(Debug)]
-pub struct UnmatchedError(pub Token, pub SourcePos);
+pub struct UnmatchedError {
+    /// The token opening token we were expecting to match.
+    pub token: Token,
+    /// The position of `token`.
+    pub pos: SourcePos,
+}
 
 impl Error for UnmatchedError {}
 
 impl fmt::Display for UnmatchedError {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "unmatched {} at {}", self.0, self.1)
+        write!(fmt, "unmatched {} at {}", self.token, self.pos)
     }
 }
 

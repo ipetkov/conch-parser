@@ -510,7 +510,10 @@ impl<I: PeekablePositionIterator<Item = Token>> Iterator for Balanced<I> {
                 // Closing SingleQuote should have been captured above
                 Some(t) => Some(Ok(t)),
                 // Make sure we indicate errors on missing closing quotes
-                None => Some(Err(UnmatchedError(SingleQuote, pos))),
+                None => Some(Err(UnmatchedError {
+                    token: SingleQuote,
+                    pos,
+                })),
             };
 
             self.pos = self.iter.pos();
@@ -583,9 +586,15 @@ impl<I: PeekablePositionIterator<Item = Token>> Iterator for Balanced<I> {
                     None
                 }
                 // But its not okay otherwise
-                Some((ParenClose, pos)) => Some(Err(UnmatchedError(ParenOpen, pos))),
-                Some((CurlyClose, pos)) => Some(Err(UnmatchedError(CurlyOpen, pos))),
-                Some((delim, pos)) => Some(Err(UnmatchedError(delim, pos))),
+                Some((ParenClose, pos)) => Some(Err(UnmatchedError {
+                    token: ParenOpen,
+                    pos,
+                })),
+                Some((CurlyClose, pos)) => Some(Err(UnmatchedError {
+                    token: CurlyOpen,
+                    pos,
+                })),
+                Some((delim, pos)) => Some(Err(UnmatchedError { token: delim, pos })),
             },
         };
 

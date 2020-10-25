@@ -13,7 +13,7 @@ use crate::ast::builder::ComplexWordKind::{self, Concat, Single};
 use crate::ast::builder::WordKind::{self, DoubleQuoted, Simple, SingleQuoted};
 use crate::ast::builder::{self, Builder, SimpleWordKind};
 use crate::ast::{self, DefaultArithmetic, DefaultParameter};
-use crate::error::{ParseError, UnmatchedError};
+use crate::error::ParseError;
 use crate::token::Token;
 use crate::token::Token::*;
 
@@ -759,12 +759,6 @@ where
     pub fn redirect_heredoc(&mut self, src_fd: Option<u16>) -> ParseResult<B::Redirect> {
         use std::iter::FromIterator;
 
-        macro_rules! try_map {
-            ($result:expr) => {
-                $result.map_err(|e: UnmatchedError| ParseError::Unmatched(e.0, e.1))?
-            };
-        }
-
         let strip_tabs = eat!(self, {
             DLess => { false },
             DLessDash => { true },
@@ -798,7 +792,7 @@ where
             }
 
             for t in self.iter.balanced() {
-                delim_tokens.push(try_map!(t));
+                delim_tokens.push(t?);
             }
         }
 
@@ -818,7 +812,7 @@ where
                 Some(SingleQuote) => {
                     quoted = true;
                     for t in iter.single_quoted(start_pos) {
-                        delim.push_str(try_map!(t).as_str());
+                        delim.push_str(t?.as_str());
                     }
                 }
 
@@ -826,7 +820,7 @@ where
                     quoted = true;
                     let mut iter = iter.double_quoted(start_pos);
                     while let Some(next) = iter.next() {
-                        match try_map!(next) {
+                        match next? {
                             Backslash => match iter.next() {
                                 Some(Ok(tok @ Dollar))
                                 | Some(Ok(tok @ Backtick))
@@ -835,7 +829,7 @@ where
                                 | Some(Ok(tok @ Newline)) => delim.push_str(tok.as_str()),
 
                                 Some(t) => {
-                                    let t = try_map!(t);
+                                    let t = t?;
                                     delim.push_str(Backslash.as_str());
                                     delim.push_str(t.as_str());
                                 }
@@ -873,7 +867,7 @@ where
                     quoted = true;
                     delim.push_str(Backtick.as_str());
                     for t in iter.backticked_remove_backslashes(start_pos) {
-                        delim.push_str(try_map!(t).as_str());
+                        delim.push_str(t?.as_str());
                     }
                     delim.push_str(Backtick.as_str());
                 }
@@ -911,7 +905,7 @@ where
             }
 
             for t in self.iter.balanced() {
-                saved_tokens.push(try_map!(t));
+                saved_tokens.push(t?);
             }
         }
 
@@ -1139,7 +1133,7 @@ where
                 SingleQuote => {
                     let mut buf = String::new();
                     for t in self.iter.single_quoted(start_pos) {
-                        buf.push_str(t.map_err(|e| ParseError::Unmatched(e.0, e.1))?.as_str())
+                        buf.push_str(t?.as_str())
                     }
 
                     SingleQuoted(buf)
@@ -1291,8 +1285,7 @@ where
         // `peek` or `next` operation we make).
         let tok_iter = self
             .iter
-            .token_iter_from_backticked_with_removed_backslashes(backtick_pos)
-            .map_err(|e| ParseError::Unmatched(e.0, e.1))?;
+            .token_iter_from_backticked_with_removed_backslashes(backtick_pos)?;
 
         let mut tok_backup = TokenIterWrapper::Buffered(tok_iter);
 
