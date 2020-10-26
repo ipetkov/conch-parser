@@ -1,6 +1,5 @@
 use crate::error::UnmatchedError;
 use crate::iter::{Balanced, PeekablePositionIterator};
-use crate::parse::SourcePos;
 use crate::token::Token;
 
 /// A `Balanced` backtick `Token` iterator which removes all backslashes
@@ -21,9 +20,14 @@ where
 {
     /// Constructs a new balanced backtick iterator which removes all backslashes
     /// from the stream that are followed by `\`, `$`, or `` ` ``.
-    pub fn new(iter: I, pos: SourcePos) -> Self {
+    ///
+    /// # Panics
+    ///
+    /// Panics if the next token of `iter` is not `` ` ``. Caller should ensure
+    /// a backtick token is available to consume.
+    pub fn new(iter: I) -> Self {
         Self {
-            iter: Balanced::backticked(iter, pos),
+            iter: Balanced::backticked(iter),
             peeked: None,
             done: false,
         }

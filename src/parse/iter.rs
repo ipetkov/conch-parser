@@ -32,48 +32,6 @@ impl TokenOrPos {
     }
 }
 
-/// A convenience trait for converting `Token` iterators into other sub-iterators.
-pub trait TokenIterator: Sized + PeekablePositionIterator<Item = Token> {
-    /// Returns an iterator that yields at least one token, but continues to yield
-    /// tokens until all matching cases of single/double quotes, backticks,
-    /// `${ }`, `$( )`, or `( )` are found.
-    fn balanced(&mut self) -> Balanced<&mut Self> {
-        Balanced::balanced(self)
-    }
-
-    /// Returns an iterator that yields tokens up to when a (closing) single quote
-    /// is reached (assuming that the caller has reached the opening quote and
-    /// wishes to continue up to but not including the closing quote).
-    fn single_quoted(&mut self, pos: SourcePos) -> Balanced<&mut Self> {
-        Balanced::single_quoted(self, pos)
-    }
-
-    /// Returns an iterator that yields tokens up to when a (closing) double quote
-    /// is reached (assuming that the caller has reached the opening quote and
-    /// wishes to continue up to but not including the closing quote).
-    fn double_quoted(&mut self, pos: SourcePos) -> Balanced<&mut Self> {
-        Balanced::double_quoted(self, pos)
-    }
-
-    /// Returns an iterator that yields tokens up to when a (closing) backtick
-    /// is reached (assuming that the caller has reached the opening backtick and
-    /// wishes to continue up to but not including the closing backtick).
-    fn backticked(&mut self, pos: SourcePos) -> Balanced<&mut Self> {
-        Balanced::backticked(self, pos)
-    }
-
-    /// Returns an iterator that yields tokens up to when a (closing) backtick
-    /// is reached (assuming that the caller has reached the opening backtick and
-    /// wishes to continue up to but not including the closing backtick).
-    /// from the stream that are followed by `\`, `$`, or `` ` ``.
-    fn backticked_remove_backslashes(
-        &mut self,
-        pos: SourcePos,
-    ) -> BacktickBackslashRemover<&mut Self> {
-        BacktickBackslashRemover::new(self, pos)
-    }
-}
-
 /// A Token iterator that keeps track of how many lines have been read.
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 #[derive(Debug)]
@@ -147,8 +105,6 @@ impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
         (lo, hi)
     }
 }
-
-impl<I: Iterator<Item = Token>> TokenIterator for TokenIter<I> {}
 
 impl<I: Iterator<Item = Token>> Multipeek for TokenIter<I> {
     fn advance_peek(&mut self) -> Option<&Self::Item> {
@@ -231,9 +187,8 @@ impl<I: Iterator<Item = Token>> TokenIter<I> {
     /// regardless of how many backslashes may have been removed since then.
     pub fn token_iter_from_backticked_with_removed_backslashes(
         &mut self,
-        pos: SourcePos,
     ) -> Result<TokenIter<std_iter::Empty<Token>>, UnmatchedError> {
-        BacktickBackslashRemover::create_token_iter(self.backticked(pos))
+        BacktickBackslashRemover::create_token_iter(Balanced::backticked(self))
     }
 }
 
@@ -278,8 +233,6 @@ impl<I: Iterator<Item = Token>> Iterator for TokenIterWrapper<I> {
     }
 }
 
-impl<I: Iterator<Item = Token>> TokenIterator for TokenIterWrapper<I> {}
-
 impl<I: Iterator<Item = Token>> Multipeek for TokenIterWrapper<I> {
     fn advance_peek(&mut self) -> Option<&Self::Item> {
         match self {
@@ -318,14 +271,13 @@ impl<I: Iterator<Item = Token>> TokenIterWrapper<I> {
     /// Delegates to `TokenIter::token_iter_from_backticked_with_removed_backslashes`.
     pub fn token_iter_from_backticked_with_removed_backslashes(
         &mut self,
-        pos: SourcePos,
     ) -> Result<TokenIter<std_iter::Empty<Token>>, UnmatchedError> {
         match *self {
             TokenIterWrapper::Regular(ref mut inner) => {
-                inner.token_iter_from_backticked_with_removed_backslashes(pos)
+                inner.token_iter_from_backticked_with_removed_backslashes()
             }
             TokenIterWrapper::Buffered(ref mut inner) => {
-                inner.token_iter_from_backticked_with_removed_backslashes(pos)
+                inner.token_iter_from_backticked_with_removed_backslashes()
             }
         }
     }
@@ -425,7 +377,6 @@ mod tests {
         let pos2 = src(4, 4, 4);
 
         let mut tok_iter = TokenIter::with_position(std::iter::empty(), orig);
-
 
         tok_iter.buffer_tokens_to_yield_first(vec![Token::Newline], pos1);
         tok_iter.buffer_tokens_to_yield_first(vec![Token::Semi, Token::Semi], pos2);

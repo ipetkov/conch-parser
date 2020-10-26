@@ -8,13 +8,13 @@ use std::iter::empty as empty_iter;
 use std::mem;
 use std::str::FromStr;
 
-use self::iter::{TokenIter, TokenIterWrapper, TokenIterator};
+use self::iter::{TokenIter, TokenIterWrapper};
 use crate::ast::builder::ComplexWordKind::{self, Concat, Single};
 use crate::ast::builder::WordKind::{self, DoubleQuoted, Simple, SingleQuoted};
 use crate::ast::builder::{self, Builder, SimpleWordKind};
 use crate::ast::{self, DefaultArithmetic, DefaultParameter};
 use crate::error::{ParseError, UnmatchedError};
-use crate::iter::{PeekableIterator, PositionIterator};
+use crate::iter::{BacktickBackslashRemover, Balanced, PeekableIterator, PositionIterator};
 use crate::token::Token;
 use crate::token::Token::*;
 
@@ -800,7 +800,7 @@ where
                 break;
             }
 
-            for t in self.iter.balanced() {
+            for t in Balanced::balanced(&mut self.iter) {
                 delim_tokens.push(t?);
             }
         }
@@ -809,25 +809,27 @@ where
         let mut quoted = false;
         let mut delim = String::new();
         loop {
-            let start_pos = iter.pos();
-            match iter.next() {
-                Some(Backslash) => {
+            match iter.peek() {
+                Some(&Backslash) => {
+                    iter.next(); // Skip backslash
+
                     quoted = true;
                     if let Some(t) = iter.next() {
                         delim.push_str(t.as_str())
                     }
                 }
 
-                Some(SingleQuote) => {
+                Some(&SingleQuote) => {
                     quoted = true;
-                    for t in iter.single_quoted(start_pos) {
+                    for t in Balanced::single_quoted(&mut iter) {
                         delim.push_str(t?.as_str());
                     }
+                    continue;
                 }
 
-                Some(DoubleQuote) => {
+                Some(&DoubleQuote) => {
                     quoted = true;
-                    let mut iter = iter.double_quoted(start_pos);
+                    let mut iter = Balanced::double_quoted(&mut iter);
                     while let Some(next) = iter.next() {
                         match next? {
                             Backslash => match iter.next() {
@@ -872,16 +874,20 @@ where
                 //
                 // TL;DR: balanced backticks are allowed in delimeter, they cause the body to NOT
                 // be expanded, and backslashes are only removed if followed by \, $, or `.
-                Some(Backtick) => {
+                Some(&Backtick) => {
                     quoted = true;
                     delim.push_str(Backtick.as_str());
-                    for t in iter.backticked_remove_backslashes(start_pos) {
+                    for t in BacktickBackslashRemover::new(&mut iter) {
                         delim.push_str(t?.as_str());
                     }
                     delim.push_str(Backtick.as_str());
                 }
 
-                Some(t) => delim.push_str(t.as_str()),
+                Some(t) => {
+                    delim.push_str(t.as_str());
+                    iter.next(); // Consume the token we just peeked
+                }
+
                 None => break,
             }
         }
@@ -913,7 +919,7 @@ where
                 break;
             }
 
-            for t in self.iter.balanced() {
+            for t in Balanced::balanced(&mut self.iter) {
                 saved_tokens.push(t?);
             }
         }
@@ -1080,11 +1086,10 @@ where
 
             match self.iter.peek() {
                 Some(&CurlyOpen) | Some(&CurlyClose) | Some(&SquareOpen) | Some(&SquareClose)
-                | Some(&SingleQuote) | Some(&DoubleQuote) | Some(&Pound) | Some(&Star)
-                | Some(&Question) | Some(&Tilde) | Some(&Bang) | Some(&Backslash)
-                | Some(&Percent) | Some(&Dash) | Some(&Equals) | Some(&Plus) | Some(&Colon)
-                | Some(&At) | Some(&Caret) | Some(&Slash) | Some(&Comma) | Some(&Name(_))
-                | Some(&Literal(_)) => {}
+                | Some(&DoubleQuote) | Some(&Pound) | Some(&Star) | Some(&Question)
+                | Some(&Tilde) | Some(&Bang) | Some(&Backslash) | Some(&Percent) | Some(&Dash)
+                | Some(&Equals) | Some(&Plus) | Some(&Colon) | Some(&At) | Some(&Caret)
+                | Some(&Slash) | Some(&Comma) | Some(&Name(_)) | Some(&Literal(_)) => {}
 
                 Some(&Backtick) => {
                     words.push(Simple(self.backticked_raw()?));
@@ -1093,6 +1098,16 @@ where
 
                 Some(&Dollar) | Some(&ParamPositional(_)) => {
                     words.push(Simple(self.parameter_raw()?));
+                    continue;
+                }
+
+                Some(&SingleQuote) => {
+                    let mut buf = String::new();
+                    for t in Balanced::single_quoted(&mut self.iter) {
+                        buf.push_str(t?.as_str())
+                    }
+
+                    words.push(SingleQuoted(buf));
                     continue;
                 }
 
@@ -1139,15 +1154,6 @@ where
                     Some(t) => Simple(SimpleWordKind::Escaped(t.to_string())),
                 },
 
-                SingleQuote => {
-                    let mut buf = String::new();
-                    for t in self.iter.single_quoted(start_pos) {
-                        buf.push_str(t?.as_str())
-                    }
-
-                    SingleQuoted(buf)
-                }
-
                 DoubleQuote => DoubleQuoted(
                     self.word_interpolated_raw(Some((DoubleQuote, DoubleQuote)), start_pos)?,
                 ),
@@ -1158,9 +1164,9 @@ where
 
                 // All word delimiters should have
                 // broken the loop while peeking above.
-                Newline | ParenOpen | ParenClose | Semi | Amp | Pipe | AndIf | OrIf | DSemi
-                | Less | Great | DLess | DGreat | GreatAnd | LessAnd | DLessDash | Clobber
-                | LessGreat | Whitespace(_) => unreachable!(),
+                Newline | ParenOpen | ParenClose | SingleQuote | Semi | Amp | Pipe | AndIf
+                | OrIf | DSemi | Less | Great | DLess | DGreat | GreatAnd | LessAnd | DLessDash
+                | Clobber | LessGreat | Whitespace(_) => unreachable!(),
             };
 
             words.push(w);
@@ -1290,8 +1296,9 @@ where
     /// Identical to `Parser::backticked_command_substitution`, except but does not pass the
     /// result to the AST builder.
     fn backticked_raw(&mut self) -> ParseResult<SimpleWordKind<B::Command>> {
-        let backtick_pos = self.iter.pos();
-        eat!(self, { Backtick => {} });
+        if self.iter.peek() != Some(&Backtick) {
+            return Err(self.make_unexpected_err());
+        }
 
         // FIXME: it would be great to not have to buffer all tokens between backticks
         // and lazily consume them. Unfortunately the BacktickBackslashRemover iterator
@@ -1300,7 +1307,7 @@ where
         // `peek` or `next` operation we make).
         let tok_iter = self
             .iter
-            .token_iter_from_backticked_with_removed_backslashes(backtick_pos)?;
+            .token_iter_from_backticked_with_removed_backslashes()?;
 
         let mut tok_backup = TokenIterWrapper::Buffered(tok_iter);
 

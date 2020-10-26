@@ -130,7 +130,7 @@ pub trait Multipeek: Iterator {
     /// reset this internal position back to the start.
     ///
     /// Note: callers should utilize the cursor returned by `multipeek`. Below
-    /// is an example to illustrate behavior for implementors. 
+    /// is an example to illustrate behavior for implementors.
     ///
     /// ```no_run
     /// use conch_parser::iter::Multipeek;
@@ -175,7 +175,7 @@ pub trait Multipeek: Iterator {
     /// Reset the peek position back to the start.
     ///
     /// Note: callers should utilize the cursor returned by `multipeek`. Below
-    /// is an example to illustrate behavior for implementors. 
+    /// is an example to illustrate behavior for implementors.
     ///
     /// ```no_run
     /// use conch_parser::iter::Multipeek;

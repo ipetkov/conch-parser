@@ -37,14 +37,32 @@ where
     ///
     /// If a delimeter (and its position) is specified, tokens are yielded *up to*
     /// the delimeter, but the delimeter will be silently consumed.
-    fn new(iter: I, delim: Option<(Token, SourcePos)>) -> Self {
+    fn new(mut iter: I, opening_token: Option<Token>) -> Self {
+        let mut stack = Vec::new();
+
+        let skip_last_delimeter = match opening_token {
+            None => false,
+            Some(t) => {
+                let tok_pos = iter.pos();
+                let next = iter.next();
+                if Some(&t) != next.as_ref() {
+                    panic!("expected {:?} but got {:?}", t, next);
+                }
+
+                stack.push((t, tok_pos));
+                true
+            }
+        };
+
+        let pos = iter.pos();
+
         Self {
-            escaped: None,
-            skip_last_delimeter: delim.is_some(),
-            stack: delim.map_or(Vec::new(), |d| vec![d]),
-            done: false,
-            pos: iter.pos(),
             iter,
+            escaped: None,
+            stack,
+            skip_last_delimeter,
+            done: false,
+            pos,
         }
     }
 
@@ -58,22 +76,37 @@ where
     /// Returns an iterator that yields tokens up to when a (closing) single quote
     /// is reached (assuming that the caller has reached the opening quote and
     /// wishes to continue up to but not including the closing quote).
-    pub fn single_quoted(iter: I, pos: SourcePos) -> Self {
-        Self::new(iter, Some((Token::SingleQuote, pos)))
+    ///
+    /// # Panics
+    ///
+    /// Panics if the next token of `iter` is not `'`. Caller should ensure
+    /// a single quote token is available to consume.
+    pub fn single_quoted(iter: I) -> Self {
+        Self::new(iter, Some(Token::SingleQuote))
     }
 
     /// Returns an iterator that yields tokens up to when a (closing) double quote
     /// is reached (assuming that the caller has reached the opening quote and
     /// wishes to continue up to but not including the closing quote).
-    pub fn double_quoted(iter: I, pos: SourcePos) -> Self {
-        Self::new(iter, Some((Token::DoubleQuote, pos)))
+    ///
+    /// # Panics
+    ///
+    /// Panics if the next token of `iter` is not `"`. Caller should ensure
+    /// a double quote token is available to consume.
+    pub fn double_quoted(iter: I) -> Self {
+        Self::new(iter, Some(Token::DoubleQuote))
     }
 
     /// Returns an iterator that yields tokens up to when a (closing) backtick
     /// is reached (assuming that the caller has reached the opening backtick and
     /// wishes to continue up to but not including the closing backtick).
-    pub fn backticked(iter: I, pos: SourcePos) -> Self {
-        Self::new(iter, Some((Token::Backtick, pos)))
+    ///
+    /// # Panics
+    ///
+    /// Panics if the next token of `iter` is not `` ` ``. Caller should ensure
+    /// a backtick token is available to consume.
+    pub fn backticked(iter: I) -> Self {
+        Self::new(iter, Some(Token::Backtick))
     }
 }
 
