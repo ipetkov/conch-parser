@@ -9,7 +9,7 @@ fn main() {
         .lines()
         .map(Result::unwrap)
         .flat_map(|mut line| {
-            line.push_str("\n"); // BufRead::lines unfortunately strips \n and \r\n
+            line.push('\n'); // BufRead::lines unfortunately strips \n and \r\n
             line.into_chars()
         });
 

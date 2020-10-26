@@ -1244,11 +1244,14 @@ where
             match self.iter.next() {
                 // Backslashes only escape a few tokens when double-quoted-type words
                 Some(Backslash) => {
-                    let special = match self.iter.peek() {
-                        Some(&Dollar) | Some(&Backtick) | Some(&DoubleQuote) | Some(&Backslash)
-                        | Some(&Newline) => true,
-                        _ => false,
-                    };
+                    let special = matches!(
+                        self.iter.peek(),
+                        Some(&Dollar)
+                            | Some(&Backtick)
+                            | Some(&DoubleQuote)
+                            | Some(&Backslash)
+                            | Some(&Newline)
+                    );
 
                     if special || self.iter.peek() == delim_close.as_ref() {
                         store!(SimpleWordKind::Escaped(
@@ -1349,8 +1352,8 @@ where
                 _ => Ok(SimpleWordKind::Literal(Dollar.to_string())),
             },
 
-            Some(t) => Err(ParseError::Unexpected(t, start_pos).into()),
-            None => Err(ParseError::UnexpectedEOF.into()),
+            Some(t) => Err(ParseError::Unexpected(t, start_pos)),
+            None => Err(ParseError::UnexpectedEOF),
         }
     }
 
@@ -1493,7 +1496,7 @@ where
 
             Some(CurlyClose) => return Ok(SimpleWordKind::Param(param)),
 
-            Some(t) => return Err(ParseError::BadSubst(t, op_pos).into()),
+            Some(t) => return Err(ParseError::BadSubst(t, op_pos)),
             None => {
                 return Err(UnmatchedError {
                     token: CurlyOpen,
@@ -1645,11 +1648,11 @@ where
             Some(Name(n)) => Parameter::Var(n),
             Some(Literal(s)) => match u32::from_str(&s) {
                 Ok(n) => Parameter::Positional(n),
-                Err(_) => return Err(ParseError::BadSubst(Literal(s), start_pos).into()),
+                Err(_) => return Err(ParseError::BadSubst(Literal(s), start_pos)),
             },
 
-            Some(t) => return Err(ParseError::BadSubst(t, start_pos).into()),
-            None => return Err(ParseError::UnexpectedEOF.into()),
+            Some(t) => return Err(ParseError::BadSubst(t, start_pos)),
+            None => return Err(ParseError::UnexpectedEOF),
         };
 
         Ok(param)
@@ -1841,8 +1844,7 @@ where
                 cmd_pos: start_pos,
                 kw: DO,
                 kw_pos: self.iter.pos(),
-            }
-            .into()),
+            }),
         }
     }
 
@@ -1936,7 +1938,7 @@ where
         let var_pos = self.iter.pos();
         let var = match self.iter.next() {
             Some(Name(v)) => v,
-            Some(Literal(s)) => return Err(ParseError::BadIdent(s, var_pos).into()),
+            Some(Literal(s)) => return Err(ParseError::BadIdent(s, var_pos)),
             _ => unreachable!(),
         };
 
@@ -1985,8 +1987,7 @@ where
                 cmd_pos: start_pos,
                 kw: IN,
                 kw_pos: self.iter.pos(),
-            }
-            .into());
+            });
         } else {
             // `for name \n* do_group`
             (None, post_var_comments)
@@ -1998,8 +1999,7 @@ where
                 cmd_pos: start_pos,
                 kw: DO,
                 kw_pos: self.iter.pos(),
-            }
-            .into());
+            });
         }
 
         let body = self.do_group()?;
@@ -2210,7 +2210,7 @@ where
         let ident_pos = self.iter.pos();
         let name = match self.iter.next() {
             Some(Name(n)) => n,
-            Some(Literal(s)) => return Err(ParseError::BadIdent(s, ident_pos).into()),
+            Some(Literal(s)) => return Err(ParseError::BadIdent(s, ident_pos)),
             _ => unreachable!(),
         };
 
@@ -2325,13 +2325,7 @@ where
             return None;
         }
 
-        let care_about_whitespace = tokens.iter().any(|tok| {
-            if let Whitespace(_) = *tok {
-                true
-            } else {
-                false
-            }
-        });
+        let care_about_whitespace = tokens.iter().any(|tok| matches!(*tok, Whitespace(_)));
 
         // If the caller cares about whitespace as a reserved word we should
         // do a reserved word check without skipping any leading whitespace.

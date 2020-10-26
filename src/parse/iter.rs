@@ -382,7 +382,7 @@ mod tests {
         tok_iter.buffer_tokens_to_yield_first(vec![Token::Semi, Token::Semi], pos2);
 
         assert_eq!(pos2, tok_iter.pos());
-        let mut cur_pos = pos2.clone();
+        let mut cur_pos = pos2;
         cur_pos.advance(&Token::Semi);
         assert_eq!(Some(Token::Semi), tok_iter.next());
         assert_eq!(cur_pos, tok_iter.pos());

@@ -531,7 +531,7 @@ where
     }
 
     /// Ignored by the builder.
-    fn comments(&mut self, _comments: Vec<Newline>) -> () {}
+    fn comments(&mut self, _comments: Vec<Newline>) {}
 
     /// Constructs a `ast::Word` from the provided input.
     fn word(&mut self, kind: ComplexWordKind<Self::Command>) -> Self::Word {
@@ -604,7 +604,7 @@ where
         let mut map_simple = |kind| {
             use crate::ast::builder::ParameterSubstitutionKind::*;
 
-            let simple = match kind {
+            match kind {
                 SimpleWordKind::Literal(s) => SimpleWord::Literal(s.into()),
                 SimpleWordKind::Escaped(s) => SimpleWord::Escaped(s.into()),
                 SimpleWordKind::Param(p) => SimpleWord::Param(map_param(p)),
@@ -650,19 +650,15 @@ where
                     };
                     SimpleWord::Subst(Box::new(subst))
                 }
-            };
-            simple
+            }
         };
 
-        let mut map_word = |kind| {
-            let word = match kind {
-                WordKind::Simple(s) => Word::Simple(map_simple(s)),
-                WordKind::SingleQuoted(s) => Word::SingleQuoted(s.into()),
-                WordKind::DoubleQuoted(v) => {
-                    Word::DoubleQuoted(v.into_iter().map(&mut map_simple).collect::<Vec<_>>())
-                }
-            };
-            word
+        let mut map_word = |kind| match kind {
+            WordKind::Simple(s) => Word::Simple(map_simple(s)),
+            WordKind::SingleQuoted(s) => Word::SingleQuoted(s.into()),
+            WordKind::DoubleQuoted(v) => {
+                Word::DoubleQuoted(v.into_iter().map(&mut map_simple).collect::<Vec<_>>())
+            }
         };
 
         let word = match compress(kind) {
@@ -677,7 +673,7 @@ where
 
     /// Constructs a `ast::Redirect` from the provided input.
     fn redirect(&mut self, kind: RedirectKind<Self::Word>) -> Self::Redirect {
-        let io = match kind {
+        match kind {
             RedirectKind::Read(fd, path) => Redirect::Read(fd, path),
             RedirectKind::Write(fd, path) => Redirect::Write(fd, path),
             RedirectKind::ReadWrite(fd, path) => Redirect::ReadWrite(fd, path),
@@ -686,9 +682,7 @@ where
             RedirectKind::Heredoc(fd, body) => Redirect::Heredoc(fd, body),
             RedirectKind::DupRead(src, dst) => Redirect::DupRead(src, dst),
             RedirectKind::DupWrite(src, dst) => Redirect::DupWrite(src, dst),
-        };
-
-        io
+        }
     }
 }
 

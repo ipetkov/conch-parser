@@ -119,7 +119,7 @@ pub trait Multipeek: Iterator {
     /// assert_eq!(Some(&1), peeker.peek_next());
     /// drop(peeker);
     /// ```
-    fn multipeek<'a>(&'a mut self) -> MultipeekCursor<'a, Self> {
+    fn multipeek(&mut self) -> MultipeekCursor<'_, Self> {
         MultipeekCursor { parent: self }
     }
 
