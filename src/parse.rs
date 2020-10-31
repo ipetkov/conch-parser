@@ -18,6 +18,7 @@ use crate::iter::{BacktickBackslashRemover, Balanced, PeekableIterator, Position
 use crate::token::Token;
 use crate::token::Token::*;
 
+mod combinators;
 mod iter;
 
 const CASE: &str = "case";
@@ -340,7 +341,7 @@ macro_rules! arith_parse {
         fn $fn_name(&mut self) -> ParseResult<DefaultArithmetic> {
             let mut expr = self.$next_expr()?;
             loop {
-                self.skip_whitespace();
+                combinators::skip_whitespace(&mut self.iter);
                 eat_maybe!(self, {
                     $($tok => {
                         let next = self.$next_expr()?;
@@ -436,7 +437,7 @@ where
         let mut rest = Vec::new();
 
         loop {
-            self.skip_whitespace();
+            combinators::skip_whitespace(&mut self.iter);
             let is_and = eat_maybe!(self, {
                 AndIf => { true },
                 OrIf  => { false };
@@ -462,7 +463,7 @@ where
     ///
     /// For example `[!] foo | bar`.
     pub fn pipeline(&mut self) -> ParseResult<B::ListableCommand> {
-        self.skip_whitespace();
+        combinators::skip_whitespace(&mut self.iter);
         let bang = eat_maybe!(self, {
             Bang => { true };
             _ => { false },
@@ -513,7 +514,7 @@ where
         let mut cmd_args = Vec::new();
 
         loop {
-            self.skip_whitespace();
+            combinators::skip_whitespace(&mut self.iter);
             let is_name = {
                 let mut peeked = self.iter.multipeek();
                 if let Some(&Name(_)) = peeked.peek_next() {
@@ -587,7 +588,7 @@ where
     pub fn redirect_list(&mut self) -> ParseResult<Vec<B::Redirect>> {
         let mut list = Vec::new();
         loop {
-            self.skip_whitespace();
+            combinators::skip_whitespace(&mut self.iter);
             let start = self.iter.pos();
             match self.redirect()? {
                 Some(Ok(io)) => list.push(io),
@@ -684,7 +685,7 @@ where
             },
         };
 
-        self.skip_whitespace();
+        combinators::skip_whitespace(&mut self.iter);
 
         macro_rules! get_path {
             ($parser:expr) => {
@@ -773,7 +774,7 @@ where
             DLessDash => { true },
         });
 
-        self.skip_whitespace();
+        combinators::skip_whitespace(&mut self.iter);
 
         // Unfortunately we're going to have to capture the delimeter word "manually"
         // here and double some code. The problem is that we might need to unquote the
@@ -1043,7 +1044,7 @@ where
     /// (e.g. malformed parameter).
     pub fn word(&mut self) -> ParseResult<Option<B::Word>> {
         let ret = self.word_preserve_trailing_whitespace()?;
-        self.skip_whitespace();
+        combinators::skip_whitespace(&mut self.iter);
         Ok(ret)
     }
 
@@ -1070,7 +1071,7 @@ where
         &mut self,
         delim: Option<Token>,
     ) -> ParseResult<Option<ComplexWordKind<B::Command>>> {
-        self.skip_whitespace();
+        combinators::skip_whitespace(&mut self.iter);
 
         // Make sure we don't consume comments,
         // e.g. if a # is at the start of a word.
@@ -1549,7 +1550,7 @@ where
                     // If we hit a paren right off the bat either the body is empty
                     // or there is a stray paren which will result in an error either
                     // when we look for the closing parens or sometime after.
-                    self.skip_whitespace();
+                    combinators::skip_whitespace(&mut self.iter);
                     let subst = if let Some(&ParenClose) = self.iter.peek() {
                         None
                     } else {
@@ -1557,9 +1558,9 @@ where
                     };
 
                     // Some shells allow the closing parens to have whitespace in between
-                    self.skip_whitespace();
+                    combinators::skip_whitespace(&mut self.iter);
                     eat!(self, { ParenClose => {} });
-                    self.skip_whitespace();
+                    combinators::skip_whitespace(&mut self.iter);
                     eat!(self, { ParenClose => {} });
 
                     Arith(subst)
@@ -1737,7 +1738,7 @@ where
     /// Peeks at the next token (after skipping whitespace) to determine
     /// if (and which) compound command may follow.
     fn next_compound_command_type(&mut self) -> Option<CompoundCmdKeyword> {
-        self.skip_whitespace();
+        combinators::skip_whitespace(&mut self.iter);
         if Some(&ParenOpen) == self.iter.peek() {
             Some(CompoundCmdKeyword::Subshell)
         } else if self.peek_reserved_token(&[CurlyOpen]).is_some() {
@@ -1928,7 +1929,7 @@ where
         self.reserved_word(&[FOR])
             .map_err(|_| self.make_unexpected_err())?;
 
-        self.skip_whitespace();
+        combinators::skip_whitespace(&mut self.iter);
 
         match self.iter.peek() {
             Some(&Name(_)) | Some(&Literal(_)) => {}
@@ -2200,7 +2201,7 @@ where
             None => false,
         };
 
-        self.skip_whitespace();
+        combinators::skip_whitespace(&mut self.iter);
 
         match self.iter.peek() {
             Some(&Name(_)) | Some(&Literal(_)) => {}
@@ -2218,7 +2219,7 @@ where
         // possibility is for `()` to appear.
         let body = if Some(&ParenOpen) == self.iter.peek() {
             eat!(self, { ParenOpen => {} });
-            self.skip_whitespace();
+            combinators::skip_whitespace(&mut self.iter);
             eat!(self, { ParenClose => {} });
             None
         } else if found_fn && Some(&Newline) == self.iter.peek() {
@@ -2227,12 +2228,12 @@ where
         } else {
             // Enforce at least one whitespace between function declaration and body
             eat!(self, { Whitespace(_) => {} });
-            self.skip_whitespace();
+            combinators::skip_whitespace(&mut self.iter);
 
             // If we didn't find the function keyword, we MUST find `()` at this time
             if !found_fn {
                 eat!(self, { ParenOpen => {} });
-                self.skip_whitespace();
+                combinators::skip_whitespace(&mut self.iter);
                 eat!(self, { ParenClose => {} });
                 None
             } else if Some(&ParenOpen) == self.iter.peek() {
@@ -2258,28 +2259,6 @@ where
         Ok((name, post_name_comments, body))
     }
 
-    /// Skips over any encountered whitespace but preserves newlines.
-    #[inline]
-    pub fn skip_whitespace(&mut self) {
-        loop {
-            while let Some(&Whitespace(_)) = self.iter.peek() {
-                self.iter.next();
-            }
-
-            let found_backslash_newline = {
-                let mut peeked = self.iter.multipeek();
-                Some(&Backslash) == peeked.peek_next() && Some(&Newline) == peeked.peek_next()
-            };
-
-            if found_backslash_newline {
-                self.iter.next();
-                self.iter.next();
-            } else {
-                break;
-            }
-        }
-    }
-
     /// Parses zero or more `Token::Newline`s, skipping whitespace but capturing comments.
     #[inline]
     pub fn linebreak(&mut self) -> Vec<builder::Newline> {
@@ -2292,7 +2271,7 @@ where
 
     /// Tries to parse a `Token::Newline` (or a comment) after skipping whitespace.
     pub fn newline(&mut self) -> Option<builder::Newline> {
-        self.skip_whitespace();
+        combinators::skip_whitespace(&mut self.iter);
 
         match self.iter.peek() {
             Some(&Pound) => {
@@ -2335,7 +2314,7 @@ where
         let num_tries = if care_about_whitespace {
             2
         } else {
-            self.skip_whitespace();
+            combinators::skip_whitespace(&mut self.iter);
             1
         };
 
@@ -2360,7 +2339,7 @@ where
                 }
             }
 
-            self.skip_whitespace();
+            combinators::skip_whitespace(&mut self.iter);
         }
 
         None
@@ -2380,7 +2359,7 @@ where
             return None;
         }
 
-        self.skip_whitespace();
+        combinators::skip_whitespace(&mut self.iter);
         let mut peeked = self.iter.multipeek();
         let found_tok = match peeked.peek_next() {
             Some(&Name(ref kw)) | Some(&Literal(ref kw)) => {
@@ -2500,7 +2479,7 @@ where
     pub fn arithmetic_substitution(&mut self) -> ParseResult<DefaultArithmetic> {
         let mut exprs = Vec::new();
         loop {
-            self.skip_whitespace();
+            combinators::skip_whitespace(&mut self.iter);
             exprs.push(self.arith_assig()?);
 
             eat_maybe!(self, {
@@ -2521,7 +2500,7 @@ where
     fn arith_assig(&mut self) -> ParseResult<DefaultArithmetic> {
         use crate::ast::Arithmetic::*;
 
-        self.skip_whitespace();
+        combinators::skip_whitespace(&mut self.iter);
 
         let assig = {
             let mut assig = false;
@@ -2558,7 +2537,7 @@ where
         }
 
         let var = self.arith_var()?;
-        self.skip_whitespace();
+        combinators::skip_whitespace(&mut self.iter);
         let op = match self.iter.next() {
             Some(op @ Star) | Some(op @ Slash) | Some(op @ Percent) | Some(op @ Plus)
             | Some(op @ Dash) | Some(op @ DLess) | Some(op @ DGreat) | Some(op @ Amp)
@@ -2591,11 +2570,11 @@ where
     /// Parses expressions such as `expr ? expr : expr`.
     fn arith_ternary(&mut self) -> ParseResult<DefaultArithmetic> {
         let guard = self.arith_logical_or()?;
-        self.skip_whitespace();
+        combinators::skip_whitespace(&mut self.iter);
         eat_maybe!(self, {
             Question => {
                 let body = self.arith_ternary()?;
-                self.skip_whitespace();
+                combinators::skip_whitespace(&mut self.iter);
                 eat!(self, { Colon => {} });
                 let els = self.arith_ternary()?;
                 Ok(ast::Arithmetic::Ternary(Box::new(guard), Box::new(body), Box::new(els)))
@@ -2644,7 +2623,7 @@ where
     fn arith_eq(&mut self) -> ParseResult<DefaultArithmetic> {
         let mut expr = self.arith_ineq()?;
         loop {
-            self.skip_whitespace();
+            combinators::skip_whitespace(&mut self.iter);
             let eq_type = eat_maybe!(self, {
                 Equals => { true },
                 Bang => { false };
@@ -2667,7 +2646,7 @@ where
     fn arith_ineq(&mut self) -> ParseResult<DefaultArithmetic> {
         let mut expr = self.arith_shift()?;
         loop {
-            self.skip_whitespace();
+            combinators::skip_whitespace(&mut self.iter);
             eat_maybe!(self, {
                 Less => {
                     let eq = eat_maybe!(self, { Equals => { true }; _ => { false } });
@@ -2723,7 +2702,7 @@ where
     /// Parses expressions such as `expr ** expr`.
     fn arith_pow(&mut self) -> ParseResult<DefaultArithmetic> {
         let expr = self.arith_unary_misc()?;
-        self.skip_whitespace();
+        combinators::skip_whitespace(&mut self.iter);
 
         // We must be extra careful here because ** has a higher precedence
         // than *, meaning power operations will be parsed before multiplication.
@@ -2749,7 +2728,7 @@ where
 
     /// Parses expressions such as `!expr`, `~expr`, `+expr`, `-expr`, `++var` and `--var`.
     fn arith_unary_misc(&mut self) -> ParseResult<DefaultArithmetic> {
-        self.skip_whitespace();
+        combinators::skip_whitespace(&mut self.iter);
         let expr = eat_maybe!(self, {
             Bang  => { ast::Arithmetic::LogicalNot(Box::new(self.arith_unary_misc()?)) },
             Tilde => { ast::Arithmetic::BitwiseNot(Box::new(self.arith_unary_misc()?)) },
@@ -2789,11 +2768,11 @@ where
     /// treated as variables.
     #[inline]
     fn arith_post_incr(&mut self) -> ParseResult<DefaultArithmetic> {
-        self.skip_whitespace();
+        combinators::skip_whitespace(&mut self.iter);
         eat_maybe!(self, {
             ParenOpen => {
                 let expr = self.arithmetic_substitution()?;
-                self.skip_whitespace();
+                combinators::skip_whitespace(&mut self.iter);
                 eat!(self, { ParenClose => {} });
                 return Ok(expr);
             }
@@ -2836,7 +2815,7 @@ where
                 // post-increment operator and avoid confusing it with an addition operation
                 // that is yet to be parsed.
                 let post_incr = {
-                    self.skip_whitespace();
+                    combinators::skip_whitespace(&mut self.iter);
                     let mut peeked = self.iter.multipeek();
                     match peeked.peek_next() {
                         Some(&Plus) => peeked.peek_next() == Some(&Plus),
@@ -2861,7 +2840,7 @@ where
     /// Parses a variable name in the form `name` or `$name`.
     #[inline]
     fn arith_var(&mut self) -> ParseResult<String> {
-        self.skip_whitespace();
+        combinators::skip_whitespace(&mut self.iter);
         eat_maybe!(self, { Dollar => {} });
 
         if let Some(&Name(_)) = self.iter.peek() {

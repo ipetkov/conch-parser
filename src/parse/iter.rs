@@ -142,11 +142,17 @@ impl<I: Iterator<Item = Token>> Multipeek for TokenIter<I> {
     }
 }
 
-impl<I: Iterator<Item = Token>> TokenIter<I> {
+impl<I> TokenIter<I>
+where
+    I: Iterator<Item = Token>,
+{
     /// Creates a new TokenIter from another Token iterator.
-    pub fn new(iter: I) -> TokenIter<I> {
+    pub fn new<II>(iter: II) -> Self
+    where
+        II: IntoIterator<IntoIter = I, Item = Token>,
+    {
         Self {
-            iter: iter.fuse(),
+            iter: iter.into_iter().fuse(),
             pos: SourcePos::new(),
             peek_buf: VecDeque::new(),
             peek_idx: 0,

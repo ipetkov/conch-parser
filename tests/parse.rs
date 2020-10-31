@@ -75,23 +75,6 @@ fn test_linebreak_escaping_newline_insignificant() {
 }
 
 #[test]
-fn test_skip_whitespace_preserve_newline() {
-    let mut p = make_parser("    \t\t \t \t\n   ");
-    p.skip_whitespace();
-    assert_eq!(p.linebreak().len(), 1);
-}
-
-#[test]
-fn test_skip_whitespace_preserve_comments() {
-    let mut p = make_parser("    \t\t \t \t#comment\n   ");
-    p.skip_whitespace();
-    assert_eq!(
-        p.linebreak().pop().unwrap(),
-        Newline(Some(String::from("#comment")))
-    );
-}
-
-#[test]
 fn test_skip_whitespace_comments_capture_all_up_to_newline() {
     let mut p = make_parser("#comment&&||;;()<<-\n");
     assert_eq!(
@@ -107,23 +90,6 @@ fn test_skip_whitespace_comments_may_end_with_eof() {
         p.linebreak().pop().unwrap(),
         Newline(Some(String::from("#comment")))
     );
-}
-
-#[test]
-fn test_skip_whitespace_skip_escapes_dont_affect_newlines() {
-    let mut p = make_parser("  \t \\\n  \\\n#comment\n");
-    p.skip_whitespace();
-    assert_eq!(
-        p.linebreak().pop().unwrap(),
-        Newline(Some(String::from("#comment")))
-    );
-}
-
-#[test]
-fn test_skip_whitespace_skips_escaped_newlines() {
-    let mut p = make_parser("\\\n\\\n   \\\n");
-    p.skip_whitespace();
-    assert_eq!(p.linebreak(), vec!());
 }
 
 #[test]
