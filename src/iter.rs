@@ -120,6 +120,7 @@ pub trait Multipeek: Iterator {
     /// drop(peeker);
     /// ```
     fn multipeek(&mut self) -> MultipeekCursor<'_, Self> {
+        self.reset_peek();
         MultipeekCursor { parent: self }
     }
 
@@ -211,6 +212,32 @@ pub trait Multipeek: Iterator {
     /// assert_eq!(Some(&2), iter.advance_peek());
     /// ```
     fn reset_peek(&mut self);
+}
+
+impl<T> Multipeek for &'_ mut T
+where
+    T: ?Sized + Multipeek,
+{
+    fn advance_peek(&mut self) -> Option<&Self::Item> {
+        (**self).advance_peek()
+    }
+
+    fn reset_peek(&mut self) {
+        (**self).reset_peek();
+    }
+}
+
+impl<T> Multipeek for Box<T>
+where
+    T: ?Sized + Multipeek,
+{
+    fn advance_peek(&mut self) -> Option<&Self::Item> {
+        (**self).advance_peek()
+    }
+
+    fn reset_peek(&mut self) {
+        (**self).reset_peek();
+    }
 }
 
 /// A cursor for working with `Multipeek` iterators.
