@@ -388,7 +388,7 @@ where
     /// For example, `foo && bar; baz` will yield two complete
     /// commands: `And(foo, bar)`, and `Simple(baz)`.
     pub fn complete_command(&mut self) -> ParseResult<Option<B::Command>> {
-        let pre_cmd_comments = self.linebreak();
+        let pre_cmd_comments = combinators::linebreak(&mut self.iter);
 
         if self.iter.peek().is_some() {
             Ok(Some(self.complete_command_with_leading_comments(
@@ -413,10 +413,10 @@ where
         let cmd = self.and_or_list()?;
 
         let (sep, cmd_comment) = eat_maybe!(self, {
-            Semi => { (builder::SeparatorKind::Semi, self.newline()) },
-            Amp  => { (builder::SeparatorKind::Amp , self.newline()) };
+            Semi => { (builder::SeparatorKind::Semi, combinators::newline(&mut self.iter)) },
+            Amp  => { (builder::SeparatorKind::Amp , combinators::newline(&mut self.iter)) };
             _ => {
-                match self.newline() {
+                match combinators::newline(&mut self.iter) {
                     n@Some(_) => (builder::SeparatorKind::Newline, n),
                     None => (builder::SeparatorKind::Other, None),
                 }
@@ -444,7 +444,7 @@ where
                 _ => { break },
             });
 
-            let post_sep_comments = self.linebreak();
+            let post_sep_comments = combinators::linebreak(&mut self.iter);
             let next = self.pipeline()?;
 
             let next = if is_and {
@@ -480,7 +480,7 @@ where
             let cmd = self.command()?;
 
             eat_maybe!(self, {
-                Pipe => { cmds.push((self.linebreak(), cmd)) };
+                Pipe => { cmds.push((combinators::linebreak(&mut self.iter), cmd)) };
                 _ => {
                     cmds.push((Vec::new(), cmd));
                     break;
@@ -1943,8 +1943,8 @@ where
             _ => unreachable!(),
         };
 
-        let var_comment = self.newline();
-        let post_var_comments = self.linebreak();
+        let var_comment = combinators::newline(&mut self.iter);
+        let post_var_comments = combinators::linebreak(&mut self.iter);
 
         // A for command can take one of several different shapes (in pseudo regex syntax):
         // `for name [\n*] [in [word*]] [;\n* | \n+] do_group`
@@ -1966,19 +1966,19 @@ where
 
             // We need either a newline or a ; to separate the words from the body
             // Thus if neither is found it is considered an error
-            let words_comment = self.newline();
+            let words_comment = combinators::newline(&mut self.iter);
             if !found_semi && words_comment.is_none() {
                 return Err(self.make_unexpected_err());
             }
 
             (
                 Some((post_var_comments, words, words_comment)),
-                self.linebreak(),
+                combinators::linebreak(&mut self.iter),
             )
         } else if Some(&Semi) == self.iter.peek() {
             // `for name \n*;\n* do_group`
             eat!(self, { Semi => {} });
-            (None, self.linebreak())
+            (None, combinators::linebreak(&mut self.iter))
         } else if self.peek_reserved_word(&[DO]).is_none() {
             // If we didn't find an `in` keyword, and we havent hit the body
             // (a `do` keyword), then we can reasonably say the script has
@@ -2051,14 +2051,14 @@ where
             None => return Err(self.make_unexpected_err()),
         };
 
-        let post_word_comments = self.linebreak();
+        let post_word_comments = combinators::linebreak(&mut self.iter);
         self.reserved_word(&[IN]).map_err(missing_in!())?;
-        let in_comment = self.newline();
+        let in_comment = combinators::newline(&mut self.iter);
 
         let mut pre_esac_comments = None;
         let mut arms = Vec::new();
         loop {
-            let pre_pattern_comments = self.linebreak();
+            let pre_pattern_comments = combinators::linebreak(&mut self.iter);
             if self.peek_reserved_word(&[ESAC]).is_some() {
                 // Make sure we don't lose the captured comments if there are no body
                 debug_assert_eq!(pre_esac_comments, None);
@@ -2101,7 +2101,7 @@ where
                 }
             }
 
-            let pattern_comment = self.newline();
+            let pattern_comment = combinators::newline(&mut self.iter);
             let body = self.command_group_internal(CommandGroupDelimiters {
                 reserved_words: &[ESAC],
                 reserved_tokens: &[],
@@ -2110,7 +2110,7 @@ where
 
             let (no_more_arms, arm_comment) = if Some(&DSemi) == self.iter.peek() {
                 self.iter.next();
-                (false, self.newline())
+                (false, combinators::newline(&mut self.iter))
             } else {
                 (true, None)
             };
@@ -2130,7 +2130,7 @@ where
             }
         }
 
-        let remaining_comments = self.linebreak();
+        let remaining_comments = combinators::linebreak(&mut self.iter);
         let pre_esac_comments = match pre_esac_comments {
             Some(mut comments) => {
                 comments.extend(remaining_comments);
@@ -2253,43 +2253,13 @@ where
 
         let (post_name_comments, body) = match body {
             Some(subshell) => (Vec::new(), subshell),
-            None => (self.linebreak(), self.compound_command()?),
+            None => (
+                combinators::linebreak(&mut self.iter),
+                self.compound_command()?,
+            ),
         };
 
         Ok((name, post_name_comments, body))
-    }
-
-    /// Parses zero or more `Token::Newline`s, skipping whitespace but capturing comments.
-    #[inline]
-    pub fn linebreak(&mut self) -> Vec<builder::Newline> {
-        let mut lines = Vec::new();
-        while let Some(n) = self.newline() {
-            lines.push(n);
-        }
-        lines
-    }
-
-    /// Tries to parse a `Token::Newline` (or a comment) after skipping whitespace.
-    pub fn newline(&mut self) -> Option<builder::Newline> {
-        combinators::skip_whitespace(&mut self.iter);
-
-        match self.iter.peek() {
-            Some(&Pound) => {
-                let comment = self
-                    .iter
-                    .by_ref()
-                    .take_while(|t| t != &Newline)
-                    .collect::<Vec<_>>();
-                Some(builder::Newline(Some(concat_tokens(&comment))))
-            }
-
-            Some(&Newline) => {
-                self.iter.next();
-                Some(builder::Newline(None))
-            }
-
-            _ => None,
-        }
     }
 
     /// Checks that one of the specified tokens appears as a reserved word.
@@ -2457,7 +2427,7 @@ where
                 break;
             }
 
-            let leading_comments = self.linebreak();
+            let leading_comments = combinators::linebreak(&mut self.iter);
 
             if found_delim(self) || self.iter.peek().is_none() {
                 debug_assert!(trailing_comments.is_empty());

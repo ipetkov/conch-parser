@@ -15,96 +15,10 @@ fn test_parser_should_yield_none_after_error() {
 }
 
 #[test]
-fn test_linebreak_valid_with_comments_and_whitespace() {
-    let mut p = make_parser("\n\t\t\t\n # comment1\n#comment2\n   \n");
-    assert_eq!(
-        p.linebreak(),
-        vec!(
-            Newline(None),
-            Newline(None),
-            Newline(Some(String::from("# comment1"))),
-            Newline(Some(String::from("#comment2"))),
-            Newline(None)
-        )
-    );
-}
-
-#[test]
-fn test_linebreak_valid_empty() {
-    let mut p = make_parser("");
-    assert_eq!(p.linebreak(), vec!());
-}
-
-#[test]
-fn test_linebreak_valid_nonnewline() {
-    let mut p = make_parser("hello world");
-    assert_eq!(p.linebreak(), vec!());
-}
-
-#[test]
-fn test_linebreak_valid_eof_instead_of_newline() {
-    let mut p = make_parser("#comment");
-    assert_eq!(p.linebreak(), vec!(Newline(Some(String::from("#comment")))));
-}
-
-#[test]
-fn test_linebreak_single_quote_insiginificant() {
-    let mut p = make_parser("#unclosed quote ' comment");
-    assert_eq!(
-        p.linebreak(),
-        vec!(Newline(Some(String::from("#unclosed quote ' comment"))))
-    );
-}
-
-#[test]
-fn test_linebreak_double_quote_insiginificant() {
-    let mut p = make_parser("#unclosed quote \" comment");
-    assert_eq!(
-        p.linebreak(),
-        vec!(Newline(Some(String::from("#unclosed quote \" comment"))))
-    );
-}
-
-#[test]
-fn test_linebreak_escaping_newline_insignificant() {
-    let mut p = make_parser("#comment escapes newline\\\n");
-    assert_eq!(
-        p.linebreak(),
-        vec!(Newline(Some(String::from("#comment escapes newline\\"))))
-    );
-}
-
-#[test]
-fn test_skip_whitespace_comments_capture_all_up_to_newline() {
-    let mut p = make_parser("#comment&&||;;()<<-\n");
-    assert_eq!(
-        p.linebreak().pop().unwrap(),
-        Newline(Some(String::from("#comment&&||;;()<<-")))
-    );
-}
-
-#[test]
-fn test_skip_whitespace_comments_may_end_with_eof() {
-    let mut p = make_parser("#comment");
-    assert_eq!(
-        p.linebreak().pop().unwrap(),
-        Newline(Some(String::from("#comment")))
-    );
-}
-
-#[test]
 fn test_comment_cannot_start_mid_whitespace_delimited_word() {
     let mut p = make_parser("hello#world");
     let w = p.word().unwrap().expect("no valid word was discovered");
     assert_eq!(w, word("hello#world"));
-}
-
-#[test]
-fn test_comment_can_start_if_whitespace_before_pound() {
-    let mut p = make_parser("hello #world");
-    p.word().unwrap().expect("no valid word was discovered");
-    let comment = p.linebreak();
-    assert_eq!(comment, vec!(Newline(Some(String::from("#world")))));
 }
 
 #[test]
