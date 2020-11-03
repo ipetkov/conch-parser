@@ -31,10 +31,12 @@ macro_rules! eat_maybe {
     }};
 }
 
+mod and_or;
 mod linebreak;
 mod pipeline;
 mod skip_whitespace;
 
+pub use self::and_or::{and_or_list, AndOrList};
 pub use self::linebreak::{linebreak, newline};
 pub use self::pipeline::{pipeline, Pipeline};
 pub use self::skip_whitespace::skip_whitespace;

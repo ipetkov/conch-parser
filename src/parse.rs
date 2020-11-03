@@ -472,30 +472,12 @@ where
     /// Commands are left associative. For example `foo || bar && baz`
     /// parses to `And(Or(foo, bar), baz)`.
     pub fn and_or_list(&mut self) -> ParseResult<B::CommandList> {
-        let first = self.pipeline()?;
-        let mut rest = Vec::new();
+        let builder = self.builder.clone();
+        let list = combinators::and_or_list(&mut *self.iter, |iter: &'_ mut _| {
+            Parser::borrowed(iter, builder.clone()).pipeline()
+        })?;
 
-        loop {
-            combinators::skip_whitespace(&mut *self.iter);
-            let is_and = eat_maybe!(self, {
-                AndIf => { true },
-                OrIf  => { false };
-                _ => { break },
-            });
-
-            let post_sep_comments = combinators::linebreak(&mut *self.iter);
-            let next = self.pipeline()?;
-
-            let next = if is_and {
-                ast::AndOr::And(next)
-            } else {
-                ast::AndOr::Or(next)
-            };
-
-            rest.push((post_sep_comments, next));
-        }
-
-        Ok(self.builder.and_or_list(first, rest))
+        Ok(self.builder.and_or_list(list.first, list.rest))
     }
 
     /// Parses either a single command or a pipeline of commands.
