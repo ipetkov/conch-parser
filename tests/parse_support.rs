@@ -48,11 +48,13 @@ pub fn word_param(p: DefaultParameter) -> TopLevelWord<String> {
     TopLevelWord(Single(Word::Simple(Param(p))))
 }
 
-pub fn make_parser(src: &str) -> DefaultParser<Lexer<std::str::Chars<'_>>> {
+pub fn make_parser(src: &str) -> DefaultParser<'_, Lexer<std::str::Chars<'_>>> {
     DefaultParser::new(Lexer::new(src.chars()))
 }
 
-pub fn make_parser_from_tokens(src: Vec<Token>) -> DefaultParser<std::vec::IntoIter<Token>> {
+pub fn make_parser_from_tokens(
+    src: Vec<Token>,
+) -> DefaultParser<'static, std::vec::IntoIter<Token>> {
     DefaultParser::new(src.into_iter())
 }
 

@@ -38,7 +38,7 @@ const WHILE: &str = "while";
 
 /// A parser which will use a default AST builder implementation,
 /// yielding results in terms of types defined in the `ast` module.
-pub type DefaultParser<I> = Parser<I, builder::StringBuilder>;
+pub type DefaultParser<'a, I> = Parser<'a, I, builder::StringBuilder>;
 
 /// A specialized `Result` type for parsing shell commands.
 pub type ParseResult<T> = Result<T, ParseError>;
@@ -149,32 +149,32 @@ impl Default for CommandGroupDelimiters<'static, 'static, 'static> {
 /// result.
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 #[derive(Debug)]
-pub struct ParserIterator<I, B> {
+pub struct ParserIterator<'a, I, B> {
     /// The underlying parser to poll for complete commands.
     /// A `None` value indicates the stream has been exhausted.
-    parser: Option<Parser<I, B>>,
+    parser: Option<Parser<'a, I, B>>,
 }
 
-impl<I, B> ParserIterator<I, B> {
+impl<'a, I, B> ParserIterator<'a, I, B> {
     /// Construct a new adapter with a given parser.
-    fn new(parser: Parser<I, B>) -> Self {
-        ParserIterator {
+    fn new(parser: Parser<'a, I, B>) -> Self {
+        Self {
             parser: Some(parser),
         }
     }
 }
 
-impl<I, B> std::iter::FusedIterator for ParserIterator<I, B>
+impl<I, B> std::iter::FusedIterator for ParserIterator<'_, I, B>
 where
     I: Iterator<Item = Token>,
-    B: Builder,
+    B: Builder + Clone,
 {
 }
 
-impl<I, B> Iterator for ParserIterator<I, B>
+impl<I, B> Iterator for ParserIterator<'_, I, B>
 where
     I: Iterator<Item = Token>,
-    B: Builder,
+    B: Builder + Clone,
 {
     type Item = ParseResult<B::Command>;
 
@@ -196,12 +196,12 @@ where
     }
 }
 
-impl<I, B> IntoIterator for Parser<I, B>
+impl<'a, I, B> IntoIterator for Parser<'a, I, B>
 where
     I: Iterator<Item = Token>,
-    B: Builder,
+    B: Builder + Clone,
 {
-    type IntoIter = ParserIterator<I, B>;
+    type IntoIter = ParserIterator<'a, I, B>;
     type Item = <Self::IntoIter as Iterator>::Item;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -273,18 +273,44 @@ where
 /// it were `[Literal(<<)]`. The lexer's behavior need not be consistent between different
 /// multi-char tokens, as long as it is aware of the implications.
 #[derive(Debug)]
-pub struct Parser<I, B> {
-    iter: TokenIterWrapper<I>,
+pub struct Parser<'a, I, B> {
+    iter: MyCow<'a, TokenIterWrapper<I>>,
     builder: B,
 }
 
-impl<I, B> Parser<I, B>
+#[derive(Debug)]
+enum MyCow<'a, T> {
+    Owned(T),
+    Borrowed(&'a mut T),
+}
+
+impl<T> std::ops::Deref for MyCow<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            MyCow::Owned(t) => t,
+            MyCow::Borrowed(t) => t,
+        }
+    }
+}
+
+impl<T> std::ops::DerefMut for MyCow<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            MyCow::Owned(t) => t,
+            MyCow::Borrowed(t) => t,
+        }
+    }
+}
+
+impl<'a, I, B> Parser<'a, I, B>
 where
     I: Iterator<Item = Token>,
-    B: Builder + Default,
+    B: Builder + Default + Clone,
 {
     /// Creates a new Parser from a Token iterator or collection.
-    pub fn new<T>(iter: T) -> Parser<I, B>
+    pub fn new<T: 'a>(iter: T) -> Self
     where
         T: IntoIterator<Item = Token, IntoIter = I>,
     {
@@ -341,7 +367,7 @@ macro_rules! arith_parse {
         fn $fn_name(&mut self) -> ParseResult<DefaultArithmetic> {
             let mut expr = self.$next_expr()?;
             loop {
-                combinators::skip_whitespace(&mut self.iter);
+                combinators::skip_whitespace(&mut *self.iter);
                 eat_maybe!(self, {
                     $($tok => {
                         let next = self.$next_expr()?;
@@ -355,10 +381,31 @@ macro_rules! arith_parse {
     }
 }
 
-impl<I, B> Parser<I, B>
+impl<'a, I: 'a, B> Parser<'a, I, B>
 where
     I: Iterator<Item = Token>,
-    B: Builder,
+    B: Builder + Clone,
+{
+    /// Creates a new Parser from a Token iterator and provided AST builder.
+    pub fn with_builder(iter: I, builder: B) -> Self {
+        Self {
+            iter: MyCow::Owned(TokenIterWrapper::Regular(TokenIter::new(iter))),
+            builder,
+        }
+    }
+
+    fn borrowed(iter: &'a mut TokenIterWrapper<I>, builder: B) -> Self {
+        Self {
+            iter: MyCow::Borrowed(iter),
+            builder,
+        }
+    }
+}
+
+impl<'b, I, B> Parser<'b, I, B>
+where
+    I: Iterator<Item = Token>,
+    B: Builder + Clone,
 {
     /// Construct an `Unexpected` error using the given token. If `None` specified, the next
     /// token in the iterator will be used (or `UnexpectedEOF` if none left).
@@ -368,14 +415,6 @@ where
         self.iter.next().map_or(ParseError::UnexpectedEOF, |t| {
             ParseError::Unexpected(t, pos)
         })
-    }
-
-    /// Creates a new Parser from a Token iterator and provided AST builder.
-    pub fn with_builder(iter: I, builder: B) -> Self {
-        Parser {
-            iter: TokenIterWrapper::Regular(TokenIter::new(iter)),
-            builder,
-        }
     }
 
     /// Returns the parser's current position in the source.
@@ -388,7 +427,7 @@ where
     /// For example, `foo && bar; baz` will yield two complete
     /// commands: `And(foo, bar)`, and `Simple(baz)`.
     pub fn complete_command(&mut self) -> ParseResult<Option<B::Command>> {
-        let pre_cmd_comments = combinators::linebreak(&mut self.iter);
+        let pre_cmd_comments = combinators::linebreak(&mut *self.iter);
 
         if self.iter.peek().is_some() {
             Ok(Some(self.complete_command_with_leading_comments(
@@ -413,10 +452,10 @@ where
         let cmd = self.and_or_list()?;
 
         let (sep, cmd_comment) = eat_maybe!(self, {
-            Semi => { (builder::SeparatorKind::Semi, combinators::newline(&mut self.iter)) },
-            Amp  => { (builder::SeparatorKind::Amp , combinators::newline(&mut self.iter)) };
+            Semi => { (builder::SeparatorKind::Semi, combinators::newline(&mut *self.iter)) },
+            Amp  => { (builder::SeparatorKind::Amp , combinators::newline(&mut *self.iter)) };
             _ => {
-                match combinators::newline(&mut self.iter) {
+                match combinators::newline(&mut *self.iter) {
                     n@Some(_) => (builder::SeparatorKind::Newline, n),
                     None => (builder::SeparatorKind::Other, None),
                 }
@@ -437,14 +476,14 @@ where
         let mut rest = Vec::new();
 
         loop {
-            combinators::skip_whitespace(&mut self.iter);
+            combinators::skip_whitespace(&mut *self.iter);
             let is_and = eat_maybe!(self, {
                 AndIf => { true },
                 OrIf  => { false };
                 _ => { break },
             });
 
-            let post_sep_comments = combinators::linebreak(&mut self.iter);
+            let post_sep_comments = combinators::linebreak(&mut *self.iter);
             let next = self.pipeline()?;
 
             let next = if is_and {
@@ -463,32 +502,12 @@ where
     ///
     /// For example `[!] foo | bar`.
     pub fn pipeline(&mut self) -> ParseResult<B::ListableCommand> {
-        combinators::skip_whitespace(&mut self.iter);
-        let bang = eat_maybe!(self, {
-            Bang => { true };
-            _ => { false },
-        });
+        let builder = self.builder.clone();
+        let pipeline = combinators::pipeline(&mut *self.iter, |iter: &'_ mut _| {
+            Parser::borrowed(iter, builder.clone()).command()
+        })?;
 
-        let mut cmds = Vec::new();
-        loop {
-            // We've already passed an apropriate spot for !, so it
-            // is an error if it appears before the start of a command.
-            if let Some(&Bang) = self.iter.peek() {
-                return Err(self.make_unexpected_err());
-            }
-
-            let cmd = self.command()?;
-
-            eat_maybe!(self, {
-                Pipe => { cmds.push((combinators::linebreak(&mut self.iter), cmd)) };
-                _ => {
-                    cmds.push((Vec::new(), cmd));
-                    break;
-                },
-            });
-        }
-
-        Ok(self.builder.pipeline(bang, cmds))
+        Ok(self.builder.pipeline(pipeline.invert_status, pipeline.cmds))
     }
 
     /// Parses any compound or individual command.
@@ -514,7 +533,7 @@ where
         let mut cmd_args = Vec::new();
 
         loop {
-            combinators::skip_whitespace(&mut self.iter);
+            combinators::skip_whitespace(&mut *self.iter);
             let is_name = {
                 let mut peeked = self.iter.multipeek();
                 if let Some(&Name(_)) = peeked.peek_next() {
@@ -588,7 +607,7 @@ where
     pub fn redirect_list(&mut self) -> ParseResult<Vec<B::Redirect>> {
         let mut list = Vec::new();
         loop {
-            combinators::skip_whitespace(&mut self.iter);
+            combinators::skip_whitespace(&mut *self.iter);
             let start = self.iter.pos();
             match self.redirect()? {
                 Some(Ok(io)) => list.push(io),
@@ -685,7 +704,7 @@ where
             },
         };
 
-        combinators::skip_whitespace(&mut self.iter);
+        combinators::skip_whitespace(&mut *self.iter);
 
         macro_rules! get_path {
             ($parser:expr) => {
@@ -774,7 +793,7 @@ where
             DLessDash => { true },
         });
 
-        combinators::skip_whitespace(&mut self.iter);
+        combinators::skip_whitespace(&mut *self.iter);
 
         // Unfortunately we're going to have to capture the delimeter word "manually"
         // here and double some code. The problem is that we might need to unquote the
@@ -801,7 +820,7 @@ where
                 break;
             }
 
-            for t in Balanced::balanced(&mut self.iter) {
+            for t in Balanced::balanced(&mut *self.iter) {
                 delim_tokens.push(t?);
             }
         }
@@ -920,7 +939,7 @@ where
                 break;
             }
 
-            for t in Balanced::balanced(&mut self.iter) {
+            for t in Balanced::balanced(&mut *self.iter) {
                 saved_tokens.push(t?);
             }
         }
@@ -1012,9 +1031,9 @@ where
             }
 
             let mut tok_backup = TokenIterWrapper::Buffered(tok_iter);
-            mem::swap(&mut self.iter, &mut tok_backup);
+            mem::swap(&mut *self.iter, &mut tok_backup);
             let mut body = self.word_interpolated_raw(None, heredoc_start_pos)?;
-            let _ = mem::replace(&mut self.iter, tok_backup);
+            let _ = mem::replace(&mut *self.iter, tok_backup);
 
             if body.len() > 1 {
                 Concat(body.into_iter().map(Simple).collect())
@@ -1044,7 +1063,7 @@ where
     /// (e.g. malformed parameter).
     pub fn word(&mut self) -> ParseResult<Option<B::Word>> {
         let ret = self.word_preserve_trailing_whitespace()?;
-        combinators::skip_whitespace(&mut self.iter);
+        combinators::skip_whitespace(&mut *self.iter);
         Ok(ret)
     }
 
@@ -1071,7 +1090,7 @@ where
         &mut self,
         delim: Option<Token>,
     ) -> ParseResult<Option<ComplexWordKind<B::Command>>> {
-        combinators::skip_whitespace(&mut self.iter);
+        combinators::skip_whitespace(&mut *self.iter);
 
         // Make sure we don't consume comments,
         // e.g. if a # is at the start of a word.
@@ -1104,7 +1123,7 @@ where
 
                 Some(&SingleQuote) => {
                     let mut buf = String::new();
-                    for t in Balanced::single_quoted(&mut self.iter) {
+                    for t in Balanced::single_quoted(&mut *self.iter) {
                         buf.push_str(t?.as_str())
                     }
 
@@ -1315,9 +1334,9 @@ where
 
         let mut tok_backup = TokenIterWrapper::Buffered(tok_iter);
 
-        mem::swap(&mut self.iter, &mut tok_backup);
+        mem::swap(&mut *self.iter, &mut tok_backup);
         let cmd_subst = self.command_group_internal(CommandGroupDelimiters::default());
-        let _ = mem::replace(&mut self.iter, tok_backup);
+        let _ = mem::replace(&mut *self.iter, tok_backup);
 
         Ok(SimpleWordKind::CommandSubst(cmd_subst?))
     }
@@ -1550,7 +1569,7 @@ where
                     // If we hit a paren right off the bat either the body is empty
                     // or there is a stray paren which will result in an error either
                     // when we look for the closing parens or sometime after.
-                    combinators::skip_whitespace(&mut self.iter);
+                    combinators::skip_whitespace(&mut *self.iter);
                     let subst = if let Some(&ParenClose) = self.iter.peek() {
                         None
                     } else {
@@ -1558,9 +1577,9 @@ where
                     };
 
                     // Some shells allow the closing parens to have whitespace in between
-                    combinators::skip_whitespace(&mut self.iter);
+                    combinators::skip_whitespace(&mut *self.iter);
                     eat!(self, { ParenClose => {} });
-                    combinators::skip_whitespace(&mut self.iter);
+                    combinators::skip_whitespace(&mut *self.iter);
                     eat!(self, { ParenClose => {} });
 
                     Arith(subst)
@@ -1738,7 +1757,7 @@ where
     /// Peeks at the next token (after skipping whitespace) to determine
     /// if (and which) compound command may follow.
     fn next_compound_command_type(&mut self) -> Option<CompoundCmdKeyword> {
-        combinators::skip_whitespace(&mut self.iter);
+        combinators::skip_whitespace(&mut *self.iter);
         if Some(&ParenOpen) == self.iter.peek() {
             Some(CompoundCmdKeyword::Subshell)
         } else if self.peek_reserved_token(&[CurlyOpen]).is_some() {
@@ -1929,7 +1948,7 @@ where
         self.reserved_word(&[FOR])
             .map_err(|_| self.make_unexpected_err())?;
 
-        combinators::skip_whitespace(&mut self.iter);
+        combinators::skip_whitespace(&mut *self.iter);
 
         match self.iter.peek() {
             Some(&Name(_)) | Some(&Literal(_)) => {}
@@ -1943,8 +1962,8 @@ where
             _ => unreachable!(),
         };
 
-        let var_comment = combinators::newline(&mut self.iter);
-        let post_var_comments = combinators::linebreak(&mut self.iter);
+        let var_comment = combinators::newline(&mut *self.iter);
+        let post_var_comments = combinators::linebreak(&mut *self.iter);
 
         // A for command can take one of several different shapes (in pseudo regex syntax):
         // `for name [\n*] [in [word*]] [;\n* | \n+] do_group`
@@ -1966,19 +1985,19 @@ where
 
             // We need either a newline or a ; to separate the words from the body
             // Thus if neither is found it is considered an error
-            let words_comment = combinators::newline(&mut self.iter);
+            let words_comment = combinators::newline(&mut *self.iter);
             if !found_semi && words_comment.is_none() {
                 return Err(self.make_unexpected_err());
             }
 
             (
                 Some((post_var_comments, words, words_comment)),
-                combinators::linebreak(&mut self.iter),
+                combinators::linebreak(&mut *self.iter),
             )
         } else if Some(&Semi) == self.iter.peek() {
             // `for name \n*;\n* do_group`
             eat!(self, { Semi => {} });
-            (None, combinators::linebreak(&mut self.iter))
+            (None, combinators::linebreak(&mut *self.iter))
         } else if self.peek_reserved_word(&[DO]).is_none() {
             // If we didn't find an `in` keyword, and we havent hit the body
             // (a `do` keyword), then we can reasonably say the script has
@@ -2051,14 +2070,14 @@ where
             None => return Err(self.make_unexpected_err()),
         };
 
-        let post_word_comments = combinators::linebreak(&mut self.iter);
+        let post_word_comments = combinators::linebreak(&mut *self.iter);
         self.reserved_word(&[IN]).map_err(missing_in!())?;
-        let in_comment = combinators::newline(&mut self.iter);
+        let in_comment = combinators::newline(&mut *self.iter);
 
         let mut pre_esac_comments = None;
         let mut arms = Vec::new();
         loop {
-            let pre_pattern_comments = combinators::linebreak(&mut self.iter);
+            let pre_pattern_comments = combinators::linebreak(&mut *self.iter);
             if self.peek_reserved_word(&[ESAC]).is_some() {
                 // Make sure we don't lose the captured comments if there are no body
                 debug_assert_eq!(pre_esac_comments, None);
@@ -2101,7 +2120,7 @@ where
                 }
             }
 
-            let pattern_comment = combinators::newline(&mut self.iter);
+            let pattern_comment = combinators::newline(&mut *self.iter);
             let body = self.command_group_internal(CommandGroupDelimiters {
                 reserved_words: &[ESAC],
                 reserved_tokens: &[],
@@ -2110,7 +2129,7 @@ where
 
             let (no_more_arms, arm_comment) = if Some(&DSemi) == self.iter.peek() {
                 self.iter.next();
-                (false, combinators::newline(&mut self.iter))
+                (false, combinators::newline(&mut *self.iter))
             } else {
                 (true, None)
             };
@@ -2130,7 +2149,7 @@ where
             }
         }
 
-        let remaining_comments = combinators::linebreak(&mut self.iter);
+        let remaining_comments = combinators::linebreak(&mut *self.iter);
         let pre_esac_comments = match pre_esac_comments {
             Some(mut comments) => {
                 comments.extend(remaining_comments);
@@ -2201,7 +2220,7 @@ where
             None => false,
         };
 
-        combinators::skip_whitespace(&mut self.iter);
+        combinators::skip_whitespace(&mut *self.iter);
 
         match self.iter.peek() {
             Some(&Name(_)) | Some(&Literal(_)) => {}
@@ -2219,7 +2238,7 @@ where
         // possibility is for `()` to appear.
         let body = if Some(&ParenOpen) == self.iter.peek() {
             eat!(self, { ParenOpen => {} });
-            combinators::skip_whitespace(&mut self.iter);
+            combinators::skip_whitespace(&mut *self.iter);
             eat!(self, { ParenClose => {} });
             None
         } else if found_fn && Some(&Newline) == self.iter.peek() {
@@ -2228,12 +2247,12 @@ where
         } else {
             // Enforce at least one whitespace between function declaration and body
             eat!(self, { Whitespace(_) => {} });
-            combinators::skip_whitespace(&mut self.iter);
+            combinators::skip_whitespace(&mut *self.iter);
 
             // If we didn't find the function keyword, we MUST find `()` at this time
             if !found_fn {
                 eat!(self, { ParenOpen => {} });
-                combinators::skip_whitespace(&mut self.iter);
+                combinators::skip_whitespace(&mut *self.iter);
                 eat!(self, { ParenClose => {} });
                 None
             } else if Some(&ParenOpen) == self.iter.peek() {
@@ -2254,7 +2273,7 @@ where
         let (post_name_comments, body) = match body {
             Some(subshell) => (Vec::new(), subshell),
             None => (
-                combinators::linebreak(&mut self.iter),
+                combinators::linebreak(&mut *self.iter),
                 self.compound_command()?,
             ),
         };
@@ -2284,7 +2303,7 @@ where
         let num_tries = if care_about_whitespace {
             2
         } else {
-            combinators::skip_whitespace(&mut self.iter);
+            combinators::skip_whitespace(&mut *self.iter);
             1
         };
 
@@ -2309,7 +2328,7 @@ where
                 }
             }
 
-            combinators::skip_whitespace(&mut self.iter);
+            combinators::skip_whitespace(&mut *self.iter);
         }
 
         None
@@ -2329,7 +2348,7 @@ where
             return None;
         }
 
-        combinators::skip_whitespace(&mut self.iter);
+        combinators::skip_whitespace(&mut *self.iter);
         let mut peeked = self.iter.multipeek();
         let found_tok = match peeked.peek_next() {
             Some(&Name(ref kw)) | Some(&Literal(ref kw)) => {
@@ -2407,7 +2426,7 @@ where
         &mut self,
         cfg: CommandGroupDelimiters<'_, '_, '_>,
     ) -> ParseResult<builder::CommandGroup<B::Command>> {
-        let found_delim = |slf: &mut Parser<_, _>| {
+        let found_delim = |slf: &mut Parser<'_, _, _>| {
             let found_exact = !cfg.exact_tokens.is_empty()
                 && slf
                     .iter
@@ -2427,7 +2446,7 @@ where
                 break;
             }
 
-            let leading_comments = combinators::linebreak(&mut self.iter);
+            let leading_comments = combinators::linebreak(&mut *self.iter);
 
             if found_delim(self) || self.iter.peek().is_none() {
                 debug_assert!(trailing_comments.is_empty());
@@ -2449,7 +2468,7 @@ where
     pub fn arithmetic_substitution(&mut self) -> ParseResult<DefaultArithmetic> {
         let mut exprs = Vec::new();
         loop {
-            combinators::skip_whitespace(&mut self.iter);
+            combinators::skip_whitespace(&mut *self.iter);
             exprs.push(self.arith_assig()?);
 
             eat_maybe!(self, {
@@ -2470,7 +2489,7 @@ where
     fn arith_assig(&mut self) -> ParseResult<DefaultArithmetic> {
         use crate::ast::Arithmetic::*;
 
-        combinators::skip_whitespace(&mut self.iter);
+        combinators::skip_whitespace(&mut *self.iter);
 
         let assig = {
             let mut assig = false;
@@ -2507,7 +2526,7 @@ where
         }
 
         let var = self.arith_var()?;
-        combinators::skip_whitespace(&mut self.iter);
+        combinators::skip_whitespace(&mut *self.iter);
         let op = match self.iter.next() {
             Some(op @ Star) | Some(op @ Slash) | Some(op @ Percent) | Some(op @ Plus)
             | Some(op @ Dash) | Some(op @ DLess) | Some(op @ DGreat) | Some(op @ Amp)
@@ -2540,11 +2559,11 @@ where
     /// Parses expressions such as `expr ? expr : expr`.
     fn arith_ternary(&mut self) -> ParseResult<DefaultArithmetic> {
         let guard = self.arith_logical_or()?;
-        combinators::skip_whitespace(&mut self.iter);
+        combinators::skip_whitespace(&mut *self.iter);
         eat_maybe!(self, {
             Question => {
                 let body = self.arith_ternary()?;
-                combinators::skip_whitespace(&mut self.iter);
+                combinators::skip_whitespace(&mut *self.iter);
                 eat!(self, { Colon => {} });
                 let els = self.arith_ternary()?;
                 Ok(ast::Arithmetic::Ternary(Box::new(guard), Box::new(body), Box::new(els)))
@@ -2593,7 +2612,7 @@ where
     fn arith_eq(&mut self) -> ParseResult<DefaultArithmetic> {
         let mut expr = self.arith_ineq()?;
         loop {
-            combinators::skip_whitespace(&mut self.iter);
+            combinators::skip_whitespace(&mut *self.iter);
             let eq_type = eat_maybe!(self, {
                 Equals => { true },
                 Bang => { false };
@@ -2616,7 +2635,7 @@ where
     fn arith_ineq(&mut self) -> ParseResult<DefaultArithmetic> {
         let mut expr = self.arith_shift()?;
         loop {
-            combinators::skip_whitespace(&mut self.iter);
+            combinators::skip_whitespace(&mut *self.iter);
             eat_maybe!(self, {
                 Less => {
                     let eq = eat_maybe!(self, { Equals => { true }; _ => { false } });
@@ -2672,7 +2691,7 @@ where
     /// Parses expressions such as `expr ** expr`.
     fn arith_pow(&mut self) -> ParseResult<DefaultArithmetic> {
         let expr = self.arith_unary_misc()?;
-        combinators::skip_whitespace(&mut self.iter);
+        combinators::skip_whitespace(&mut *self.iter);
 
         // We must be extra careful here because ** has a higher precedence
         // than *, meaning power operations will be parsed before multiplication.
@@ -2698,7 +2717,7 @@ where
 
     /// Parses expressions such as `!expr`, `~expr`, `+expr`, `-expr`, `++var` and `--var`.
     fn arith_unary_misc(&mut self) -> ParseResult<DefaultArithmetic> {
-        combinators::skip_whitespace(&mut self.iter);
+        combinators::skip_whitespace(&mut *self.iter);
         let expr = eat_maybe!(self, {
             Bang  => { ast::Arithmetic::LogicalNot(Box::new(self.arith_unary_misc()?)) },
             Tilde => { ast::Arithmetic::BitwiseNot(Box::new(self.arith_unary_misc()?)) },
@@ -2738,11 +2757,11 @@ where
     /// treated as variables.
     #[inline]
     fn arith_post_incr(&mut self) -> ParseResult<DefaultArithmetic> {
-        combinators::skip_whitespace(&mut self.iter);
+        combinators::skip_whitespace(&mut *self.iter);
         eat_maybe!(self, {
             ParenOpen => {
                 let expr = self.arithmetic_substitution()?;
-                combinators::skip_whitespace(&mut self.iter);
+                combinators::skip_whitespace(&mut *self.iter);
                 eat!(self, { ParenClose => {} });
                 return Ok(expr);
             }
@@ -2785,7 +2804,7 @@ where
                 // post-increment operator and avoid confusing it with an addition operation
                 // that is yet to be parsed.
                 let post_incr = {
-                    combinators::skip_whitespace(&mut self.iter);
+                    combinators::skip_whitespace(&mut *self.iter);
                     let mut peeked = self.iter.multipeek();
                     match peeked.peek_next() {
                         Some(&Plus) => peeked.peek_next() == Some(&Plus),
@@ -2810,7 +2829,7 @@ where
     /// Parses a variable name in the form `name` or `$name`.
     #[inline]
     fn arith_var(&mut self) -> ParseResult<String> {
-        combinators::skip_whitespace(&mut self.iter);
+        combinators::skip_whitespace(&mut *self.iter);
         eat_maybe!(self, { Dollar => {} });
 
         if let Some(&Name(_)) = self.iter.peek() {
@@ -2841,7 +2860,7 @@ mod tests {
     use crate::lexer::Lexer;
     use crate::parse::*;
 
-    fn make_parser(src: &str) -> DefaultParser<Lexer<std::str::Chars<'_>>> {
+    fn make_parser(src: &str) -> DefaultParser<'_, Lexer<std::str::Chars<'_>>> {
         DefaultParser::new(Lexer::new(src.chars()))
     }
 
