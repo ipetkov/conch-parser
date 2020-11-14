@@ -1044,13 +1044,6 @@ where
     /// Note that an error can still arise if partial tokens are present
     /// (e.g. malformed parameter).
     pub fn word(&mut self) -> ParseResult<Option<B::Word>> {
-        let ret = self.word_preserve_trailing_whitespace()?;
-        combinators::skip_whitespace(&mut *self.iter);
-        Ok(ret)
-    }
-
-    /// Identical to `Parser::word()` but preserves trailing whitespace after the word.
-    pub fn word_preserve_trailing_whitespace(&mut self) -> ParseResult<Option<B::Word>> {
         let w = match self.word_preserve_trailing_whitespace_raw()? {
             Some(w) => Some(self.builder.word(w)),
             None => None,
@@ -2084,6 +2077,7 @@ where
                     None => return Err(self.make_unexpected_err()),
                 }
 
+                combinators::skip_whitespace(&mut *self.iter);
                 match self.iter.peek() {
                     Some(&Pipe) => {
                         self.iter.next();
@@ -2929,9 +2923,9 @@ mod tests {
     }
 
     #[test]
-    fn test_word_preserve_trailing_whitespace() {
+    fn test_word() {
         let mut p = make_parser("test       ");
-        p.word_preserve_trailing_whitespace().unwrap();
+        p.word().unwrap();
         assert!(p.iter.next().is_some());
     }
 
