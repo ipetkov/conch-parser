@@ -42,7 +42,7 @@ macro_rules! eat {
         let pos = $iter.pos();
         match $iter.next() {
             $(Some($tok) $(if $if_expr)? => $body),+,
-            t => return Err($crate::parse::combinators::make_unexpected_err_parts(pos, t).into()),
+            t => return Err($crate::parse2::combinators::make_unexpected_err_parts(pos, t).into()),
         }
     }};
 }
@@ -58,26 +58,6 @@ pub use self::arith::arith_var;
 pub use self::linebreak::{linebreak, newline};
 pub use self::pipeline::{pipeline, Pipeline};
 pub use self::skip_whitespace::skip_whitespace;
-
-pub trait Parser<I: ?Sized> {
-    type Output;
-    type Error;
-
-    fn parse(&mut self, cx: &mut I) -> Result<Self::Output, Self::Error>;
-}
-
-impl<F, I, O, E> Parser<I> for F
-where
-    I: ?Sized,
-    F: ?Sized + FnMut(&mut I) -> Result<O, E>,
-{
-    type Output = O;
-    type Error = E;
-
-    fn parse(&mut self, cx: &mut I) -> Result<Self::Output, Self::Error> {
-        (*self)(cx)
-    }
-}
 
 fn make_unexpected_err<I>(iter: &mut I) -> ParseError
 where

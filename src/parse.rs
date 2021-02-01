@@ -15,11 +15,11 @@ use crate::ast::builder::{self, Builder, SimpleWordKind};
 use crate::ast::{self, DefaultArithmetic, DefaultParameter};
 use crate::error::{ParseError, UnmatchedError};
 use crate::iter::{BacktickBackslashRemover, Balanced, PeekableIterator, PositionIterator};
+use crate::parse2::combinators;
 use crate::token::Token;
 use crate::token::Token::*;
 
-mod combinators;
-mod iter;
+pub(crate) mod iter;
 
 const CASE: &str = "case";
 const DO: &str = "do";

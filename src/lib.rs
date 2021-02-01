@@ -41,6 +41,9 @@
 #![deny(unused_qualifications)]
 #![forbid(unsafe_code)]
 
+// New parse reimplementation, rename before making public
+pub(crate) mod parse2;
+
 pub mod ast;
 pub mod error;
 pub mod iter;

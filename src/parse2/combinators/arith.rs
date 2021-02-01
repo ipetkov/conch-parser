@@ -1,6 +1,6 @@
 use crate::error::ParseError;
 use crate::iter::{Multipeek, PositionIterator};
-use crate::parse::combinators;
+use crate::parse2::combinators;
 use crate::token::Token;
 
 /// Parses an arithmetic variable name in the form `name` or `$name`.

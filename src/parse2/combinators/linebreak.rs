@@ -1,6 +1,6 @@
 use crate::ast::builder;
 use crate::iter::Multipeek;
-use crate::parse::combinators;
+use crate::parse2::combinators;
 use crate::token::Token;
 
 /// Parses zero or more `Token::Newline`s, skipping leading whitespace and capturing comments.
