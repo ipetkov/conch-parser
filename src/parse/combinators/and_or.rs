@@ -24,9 +24,9 @@ where
     loop {
         combinators::skip_whitespace(iter);
         let is_and = eat_maybe!(iter, {
-            Token::AndIf => { true },
-            Token::OrIf  => { false };
-            _ => { break },
+            Token::AndIf => true,
+            Token::OrIf  => false;
+            _ => break,
         });
 
         let post_sep_comments = combinators::linebreak(iter);

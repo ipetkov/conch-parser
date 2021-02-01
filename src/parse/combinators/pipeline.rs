@@ -21,8 +21,8 @@ where
 {
     combinators::skip_whitespace(iter);
     let invert_status = eat_maybe!(iter, {
-        Token::Bang => { true };
-        _ => { false },
+        Token::Bang => true;
+        _ => false,
     });
 
     let mut cmds = Vec::new();
@@ -50,7 +50,7 @@ where
                     invert_status,
                     cmds,
                 });
-            }
+            },
         });
     }
 }

@@ -2501,7 +2501,7 @@ where
             return self.arith_ternary();
         }
 
-        let var = self.arith_var()?;
+        let var = combinators::arith_var(&mut *self.iter)?;
         combinators::skip_whitespace(&mut *self.iter);
         let op = match self.iter.next() {
             Some(op @ Star) | Some(op @ Slash) | Some(op @ Percent) | Some(op @ Plus)
@@ -2705,7 +2705,7 @@ where
                         let next = self.arith_unary_misc()?;
                         ast::Arithmetic::UnaryPlus(Box::new(ast::Arithmetic::UnaryMinus(Box::new(next))))
                     },
-                    Plus => { ast::Arithmetic::PreIncr(self.arith_var()?) };
+                    Plus => { ast::Arithmetic::PreIncr(combinators::arith_var(&mut *self.iter)?) };
                     _ => { ast::Arithmetic::UnaryPlus(Box::new(self.arith_unary_misc()?)) }
                 })
             },
@@ -2718,7 +2718,7 @@ where
                         let next = self.arith_unary_misc()?;
                         ast::Arithmetic::UnaryMinus(Box::new(ast::Arithmetic::UnaryPlus(Box::new(next))))
                     },
-                    Dash => { ast::Arithmetic::PreDecr(self.arith_var()?) };
+                    Dash => { ast::Arithmetic::PreDecr(combinators::arith_var(&mut *self.iter)?) };
                     _ => { ast::Arithmetic::UnaryMinus(Box::new(self.arith_unary_misc()?)) }
                 })
             };
@@ -2772,7 +2772,7 @@ where
                 ast::Arithmetic::Literal(num)
             }
             None => {
-                let var = self.arith_var()?;
+                let var = combinators::arith_var(&mut *self.iter)?;
 
                 // We must be extra careful here because post-increment has a higher precedence
                 // than addition/subtraction meaning post-increment operations will be parsed
@@ -2800,23 +2800,6 @@ where
             }
         };
         Ok(expr)
-    }
-
-    /// Parses a variable name in the form `name` or `$name`.
-    #[inline]
-    fn arith_var(&mut self) -> ParseResult<String> {
-        combinators::skip_whitespace(&mut *self.iter);
-        eat_maybe!(self, { Dollar => {} });
-
-        if let Some(&Name(_)) = self.iter.peek() {
-            if let Some(Name(n)) = self.iter.next() {
-                Ok(n)
-            } else {
-                unreachable!()
-            }
-        } else {
-            Err(self.make_unexpected_err())
-        }
     }
 }
 
