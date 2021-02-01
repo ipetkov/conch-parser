@@ -2723,82 +2723,16 @@ where
                 })
             };
 
-            _ => { self.arith_post_incr()? }
-        });
-        Ok(expr)
-    }
+            _ => {
+                let builder = self.builder.clone();
 
-    /// Parses expressions such as `(expr)`, numeric literals, `var`, `var++`, or `var--`.
-    /// Numeric literals must appear as a single `Literal` token. `Name` tokens will be
-    /// treated as variables.
-    #[inline]
-    fn arith_post_incr(&mut self) -> ParseResult<DefaultArithmetic> {
-        combinators::skip_whitespace(&mut *self.iter);
-        eat_maybe!(self, {
-            ParenOpen => {
-                let expr = self.arithmetic_substitution()?;
-                combinators::skip_whitespace(&mut *self.iter);
-                eat!(self, { ParenClose => {} });
-                return Ok(expr);
+                combinators::arith_post_incr(
+                    &mut *self.iter,
+                    |iter: &'_ mut _| Parser::borrowed(iter, builder.clone()).arithmetic_substitution(),
+                    combinators::arith_var,
+                )?
             }
         });
-
-        let num = if let Some(&Literal(ref s)) = self.iter.peek() {
-            if s.starts_with("0x") || s.starts_with("0X") {
-                // from_str_radix does not like it when 0x is present
-                // in the string to parse, thus we should strip it off.
-                // Also, if the string is empty from_str_radix will return
-                // an error; shells like bash and zsh treat `0x` as `0x0`
-                // so we will do the same.
-                let num = &s[2..];
-                if num.is_empty() {
-                    Some(0)
-                } else {
-                    isize::from_str_radix(&s[2..], 16).ok()
-                }
-            } else if s.starts_with('0') {
-                isize::from_str_radix(s, 8).ok()
-            } else {
-                isize::from_str_radix(s, 10).ok()
-            }
-        } else {
-            None
-        };
-
-        let expr = match num {
-            Some(num) => {
-                // Make sure we consume the Token::Literal which holds the number
-                self.iter.next();
-                ast::Arithmetic::Literal(num)
-            }
-            None => {
-                let var = combinators::arith_var(&mut *self.iter)?;
-
-                // We must be extra careful here because post-increment has a higher precedence
-                // than addition/subtraction meaning post-increment operations will be parsed
-                // before addition. Thus we should be absolutely certain we should parse a
-                // post-increment operator and avoid confusing it with an addition operation
-                // that is yet to be parsed.
-                let post_incr = {
-                    combinators::skip_whitespace(&mut *self.iter);
-                    let mut peeked = self.iter.multipeek();
-                    match peeked.peek_next() {
-                        Some(&Plus) => peeked.peek_next() == Some(&Plus),
-                        Some(&Dash) => peeked.peek_next() == Some(&Dash),
-                        _ => false,
-                    }
-                };
-
-                if post_incr {
-                    eat!(self, {
-                        Plus => { eat!(self, { Plus => { ast::Arithmetic::PostIncr(var) } }) },
-                        Dash => { eat!(self, { Dash => { ast::Arithmetic::PostDecr(var) } }) },
-                    })
-                } else {
-                    ast::Arithmetic::Var(var)
-                }
-            }
-        };
         Ok(expr)
     }
 }
