@@ -5,6 +5,34 @@ use crate::parse2::combinators;
 use crate::parse2::Parser;
 use crate::token::Token;
 
+/// Parses expressions such as `expr * expr`, `expr / expr`, or `expr % expr`.
+pub fn arith_mult<T, I, PP>(iter: &mut I, mut arith_pow: PP) -> Result<PP::Output, ParseError>
+where
+    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    PP: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
+{
+    let mut expr = arith_pow.parse(iter)?;
+    loop {
+        combinators::skip_whitespace(iter);
+        eat_maybe!(iter, {
+            Token::Star => {
+                let next = arith_pow.parse(iter)?;
+                expr = Arithmetic::Mult(Box::new(expr), Box::new(next));
+            },
+            Token::Slash => {
+                let next = arith_pow.parse(iter)?;
+                expr = Arithmetic::Div(Box::new(expr), Box::new(next));
+            },
+            Token::Percent => {
+                let next = arith_pow.parse(iter)?;
+                expr = Arithmetic::Modulo(Box::new(expr), Box::new(next));
+            };
+            _ => break,
+        });
+    }
+    Ok(expr)
+}
+
 /// Parses expressions such as `expr ** expr`.
 pub fn arith_pow<T, I, PU>(iter: &mut I, mut arith_unary_op: PU) -> Result<PU::Output, ParseError>
 where

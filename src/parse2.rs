@@ -1,4 +1,8 @@
+mod arith;
+
 pub mod combinators;
+
+pub use self::arith::ArithParser;
 
 pub trait Parser<I: ?Sized> {
     type Output;

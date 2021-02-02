@@ -2655,35 +2655,13 @@ where
         Dash => ast::Arithmetic::Sub
     );
 
-    arith_parse!(
-        /// Parses expressions such as `expr * expr`, `expr / expr`, or `expr % expr`.
-        fn arith_mult,
-        arith_pow,
-        Star    => ast::Arithmetic::Mult,
-        Slash   => ast::Arithmetic::Div,
-        Percent => ast::Arithmetic::Modulo
-    );
-
-    /// Parses expressions such as `expr ** expr`.
-    fn arith_pow(&mut self) -> ParseResult<DefaultArithmetic> {
+    /// Parses expressions such as `expr * expr`, `expr / expr`, or `expr % expr`.
+    fn arith_mult(&mut self) -> ParseResult<DefaultArithmetic> {
         let builder = self.builder.clone();
 
-        combinators::arith_pow(
-            &mut *self.iter,
-            |iter: &'_ mut _| combinators::arith_unary_op(
-                iter,
-                |iter: &'_ mut _| {
-                    combinators::arith_post_incr(
-                        iter,
-                        |iter: &'_ mut _| {
-                            Parser::borrowed(iter, builder.clone()).arithmetic_substitution()
-                        },
-                        combinators::arith_var,
-                    )
-                },
-                combinators::arith_var,
-            ),
-        )
+        crate::parse2::ArithParser::arith_mult(&mut *self.iter, |iter: &'_ mut _| {
+            Parser::borrowed(iter, builder.clone()).arithmetic_substitution()
+        })
     }
 }
 
