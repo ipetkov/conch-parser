@@ -5,6 +5,35 @@ use crate::parse2::combinators;
 use crate::parse2::Parser;
 use crate::token::Token;
 
+macro_rules! arith_parse {
+    (
+        $(#[$fn_attr:meta])*
+        pub fn $fn_name:ident,
+        $next:ident,
+        $($tok:pat => $constructor:path),+,
+    ) => {
+        $(#[$fn_attr])*
+        pub fn $fn_name<T, I, P>(iter: &mut I, mut $next: P) -> Result<P::Output, ParseError>
+        where
+            I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+            P: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
+        {
+            let mut expr = $next.parse(iter)?;
+            loop {
+                combinators::skip_whitespace(iter);
+                eat_maybe!(iter, {
+                    $($tok => {
+                        let next = $next.parse(iter)?;
+                        expr = $constructor(Box::new(expr), Box::new(next));
+                    }),+;
+                    _ => break,
+                });
+            }
+            Ok(expr)
+        }
+    }
+}
+
 /// Parses expressions such as `expr < expr`,`expr <= expr`,`expr > expr`,`expr >= expr`.
 pub fn arith_ineq<T, I, PS>(iter: &mut I, mut arith_shift: PS) -> Result<PS::Output, ParseError>
 where
@@ -47,80 +76,29 @@ where
     Ok(expr)
 }
 
-/// Parses expressions such as `expr << expr` or `expr >> expr`.
-pub fn arith_shift<T, I, PA>(iter: &mut I, mut arith_add: PA) -> Result<PA::Output, ParseError>
-where
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
-    PA: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
-{
-    let mut expr = arith_add.parse(iter)?;
-    loop {
-        combinators::skip_whitespace(iter);
-        eat_maybe!(iter, {
-            Token::DLess => {
-                let next = arith_add.parse(iter)?;
-                expr = Arithmetic::ShiftLeft(Box::new(expr), Box::new(next));
-            },
-            Token::DGreat => {
-                let next = arith_add.parse(iter)?;
-                expr = Arithmetic::ShiftRight(Box::new(expr), Box::new(next));
-            };
-            _ => break,
-        });
-    }
-    Ok(expr)
+arith_parse! {
+    /// Parses expressions such as `expr << expr` or `expr >> expr`.
+    pub fn arith_shift,
+    arith_add,
+    Token::DLess => Arithmetic::ShiftLeft,
+    Token::DGreat => Arithmetic::ShiftRight,
 }
 
-/// Parses expressions such as `expr + expr` or `expr - expr`.
-pub fn arith_add<T, I, PM>(iter: &mut I, mut arith_mult: PM) -> Result<PM::Output, ParseError>
-where
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
-    PM: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
-{
-    let mut expr = arith_mult.parse(iter)?;
-    loop {
-        combinators::skip_whitespace(iter);
-        eat_maybe!(iter, {
-            Token::Plus => {
-                let next = arith_mult.parse(iter)?;
-                expr = Arithmetic::Add(Box::new(expr), Box::new(next));
-            },
-            Token::Dash => {
-                let next = arith_mult.parse(iter)?;
-                expr = Arithmetic::Sub(Box::new(expr), Box::new(next));
-            };
-            _ => break,
-        });
-    }
-    Ok(expr)
+arith_parse! {
+    /// Parses expressions such as `expr + expr` or `expr - expr`.
+    pub fn arith_add,
+    arith_mult,
+    Token::Plus => Arithmetic::Add,
+    Token::Dash => Arithmetic::Sub,
 }
 
-/// Parses expressions such as `expr * expr`, `expr / expr`, or `expr % expr`.
-pub fn arith_mult<T, I, PP>(iter: &mut I, mut arith_pow: PP) -> Result<PP::Output, ParseError>
-where
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
-    PP: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
-{
-    let mut expr = arith_pow.parse(iter)?;
-    loop {
-        combinators::skip_whitespace(iter);
-        eat_maybe!(iter, {
-            Token::Star => {
-                let next = arith_pow.parse(iter)?;
-                expr = Arithmetic::Mult(Box::new(expr), Box::new(next));
-            },
-            Token::Slash => {
-                let next = arith_pow.parse(iter)?;
-                expr = Arithmetic::Div(Box::new(expr), Box::new(next));
-            },
-            Token::Percent => {
-                let next = arith_pow.parse(iter)?;
-                expr = Arithmetic::Modulo(Box::new(expr), Box::new(next));
-            };
-            _ => break,
-        });
-    }
-    Ok(expr)
+arith_parse! {
+    /// Parses expressions such as `expr * expr`, `expr / expr`, or `expr % expr`.
+    pub fn arith_mult,
+    arith_pow,
+    Token::Star => Arithmetic::Mult,
+    Token::Slash => Arithmetic::Div,
+    Token::Percent => Arithmetic::Modulo,
 }
 
 /// Parses expressions such as `expr ** expr`.
