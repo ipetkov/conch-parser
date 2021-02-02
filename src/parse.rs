@@ -2609,40 +2609,9 @@ where
     /// Parses expressions such as `expr < expr`,`expr <= expr`,`expr > expr`,`expr >= expr`.
     #[inline]
     fn arith_ineq(&mut self) -> ParseResult<DefaultArithmetic> {
-        let mut expr = self.arith_shift()?;
-        loop {
-            combinators::skip_whitespace(&mut *self.iter);
-            eat_maybe!(self, {
-                Less => {
-                    let eq = eat_maybe!(self, { Equals => { true }; _ => { false } });
-                    let next = self.arith_shift()?;
-
-                    expr = if eq {
-                        ast::Arithmetic::LessEq(Box::new(expr), Box::new(next))
-                    } else {
-                        ast::Arithmetic::Less(Box::new(expr), Box::new(next))
-                    };
-                },
-                Great => {
-                    let eq = eat_maybe!(self, { Equals => { true }; _ => { false } });
-                    let next = self.arith_shift()?;
-
-                    expr = if eq {
-                        ast::Arithmetic::GreatEq(Box::new(expr), Box::new(next))
-                    } else {
-                        ast::Arithmetic::Great(Box::new(expr), Box::new(next))
-                    };
-                };
-                _ => { break },
-            });
-        }
-        Ok(expr)
-    }
-
-    fn arith_shift(&mut self) -> ParseResult<DefaultArithmetic> {
         let builder = self.builder.clone();
 
-        crate::parse2::ArithParser::arith_shift(&mut *self.iter, |iter: &'_ mut _| {
+        crate::parse2::ArithParser::arith_ineq(&mut *self.iter, |iter: &'_ mut _| {
             Parser::borrowed(iter, builder.clone()).arithmetic_substitution()
         })
     }

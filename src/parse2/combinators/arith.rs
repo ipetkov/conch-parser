@@ -5,6 +5,48 @@ use crate::parse2::combinators;
 use crate::parse2::Parser;
 use crate::token::Token;
 
+/// Parses expressions such as `expr < expr`,`expr <= expr`,`expr > expr`,`expr >= expr`.
+pub fn arith_ineq<T, I, PS>(iter: &mut I, mut arith_shift: PS) -> Result<PS::Output, ParseError>
+where
+    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    PS: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
+{
+    let mut expr = arith_shift.parse(iter)?;
+    loop {
+        combinators::skip_whitespace(iter);
+        eat_maybe!(iter, {
+            Token::Less => {
+                let eq = eat_maybe!(iter, {
+                    Token::Equals => true;
+                    _ => false,
+                });
+                let next = arith_shift.parse(iter)?;
+
+                expr = if eq {
+                    Arithmetic::LessEq(Box::new(expr), Box::new(next))
+                } else {
+                    Arithmetic::Less(Box::new(expr), Box::new(next))
+                };
+            },
+            Token::Great => {
+                let eq = eat_maybe!(iter, {
+                    Token::Equals => true;
+                    _ => false,
+                });
+                let next = arith_shift.parse(iter)?;
+
+                expr = if eq {
+                    Arithmetic::GreatEq(Box::new(expr), Box::new(next))
+                } else {
+                    Arithmetic::Great(Box::new(expr), Box::new(next))
+                };
+            };
+            _ => break,
+        });
+    }
+    Ok(expr)
+}
+
 /// Parses expressions such as `expr << expr` or `expr >> expr`.
 pub fn arith_shift<T, I, PA>(iter: &mut I, mut arith_add: PA) -> Result<PA::Output, ParseError>
 where
