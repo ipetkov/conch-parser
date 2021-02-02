@@ -5,6 +5,39 @@ use crate::parse2::combinators;
 use crate::parse2::Parser;
 use crate::token::Token;
 
+/// Parses expressions such as `expr ** expr`.
+pub fn arith_pow<T, I, PU>(iter: &mut I, mut arith_unary_op: PU) -> Result<PU::Output, ParseError>
+where
+    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    PU: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
+{
+    let expr = arith_unary_op.parse(iter)?;
+    combinators::skip_whitespace(iter);
+
+    // We must be extra careful here because ** has a higher precedence
+    // than *, meaning power operations will be parsed before multiplication.
+    // Thus we should be absolutely certain we should parse a ** operator
+    // and avoid confusing it with a multiplication operation that is yet
+    // to be parsed.
+    let double_star = {
+        let mut mp = iter.multipeek();
+        let star = Some(&Token::Star);
+        mp.peek_next() == star && mp.peek_next() == star
+    };
+
+    let ret = if double_star {
+        iter.next();
+        iter.next();
+
+        let next = arith_pow(iter, arith_unary_op)?;
+        Arithmetic::Pow(Box::new(expr), Box::new(next))
+    } else {
+        expr
+    };
+
+    Ok(ret)
+}
+
 /// Parses expressions such as `!expr`, `~expr`, `+expr`, `-expr`, `++var` and `--var`.
 pub fn arith_unary_op<T, I, PI, PV>(
     iter: &mut I,
@@ -27,36 +60,36 @@ where
             Arithmetic::BitwiseNot(Box::new(next))
         },
         Token::Plus => eat_maybe!(iter, {
-           // Although we can optimize this out, we'll let the caller handle
-           // optimizations, in case it is interested in such redundant situations.
-           Token::Dash => {
-               let next = arith_unary_op(iter, arith_post_incr, arith_var)?;
-               let next = Arithmetic::UnaryMinus(Box::new(next));
-               Arithmetic::UnaryPlus(Box::new(next))
-           },
+            // Although we can optimize this out, we'll let the caller handle
+            // optimizations, in case it is interested in such redundant situations.
+            Token::Dash => {
+                let next = arith_unary_op(iter, arith_post_incr, arith_var)?;
+                let next = Arithmetic::UnaryMinus(Box::new(next));
+                Arithmetic::UnaryPlus(Box::new(next))
+            },
 
-           Token::Plus => Arithmetic::PreIncr(arith_var.parse(iter)?);
+            Token::Plus => Arithmetic::PreIncr(arith_var.parse(iter)?);
 
-           _ => {
-               let next = arith_unary_op(iter, arith_post_incr, arith_var)?;
-               Arithmetic::UnaryPlus(Box::new(next))
-           },
+            _ => {
+                let next = arith_unary_op(iter, arith_post_incr, arith_var)?;
+                Arithmetic::UnaryPlus(Box::new(next))
+            },
         }),
 
         Token::Dash => eat_maybe!(iter, {
             // Although we can optimize this out, we'll let the AST builder handle
             // optimizations, in case it is interested in such redundant situations.
             Token::Plus => {
-               let next = arith_unary_op(iter, arith_post_incr, arith_var)?;
-               let next = Arithmetic::UnaryPlus(Box::new(next));
-               Arithmetic::UnaryMinus(Box::new(next))
+                let next = arith_unary_op(iter, arith_post_incr, arith_var)?;
+                let next = Arithmetic::UnaryPlus(Box::new(next));
+                Arithmetic::UnaryMinus(Box::new(next))
             },
 
             Token::Dash => Arithmetic::PreDecr(arith_var.parse(iter)?);
 
             _ => {
-               let next = arith_unary_op(iter, arith_post_incr, arith_var)?;
-               Arithmetic::UnaryMinus(Box::new(next))
+                let next = arith_unary_op(iter, arith_post_incr, arith_var)?;
+                Arithmetic::UnaryMinus(Box::new(next))
             },
         });
 

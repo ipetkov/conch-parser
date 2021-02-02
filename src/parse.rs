@@ -2668,42 +2668,22 @@ where
     fn arith_pow(&mut self) -> ParseResult<DefaultArithmetic> {
         let builder = self.builder.clone();
 
-        let expr = combinators::arith_unary_op(
+        combinators::arith_pow(
             &mut *self.iter,
-            |iter: &'_ mut _| {
-                combinators::arith_post_incr(
-                    iter,
-                    |iter: &'_ mut _| {
-                        Parser::borrowed(iter, builder.clone()).arithmetic_substitution()
-                    },
-                    combinators::arith_var,
-                )
-            },
-            combinators::arith_var,
-        )?;
-
-        combinators::skip_whitespace(&mut *self.iter);
-
-        // We must be extra careful here because ** has a higher precedence
-        // than *, meaning power operations will be parsed before multiplication.
-        // Thus we should be absolutely certain we should parse a ** operator
-        // and avoid confusing it with a multiplication operation that is yet
-        // to be parsed.
-        let double_star = {
-            let mut peeked = self.iter.multipeek();
-            peeked.peek_next() == Some(&Star) && peeked.peek_next() == Some(&Star)
-        };
-
-        if double_star {
-            eat!(self, { Star => {} });
-            eat!(self, { Star => {} });
-            Ok(ast::Arithmetic::Pow(
-                Box::new(expr),
-                Box::new(self.arith_pow()?),
-            ))
-        } else {
-            Ok(expr)
-        }
+            |iter: &'_ mut _| combinators::arith_unary_op(
+                iter,
+                |iter: &'_ mut _| {
+                    combinators::arith_post_incr(
+                        iter,
+                        |iter: &'_ mut _| {
+                            Parser::borrowed(iter, builder.clone()).arithmetic_substitution()
+                        },
+                        combinators::arith_var,
+                    )
+                },
+                combinators::arith_var,
+            ),
+        )
     }
 }
 
