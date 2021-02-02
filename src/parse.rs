@@ -2639,18 +2639,10 @@ where
         Ok(expr)
     }
 
-    arith_parse!(
-        /// Parses expressions such as `expr << expr` or `expr >> expr`.
-        fn arith_shift,
-        arith_add,
-        DLess  => ast::Arithmetic::ShiftLeft,
-        DGreat => ast::Arithmetic::ShiftRight
-    );
-
-    fn arith_add(&mut self) -> ParseResult<DefaultArithmetic> {
+    fn arith_shift(&mut self) -> ParseResult<DefaultArithmetic> {
         let builder = self.builder.clone();
 
-        crate::parse2::ArithParser::arith_add(&mut *self.iter, |iter: &'_ mut _| {
+        crate::parse2::ArithParser::arith_shift(&mut *self.iter, |iter: &'_ mut _| {
             Parser::borrowed(iter, builder.clone()).arithmetic_substitution()
         })
     }

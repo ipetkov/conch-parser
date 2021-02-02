@@ -35,30 +35,31 @@ impl<T> ArithParser<T>
 where
     T: From<String>,
 {
-    pub fn arith_add<I, PS>(iter: &mut I, mut arith_subst: PS) -> Result<PS::Output, ParseError>
+    pub fn arith_shift<I, PS>(iter: &mut I, mut arith_subst: PS) -> Result<PS::Output, ParseError>
     where
         I: ?Sized + Multipeek<Item = Token> + PositionIterator,
         PS: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
     {
-        combinators::arith_add(iter, |iter: &'_ mut _| {
-            combinators::arith_mult(iter, |iter: &'_ mut _| {
-                combinators::arith_pow(iter, |iter: &'_ mut _| {
-                    combinators::arith_unary_op(
-                        iter,
-                        |iter: &'_ mut _| {
-                            combinators::arith_post_incr(
-                                iter,
-                                |iter: &'_ mut _| arith_subst.parse(iter),
-                                Self::arith_var,
-                            )
-                        },
-                        Self::arith_var,
-                    )
+        combinators::arith_shift(iter, |iter: &'_ mut _| {
+            combinators::arith_add(iter, |iter: &'_ mut _| {
+                combinators::arith_mult(iter, |iter: &'_ mut _| {
+                    combinators::arith_pow(iter, |iter: &'_ mut _| {
+                        combinators::arith_unary_op(
+                            iter,
+                            |iter: &'_ mut _| {
+                                combinators::arith_post_incr(
+                                    iter,
+                                    |iter: &'_ mut _| arith_subst.parse(iter),
+                                    Self::arith_var,
+                                )
+                            },
+                            Self::arith_var,
+                        )
+                    })
                 })
             })
         })
     }
-
 
     fn arith_var<I>(iter: &mut I) -> Result<T, ParseError>
     where
