@@ -2647,19 +2647,10 @@ where
         DGreat => ast::Arithmetic::ShiftRight
     );
 
-    arith_parse!(
-        /// Parses expressions such as `expr + expr` or `expr - expr`.
-        fn arith_add,
-        arith_mult,
-        Plus => ast::Arithmetic::Add,
-        Dash => ast::Arithmetic::Sub
-    );
-
-    /// Parses expressions such as `expr * expr`, `expr / expr`, or `expr % expr`.
-    fn arith_mult(&mut self) -> ParseResult<DefaultArithmetic> {
+    fn arith_add(&mut self) -> ParseResult<DefaultArithmetic> {
         let builder = self.builder.clone();
 
-        crate::parse2::ArithParser::arith_mult(&mut *self.iter, |iter: &'_ mut _| {
+        crate::parse2::ArithParser::arith_add(&mut *self.iter, |iter: &'_ mut _| {
             Parser::borrowed(iter, builder.clone()).arithmetic_substitution()
         })
     }
