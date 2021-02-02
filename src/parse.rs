@@ -2666,7 +2666,22 @@ where
 
     /// Parses expressions such as `expr ** expr`.
     fn arith_pow(&mut self) -> ParseResult<DefaultArithmetic> {
-        let expr = self.arith_unary_misc()?;
+        let builder = self.builder.clone();
+
+        let expr = combinators::arith_unary_op(
+            &mut *self.iter,
+            |iter: &'_ mut _| {
+                combinators::arith_post_incr(
+                    iter,
+                    |iter: &'_ mut _| {
+                        Parser::borrowed(iter, builder.clone()).arithmetic_substitution()
+                    },
+                    combinators::arith_var,
+                )
+            },
+            combinators::arith_var,
+        )?;
+
         combinators::skip_whitespace(&mut *self.iter);
 
         // We must be extra careful here because ** has a higher precedence
@@ -2689,51 +2704,6 @@ where
         } else {
             Ok(expr)
         }
-    }
-
-    /// Parses expressions such as `!expr`, `~expr`, `+expr`, `-expr`, `++var` and `--var`.
-    fn arith_unary_misc(&mut self) -> ParseResult<DefaultArithmetic> {
-        combinators::skip_whitespace(&mut *self.iter);
-        let expr = eat_maybe!(self, {
-            Bang  => { ast::Arithmetic::LogicalNot(Box::new(self.arith_unary_misc()?)) },
-            Tilde => { ast::Arithmetic::BitwiseNot(Box::new(self.arith_unary_misc()?)) },
-            Plus  => {
-                eat_maybe!(self, {
-                    // Although we can optimize this out, we'll let the AST builder handle
-                    // optimizations, in case it is interested in such redundant situations.
-                    Dash => {
-                        let next = self.arith_unary_misc()?;
-                        ast::Arithmetic::UnaryPlus(Box::new(ast::Arithmetic::UnaryMinus(Box::new(next))))
-                    },
-                    Plus => { ast::Arithmetic::PreIncr(combinators::arith_var(&mut *self.iter)?) };
-                    _ => { ast::Arithmetic::UnaryPlus(Box::new(self.arith_unary_misc()?)) }
-                })
-            },
-
-            Dash  => {
-                eat_maybe!(self, {
-                    // Although we can optimize this out, we'll let the AST builder handle
-                    // optimizations, in case it is interested in such redundant situations.
-                    Plus => {
-                        let next = self.arith_unary_misc()?;
-                        ast::Arithmetic::UnaryMinus(Box::new(ast::Arithmetic::UnaryPlus(Box::new(next))))
-                    },
-                    Dash => { ast::Arithmetic::PreDecr(combinators::arith_var(&mut *self.iter)?) };
-                    _ => { ast::Arithmetic::UnaryMinus(Box::new(self.arith_unary_misc()?)) }
-                })
-            };
-
-            _ => {
-                let builder = self.builder.clone();
-
-                combinators::arith_post_incr(
-                    &mut *self.iter,
-                    |iter: &'_ mut _| Parser::borrowed(iter, builder.clone()).arithmetic_substitution(),
-                    combinators::arith_var,
-                )?
-            }
-        });
-        Ok(expr)
     }
 }
 

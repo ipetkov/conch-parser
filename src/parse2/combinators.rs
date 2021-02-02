@@ -27,7 +27,10 @@ macro_rules! eat_maybe {
                 $iter.next();
                 $body
             }),+
-            _ => $default,
+            _ => {
+                drop(mp);
+                $default
+            },
         }
     }};
 }
@@ -54,7 +57,7 @@ mod pipeline;
 mod skip_whitespace;
 
 pub use self::and_or::{and_or_list, AndOrList};
-pub use self::arith::{arith_post_incr, arith_var};
+pub use self::arith::{arith_post_incr, arith_unary_op, arith_var};
 pub use self::linebreak::{linebreak, newline};
 pub use self::pipeline::{pipeline, Pipeline};
 pub use self::skip_whitespace::skip_whitespace;

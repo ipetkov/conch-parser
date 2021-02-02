@@ -5,6 +5,67 @@ use crate::parse2::combinators;
 use crate::parse2::Parser;
 use crate::token::Token;
 
+/// Parses expressions such as `!expr`, `~expr`, `+expr`, `-expr`, `++var` and `--var`.
+pub fn arith_unary_op<T, I, PI, PV>(
+    iter: &mut I,
+    mut arith_post_incr: PI,
+    mut arith_var: PV,
+) -> Result<Arithmetic<T>, ParseError>
+where
+    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    PI: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
+    PV: Parser<I, Output = T, Error = ParseError>,
+{
+    combinators::skip_whitespace(iter);
+    let expr = eat_maybe!(iter, {
+        Token::Bang => {
+            let next = arith_unary_op(iter, arith_post_incr, arith_var)?;
+            Arithmetic::LogicalNot(Box::new(next))
+        },
+        Token::Tilde => {
+            let next = arith_unary_op(iter, arith_post_incr, arith_var)?;
+            Arithmetic::BitwiseNot(Box::new(next))
+        },
+        Token::Plus => eat_maybe!(iter, {
+           // Although we can optimize this out, we'll let the caller handle
+           // optimizations, in case it is interested in such redundant situations.
+           Token::Dash => {
+               let next = arith_unary_op(iter, arith_post_incr, arith_var)?;
+               let next = Arithmetic::UnaryMinus(Box::new(next));
+               Arithmetic::UnaryPlus(Box::new(next))
+           },
+
+           Token::Plus => Arithmetic::PreIncr(arith_var.parse(iter)?);
+
+           _ => {
+               let next = arith_unary_op(iter, arith_post_incr, arith_var)?;
+               Arithmetic::UnaryPlus(Box::new(next))
+           },
+        }),
+
+        Token::Dash => eat_maybe!(iter, {
+            // Although we can optimize this out, we'll let the AST builder handle
+            // optimizations, in case it is interested in such redundant situations.
+            Token::Plus => {
+               let next = arith_unary_op(iter, arith_post_incr, arith_var)?;
+               let next = Arithmetic::UnaryPlus(Box::new(next));
+               Arithmetic::UnaryMinus(Box::new(next))
+            },
+
+            Token::Dash => Arithmetic::PreDecr(arith_var.parse(iter)?);
+
+            _ => {
+               let next = arith_unary_op(iter, arith_post_incr, arith_var)?;
+               Arithmetic::UnaryMinus(Box::new(next))
+            },
+        });
+
+        _ => arith_post_incr.parse(iter)?,
+    });
+
+    Ok(expr)
+}
+
 /// Parses expressions such as `(expr)`, numeric literals, `var`, `var++`, or `var--`.
 /// Numeric literals must appear as a single `Literal` token. `Name` tokens will be
 /// treated as variables.
@@ -12,11 +73,11 @@ pub fn arith_post_incr<I, PS, PV>(
     iter: &mut I,
     mut arith_subst: PS,
     mut arith_var: PV,
-) -> Result<Arithmetic<String>, ParseError>
+) -> Result<Arithmetic<PV::Output>, ParseError>
 where
     I: ?Sized + Multipeek<Item = Token> + PositionIterator,
-    PS: Parser<I, Output = Arithmetic<String>, Error = ParseError>,
-    PV: Parser<I, Output = String, Error = ParseError>,
+    PS: Parser<I, Output = Arithmetic<PV::Output>, Error = ParseError>,
+    PV: Parser<I, Error = ParseError>,
 {
     combinators::skip_whitespace(iter);
     eat_maybe!(iter, {
