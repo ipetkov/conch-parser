@@ -34,11 +34,40 @@ macro_rules! arith_parse {
     }
 }
 
-/// Parses expressions such as `expr < expr`,`expr <= expr`,`expr > expr`,`expr >= expr`.
-pub fn arith_ineq<T, I, PS>(iter: &mut I, mut arith_shift: PS) -> Result<PS::Output, ParseError>
+/// Parses expressions such as `expr == expr` or `expr != expr`.
+pub fn arith_eq<T, I, P>(iter: &mut I, mut arith_ineq: P) -> Result<P::Output, ParseError>
 where
     I: ?Sized + Multipeek<Item = Token> + PositionIterator,
-    PS: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
+    P: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
+{
+    let mut expr = arith_ineq.parse(iter)?;
+    loop {
+        combinators::skip_whitespace(iter);
+        let eq_type = eat_maybe!(iter, {
+            Token::Equals => true,
+            Token::Bang => false;
+            _ => break,
+        });
+
+        eat!(iter, {
+            Token::Equals => {},
+        });
+
+        let next = arith_ineq.parse(iter)?;
+        expr = if eq_type {
+            Arithmetic::Eq(Box::new(expr), Box::new(next))
+        } else {
+            Arithmetic::NotEq(Box::new(expr), Box::new(next))
+        };
+    }
+    Ok(expr)
+}
+
+/// Parses expressions such as `expr < expr`,`expr <= expr`,`expr > expr`,`expr >= expr`.
+pub fn arith_ineq<T, I, P>(iter: &mut I, mut arith_shift: P) -> Result<P::Output, ParseError>
+where
+    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    P: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
 {
     let mut expr = arith_shift.parse(iter)?;
     loop {
@@ -102,10 +131,10 @@ arith_parse! {
 }
 
 /// Parses expressions such as `expr ** expr`.
-pub fn arith_pow<T, I, PU>(iter: &mut I, mut arith_unary_op: PU) -> Result<PU::Output, ParseError>
+pub fn arith_pow<T, I, P>(iter: &mut I, mut arith_unary_op: P) -> Result<P::Output, ParseError>
 where
     I: ?Sized + Multipeek<Item = Token> + PositionIterator,
-    PU: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
+    P: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
 {
     let expr = arith_unary_op.parse(iter)?;
     combinators::skip_whitespace(iter);

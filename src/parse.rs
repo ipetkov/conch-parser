@@ -2586,32 +2586,9 @@ where
     /// Parses expressions such as `expr == expr` or `expr != expr`.
     #[inline]
     fn arith_eq(&mut self) -> ParseResult<DefaultArithmetic> {
-        let mut expr = self.arith_ineq()?;
-        loop {
-            combinators::skip_whitespace(&mut *self.iter);
-            let eq_type = eat_maybe!(self, {
-                Equals => { true },
-                Bang => { false };
-                _ => { break }
-            });
-
-            eat!(self, { Equals => {} });
-            let next = self.arith_ineq()?;
-            expr = if eq_type {
-                ast::Arithmetic::Eq(Box::new(expr), Box::new(next))
-            } else {
-                ast::Arithmetic::NotEq(Box::new(expr), Box::new(next))
-            };
-        }
-        Ok(expr)
-    }
-
-    /// Parses expressions such as `expr < expr`,`expr <= expr`,`expr > expr`,`expr >= expr`.
-    #[inline]
-    fn arith_ineq(&mut self) -> ParseResult<DefaultArithmetic> {
         let builder = self.builder.clone();
 
-        crate::parse2::ArithParser::arith_ineq(&mut *self.iter, |iter: &'_ mut _| {
+        crate::parse2::ArithParser::arith_eq(&mut *self.iter, |iter: &'_ mut _| {
             Parser::borrowed(iter, builder.clone()).arithmetic_substitution()
         })
     }
