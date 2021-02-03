@@ -35,28 +35,43 @@ impl<T> ArithParser<T>
 where
     T: From<String>,
 {
-    pub fn arith_eq<I, PS>(iter: &mut I, mut arith_subst: PS) -> Result<PS::Output, ParseError>
+    pub fn arith_logical_or<I, PS>(
+        iter: &mut I,
+        mut arith_subst: PS,
+    ) -> Result<PS::Output, ParseError>
     where
         I: ?Sized + Multipeek<Item = Token> + PositionIterator,
         PS: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
     {
-        combinators::arith_eq(iter, |iter: &'_ mut _| {
-            combinators::arith_ineq(iter, |iter: &'_ mut _| {
-                combinators::arith_shift(iter, |iter: &'_ mut _| {
-                    combinators::arith_add(iter, |iter: &'_ mut _| {
-                        combinators::arith_mult(iter, |iter: &'_ mut _| {
-                            combinators::arith_pow(iter, |iter: &'_ mut _| {
-                                combinators::arith_unary_op(
-                                    iter,
-                                    |iter: &'_ mut _| {
-                                        combinators::arith_post_incr(
-                                            iter,
-                                            |iter: &'_ mut _| arith_subst.parse(iter),
-                                            Self::arith_var,
-                                        )
-                                    },
-                                    Self::arith_var,
-                                )
+        combinators::arith_logical_or(iter, |iter: &'_ mut _| {
+            combinators::arith_logical_and(iter, |iter: &'_ mut _| {
+                combinators::arith_bitwise_or(iter, |iter: &'_ mut _| {
+                    combinators::arith_bitwise_xor(iter, |iter: &'_ mut _| {
+                        combinators::arith_bitwise_and(iter, |iter: &'_ mut _| {
+                            combinators::arith_eq(iter, |iter: &'_ mut _| {
+                                combinators::arith_ineq(iter, |iter: &'_ mut _| {
+                                    combinators::arith_shift(iter, |iter: &'_ mut _| {
+                                        combinators::arith_add(iter, |iter: &'_ mut _| {
+                                            combinators::arith_mult(iter, |iter: &'_ mut _| {
+                                                combinators::arith_pow(iter, |iter: &'_ mut _| {
+                                                    combinators::arith_unary_op(
+                                                        iter,
+                                                        |iter: &'_ mut _| {
+                                                            combinators::arith_post_incr(
+                                                                iter,
+                                                                |iter: &'_ mut _| {
+                                                                    arith_subst.parse(iter)
+                                                                },
+                                                                Self::arith_var,
+                                                            )
+                                                        },
+                                                        Self::arith_var,
+                                                    )
+                                                })
+                                            })
+                                        })
+                                    })
+                                })
                             })
                         })
                     })

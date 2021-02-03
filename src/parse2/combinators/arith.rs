@@ -34,6 +34,41 @@ macro_rules! arith_parse {
     }
 }
 
+arith_parse!(
+    /// Parses expressions such as `expr || expr`.
+    pub fn arith_logical_or,
+    arith_logical_and,
+    Token::OrIf => Arithmetic::LogicalOr,
+);
+
+arith_parse!(
+    /// Parses expressions such as `expr && expr`.
+    pub fn arith_logical_and,
+    arith_bitwise_or,
+    Token::AndIf => Arithmetic::LogicalAnd,
+);
+
+arith_parse!(
+    /// Parses expressions such as `expr | expr`.
+    pub fn arith_bitwise_or,
+    arith_bitwise_xor,
+    Token::Pipe => Arithmetic::BitwiseOr,
+);
+
+arith_parse!(
+    /// Parses expressions such as `expr ^ expr`.
+    pub fn arith_bitwise_xor,
+    arith_bitwise_and,
+    Token::Caret => Arithmetic::BitwiseXor,
+);
+
+arith_parse!(
+    /// Parses expressions such as `expr & expr`.
+    pub fn arith_bitwise_and,
+    arith_eq,
+    Token::Amp => Arithmetic::BitwiseAnd,
+);
+
 /// Parses expressions such as `expr == expr` or `expr != expr`.
 pub fn arith_eq<T, I, P>(iter: &mut I, mut arith_ineq: P) -> Result<P::Output, ParseError>
 where

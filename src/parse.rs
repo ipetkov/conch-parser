@@ -353,34 +353,6 @@ macro_rules! eat {
     };
 }
 
-/// A macro that defines a function for parsing binary operations in arithmetic
-/// expressions.  It accepts a name for the function, a name for the subsequent
-/// expression (which has a higher precedence) to sub parse on, and a number of
-/// tokens which can be recognized as an operator for the binary operation and
-/// the appropriate AST constructor for said token/operator. All operators within
-/// the definition are considered to have identical precedence and are left-to-right
-/// associative.
-macro_rules! arith_parse {
-    ($(#[$fn_attr:meta])* fn $fn_name:ident, $next_expr:ident, $($tok:pat => $constructor:path),+) => {
-        $(#[$fn_attr])*
-        #[inline]
-        fn $fn_name(&mut self) -> ParseResult<DefaultArithmetic> {
-            let mut expr = self.$next_expr()?;
-            loop {
-                combinators::skip_whitespace(&mut *self.iter);
-                eat_maybe!(self, {
-                    $($tok => {
-                        let next = self.$next_expr()?;
-                        expr = $constructor(Box::new(expr), Box::new(next));
-                    }),+;
-                    _ => { break },
-                });
-            }
-            Ok(expr)
-        }
-    }
-}
-
 impl<'a, I: 'a, B> Parser<'a, I, B>
 where
     I: Iterator<Item = Token>,
@@ -2548,47 +2520,10 @@ where
         })
     }
 
-    arith_parse!(
-        /// Parses expressions such as `expr || expr`.
-        fn arith_logical_or,
-        arith_logical_and,
-        OrIf  => ast::Arithmetic::LogicalOr
-    );
-
-    arith_parse!(
-        /// Parses expressions such as `expr && expr`.
-        fn arith_logical_and,
-        arith_bitwise_or,
-        AndIf => ast::Arithmetic::LogicalAnd
-    );
-
-    arith_parse!(
-        /// Parses expressions such as `expr | expr`.
-        fn arith_bitwise_or,
-        arith_bitwise_xor,
-        Pipe  => ast::Arithmetic::BitwiseOr
-    );
-
-    arith_parse!(
-        /// Parses expressions such as `expr ^ expr`.
-        fn arith_bitwise_xor,
-        arith_bitwise_and,
-        Caret => ast::Arithmetic::BitwiseXor
-    );
-
-    arith_parse!(
-        /// Parses expressions such as `expr & expr`.
-        fn arith_bitwise_and,
-        arith_eq,
-        Amp   => ast::Arithmetic::BitwiseAnd
-    );
-
-    /// Parses expressions such as `expr == expr` or `expr != expr`.
-    #[inline]
-    fn arith_eq(&mut self) -> ParseResult<DefaultArithmetic> {
+    fn arith_logical_or(&mut self) -> ParseResult<DefaultArithmetic> {
         let builder = self.builder.clone();
 
-        crate::parse2::ArithParser::arith_eq(&mut *self.iter, |iter: &'_ mut _| {
+        crate::parse2::ArithParser::arith_logical_or(&mut *self.iter, |iter: &'_ mut _| {
             Parser::borrowed(iter, builder.clone()).arithmetic_substitution()
         })
     }
