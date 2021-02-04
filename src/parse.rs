@@ -2506,24 +2506,9 @@ where
 
     /// Parses expressions such as `expr ? expr : expr`.
     fn arith_ternary(&mut self) -> ParseResult<DefaultArithmetic> {
-        let guard = self.arith_logical_or()?;
-        combinators::skip_whitespace(&mut *self.iter);
-        eat_maybe!(self, {
-            Question => {
-                let body = self.arith_ternary()?;
-                combinators::skip_whitespace(&mut *self.iter);
-                eat!(self, { Colon => {} });
-                let els = self.arith_ternary()?;
-                Ok(ast::Arithmetic::Ternary(Box::new(guard), Box::new(body), Box::new(els)))
-            };
-            _ => { Ok(guard) },
-        })
-    }
-
-    fn arith_logical_or(&mut self) -> ParseResult<DefaultArithmetic> {
         let builder = self.builder.clone();
 
-        crate::parse2::ArithParser::arith_logical_or(&mut *self.iter, |iter: &'_ mut _| {
+        crate::parse2::ArithParser::arith_ternary(&mut *self.iter, |iter: &'_ mut _| {
             Parser::borrowed(iter, builder.clone()).arithmetic_substitution()
         })
     }

@@ -5,6 +5,43 @@ use crate::parse2::combinators;
 use crate::parse2::Parser;
 use crate::token::Token;
 
+/// Parses expressions such as `expr ? expr : expr`.
+pub fn arith_ternary<T, I, P>(
+    iter: &mut I,
+    mut arith_logical_or: P,
+) -> Result<P::Output, ParseError>
+where
+    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    P: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
+{
+    #[allow(trivial_casts)]
+    arith_ternary_dyn(iter, &mut arith_logical_or as _)
+}
+
+fn arith_ternary_dyn<T, I>(
+    iter: &mut I,
+    arith_logical_or: &mut dyn Parser<I, Output = Arithmetic<T>, Error = ParseError>,
+) -> Result<Arithmetic<T>, ParseError>
+where
+    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+{
+    let guard = arith_logical_or.parse(iter)?;
+    combinators::skip_whitespace(iter);
+
+    let ret = eat_maybe!(iter, {
+        Token::Question => {
+            let body = arith_ternary(iter, |iter: &'_ mut _| arith_logical_or.parse(iter))?;
+            combinators::skip_whitespace(iter);
+            eat!(iter, { Token::Colon => {}, });
+            let els = arith_ternary(iter, |iter: &'_ mut _| arith_logical_or.parse(iter))?;
+            Arithmetic::Ternary(Box::new(guard), Box::new(body), Box::new(els))
+        };
+        _ => guard,
+    });
+
+    Ok(ret)
+}
+
 macro_rules! arith_parse {
     (
         $(#[$fn_attr:meta])*
