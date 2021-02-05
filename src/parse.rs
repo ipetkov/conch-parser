@@ -15,7 +15,7 @@ use crate::ast::builder::{self, Builder, SimpleWordKind};
 use crate::ast::{self, DefaultArithmetic, DefaultParameter};
 use crate::error::{ParseError, UnmatchedError};
 use crate::iter::{BacktickBackslashRemover, Balanced, PeekableIterator, PositionIterator};
-use crate::parse2::combinators;
+use crate::parse2::{combinators, parse_fn};
 use crate::token::Token;
 use crate::token::Token::*;
 
@@ -445,9 +445,10 @@ where
     /// parses to `And(Or(foo, bar), baz)`.
     pub fn and_or_list(&mut self) -> ParseResult<B::CommandList> {
         let builder = self.builder.clone();
-        let list = combinators::and_or_list(&mut *self.iter, |iter: &'_ mut _| {
-            Parser::borrowed(iter, builder.clone()).pipeline()
-        })?;
+        let list = combinators::and_or_list(
+            &mut *self.iter,
+            parse_fn(|iter| Parser::borrowed(iter, builder.clone()).pipeline()),
+        )?;
 
         Ok(self.builder.and_or_list(list.first, list.rest))
     }
@@ -457,9 +458,10 @@ where
     /// For example `[!] foo | bar`.
     pub fn pipeline(&mut self) -> ParseResult<B::ListableCommand> {
         let builder = self.builder.clone();
-        let pipeline = combinators::pipeline(&mut *self.iter, |iter: &'_ mut _| {
-            Parser::borrowed(iter, builder.clone()).command()
-        })?;
+        let pipeline = combinators::pipeline(
+            &mut *self.iter,
+            parse_fn(|iter| Parser::borrowed(iter, builder.clone()).command()),
+        )?;
 
         Ok(self.builder.pipeline(pipeline.invert_status, pipeline.cmds))
     }
@@ -2508,9 +2510,10 @@ where
     fn arith_ternary(&mut self) -> ParseResult<DefaultArithmetic> {
         let builder = self.builder.clone();
 
-        crate::parse2::ArithParser::arith_ternary(&mut *self.iter, |iter: &'_ mut _| {
-            Parser::borrowed(iter, builder.clone()).arithmetic_substitution()
-        })
+        crate::parse2::ArithParser::arith_ternary(
+            &mut *self.iter,
+            parse_fn(|iter| Parser::borrowed(iter, builder.clone()).arithmetic_substitution()),
+        )
     }
 }
 

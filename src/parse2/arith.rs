@@ -2,7 +2,7 @@ use crate::ast::Arithmetic;
 use crate::error::ParseError;
 use crate::iter::{Multipeek, PositionIterator};
 use crate::parse2::combinators;
-use crate::parse2::Parser;
+use crate::parse2::{parse_fn, Parser};
 use crate::token::Token;
 use std::marker::PhantomData;
 
@@ -40,46 +40,73 @@ where
         I: ?Sized + Multipeek<Item = Token> + PositionIterator,
         PS: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
     {
-        combinators::arith_ternary(iter, |iter: &'_ mut _| {
-            combinators::arith_logical_or(iter, |iter: &'_ mut _| {
-                combinators::arith_logical_and(iter, |iter: &'_ mut _| {
-                    combinators::arith_bitwise_or(iter, |iter: &'_ mut _| {
-                        combinators::arith_bitwise_xor(iter, |iter: &'_ mut _| {
-                            combinators::arith_bitwise_and(iter, |iter: &'_ mut _| {
-                                combinators::arith_eq(iter, |iter: &'_ mut _| {
-                                    combinators::arith_ineq(iter, |iter: &'_ mut _| {
-                                        combinators::arith_shift(iter, |iter: &'_ mut _| {
-                                            combinators::arith_add(iter, |iter: &'_ mut _| {
-                                                combinators::arith_mult(iter, |iter: &'_ mut _| {
+        combinators::arith_ternary(
+            iter,
+            parse_fn(|iter| {
+                combinators::arith_logical_or(
+                    iter,
+                    parse_fn(|iter| {
+                        combinators::arith_logical_and(
+                            iter,
+                            parse_fn(|iter| {
+                                combinators::arith_bitwise_or(
+                                    iter,
+                                    parse_fn(|iter| {
+                                        combinators::arith_bitwise_xor(
+                                            iter,
+                                            parse_fn(|iter| {
+                                                combinators::arith_bitwise_and(
+                                                    iter,
+                                                    parse_fn(|iter| {
+                                                        combinators::arith_eq(
+                                                            iter,
+                                                            parse_fn(|iter| {
+                                                                combinators::arith_ineq(
+                                                                    iter,
+                                                                    parse_fn(|iter| {
+                                                                        combinators::arith_shift(
+                                                                            iter,
+                                                                            parse_fn(|iter| {
+                                                                                combinators::arith_add(iter, parse_fn(|iter| {
+                                                combinators::arith_mult(iter, parse_fn(|iter| {
                                                     combinators::arith_pow(
                                                         iter,
-                                                        |iter: &'_ mut _| {
+                                                        parse_fn(|iter| {
                                                             combinators::arith_unary_op(
                                                                 iter,
-                                                                |iter: &'_ mut _| {
+                                                                parse_fn(|iter| {
                                                                     combinators::arith_post_incr(
                                                                         iter,
-                                                                        |iter: &'_ mut _| {
+                                                                        parse_fn(|iter| {
                                                                             arith_subst.parse(iter)
-                                                                        },
-                                                                        Self::arith_var,
+                                                                        }),
+                                                                        parse_fn(Self::arith_var),
                                                                     )
-                                                                },
-                                                                Self::arith_var,
+                                                                }),
+                                                                parse_fn(Self::arith_var),
                                                             )
-                                                        },
+                                                        }),
                                                     )
-                                                })
-                                            })
-                                        })
-                                    })
-                                })
-                            })
-                        })
-                    })
-                })
-            })
-        })
+                                                }))
+                                            }))
+                                                                            }),
+                                                                        )
+                                                                    }),
+                                                                )
+                                                            }),
+                                                        )
+                                                    }),
+                                                )
+                                            }),
+                                        )
+                                    }),
+                                )
+                            }),
+                        )
+                    }),
+                )
+            }),
+        )
     }
 
     fn arith_var<I>(iter: &mut I) -> Result<T, ParseError>

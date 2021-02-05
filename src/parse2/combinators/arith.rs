@@ -14,26 +14,20 @@ where
     I: ?Sized + Multipeek<Item = Token> + PositionIterator,
     P: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
 {
+    // NB: cast to a trait object so the compiler doesn't get stuck
+    // recursively monomorphizing this function with infinite reference types
     #[allow(trivial_casts)]
-    arith_ternary_dyn(iter, &mut arith_logical_or as _)
-}
+    let mut arith_logical_or: &mut dyn Parser<_, Output = _, Error = _> = &mut arith_logical_or;
 
-fn arith_ternary_dyn<T, I>(
-    iter: &mut I,
-    arith_logical_or: &mut dyn Parser<I, Output = Arithmetic<T>, Error = ParseError>,
-) -> Result<Arithmetic<T>, ParseError>
-where
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
-{
     let guard = arith_logical_or.parse(iter)?;
     combinators::skip_whitespace(iter);
 
     let ret = eat_maybe!(iter, {
         Token::Question => {
-            let body = arith_ternary(iter, |iter: &'_ mut _| arith_logical_or.parse(iter))?;
+            let body = arith_ternary(iter, &mut arith_logical_or)?;
             combinators::skip_whitespace(iter);
             eat!(iter, { Token::Colon => {}, });
-            let els = arith_ternary(iter, |iter: &'_ mut _| arith_logical_or.parse(iter))?;
+            let els = arith_ternary(iter, arith_logical_or)?;
             Arithmetic::Ternary(Box::new(guard), Box::new(body), Box::new(els))
         };
         _ => guard,
