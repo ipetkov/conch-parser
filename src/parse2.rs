@@ -2,7 +2,7 @@ mod arith;
 
 pub mod combinators;
 
-pub use self::arith::ArithParser;
+pub use self::arith::arith_subst;
 
 pub trait Parser<I: ?Sized> {
     type Output;

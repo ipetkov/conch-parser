@@ -15,7 +15,7 @@ use crate::ast::builder::{self, Builder, SimpleWordKind};
 use crate::ast::DefaultParameter;
 use crate::error::{ParseError, UnmatchedError};
 use crate::iter::{BacktickBackslashRemover, Balanced, PeekableIterator, PositionIterator};
-use crate::parse2::{combinators, parse_fn};
+use crate::parse2::{arith_subst, combinators, parse_fn};
 use crate::token::Token;
 use crate::token::Token::*;
 
@@ -1522,7 +1522,7 @@ where
                     let subst = if let Some(&ParenClose) = self.iter.peek() {
                         None
                     } else {
-                        Some(crate::parse2::ArithParser::arith_subst(&mut *self.iter)?)
+                        Some(arith_subst(&mut *self.iter)?)
                     };
 
                     // Some shells allow the closing parens to have whitespace in between
