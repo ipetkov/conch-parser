@@ -58,9 +58,9 @@ mod skip_whitespace;
 
 pub use self::and_or::{and_or_list, AndOrList};
 pub use self::arith::{
-    arith_add, arith_bitwise_and, arith_bitwise_or, arith_bitwise_xor, arith_eq, arith_ineq,
-    arith_logical_and, arith_logical_or, arith_mult, arith_post_incr, arith_pow, arith_shift,
-    arith_ternary, arith_unary_op, arith_var,
+    arith_add, arith_assig, arith_bitwise_and, arith_bitwise_or, arith_bitwise_xor, arith_eq,
+    arith_ineq, arith_logical_and, arith_logical_or, arith_mult, arith_post_incr, arith_pow,
+    arith_shift, arith_ternary, arith_unary_op, arith_var,
 };
 pub use self::linebreak::{linebreak, newline};
 pub use self::pipeline::{pipeline, Pipeline};

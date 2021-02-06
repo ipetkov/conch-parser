@@ -5,6 +5,95 @@ use crate::parse2::combinators;
 use crate::parse2::Parser;
 use crate::token::Token;
 
+/// Parses expressions such as `var = expr` or `var op= expr`, where `op` is
+/// any of the following operators: *, /, %, +, -, <<, >>, &, |, ^.
+pub fn arith_assig<T, I, PT, PV>(
+    iter: &mut I,
+    mut arith_ternary: PT,
+    mut arith_var: PV,
+) -> Result<PT::Output, ParseError>
+where
+    T: Clone,
+    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    PT: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
+    PV: Parser<I, Output = T, Error = ParseError>,
+{
+    combinators::skip_whitespace(iter);
+
+    let mut is_assig = || {
+        let mut mp = iter.multipeek();
+        match mp.peek_next() {
+            Some(Token::Name(_)) => {}
+            Some(Token::Dollar) => match mp.peek_next() {
+                Some(Token::Name(_)) => {}
+                _ => return false,
+            },
+            _ => return false,
+        };
+
+        // If we got this far it looks like we have an expression
+        // starting with a variable. Next we'll skip past any
+        // whitespace and look for an operator. If we don't find an
+        // expected operator, then it cannot be an assignment expression.
+        loop {
+            match mp.peek_next() {
+                // Skip past whitespace
+                Some(Token::Whitespace(_)) => continue,
+                Some(Token::Backslash) => match mp.peek_next() {
+                    Some(Token::Newline) => continue,
+                    _ => return false,
+                },
+
+                // Recognize a `var =` asignment so long as we don't find `var ==`
+                Some(Token::Equals) => return Some(&Token::Equals) != mp.peek_next(),
+
+                Some(Token::Star) | Some(Token::Slash) | Some(Token::Percent)
+                | Some(Token::Plus) | Some(Token::Dash) | Some(Token::DLess)
+                | Some(Token::DGreat) | Some(Token::Amp) | Some(Token::Pipe)
+                | Some(Token::Caret) => return Some(&Token::Equals) == mp.peek_next(),
+
+                _ => return false,
+            }
+        }
+    };
+
+    if !is_assig() {
+        return arith_ternary.parse(iter);
+    }
+
+    let var = arith_var.parse(iter)?;
+    combinators::skip_whitespace(iter);
+
+    let expr = eat_maybe!(iter, {
+        Token::Equals => arith_assig(iter, arith_ternary, arith_var)?;
+        _ => {
+            let op = eat!(iter, {
+                Token::Star    => Arithmetic::Mult,
+                Token::Slash   => Arithmetic::Div,
+                Token::Percent => Arithmetic::Modulo,
+                Token::Plus    => Arithmetic::Add,
+                Token::Dash    => Arithmetic::Sub,
+                Token::DLess   => Arithmetic::ShiftLeft,
+                Token::DGreat  => Arithmetic::ShiftRight,
+                Token::Amp     => Arithmetic::BitwiseAnd,
+                Token::Pipe    => Arithmetic::BitwiseOr,
+                Token::Caret   => Arithmetic::BitwiseXor,
+            });
+
+            eat!(iter, {
+                Token::Equals => {},
+            });
+
+            let value = Box::new(arith_assig(iter, arith_ternary, arith_var)?);
+            let var = Box::new(Arithmetic::Var(var.clone()));
+
+            (op)(var, value)
+        },
+    });
+
+    Ok(Arithmetic::Assign(var, Box::new(expr)))
+}
+
 /// Parses expressions such as `expr ? expr : expr`.
 pub fn arith_ternary<T, I, P>(
     iter: &mut I,

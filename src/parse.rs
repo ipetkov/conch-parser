@@ -2437,80 +2437,9 @@ where
     /// Parses expressions such as `var = expr` or `var op= expr`, where `op` is
     /// any of the following operators: *, /, %, +, -, <<, >>, &, |, ^.
     fn arith_assig(&mut self) -> ParseResult<DefaultArithmetic> {
-        use crate::ast::Arithmetic::*;
-
-        combinators::skip_whitespace(&mut *self.iter);
-
-        let assig = {
-            let mut assig = false;
-            let mut peeked = self.iter.multipeek();
-
-            'assig_check: loop {
-                match peeked.peek_next() {
-                    Some(&Dollar) => continue, // Skip Dollar and peek next
-                    Some(&Name(_)) => loop {
-                        match peeked.peek_next() {
-                            Some(&Whitespace(_)) => continue, // Skip whitespace and peek next
-                            Some(&Star) | Some(&Slash) | Some(&Percent) | Some(&Plus)
-                            | Some(&Dash) | Some(&DLess) | Some(&DGreat) | Some(&Amp)
-                            | Some(&Pipe) | Some(&Caret) => {
-                                assig = Some(&Equals) == peeked.peek_next()
-                            }
-
-                            // Make sure we only recognize $(( x = ...)) but NOT $(( x == ...))
-                            Some(&Equals) => assig = Some(&Equals) != peeked.peek_next(),
-                            _ => {}
-                        }
-
-                        break 'assig_check;
-                    },
-                    _ => break 'assig_check,
-                }
-            }
-
-            assig
-        };
-
-        if !assig {
-            return self.arith_ternary();
-        }
-
-        let var = combinators::arith_var(&mut *self.iter)?;
-        combinators::skip_whitespace(&mut *self.iter);
-        let op = match self.iter.next() {
-            Some(op @ Star) | Some(op @ Slash) | Some(op @ Percent) | Some(op @ Plus)
-            | Some(op @ Dash) | Some(op @ DLess) | Some(op @ DGreat) | Some(op @ Amp)
-            | Some(op @ Pipe) | Some(op @ Caret) => {
-                eat!(self, { Equals => {} });
-                op
-            }
-            Some(op @ Equals) => op,
-            _ => unreachable!(),
-        };
-
-        let value = Box::new(self.arith_assig()?);
-        let expr = match op {
-            Star => Box::new(Mult(Box::new(Var(var.clone())), value)),
-            Slash => Box::new(Div(Box::new(Var(var.clone())), value)),
-            Percent => Box::new(Modulo(Box::new(Var(var.clone())), value)),
-            Plus => Box::new(Add(Box::new(Var(var.clone())), value)),
-            Dash => Box::new(Sub(Box::new(Var(var.clone())), value)),
-            DLess => Box::new(ShiftLeft(Box::new(Var(var.clone())), value)),
-            DGreat => Box::new(ShiftRight(Box::new(Var(var.clone())), value)),
-            Amp => Box::new(BitwiseAnd(Box::new(Var(var.clone())), value)),
-            Pipe => Box::new(BitwiseOr(Box::new(Var(var.clone())), value)),
-            Caret => Box::new(BitwiseXor(Box::new(Var(var.clone())), value)),
-            Equals => value,
-            _ => unreachable!(),
-        };
-        Ok(Assign(var, expr))
-    }
-
-    /// Parses expressions such as `expr ? expr : expr`.
-    fn arith_ternary(&mut self) -> ParseResult<DefaultArithmetic> {
         let builder = self.builder.clone();
 
-        crate::parse2::ArithParser::arith_ternary(
+        crate::parse2::ArithParser::arith_assig(
             &mut *self.iter,
             parse_fn(|iter| Parser::borrowed(iter, builder.clone()).arithmetic_substitution()),
         )
