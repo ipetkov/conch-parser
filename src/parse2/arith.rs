@@ -1,8 +1,7 @@
 use crate::ast::Arithmetic;
 use crate::error::ParseError;
 use crate::iter::{Multipeek, PositionIterator};
-use crate::parse2::combinators;
-use crate::parse2::parse_fn;
+use crate::parse2::{combinators, parse_fn, Parser};
 use crate::token::Token;
 
 /// A default implementation for parsing arithmetic substitutions.
@@ -13,40 +12,42 @@ where
     T: From<String> + Clone,
     I: ?Sized + Multipeek<Item = Token> + PositionIterator,
 {
+    let arith_logical_or: &mut dyn Parser<_, Output = _, Error = _> =
+        &mut parse_fn(arith_logical_or);
+
     combinators::arith_subst(
         iter,
         parse_fn(|iter| {
             combinators::arith_assig(
                 iter,
+                parse_fn(|iter| combinators::arith_ternary(iter, arith_logical_or)),
+                parse_fn(arith_var),
+            )
+        }),
+    )
+}
+
+fn arith_logical_or<T, I>(iter: &mut I) -> Result<Arithmetic<T>, ParseError>
+where
+    T: From<String> + Clone,
+    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+{
+    combinators::arith_logical_or(
+        iter,
+        parse_fn(|iter| {
+            combinators::arith_logical_and(
+                iter,
                 parse_fn(|iter| {
-                    combinators::arith_ternary(
+                    combinators::arith_bitwise_or(
                         iter,
                         parse_fn(|iter| {
-                            combinators::arith_logical_or(
+                            combinators::arith_bitwise_xor(
                                 iter,
                                 parse_fn(|iter| {
-                                    combinators::arith_logical_and(
+                                    combinators::arith_bitwise_and(
                                         iter,
                                         parse_fn(|iter| {
-                                            combinators::arith_bitwise_or(
-                                                iter,
-                                                parse_fn(|iter| {
-                                                    combinators::arith_bitwise_xor(
-                                                        iter,
-                                                        parse_fn(|iter| {
-                                                            combinators::arith_bitwise_and(
-                                                                iter,
-                                                                parse_fn(|iter| {
-                                                                    combinators::arith_eq(
-                                                                        iter,
-                                                                        parse_fn(arith_eq),
-                                                                    )
-                                                                }),
-                                                            )
-                                                        }),
-                                                    )
-                                                }),
-                                            )
+                                            combinators::arith_eq(iter, parse_fn(arith_eq))
                                         }),
                                     )
                                 }),
@@ -54,7 +55,6 @@ where
                         }),
                     )
                 }),
-                parse_fn(arith_var),
             )
         }),
     )

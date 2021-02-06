@@ -1,8 +1,7 @@
 use crate::ast::Arithmetic;
 use crate::error::ParseError;
 use crate::iter::{Multipeek, PositionIterator};
-use crate::parse2::combinators;
-use crate::parse2::Parser;
+use crate::parse2::{combinators, Parser};
 use crate::token::Token;
 
 /// Parses the body of any arbitrary arithmetic expression, or a comma delimited
@@ -128,25 +127,21 @@ where
 }
 
 /// Parses expressions such as `expr ? expr : expr`.
-pub fn arith_ternary<T, I, P>(
+pub fn arith_ternary<T, I>(
     iter: &mut I,
-    mut arith_logical_or: P,
-) -> Result<P::Output, ParseError>
+    // NB: need a trait object here to avoid recursively monomorphizing this
+    // function with an infinite series of reference types...
+    arith_logical_or: &mut dyn Parser<I, Output = Arithmetic<T>, Error = ParseError>,
+) -> Result<Arithmetic<T>, ParseError>
 where
     I: ?Sized + Multipeek<Item = Token> + PositionIterator,
-    P: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
 {
-    // NB: cast to a trait object so the compiler doesn't get stuck
-    // recursively monomorphizing this function with infinite reference types
-    #[allow(trivial_casts)]
-    let mut arith_logical_or: &mut dyn Parser<_, Output = _, Error = _> = &mut arith_logical_or;
-
     let guard = arith_logical_or.parse(iter)?;
     combinators::skip_whitespace(iter);
 
     let ret = eat_maybe!(iter, {
         Token::Question => {
-            let body = arith_ternary(iter, &mut arith_logical_or)?;
+            let body = arith_ternary(iter, arith_logical_or)?;
             combinators::skip_whitespace(iter);
             eat!(iter, { Token::Colon => {}, });
             let els = arith_ternary(iter, arith_logical_or)?;
