@@ -12,7 +12,7 @@ use self::iter::{TokenIter, TokenIterWrapper};
 use crate::ast::builder::ComplexWordKind::{self, Concat, Single};
 use crate::ast::builder::WordKind::{self, DoubleQuoted, Simple, SingleQuoted};
 use crate::ast::builder::{self, Builder, SimpleWordKind};
-use crate::ast::{self, DefaultArithmetic, DefaultParameter};
+use crate::ast::DefaultParameter;
 use crate::error::{ParseError, UnmatchedError};
 use crate::iter::{BacktickBackslashRemover, Balanced, PeekableIterator, PositionIterator};
 use crate::parse2::{combinators, parse_fn};
@@ -1522,7 +1522,7 @@ where
                     let subst = if let Some(&ParenClose) = self.iter.peek() {
                         None
                     } else {
-                        Some(self.arithmetic_substitution()?)
+                        Some(crate::parse2::ArithParser::arith_subst(&mut *self.iter)?)
                     };
 
                     // Some shells allow the closing parens to have whitespace in between
@@ -2411,38 +2411,6 @@ where
             commands: cmds,
             trailing_comments,
         })
-    }
-
-    /// Parses the body of any arbitrary arithmetic expression, e.g. `x + $y << 5`.
-    /// The caller is responsible for parsing the external `$(( ))` tokens.
-    pub fn arithmetic_substitution(&mut self) -> ParseResult<DefaultArithmetic> {
-        let mut exprs = Vec::new();
-        loop {
-            combinators::skip_whitespace(&mut *self.iter);
-            exprs.push(self.arith_assig()?);
-
-            eat_maybe!(self, {
-                Comma => {};
-                _ => { break },
-            });
-        }
-
-        if exprs.len() == 1 {
-            Ok(exprs.pop().unwrap())
-        } else {
-            Ok(ast::Arithmetic::Sequence(exprs))
-        }
-    }
-
-    /// Parses expressions such as `var = expr` or `var op= expr`, where `op` is
-    /// any of the following operators: *, /, %, +, -, <<, >>, &, |, ^.
-    fn arith_assig(&mut self) -> ParseResult<DefaultArithmetic> {
-        let builder = self.builder.clone();
-
-        crate::parse2::ArithParser::arith_assig(
-            &mut *self.iter,
-            parse_fn(|iter| Parser::borrowed(iter, builder.clone()).arithmetic_substitution()),
-        )
     }
 }
 

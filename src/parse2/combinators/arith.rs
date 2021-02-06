@@ -5,6 +5,39 @@ use crate::parse2::combinators;
 use crate::parse2::Parser;
 use crate::token::Token;
 
+/// Parses the body of any arbitrary arithmetic expression, or a comma delimited
+/// sequence of expressions. The caller is responsible for parsing the external
+/// `$(( ))` tokens.
+pub fn arith_subst<T, I, P>(iter: &mut I, mut arith_assig: P) -> Result<P::Output, ParseError>
+where
+    T: Clone,
+    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    P: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
+{
+    let first = arith_assig.parse(iter)?;
+    combinators::skip_whitespace(iter);
+
+    eat_maybe!(iter, {
+        Token::Comma => {};
+        _ => return Ok(first),
+    });
+
+    let mut exprs = Vec::new();
+    exprs.push(first);
+
+    loop {
+        exprs.push(arith_assig.parse(iter)?);
+
+        combinators::skip_whitespace(iter);
+        eat_maybe!(iter, {
+            Token::Comma => {};
+            _ => break,
+        });
+    }
+
+    Ok(Arithmetic::Sequence(exprs))
+}
+
 /// Parses expressions such as `var = expr` or `var op= expr`, where `op` is
 /// any of the following operators: *, /, %, +, -, <<, >>, &, |, ^.
 pub fn arith_assig<T, I, PT, PV>(
