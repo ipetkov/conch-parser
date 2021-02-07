@@ -1683,40 +1683,52 @@ where
         &mut self,
         kw: Option<CompoundCmdKeyword>,
     ) -> ParseResult<B::CompoundCommand> {
+        let builder = self.builder.clone();
+        let redirect_list = parse_fn(|iter| {
+            Parser::borrowed(iter, builder.clone())
+                .redirect()
+                .map(|redirect| {
+                    redirect.map(|redirect| match redirect {
+                        Ok(r) => ast::RedirectOrCmdWord::Redirect(r),
+                        Err(w) => ast::RedirectOrCmdWord::CmdWord(w),
+                    })
+                })
+        });
+
         let cmd = match kw.or_else(|| self.next_compound_command_type()) {
             Some(CompoundCmdKeyword::If) => {
                 let fragments = self.if_command()?;
-                let io = self.redirect_list()?;
+                let io = combinators::redirect_list(&mut *self.iter, redirect_list.clone())?;
                 self.builder.if_command(fragments, io)
             }
 
             Some(CompoundCmdKeyword::While) | Some(CompoundCmdKeyword::Until) => {
                 let (until, guard_body_pair) = self.loop_command()?;
-                let io = self.redirect_list()?;
+                let io = combinators::redirect_list(&mut *self.iter, redirect_list.clone())?;
                 self.builder.loop_command(until, guard_body_pair, io)
             }
 
             Some(CompoundCmdKeyword::For) => {
                 let for_fragments = self.for_command()?;
-                let io = self.redirect_list()?;
+                let io = combinators::redirect_list(&mut *self.iter, redirect_list.clone())?;
                 self.builder.for_command(for_fragments, io)
             }
 
             Some(CompoundCmdKeyword::Case) => {
                 let fragments = self.case_command()?;
-                let io = self.redirect_list()?;
+                let io = combinators::redirect_list(&mut *self.iter, redirect_list.clone())?;
                 self.builder.case_command(fragments, io)
             }
 
             Some(CompoundCmdKeyword::Brace) => {
                 let cmds = self.brace_group()?;
-                let io = self.redirect_list()?;
+                let io = combinators::redirect_list(&mut *self.iter, redirect_list.clone())?;
                 self.builder.brace_group(cmds, io)
             }
 
             Some(CompoundCmdKeyword::Subshell) => {
                 let cmds = self.subshell()?;
-                let io = self.redirect_list()?;
+                let io = combinators::redirect_list(&mut *self.iter, redirect_list)?;
                 self.builder.subshell(cmds, io)
             }
 

@@ -25,7 +25,8 @@ where
     }
 }
 
-struct ParseFn<F> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParseFn<F> {
     f: F,
 }
 
@@ -42,7 +43,7 @@ where
     }
 }
 
-pub fn parse_fn<I, F, O, E>(f: F) -> impl Parser<I, Output = O, Error = E>
+pub fn parse_fn<I, F, O, E>(f: F) -> ParseFn<F>
 where
     I: ?Sized,
     F: FnMut(&mut I) -> Result<O, E>,

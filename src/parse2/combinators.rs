@@ -54,6 +54,7 @@ mod and_or;
 mod arith;
 mod linebreak;
 mod pipeline;
+mod redirect;
 mod simple_command;
 mod skip_whitespace;
 
@@ -65,6 +66,7 @@ pub use self::arith::{
 };
 pub use self::linebreak::{linebreak, newline};
 pub use self::pipeline::{pipeline, Pipeline};
+pub use self::redirect::redirect_list;
 pub use self::simple_command::simple_command;
 pub use self::skip_whitespace::skip_whitespace;
 
