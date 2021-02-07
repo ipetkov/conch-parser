@@ -106,3 +106,32 @@ where
             None => true, // EOF is also a valid delimeter
         })
 }
+
+/// Checks that one of the specified strings appears as a reserved word.
+///
+/// The word must appear as a single token, unquoted and unescaped, and
+/// must be followed by a token which delimits a word when it is
+/// unquoted/unescaped. The reserved word may appear as a `Token::Name`
+/// or a `Token::Literal`.
+///
+/// If a reserved word is found, the string which it matches will be
+/// returned in case the caller cares which specific reserved word was found.
+pub(crate) fn peek_reserved_word<I>(iter: &mut I, words: &[&'static str]) -> Option<&'static str>
+where
+    I: ?Sized + Multipeek<Item = Token>,
+{
+    debug_assert!(!words.is_empty());
+
+    skip_whitespace(iter);
+
+    let mut mp = iter.multipeek();
+    mp.peek_next()
+        .and_then(|tok| match tok {
+            Token::Name(kw) | Token::Literal(kw) => words.iter().find(|&w| w == kw).copied(),
+            _ => None,
+        })
+        .filter(|_| match mp.peek_next() {
+            Some(delim) => delim.is_word_delimiter(),
+            None => true, // EOF is also a valid delimeter
+        })
+}

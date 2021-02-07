@@ -1631,10 +1631,10 @@ where
         combinators::skip_whitespace(&mut *self.iter);
         if Some(&ParenOpen) == self.iter.peek() {
             Some(CompoundCmdKeyword::Subshell)
-        } else if self.peek_reserved_token(&[CurlyOpen]).is_some() {
+        } else if combinators::peek_reserved_token(&mut *self.iter, &[CurlyOpen]).is_some() {
             Some(CompoundCmdKeyword::Brace)
         } else {
-            match self.peek_reserved_word(&[FOR, CASE, IF, WHILE, UNTIL]) {
+            match combinators::peek_reserved_word(&mut *self.iter, &[FOR, CASE, IF, WHILE, UNTIL]) {
                 Some(FOR) => Some(CompoundCmdKeyword::For),
                 Some(CASE) => Some(CompoundCmdKeyword::Case),
                 Some(IF) => Some(CompoundCmdKeyword::If),
@@ -1734,7 +1734,7 @@ where
             reserved_words: &[DO],
             ..Default::default()
         })?;
-        match self.peek_reserved_word(&[DO]) {
+        match combinators::peek_reserved_word(&mut *self.iter, &[DO]) {
             Some(_) => Ok((
                 kind,
                 builder::GuardBodyPairGroup {
@@ -1851,52 +1851,53 @@ where
         // A for command can take one of several different shapes (in pseudo regex syntax):
         // `for name [\n*] [in [word*]] [;\n* | \n+] do_group`
         // Below we'll disambiguate what situation we have as we move along.
-        let (words, pre_body_comments) = if self.peek_reserved_word(&[IN]).is_some() {
-            // Found `in` keyword, therefore we're looking at something like
-            // `for name \n* in [words*] [;\n* | \n+] do_group`
-            self.reserved_word(&[IN]).unwrap();
+        let (words, pre_body_comments) =
+            if combinators::peek_reserved_word(&mut *self.iter, &[IN]).is_some() {
+                // Found `in` keyword, therefore we're looking at something like
+                // `for name \n* in [words*] [;\n* | \n+] do_group`
+                self.reserved_word(&[IN]).unwrap();
 
-            let mut words = Vec::new();
-            while let Some(w) = self.word()? {
-                words.push(w);
-            }
+                let mut words = Vec::new();
+                while let Some(w) = self.word()? {
+                    words.push(w);
+                }
 
-            let found_semi = eat_maybe!(self, {
-                Semi => { true };
-                _ => { false }
-            });
+                let found_semi = eat_maybe!(self, {
+                    Semi => { true };
+                    _ => { false }
+                });
 
-            // We need either a newline or a ; to separate the words from the body
-            // Thus if neither is found it is considered an error
-            let words_comment = combinators::newline(&mut *self.iter);
-            if !found_semi && words_comment.is_none() {
-                return Err(self.make_unexpected_err());
-            }
+                // We need either a newline or a ; to separate the words from the body
+                // Thus if neither is found it is considered an error
+                let words_comment = combinators::newline(&mut *self.iter);
+                if !found_semi && words_comment.is_none() {
+                    return Err(self.make_unexpected_err());
+                }
 
-            (
-                Some((post_var_comments, words, words_comment)),
-                combinators::linebreak(&mut *self.iter),
-            )
-        } else if Some(&Semi) == self.iter.peek() {
-            // `for name \n*;\n* do_group`
-            eat!(self, { Semi => {} });
-            (None, combinators::linebreak(&mut *self.iter))
-        } else if self.peek_reserved_word(&[DO]).is_none() {
-            // If we didn't find an `in` keyword, and we havent hit the body
-            // (a `do` keyword), then we can reasonably say the script has
-            // words without an `in` keyword.
-            return Err(ParseError::IncompleteCmd {
-                cmd: FOR,
-                cmd_pos: start_pos,
-                kw: IN,
-                kw_pos: self.iter.pos(),
-            });
-        } else {
-            // `for name \n* do_group`
-            (None, post_var_comments)
-        };
+                (
+                    Some((post_var_comments, words, words_comment)),
+                    combinators::linebreak(&mut *self.iter),
+                )
+            } else if Some(&Semi) == self.iter.peek() {
+                // `for name \n*;\n* do_group`
+                eat!(self, { Semi => {} });
+                (None, combinators::linebreak(&mut *self.iter))
+            } else if combinators::peek_reserved_word(&mut *self.iter, &[DO]).is_none() {
+                // If we didn't find an `in` keyword, and we havent hit the body
+                // (a `do` keyword), then we can reasonably say the script has
+                // words without an `in` keyword.
+                return Err(ParseError::IncompleteCmd {
+                    cmd: FOR,
+                    cmd_pos: start_pos,
+                    kw: IN,
+                    kw_pos: self.iter.pos(),
+                });
+            } else {
+                // `for name \n* do_group`
+                (None, post_var_comments)
+            };
 
-        if self.peek_reserved_word(&[DO]).is_none() {
+        if combinators::peek_reserved_word(&mut *self.iter, &[DO]).is_none() {
             return Err(ParseError::IncompleteCmd {
                 cmd: FOR,
                 cmd_pos: start_pos,
@@ -1961,7 +1962,7 @@ where
         let mut arms = Vec::new();
         loop {
             let pre_pattern_comments = combinators::linebreak(&mut *self.iter);
-            if self.peek_reserved_word(&[ESAC]).is_some() {
+            if combinators::peek_reserved_word(&mut *self.iter, &[ESAC]).is_some() {
                 // Make sure we don't lose the captured comments if there are no body
                 debug_assert_eq!(pre_esac_comments, None);
                 pre_esac_comments = Some(pre_pattern_comments);
@@ -2056,7 +2057,7 @@ where
     /// Parses a single function declaration if present. If no function is present,
     /// nothing is consumed from the token stream.
     pub fn maybe_function_declaration(&mut self) -> ParseResult<Option<B::PipeableCommand>> {
-        if self.peek_reserved_word(&[FUNCTION]).is_some() {
+        if combinators::peek_reserved_word(&mut *self.iter, &[FUNCTION]).is_some() {
             return self.function_declaration().map(Some);
         }
 
@@ -2096,7 +2097,7 @@ where
     fn function_declaration_internal(
         &mut self,
     ) -> ParseResult<(String, Vec<builder::Newline>, B::CompoundCommand)> {
-        let found_fn = match self.peek_reserved_word(&[FUNCTION]) {
+        let found_fn = match combinators::peek_reserved_word(&mut *self.iter, &[FUNCTION]) {
             Some(_) => {
                 self.iter.next();
                 true
@@ -2165,52 +2166,11 @@ where
         Ok((name, post_name_comments, body))
     }
 
-    /// Checks that one of the specified tokens appears as a reserved word.
-    ///
-    /// The token must be followed by a token which delimits a word when it is
-    /// unquoted/unescaped.
-    ///
-    /// If a reserved word is found, the token which it matches will be
-    /// returned in case the caller cares which specific reserved word was found.
-    pub fn peek_reserved_token<'a>(&mut self, tokens: &'a [Token]) -> Option<&'a Token> {
-        combinators::peek_reserved_token(&mut *self.iter, tokens)
-    }
-
-    /// Checks that one of the specified strings appears as a reserved word.
-    ///
-    /// The word must appear as a single token, unquoted and unescaped, and
-    /// must be followed by a token which delimits a word when it is
-    /// unquoted/unescaped. The reserved word may appear as a `Token::Name`
-    /// or a `Token::Literal`.
-    ///
-    /// If a reserved word is found, the string which it matches will be
-    /// returned in case the caller cares which specific reserved word was found.
-    pub fn peek_reserved_word<'a>(&mut self, words: &'a [&str]) -> Option<&'a str> {
-        if words.is_empty() {
-            return None;
-        }
-
-        combinators::skip_whitespace(&mut *self.iter);
-        let mut peeked = self.iter.multipeek();
-        let found_tok = match peeked.peek_next() {
-            Some(&Name(ref kw)) | Some(&Literal(ref kw)) => {
-                words.iter().find(|&w| w == kw).copied()
-            }
-            _ => None,
-        };
-
-        match peeked.peek_next() {
-            Some(delim) if delim.is_word_delimiter() => found_tok,
-            None => found_tok, // EOF is a valid delimeter
-            _ => None,
-        }
-    }
-
     /// Checks that one of the specified tokens appears as a reserved word
     /// and consumes it, returning the token it matched in case the caller
     /// cares which specific reserved word was found.
     pub fn reserved_token(&mut self, tokens: &[Token]) -> ParseResult<Token> {
-        match self.peek_reserved_token(tokens) {
+        match combinators::peek_reserved_token(&mut *self.iter, tokens) {
             Some(_) => Ok(self.iter.next().unwrap()),
             None => {
                 // If the desired token is next, but we failed to find a reserved
@@ -2233,8 +2193,8 @@ where
     /// Checks that one of the specified strings appears as a reserved word
     /// and consumes it, returning the string it matched in case the caller
     /// cares which specific reserved word was found.
-    pub fn reserved_word<'a>(&mut self, words: &'a [&str]) -> Result<&'a str, ()> {
-        match self.peek_reserved_word(words) {
+    pub fn reserved_word(&mut self, words: &[&'static str]) -> Result<&'static str, ()> {
+        match combinators::peek_reserved_word(&mut *self.iter, words) {
             Some(s) => {
                 self.iter.next();
                 Ok(s)
@@ -2278,8 +2238,11 @@ where
 
             found_exact
                 || (!cfg.reserved_words.is_empty()
-                    && slf.peek_reserved_word(cfg.reserved_words).is_some())
-                || slf.peek_reserved_token(cfg.reserved_tokens).is_some()
+                    && combinators::peek_reserved_word(&mut *slf.iter, cfg.reserved_words)
+                        .is_some())
+                || (!cfg.reserved_tokens.is_empty()
+                    && combinators::peek_reserved_token(&mut *slf.iter, cfg.reserved_tokens)
+                        .is_some())
         };
 
         let mut cmds = Vec::new();
