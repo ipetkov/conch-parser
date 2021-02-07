@@ -54,6 +54,7 @@ mod and_or;
 mod arith;
 mod linebreak;
 mod pipeline;
+mod simple_command;
 mod skip_whitespace;
 
 pub use self::and_or::{and_or_list, AndOrList};
@@ -64,6 +65,7 @@ pub use self::arith::{
 };
 pub use self::linebreak::{linebreak, newline};
 pub use self::pipeline::{pipeline, Pipeline};
+pub use self::simple_command::simple_command;
 pub use self::skip_whitespace::skip_whitespace;
 
 fn make_unexpected_err<I>(iter: &mut I) -> ParseError

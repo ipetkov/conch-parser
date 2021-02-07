@@ -12,7 +12,7 @@ use self::iter::{TokenIter, TokenIterWrapper};
 use crate::ast::builder::ComplexWordKind::{self, Concat, Single};
 use crate::ast::builder::WordKind::{self, DoubleQuoted, Simple, SingleQuoted};
 use crate::ast::builder::{self, Builder, SimpleWordKind};
-use crate::ast::DefaultParameter;
+use crate::ast::{self, DefaultParameter};
 use crate::error::{ParseError, UnmatchedError};
 use crate::iter::{BacktickBackslashRemover, Balanced, PeekableIterator, PositionIterator};
 use crate::parse2::{arith_subst, combinators, parse_fn};
@@ -483,78 +483,26 @@ where
     /// A valid command is expected to have at least an executable name, or a single
     /// variable assignment or redirection. Otherwise an error will be returned.
     pub fn simple_command(&mut self) -> ParseResult<B::PipeableCommand> {
-        use crate::ast::{RedirectOrCmdWord, RedirectOrEnvVar};
+        let builder = self.builder.clone();
 
-        let mut vars = Vec::new();
-        let mut cmd_args = Vec::new();
+        let cmd = combinators::simple_command(
+            &mut *self.iter,
+            parse_fn(|iter| {
+                Parser::borrowed(iter, builder.clone())
+                    .redirect()
+                    .map(|redirect| {
+                        redirect.map(|redirect| match redirect {
+                            Ok(r) => ast::RedirectOrCmdWord::Redirect(r),
+                            Err(w) => ast::RedirectOrCmdWord::CmdWord(w),
+                        })
+                    })
+            }),
+            parse_fn(|iter| Parser::borrowed(iter, builder.clone()).word()),
+        )?;
 
-        loop {
-            combinators::skip_whitespace(&mut *self.iter);
-            let is_name = {
-                let mut peeked = self.iter.multipeek();
-                if let Some(&Name(_)) = peeked.peek_next() {
-                    Some(&Equals) == peeked.peek_next()
-                } else {
-                    false
-                }
-            };
-
-            if is_name {
-                if let Some(Name(var)) = self.iter.next() {
-                    self.iter.next(); // Consume the =
-
-                    let value = if let Some(&Whitespace(_)) = self.iter.peek() {
-                        None
-                    } else {
-                        self.word()?
-                    };
-                    vars.push(RedirectOrEnvVar::EnvVar(var, value));
-
-                    // Make sure we continue checking for assignments,
-                    // otherwise it they can be interpreted as literal words.
-                    continue;
-                } else {
-                    unreachable!();
-                }
-            }
-
-            // If we find a redirect we should keep checking for
-            // more redirects or assignments. Otherwise we will either
-            // run into the command name or the end of the simple command.
-            let exec = match self.redirect()? {
-                Some(Ok(redirect)) => {
-                    vars.push(RedirectOrEnvVar::Redirect(redirect));
-                    continue;
-                }
-                Some(Err(w)) => w,
-                None => break,
-            };
-
-            // Since there are no more assignments or redirects present
-            // it must be the first real word, and thus the executable name.
-            cmd_args.push(RedirectOrCmdWord::CmdWord(exec));
-            break;
-        }
-
-        let vars = vars;
-
-        // Now that all assignments are taken care of, any other occurances of `=` will be
-        // treated as literals when we attempt to parse a word out.
-        loop {
-            match self.redirect()? {
-                Some(Ok(redirect)) => cmd_args.push(RedirectOrCmdWord::Redirect(redirect)),
-                Some(Err(w)) => cmd_args.push(RedirectOrCmdWord::CmdWord(w)),
-                None => break,
-            }
-        }
-
-        // "Blank" commands are only allowed if redirection occurs
-        // or if there is some variable assignment
-        if vars.is_empty() && cmd_args.is_empty() {
-            Err(self.make_unexpected_err())
-        } else {
-            Ok(self.builder.simple_command(vars, cmd_args))
-        }
+        Ok(self
+            .builder
+            .simple_command(cmd.redirects_or_env_vars, cmd.redirects_or_cmd_words))
     }
 
     /// Parses a continuous list of redirections and will error if any words
