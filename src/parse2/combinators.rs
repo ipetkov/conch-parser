@@ -1,5 +1,5 @@
 use crate::error::ParseError;
-use crate::iter::PositionIterator;
+use crate::iter::{Multipeek, PositionIterator};
 use crate::parse::SourcePos;
 use crate::token::Token;
 
@@ -66,7 +66,7 @@ pub use self::arith::{
 };
 pub use self::linebreak::{linebreak, newline};
 pub use self::pipeline::{pipeline, Pipeline};
-pub use self::redirect::redirect_list;
+pub use self::redirect::{redirect, redirect_list};
 pub use self::simple_command::simple_command;
 pub use self::skip_whitespace::skip_whitespace;
 
@@ -81,4 +81,28 @@ fn make_unexpected_err_parts(pos: SourcePos, tok: Option<Token>) -> ParseError {
     tok.map_or(ParseError::UnexpectedEOF, |t| {
         ParseError::Unexpected(t, pos)
     })
+}
+
+/// Checks that one of the specified tokens appears as a reserved word.
+///
+/// The token must be followed by a token which delimits a word when it is
+/// unquoted/unescaped.
+///
+/// If a reserved word is found, the token which it matches will be
+/// returned in case the caller cares which specific reserved word was found.
+pub(crate) fn peek_reserved_token<'a, I>(iter: &mut I, tokens: &'a [Token]) -> Option<&'a Token>
+where
+    I: ?Sized + Multipeek<Item = Token>,
+{
+    debug_assert!(!tokens.is_empty());
+
+    skip_whitespace(iter);
+
+    let mut mp = iter.multipeek();
+    mp.peek_next()
+        .and_then(|tok| tokens.iter().find(|&t| t == tok))
+        .filter(|_| match mp.peek_next() {
+            Some(delim) => delim.is_word_delimiter(),
+            None => true, // EOF is also a valid delimeter
+        })
 }

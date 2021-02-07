@@ -588,80 +588,57 @@ where
             }
         }
 
-        let (src_fd, src_fd_as_word) = match self.word_preserve_trailing_whitespace_raw()? {
-            None => (None, None),
-            Some(w) => match as_num(&w) {
-                Some(num) => (Some(num), Some(w)),
-                None => return Ok(Some(Err(self.builder.word(w)))),
+        let builder = self.builder.clone();
+        let redirect = combinators::redirect(
+            &mut *self.iter,
+            as_num,
+            |cw| match cw {
+                Single(p) => could_be_numeric(p),
+                Concat(v) => v.iter().all(could_be_numeric),
             },
-        };
+            |s| Single(Simple(SimpleWordKind::Literal(s.to_string()))),
+            parse_fn(|iter| {
+                Parser::borrowed(iter, builder.clone()).word_preserve_trailing_whitespace_raw()
+            }),
+            parse_fn(|iter| -> ParseResult<ComplexWordKind<_>> {
+                Parser::borrowed(iter, builder.clone()).redirect_heredoc()
+            }),
+        )?;
 
-        let redir_tok = match self.iter.peek() {
-            Some(&Less) | Some(&Great) | Some(&DGreat) | Some(&Clobber) | Some(&LessAnd)
-            | Some(&GreatAnd) | Some(&LessGreat) => self.iter.next().unwrap(),
-
-            Some(&DLess) | Some(&DLessDash) => return Ok(Some(Ok(self.redirect_heredoc(src_fd)?))),
-
-            _ => match src_fd_as_word {
-                Some(w) => return Ok(Some(Err(self.builder.word(w)))),
-                None => return Ok(None),
-            },
-        };
-
-        combinators::skip_whitespace(&mut *self.iter);
-
-        macro_rules! get_path {
-            ($parser:expr) => {
-                match $parser.word_preserve_trailing_whitespace_raw()? {
-                    Some(p) => $parser.builder.word(p),
-                    None => return Err(self.make_unexpected_err()),
-                }
-            };
-        }
-
-        macro_rules! get_dup_path {
-            ($parser:expr) => {{
-                let path = if $parser.peek_reserved_token(&[Dash]).is_some() {
-                    let dash = $parser.reserved_token(&[Dash])?;
-                    Single(Simple(SimpleWordKind::Literal(dash.to_string())))
-                } else {
-                    let path_start_pos = $parser.iter.pos();
-                    let path = if let Some(p) = $parser.word_preserve_trailing_whitespace_raw()? {
-                        p
-                    } else {
-                        return Err($parser.make_unexpected_err());
-                    };
-                    let is_numeric = match path {
-                        Single(ref p) => could_be_numeric(&p),
-                        Concat(ref v) => v.iter().all(could_be_numeric),
-                    };
-                    if is_numeric {
-                        path
-                    } else {
-                        return Err(ParseError::BadFd {
-                            start: path_start_pos,
-                            end: self.iter.pos(),
-                        });
+        let ret = redirect.map(|redirect| match redirect {
+            ast::RedirectOrCmdWord::Redirect(r) => {
+                let kind = match r {
+                    ast::Redirect::Append(fd, w) => {
+                        builder::RedirectKind::Append(fd, self.builder.word(w))
+                    }
+                    ast::Redirect::Clobber(fd, w) => {
+                        builder::RedirectKind::Clobber(fd, self.builder.word(w))
+                    }
+                    ast::Redirect::Read(fd, w) => {
+                        builder::RedirectKind::Read(fd, self.builder.word(w))
+                    }
+                    ast::Redirect::ReadWrite(fd, w) => {
+                        builder::RedirectKind::ReadWrite(fd, self.builder.word(w))
+                    }
+                    ast::Redirect::Write(fd, w) => {
+                        builder::RedirectKind::Write(fd, self.builder.word(w))
+                    }
+                    ast::Redirect::Heredoc(fd, w) => {
+                        builder::RedirectKind::Heredoc(fd, self.builder.word(w))
+                    }
+                    ast::Redirect::DupRead(fd, w) => {
+                        builder::RedirectKind::DupRead(fd, self.builder.word(w))
+                    }
+                    ast::Redirect::DupWrite(fd, w) => {
+                        builder::RedirectKind::DupWrite(fd, self.builder.word(w))
                     }
                 };
-                $parser.builder.word(path)
-            }};
-        }
+                Ok(self.builder.redirect(kind))
+            }
+            ast::RedirectOrCmdWord::CmdWord(w) => Err(self.builder.word(w)),
+        });
 
-        let redirect = match redir_tok {
-            Less => builder::RedirectKind::Read(src_fd, get_path!(self)),
-            Great => builder::RedirectKind::Write(src_fd, get_path!(self)),
-            DGreat => builder::RedirectKind::Append(src_fd, get_path!(self)),
-            Clobber => builder::RedirectKind::Clobber(src_fd, get_path!(self)),
-            LessGreat => builder::RedirectKind::ReadWrite(src_fd, get_path!(self)),
-
-            LessAnd => builder::RedirectKind::DupRead(src_fd, get_dup_path!(self)),
-            GreatAnd => builder::RedirectKind::DupWrite(src_fd, get_dup_path!(self)),
-
-            _ => unreachable!(),
-        };
-
-        Ok(Some(Ok(self.builder.redirect(redirect))))
+        Ok(ret)
     }
 
     /// Parses a heredoc redirection and the heredoc's body.
@@ -689,7 +666,7 @@ where
     ///
     /// Note: this method expects that the caller provide a potential file
     /// descriptor for redirection.
-    pub fn redirect_heredoc(&mut self, src_fd: Option<u16>) -> ParseResult<B::Redirect> {
+    pub fn redirect_heredoc(&mut self) -> ParseResult<ComplexWordKind<B::Command>> {
         use std::iter::FromIterator;
 
         let strip_tabs = eat!(self, {
@@ -949,10 +926,7 @@ where
             }
         };
 
-        let word = self.builder.word(body);
-        Ok(self
-            .builder
-            .redirect(builder::RedirectKind::Heredoc(src_fd, word)))
+        Ok(body)
     }
 
     /// Parses a whitespace delimited chunk of text, honoring space quoting rules,
@@ -2199,49 +2173,7 @@ where
     /// If a reserved word is found, the token which it matches will be
     /// returned in case the caller cares which specific reserved word was found.
     pub fn peek_reserved_token<'a>(&mut self, tokens: &'a [Token]) -> Option<&'a Token> {
-        if tokens.is_empty() {
-            return None;
-        }
-
-        let care_about_whitespace = tokens.iter().any(|tok| matches!(*tok, Whitespace(_)));
-
-        // If the caller cares about whitespace as a reserved word we should
-        // do a reserved word check without skipping any leading whitespace.
-        // If we don't find anything the first time (or if the caller does
-        // not care about whitespace tokens) we will skip the whitespace
-        // and try again.
-        let num_tries = if care_about_whitespace {
-            2
-        } else {
-            combinators::skip_whitespace(&mut *self.iter);
-            1
-        };
-
-        for _ in 0..num_tries {
-            {
-                let mut peeked = self.iter.multipeek();
-
-                let found_tok = match peeked.peek_next() {
-                    Some(tok) => tokens.iter().find(|&t| t == tok),
-                    None => return None,
-                };
-
-                if let ret @ Some(_) = found_tok {
-                    let found_delim = match peeked.peek_next() {
-                        Some(delim) => delim.is_word_delimiter(),
-                        None => true, // EOF is also a valid delimeter
-                    };
-
-                    if found_delim {
-                        return ret;
-                    }
-                }
-            }
-
-            combinators::skip_whitespace(&mut *self.iter);
-        }
-
-        None
+        combinators::peek_reserved_token(&mut *self.iter, tokens)
     }
 
     /// Checks that one of the specified strings appears as a reserved word.
@@ -2345,7 +2277,8 @@ where
                     .unwrap_or(false);
 
             found_exact
-                || slf.peek_reserved_word(cfg.reserved_words).is_some()
+                || (!cfg.reserved_words.is_empty()
+                    && slf.peek_reserved_word(cfg.reserved_words).is_some())
                 || slf.peek_reserved_token(cfg.reserved_tokens).is_some()
         };
 
