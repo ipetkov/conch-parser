@@ -57,6 +57,7 @@ mod pipeline;
 mod redirect;
 mod simple_command;
 mod skip_whitespace;
+mod word;
 
 pub use self::and_or::{and_or_list, AndOrList};
 pub use self::arith::{
@@ -69,6 +70,7 @@ pub use self::pipeline::{pipeline, Pipeline};
 pub use self::redirect::{redirect, redirect_list};
 pub use self::simple_command::simple_command;
 pub use self::skip_whitespace::skip_whitespace;
+pub use self::word::word;
 
 fn make_unexpected_err<I>(iter: &mut I) -> ParseError
 where

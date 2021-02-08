@@ -952,7 +952,18 @@ where
     fn word_preserve_trailing_whitespace_raw(
         &mut self,
     ) -> ParseResult<Option<ComplexWordKind<B::Command>>> {
-        self.word_preserve_trailing_whitespace_raw_with_delim(None)
+        let builder = self.builder.clone();
+        combinators::word(
+            &mut *self.iter,
+            parse_fn(|iter| Parser::borrowed(iter, builder.clone()).parameter_raw()),
+            parse_fn(|iter| Parser::borrowed(iter, builder.clone()).backticked_raw()),
+            parse_fn(|iter| {
+                let mut slf = Parser::borrowed(iter, builder.clone());
+                let start_pos = slf.iter.pos();
+                eat!(slf, { DoubleQuote => {} });
+                slf.word_interpolated_raw(Some((DoubleQuote, DoubleQuote)), start_pos)
+            }),
+        )
     }
 
     /// Identical to `Parser::word_preserve_trailing_whitespace_raw()` but
@@ -2246,22 +2257,19 @@ where
         };
 
         let mut cmds = Vec::new();
-        let mut trailing_comments = Vec::new();
-        loop {
+        let trailing_comments = loop {
             if found_delim(self) {
-                break;
+                break Vec::new();
             }
 
             let leading_comments = combinators::linebreak(&mut *self.iter);
 
             if found_delim(self) || self.iter.peek().is_none() {
-                debug_assert!(trailing_comments.is_empty());
-                trailing_comments = leading_comments;
-                break;
+                break leading_comments;
             }
 
             cmds.push(self.complete_command_with_leading_comments(leading_comments)?);
-        }
+        };
 
         Ok(builder::CommandGroup {
             commands: cmds,
