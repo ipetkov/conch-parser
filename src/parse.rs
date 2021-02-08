@@ -1683,31 +1683,31 @@ where
         let cmd = match kw.or_else(|| self.next_compound_command_type()) {
             Some(CompoundCmdKeyword::If) => {
                 let fragments = self.if_command()?;
-                let io = combinators::redirect_list(&mut *self.iter, redirect_list.clone())?;
+                let io = combinators::redirect_list(&mut *self.iter, redirect_list)?;
                 self.builder.if_command(fragments, io)
             }
 
             Some(CompoundCmdKeyword::While) | Some(CompoundCmdKeyword::Until) => {
                 let (until, guard_body_pair) = self.loop_command()?;
-                let io = combinators::redirect_list(&mut *self.iter, redirect_list.clone())?;
+                let io = combinators::redirect_list(&mut *self.iter, redirect_list)?;
                 self.builder.loop_command(until, guard_body_pair, io)
             }
 
             Some(CompoundCmdKeyword::For) => {
                 let for_fragments = self.for_command()?;
-                let io = combinators::redirect_list(&mut *self.iter, redirect_list.clone())?;
+                let io = combinators::redirect_list(&mut *self.iter, redirect_list)?;
                 self.builder.for_command(for_fragments, io)
             }
 
             Some(CompoundCmdKeyword::Case) => {
                 let fragments = self.case_command()?;
-                let io = combinators::redirect_list(&mut *self.iter, redirect_list.clone())?;
+                let io = combinators::redirect_list(&mut *self.iter, redirect_list)?;
                 self.builder.case_command(fragments, io)
             }
 
             Some(CompoundCmdKeyword::Brace) => {
                 let cmds = self.brace_group()?;
-                let io = combinators::redirect_list(&mut *self.iter, redirect_list.clone())?;
+                let io = combinators::redirect_list(&mut *self.iter, redirect_list)?;
                 self.builder.brace_group(cmds, io)
             }
 
