@@ -6,7 +6,6 @@
 use std::fmt;
 use std::iter::empty as empty_iter;
 use std::mem;
-use std::str::FromStr;
 
 use self::iter::{TokenIter, TokenIterWrapper};
 use crate::ast::builder::ComplexWordKind::{self, Concat, Single};
@@ -1239,9 +1238,9 @@ where
 
             Some(Dollar) => match self.iter.peek() {
                 Some(&Star) | Some(&Pound) | Some(&Question) | Some(&Dollar) | Some(&Bang)
-                | Some(&Dash) | Some(&At) | Some(&Name(_)) => {
-                    Ok(SimpleWordKind::Param(self.parameter_inner()?))
-                }
+                | Some(&Dash) | Some(&At) | Some(&Name(_)) => Ok(SimpleWordKind::Param(
+                    combinators::param_inner(&mut *self.iter)?,
+                )),
 
                 Some(&ParenOpen) | Some(&CurlyOpen) => self.parameter_substitution_raw(),
 
@@ -1470,7 +1469,7 @@ where
                 let curly_open_pos = start_pos;
                 self.iter.next();
 
-                let param = self.parameter_inner()?;
+                let param = combinators::param_inner(&mut *self.iter)?;
                 let subst = match self.iter.peek() {
                     Some(&Percent) => {
                         self.iter.next();
@@ -1513,7 +1512,7 @@ where
 
                     // Otherwise we must have ${#param}
                     _ if Parameter::Pound == param => {
-                        let param = self.parameter_inner()?;
+                        let param = combinators::param_inner(&mut *self.iter)?;
                         eat!(self, { CurlyClose => { Len(param) } })
                     }
 
@@ -1525,33 +1524,6 @@ where
 
             _ => Err(self.make_unexpected_err()),
         }
-    }
-
-    /// Parses a valid parameter that can appear inside a set of curly braces.
-    fn parameter_inner(&mut self) -> ParseResult<DefaultParameter> {
-        use crate::ast::Parameter;
-
-        let start_pos = self.iter.pos();
-        let param = match self.iter.next() {
-            Some(Star) => Parameter::Star,
-            Some(Pound) => Parameter::Pound,
-            Some(Question) => Parameter::Question,
-            Some(Dollar) => Parameter::Dollar,
-            Some(Bang) => Parameter::Bang,
-            Some(Dash) => Parameter::Dash,
-            Some(At) => Parameter::At,
-
-            Some(Name(n)) => Parameter::Var(n),
-            Some(Literal(s)) => match u32::from_str(&s) {
-                Ok(n) => Parameter::Positional(n),
-                Err(_) => return Err(ParseError::BadSubst(Literal(s), start_pos)),
-            },
-
-            Some(t) => return Err(ParseError::BadSubst(t, start_pos)),
-            None => return Err(ParseError::UnexpectedEOF),
-        };
-
-        Ok(param)
     }
 
     /// Parses any number of sequential commands between the `do` and `done`

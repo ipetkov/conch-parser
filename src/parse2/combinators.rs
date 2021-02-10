@@ -53,6 +53,7 @@ macro_rules! eat {
 mod and_or;
 mod arith;
 mod linebreak;
+mod parameter;
 mod pipeline;
 mod redirect;
 mod simple_command;
@@ -66,6 +67,7 @@ pub use self::arith::{
     arith_shift, arith_subst, arith_ternary, arith_unary_op, arith_var,
 };
 pub use self::linebreak::{linebreak, newline};
+pub use self::parameter::param_inner;
 pub use self::pipeline::{pipeline, Pipeline};
 pub use self::redirect::{redirect, redirect_list};
 pub use self::simple_command::simple_command;
