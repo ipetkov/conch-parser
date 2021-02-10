@@ -1,12 +1,12 @@
 use crate::ast::builder;
-use crate::iter::Multipeek;
+use crate::iter::MultipeekIterator;
 use crate::parse2::combinators;
 use crate::token::Token;
 
 /// Parses zero or more `Token::Newline`s, skipping leading whitespace and capturing comments.
 pub fn linebreak<I>(iter: &mut I) -> Vec<builder::Newline>
 where
-    I: ?Sized + Multipeek<Item = Token>,
+    I: ?Sized + MultipeekIterator<Item = Token>,
 {
     let mut lines = Vec::new();
     while let Some(n) = newline(iter) {
@@ -18,7 +18,7 @@ where
 /// Tries to parse a `Token::Newline` (or a comment) after skipping leading whitespace.
 pub fn newline<I>(iter: &mut I) -> Option<builder::Newline>
 where
-    I: ?Sized + Multipeek<Item = Token>,
+    I: ?Sized + MultipeekIterator<Item = Token>,
 {
     combinators::skip_whitespace(iter);
 

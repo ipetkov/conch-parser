@@ -1,6 +1,6 @@
 use crate::ast::Arithmetic;
 use crate::error::ParseError;
-use crate::iter::{Multipeek, PositionIterator};
+use crate::iter::{MultipeekIterator, PositionIterator};
 use crate::parse2::{combinators, Parser};
 use crate::token::Token;
 
@@ -10,7 +10,7 @@ use crate::token::Token;
 pub fn arith_subst<T, I, P>(iter: &mut I, mut arith_assig: P) -> Result<P::Output, ParseError>
 where
     T: Clone,
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
     P: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
 {
     let first = arith_assig.parse(iter)?;
@@ -46,7 +46,7 @@ pub fn arith_assig<T, I, PT, PV>(
 ) -> Result<PT::Output, ParseError>
 where
     T: Clone,
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
     PT: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
     PV: Parser<I, Output = T, Error = ParseError>,
 {
@@ -134,7 +134,7 @@ pub fn arith_ternary<T, I>(
     arith_logical_or: &mut dyn Parser<I, Output = Arithmetic<T>, Error = ParseError>,
 ) -> Result<Arithmetic<T>, ParseError>
 where
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
 {
     let guard = arith_logical_or.parse(iter)?;
     combinators::skip_whitespace(iter);
@@ -163,7 +163,7 @@ macro_rules! arith_parse {
         $(#[$fn_attr])*
         pub fn $fn_name<T, I, P>(iter: &mut I, mut $next: P) -> Result<P::Output, ParseError>
         where
-            I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+            I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
             P: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
         {
             let mut expr = $next.parse(iter)?;
@@ -220,7 +220,7 @@ arith_parse!(
 /// Parses expressions such as `expr == expr` or `expr != expr`.
 pub fn arith_eq<T, I, P>(iter: &mut I, mut arith_ineq: P) -> Result<P::Output, ParseError>
 where
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
     P: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
 {
     let mut expr = arith_ineq.parse(iter)?;
@@ -249,7 +249,7 @@ where
 /// Parses expressions such as `expr < expr`,`expr <= expr`,`expr > expr`,`expr >= expr`.
 pub fn arith_ineq<T, I, P>(iter: &mut I, mut arith_shift: P) -> Result<P::Output, ParseError>
 where
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
     P: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
 {
     let mut expr = arith_shift.parse(iter)?;
@@ -316,7 +316,7 @@ arith_parse! {
 /// Parses expressions such as `expr ** expr`.
 pub fn arith_pow<T, I, P>(iter: &mut I, mut arith_unary_op: P) -> Result<P::Output, ParseError>
 where
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
     P: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
 {
     let expr = arith_unary_op.parse(iter)?;
@@ -353,7 +353,7 @@ pub fn arith_unary_op<T, I, PI, PV>(
     mut arith_var: PV,
 ) -> Result<Arithmetic<T>, ParseError>
 where
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
     PI: Parser<I, Output = Arithmetic<T>, Error = ParseError>,
     PV: Parser<I, Output = T, Error = ParseError>,
 {
@@ -416,7 +416,7 @@ pub fn arith_post_incr<I, PS, PV>(
     mut arith_var: PV,
 ) -> Result<Arithmetic<PV::Output>, ParseError>
 where
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
     PS: Parser<I, Output = Arithmetic<PV::Output>, Error = ParseError>,
     PV: Parser<I, Error = ParseError>,
 {
@@ -501,7 +501,7 @@ where
 /// Parses an arithmetic variable name in the form `name` or `$name`.
 pub fn arith_var<I>(iter: &mut I) -> Result<String, ParseError>
 where
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
 {
     combinators::skip_whitespace(iter);
     eat_maybe!(iter, {

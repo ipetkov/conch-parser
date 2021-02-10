@@ -1,6 +1,6 @@
 use crate::ast::{RedirectOrCmdWord, RedirectOrEnvVar, SimpleCommand};
 use crate::error::ParseError;
-use crate::iter::{Multipeek, PositionIterator};
+use crate::iter::{MultipeekIterator, PositionIterator};
 use crate::parse2::combinators;
 use crate::parse2::Parser;
 use crate::token::Token;
@@ -15,7 +15,7 @@ pub fn simple_command<I, W, R, PR, PW>(
     mut word: PW,
 ) -> Result<SimpleCommand<String, W, R>, ParseError>
 where
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
     PR: Parser<I, Output = Option<RedirectOrCmdWord<R, W>>, Error = ParseError>,
     PW: Parser<I, Output = Option<W>, Error = ParseError>,
 {

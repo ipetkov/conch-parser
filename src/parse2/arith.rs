@@ -1,6 +1,6 @@
 use crate::ast::Arithmetic;
 use crate::error::ParseError;
-use crate::iter::{Multipeek, PositionIterator};
+use crate::iter::{MultipeekIterator, PositionIterator};
 use crate::parse2::{combinators, parse_fn, Parser};
 use crate::token::Token;
 
@@ -10,7 +10,7 @@ use crate::token::Token;
 pub fn arith_subst<T, I>(iter: &mut I) -> Result<Arithmetic<T>, ParseError>
 where
     T: From<String> + Clone,
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
 {
     let arith_logical_or: &mut dyn Parser<_, Output = _, Error = _> =
         &mut parse_fn(arith_logical_or);
@@ -30,7 +30,7 @@ where
 fn arith_logical_or<T, I>(iter: &mut I) -> Result<Arithmetic<T>, ParseError>
 where
     T: From<String> + Clone,
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
 {
     combinators::arith_logical_or(
         iter,
@@ -63,7 +63,7 @@ where
 fn arith_eq<T, I>(iter: &mut I) -> Result<Arithmetic<T>, ParseError>
 where
     T: From<String> + Clone,
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
 {
     combinators::arith_eq(
         iter,
@@ -111,7 +111,7 @@ where
 fn arith_var<T, I>(iter: &mut I) -> Result<T, ParseError>
 where
     T: From<String>,
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
 {
     combinators::arith_var(iter).map(T::from)
 }

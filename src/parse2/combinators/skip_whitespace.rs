@@ -1,11 +1,11 @@
-use crate::iter::Multipeek;
+use crate::iter::MultipeekIterator;
 use crate::token::Token;
 
 /// Skips over any encountered whitespace and escaped newlines,
 /// but preserves regular newlines.
 pub fn skip_whitespace<I>(iter: &mut I)
 where
-    I: ?Sized + Multipeek<Item = Token>,
+    I: ?Sized + MultipeekIterator<Item = Token>,
 {
     loop {
         let mut mp = iter.multipeek();

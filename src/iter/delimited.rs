@@ -1,4 +1,4 @@
-use crate::iter::{Multipeek, PeekableIterator, PositionIterator};
+use crate::iter::{MultipeekIterator, PeekableIterator, PositionIterator};
 use crate::parse::SourcePos;
 use crate::token::Token;
 use std::iter::{FusedIterator, Iterator};
@@ -90,9 +90,9 @@ where
     }
 }
 
-impl<I> Multipeek for Delimited<'_, I>
+impl<I> MultipeekIterator for Delimited<'_, I>
 where
-    I: ?Sized + Multipeek<Item = Token>,
+    I: ?Sized + MultipeekIterator<Item = Token>,
 {
     fn advance_peek(&mut self) -> Option<&Self::Item> {
         if self.done || self.multipeek_done {

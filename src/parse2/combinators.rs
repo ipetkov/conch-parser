@@ -1,5 +1,5 @@
 use crate::error::ParseError;
-use crate::iter::{Multipeek, PositionIterator};
+use crate::iter::{MultipeekIterator, PositionIterator};
 use crate::parse::SourcePos;
 use crate::token::Token;
 
@@ -20,7 +20,7 @@ macro_rules! eat_maybe {
         $($tok:pat $(if $if_expr:expr)? => $body:expr),+;
         _ => $default:expr,
     }) => {{
-        let mut mp = $crate::iter::Multipeek::multipeek($iter);
+        let mut mp = $crate::iter::MultipeekIterator::multipeek($iter);
         match mp.peek_next() {
             $(Some($tok) $(if $if_expr)? => {
                 drop(mp);
@@ -94,7 +94,7 @@ fn make_unexpected_err_parts(pos: SourcePos, tok: Option<Token>) -> ParseError {
 /// returned in case the caller cares which specific reserved word was found.
 pub(crate) fn peek_reserved_token<'a, I>(iter: &mut I, tokens: &'a [Token]) -> Option<&'a Token>
 where
-    I: ?Sized + Multipeek<Item = Token>,
+    I: ?Sized + MultipeekIterator<Item = Token>,
 {
     debug_assert!(!tokens.is_empty());
 
@@ -120,7 +120,7 @@ where
 /// returned in case the caller cares which specific reserved word was found.
 pub(crate) fn peek_reserved_word<I>(iter: &mut I, words: &[&'static str]) -> Option<&'static str>
 where
-    I: ?Sized + Multipeek<Item = Token>,
+    I: ?Sized + MultipeekIterator<Item = Token>,
 {
     debug_assert!(!words.is_empty());
 

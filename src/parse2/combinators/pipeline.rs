@@ -1,6 +1,6 @@
 use crate::ast::builder;
 use crate::error::ParseError;
-use crate::iter::{Multipeek, PositionIterator};
+use crate::iter::{MultipeekIterator, PositionIterator};
 use crate::parse2::combinators;
 use crate::parse2::Parser;
 use crate::token::Token;
@@ -16,7 +16,7 @@ pub struct Pipeline<T> {
 /// For example `[!] foo | bar`.
 pub fn pipeline<I, P>(iter: &mut I, mut command_parser: P) -> Result<Pipeline<P::Output>, P::Error>
 where
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
     P: Parser<I>,
     P::Error: From<ParseError>,
 {

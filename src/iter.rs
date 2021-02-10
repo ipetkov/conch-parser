@@ -75,13 +75,13 @@ pub trait PeekablePositionIterator: PeekableIterator + PositionIterator {}
 impl<T> PeekablePositionIterator for T where T: ?Sized + PeekableIterator + PositionIterator {}
 
 /// An interface for iterators which support peeking of more than one item.
-pub trait Multipeek: Iterator {
+pub trait MultipeekIterator: Iterator {
     /// Create a new cursor for peeking many future items. When dropped it will automatically
     /// `reset_peek`.
     ///
     /// # Examples
     /// ```no_run
-    /// use conch_parser::iter::Multipeek;
+    /// use conch_parser::iter::MultipeekIterator;
     ///
     /// # struct Dummy<T>(Vec<T>);
     /// # impl<T> Iterator for Dummy<T> {
@@ -90,7 +90,7 @@ pub trait Multipeek: Iterator {
     /// #     unimplemented!()
     /// #   }
     /// # }
-    /// # impl<T> Multipeek for Dummy<T> {
+    /// # impl<T> MultipeekIterator for Dummy<T> {
     /// #   fn advance_peek(&mut self) -> Option<&Self::Item> {
     /// #     unimplemented!()
     /// #   }
@@ -98,7 +98,7 @@ pub trait Multipeek: Iterator {
     /// #     unimplemented!()
     /// #   }
     /// # }
-    /// fn make_multipeek<T>(v: Vec<T>) -> impl Multipeek<Item = T> {
+    /// fn make_multipeek<T>(v: Vec<T>) -> impl MultipeekIterator<Item = T> {
     ///   // ...
     /// #  Dummy(v)
     /// }
@@ -136,7 +136,7 @@ pub trait Multipeek: Iterator {
     /// is an example to illustrate behavior for implementors.
     ///
     /// ```no_run
-    /// use conch_parser::iter::Multipeek;
+    /// use conch_parser::iter::MultipeekIterator;
     ///
     /// # struct Dummy<T>(Vec<T>);
     /// # impl<T> Iterator for Dummy<T> {
@@ -145,7 +145,7 @@ pub trait Multipeek: Iterator {
     /// #     unimplemented!()
     /// #   }
     /// # }
-    /// # impl<T> Multipeek for Dummy<T> {
+    /// # impl<T> MultipeekIterator for Dummy<T> {
     /// #   fn advance_peek(&mut self) -> Option<&Self::Item> {
     /// #     unimplemented!()
     /// #   }
@@ -153,7 +153,7 @@ pub trait Multipeek: Iterator {
     /// #     unimplemented!()
     /// #   }
     /// # }
-    /// fn make_multipeek<T>(v: Vec<T>) -> impl Multipeek<Item = T> {
+    /// fn make_multipeek<T>(v: Vec<T>) -> impl MultipeekIterator<Item = T> {
     ///   // ...
     /// #  Dummy(v)
     /// }
@@ -181,7 +181,7 @@ pub trait Multipeek: Iterator {
     /// is an example to illustrate behavior for implementors.
     ///
     /// ```no_run
-    /// use conch_parser::iter::Multipeek;
+    /// use conch_parser::iter::MultipeekIterator;
     ///
     /// # struct Dummy<T>(Vec<T>);
     /// # impl<T> Iterator for Dummy<T> {
@@ -190,7 +190,7 @@ pub trait Multipeek: Iterator {
     /// #     unimplemented!()
     /// #   }
     /// # }
-    /// # impl<T> Multipeek for Dummy<T> {
+    /// # impl<T> MultipeekIterator for Dummy<T> {
     /// #   fn advance_peek(&mut self) -> Option<&Self::Item> {
     /// #     unimplemented!()
     /// #   }
@@ -198,7 +198,7 @@ pub trait Multipeek: Iterator {
     /// #     unimplemented!()
     /// #   }
     /// # }
-    /// fn make_multipeek<T>(v: Vec<T>) -> impl Multipeek<Item = T> {
+    /// fn make_multipeek<T>(v: Vec<T>) -> impl MultipeekIterator<Item = T> {
     ///   // ...
     /// #  Dummy(v)
     /// }
@@ -216,9 +216,9 @@ pub trait Multipeek: Iterator {
     fn reset_peek(&mut self);
 }
 
-impl<T> Multipeek for &'_ mut T
+impl<T> MultipeekIterator for &'_ mut T
 where
-    T: ?Sized + Multipeek,
+    T: ?Sized + MultipeekIterator,
 {
     fn advance_peek(&mut self) -> Option<&Self::Item> {
         (**self).advance_peek()
@@ -229,9 +229,9 @@ where
     }
 }
 
-impl<T> Multipeek for Box<T>
+impl<T> MultipeekIterator for Box<T>
 where
-    T: ?Sized + Multipeek,
+    T: ?Sized + MultipeekIterator,
 {
     fn advance_peek(&mut self) -> Option<&Self::Item> {
         (**self).advance_peek()
@@ -242,18 +242,18 @@ where
     }
 }
 
-/// A cursor for working with `Multipeek` iterators.
+/// A cursor for working with `MultipeekIterator`s.
 ///
 /// Calling `MultipeekCursor::peek_next()` will advance the peek position
 /// and dropping the cursor will automatically reset the position.
 #[derive(Debug)]
-pub struct MultipeekCursor<'a, I: Multipeek + ?Sized> {
+pub struct MultipeekCursor<'a, I: MultipeekIterator + ?Sized> {
     parent: &'a mut I,
 }
 
 impl<I> Drop for MultipeekCursor<'_, I>
 where
-    I: Multipeek + ?Sized,
+    I: MultipeekIterator + ?Sized,
 {
     fn drop(&mut self) {
         self.parent.reset_peek();
@@ -262,13 +262,13 @@ where
 
 impl<I> MultipeekCursor<'_, I>
 where
-    I: Multipeek + ?Sized,
+    I: MultipeekIterator + ?Sized,
 {
     /// Peek at another item to be yielded later.
     ///
     /// # Example
     /// ```no_run
-    /// use conch_parser::iter::Multipeek;
+    /// use conch_parser::iter::MultipeekIterator;
     ///
     /// # struct Dummy<T>(Vec<T>);
     /// # impl<T> Iterator for Dummy<T> {
@@ -277,7 +277,7 @@ where
     /// #     unimplemented!()
     /// #   }
     /// # }
-    /// # impl<T> Multipeek for Dummy<T> {
+    /// # impl<T> MultipeekIterator for Dummy<T> {
     /// #   fn advance_peek(&mut self) -> Option<&Self::Item> {
     /// #     unimplemented!()
     /// #   }
@@ -285,7 +285,7 @@ where
     /// #     unimplemented!()
     /// #   }
     /// # }
-    /// fn make_multipeek<T>(v: Vec<T>) -> impl Multipeek<Item = T> {
+    /// fn make_multipeek<T>(v: Vec<T>) -> impl MultipeekIterator<Item = T> {
     ///   // ...
     /// #  Dummy(v)
     /// }

@@ -1,6 +1,6 @@
 use crate::ast::builder::{ComplexWordKind, SimpleWordKind, WordKind};
 use crate::error::ParseError;
-use crate::iter::{Balanced, Multipeek, PeekablePositionIterator};
+use crate::iter::{Balanced, MultipeekIterator, PeekablePositionIterator};
 use crate::parse2::{combinators, Parser};
 use crate::token::Token;
 
@@ -21,7 +21,7 @@ pub fn word<I, C, PP, PB, PD>(
     mut double_quoted: PD,
 ) -> Result<Option<ComplexWordKind<C>>, ParseError>
 where
-    I: ?Sized + Multipeek<Item = Token> + PeekablePositionIterator,
+    I: ?Sized + MultipeekIterator<Item = Token> + PeekablePositionIterator,
     PP: Parser<I, Output = SimpleWordKind<C>, Error = ParseError>,
     PB: Parser<I, Output = SimpleWordKind<C>, Error = ParseError>,
     PD: Parser<I, Output = Vec<SimpleWordKind<C>>, Error = ParseError>,

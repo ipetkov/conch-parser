@@ -1,5 +1,5 @@
 use crate::ast::{self, builder};
-use crate::iter::{Multipeek, PositionIterator};
+use crate::iter::{MultipeekIterator, PositionIterator};
 use crate::parse2::combinators;
 use crate::parse2::Parser;
 use crate::token::Token;
@@ -16,7 +16,7 @@ pub fn and_or_list<I, P>(
     mut pipeline_parser: P,
 ) -> Result<AndOrList<P::Output>, P::Error>
 where
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
     P: Parser<I>,
 {
     let first = pipeline_parser.parse(iter)?;

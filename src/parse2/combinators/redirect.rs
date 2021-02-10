@@ -1,6 +1,6 @@
 use crate::ast::{Redirect, RedirectOrCmdWord};
 use crate::error::ParseError;
-use crate::iter::{Multipeek, PositionIterator};
+use crate::iter::{MultipeekIterator, PositionIterator};
 use crate::parse2::combinators;
 use crate::parse2::Parser;
 use crate::token::Token;
@@ -10,7 +10,7 @@ use crate::token::Token;
 /// parsing redirection lists after a compound command like `while` or `if`.
 pub fn redirect_list<I, W, R, P>(iter: &mut I, mut redirect: P) -> Result<Vec<R>, P::Error>
 where
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
     P: Parser<I, Output = Option<RedirectOrCmdWord<R, W>>>,
     P::Error: From<ParseError>,
 {
@@ -55,7 +55,7 @@ pub fn redirect<I, W, PW, PH>(
     mut heredoc: PH,
 ) -> Result<Option<RedirectOrCmdWord<Redirect<W>, W>>, ParseError>
 where
-    I: ?Sized + Multipeek<Item = Token> + PositionIterator,
+    I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
     PW: Parser<I, Output = Option<W>, Error = ParseError>,
     PH: Parser<I, Output = W, Error = ParseError>,
 {

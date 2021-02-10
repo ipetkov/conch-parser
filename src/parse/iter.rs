@@ -2,7 +2,7 @@
 
 use crate::error::UnmatchedError;
 use crate::iter::{
-    BacktickBackslashRemover, Balanced, Multipeek, MultipeekCursor, PeekableIterator,
+    BacktickBackslashRemover, Balanced, MultipeekCursor, MultipeekIterator, PeekableIterator,
     PeekablePositionIterator, PositionIterator,
 };
 use crate::parse::SourcePos;
@@ -106,7 +106,7 @@ impl<I: Iterator<Item = Token>> Iterator for TokenIter<I> {
     }
 }
 
-impl<I: Iterator<Item = Token>> Multipeek for TokenIter<I> {
+impl<I: Iterator<Item = Token>> MultipeekIterator for TokenIter<I> {
     fn advance_peek(&mut self) -> Option<&Self::Item> {
         debug_assert!(
             self.peek_idx <= self.peek_buf.len(),
@@ -239,7 +239,7 @@ impl<I: Iterator<Item = Token>> Iterator for TokenIterWrapper<I> {
     }
 }
 
-impl<I: Iterator<Item = Token>> Multipeek for TokenIterWrapper<I> {
+impl<I: Iterator<Item = Token>> MultipeekIterator for TokenIterWrapper<I> {
     fn advance_peek(&mut self) -> Option<&Self::Item> {
         match self {
             TokenIterWrapper::Regular(ref mut inner) => inner.advance_peek(),
@@ -259,7 +259,7 @@ impl<I: Iterator<Item = Token>> TokenIterWrapper<I> {
     /// Return a wrapper which allows for arbitrary look ahead. Dropping the
     /// wrapper will restore the internal stream back to what it was.
     pub fn multipeek(&mut self) -> MultipeekCursor<'_, Self> {
-        Multipeek::multipeek(self)
+        MultipeekIterator::multipeek(self)
     }
 
     /// Delegates to `TokenIter::buffer_tokens_to_yield_first`.
@@ -343,7 +343,7 @@ impl<I: PeekablePositionIterator<Item = Token>> BacktickBackslashRemover<I> {
 #[cfg(test)]
 mod tests {
     use super::{PositionIterator, TokenIter};
-    use crate::iter::Multipeek;
+    use crate::iter::MultipeekIterator;
     use crate::parse::SourcePos;
     use crate::token::Token;
 
