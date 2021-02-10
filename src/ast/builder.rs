@@ -9,7 +9,9 @@
 //! the `Builder` trait for your AST. Otherwise you can provide the `DefaultBuilder`
 //! struct to the parser if you wish to use the default AST implementation.
 
-use crate::ast::{AndOr, DefaultArithmetic, DefaultParameter, RedirectOrCmdWord, RedirectOrEnvVar};
+use crate::ast::{
+    AndOr, DefaultArithmetic, DefaultParameter, Redirect, RedirectOrCmdWord, RedirectOrEnvVar,
+};
 
 mod default_builder;
 
@@ -176,27 +178,6 @@ pub enum SimpleWordKind<C> {
     Colon,
 }
 
-/// Represents redirecting a command's file descriptors.
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub enum RedirectKind<W> {
-    /// Open a file for reading, e.g. `[n]< file`.
-    Read(Option<u16>, W),
-    /// Open a file for writing after truncating, e.g. `[n]> file`.
-    Write(Option<u16>, W),
-    /// Open a file for reading and writing, e.g. `[n]<> file`.
-    ReadWrite(Option<u16>, W),
-    /// Open a file for writing, appending to the end, e.g. `[n]>> file`.
-    Append(Option<u16>, W),
-    /// Open a file for writing, failing if the `noclobber` shell option is set, e.g. `[n]>| file`.
-    Clobber(Option<u16>, W),
-    /// Lines contained in the source that should be provided by as input to a file descriptor.
-    Heredoc(Option<u16>, W),
-    /// Duplicate a file descriptor for reading, e.g. `[n]<& [n|-]`.
-    DupRead(Option<u16>, W),
-    /// Duplicate a file descriptor for writing, e.g. `[n]>& [n|-]`.
-    DupWrite(Option<u16>, W),
-}
-
 /// Represents the type of parameter that was parsed
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum ParameterSubstitutionKind<W, C> {
@@ -262,8 +243,6 @@ pub trait Builder {
     type CompoundCommand;
     /// The type which represents shell words, which can be command names or arguments.
     type Word;
-    /// The type which represents a file descriptor redirection.
-    type Redirect;
 
     /// Invoked once a complete command is found. That is, a command delimited by a
     /// newline, semicolon, ampersand, or the end of input.
@@ -316,8 +295,8 @@ pub trait Builder {
     /// * redirects_or_cmd_words: redirections or any command or argument
     fn simple_command(
         &mut self,
-        redirects_or_env_vars: Vec<RedirectOrEnvVar<Self::Redirect, String, Self::Word>>,
-        redirects_or_cmd_words: Vec<RedirectOrCmdWord<Self::Redirect, Self::Word>>,
+        redirects_or_env_vars: Vec<RedirectOrEnvVar<Redirect<Self::Word>, String, Self::Word>>,
+        redirects_or_cmd_words: Vec<RedirectOrCmdWord<Redirect<Self::Word>, Self::Word>>,
     ) -> Self::PipeableCommand;
 
     /// Invoked when a non-zero number of commands were parsed between balanced curly braces.
@@ -329,7 +308,7 @@ pub trait Builder {
     fn brace_group(
         &mut self,
         cmds: CommandGroup<Self::Command>,
-        redirects: Vec<Self::Redirect>,
+        redirects: Vec<Redirect<Self::Word>>,
     ) -> Self::CompoundCommand;
 
     /// Invoked when a non-zero number of commands were parsed between balanced parentheses.
@@ -342,7 +321,7 @@ pub trait Builder {
     fn subshell(
         &mut self,
         cmds: CommandGroup<Self::Command>,
-        redirects: Vec<Self::Redirect>,
+        redirects: Vec<Redirect<Self::Word>>,
     ) -> Self::CompoundCommand;
 
     /// Invoked when a loop command like `while` or `until` is parsed.
@@ -357,7 +336,7 @@ pub trait Builder {
         &mut self,
         kind: LoopKind,
         guard_body_pair: GuardBodyPairGroup<Self::Command>,
-        redirects: Vec<Self::Redirect>,
+        redirects: Vec<Redirect<Self::Word>>,
     ) -> Self::CompoundCommand;
 
     /// Invoked when an `if` conditional command is parsed.
@@ -371,7 +350,7 @@ pub trait Builder {
     fn if_command(
         &mut self,
         fragments: IfFragments<Self::Command>,
-        redirects: Vec<Self::Redirect>,
+        redirects: Vec<Redirect<Self::Word>>,
     ) -> Self::CompoundCommand;
 
     /// Invoked when a `for` command is parsed.
@@ -385,7 +364,7 @@ pub trait Builder {
     fn for_command(
         &mut self,
         fragments: ForFragments<Self::Word, Self::Command>,
-        redirects: Vec<Self::Redirect>,
+        redirects: Vec<Redirect<Self::Word>>,
     ) -> Self::CompoundCommand;
 
     /// Invoked when a `case` command is parsed.
@@ -397,7 +376,7 @@ pub trait Builder {
     fn case_command(
         &mut self,
         fragments: CaseFragments<Self::Word, Self::Command>,
-        redirects: Vec<Self::Redirect>,
+        redirects: Vec<Redirect<Self::Word>>,
     ) -> Self::CompoundCommand;
 
     /// Bridges the gap between a `PipeableCommand` and a `CompoundCommand` since
@@ -438,12 +417,6 @@ pub trait Builder {
     /// # Arguments
     /// * kind: the type of word that was parsed
     fn word(&mut self, kind: ComplexWordKind<Self::Command>) -> Self::Word;
-
-    /// Invoked when a redirect is parsed.
-    ///
-    /// # Arguments
-    /// * kind: the type of redirect that was parsed
-    fn redirect(&mut self, kind: RedirectKind<Self::Word>) -> Self::Redirect;
 }
 
 macro_rules! impl_builder_body {
@@ -454,7 +427,6 @@ macro_rules! impl_builder_body {
         type PipeableCommand = $T::PipeableCommand;
         type CompoundCommand = $T::CompoundCommand;
         type Word = $T::Word;
-        type Redirect = $T::Redirect;
 
         fn complete_command(
             &mut self,
@@ -484,8 +456,8 @@ macro_rules! impl_builder_body {
 
         fn simple_command(
             &mut self,
-            redirects_or_env_vars: Vec<RedirectOrEnvVar<Self::Redirect, String, Self::Word>>,
-            redirects_or_cmd_words: Vec<RedirectOrCmdWord<Self::Redirect, Self::Word>>,
+            redirects_or_env_vars: Vec<RedirectOrEnvVar<Redirect<Self::Word>, String, Self::Word>>,
+            redirects_or_cmd_words: Vec<RedirectOrCmdWord<Redirect<Self::Word>, Self::Word>>,
         ) -> Self::PipeableCommand {
             (**self).simple_command(redirects_or_env_vars, redirects_or_cmd_words)
         }
@@ -493,7 +465,7 @@ macro_rules! impl_builder_body {
         fn brace_group(
             &mut self,
             cmds: CommandGroup<Self::Command>,
-            redirects: Vec<Self::Redirect>,
+            redirects: Vec<Redirect<Self::Word>>,
         ) -> Self::CompoundCommand {
             (**self).brace_group(cmds, redirects)
         }
@@ -501,7 +473,7 @@ macro_rules! impl_builder_body {
         fn subshell(
             &mut self,
             cmds: CommandGroup<Self::Command>,
-            redirects: Vec<Self::Redirect>,
+            redirects: Vec<Redirect<Self::Word>>,
         ) -> Self::CompoundCommand {
             (**self).subshell(cmds, redirects)
         }
@@ -510,7 +482,7 @@ macro_rules! impl_builder_body {
             &mut self,
             kind: LoopKind,
             guard_body_pair: GuardBodyPairGroup<Self::Command>,
-            redirects: Vec<Self::Redirect>,
+            redirects: Vec<Redirect<Self::Word>>,
         ) -> Self::CompoundCommand {
             (**self).loop_command(kind, guard_body_pair, redirects)
         }
@@ -518,7 +490,7 @@ macro_rules! impl_builder_body {
         fn if_command(
             &mut self,
             fragments: IfFragments<Self::Command>,
-            redirects: Vec<Self::Redirect>,
+            redirects: Vec<Redirect<Self::Word>>,
         ) -> Self::CompoundCommand {
             (**self).if_command(fragments, redirects)
         }
@@ -526,7 +498,7 @@ macro_rules! impl_builder_body {
         fn for_command(
             &mut self,
             fragments: ForFragments<Self::Word, Self::Command>,
-            redirects: Vec<Self::Redirect>,
+            redirects: Vec<Redirect<Self::Word>>,
         ) -> Self::CompoundCommand {
             (**self).for_command(fragments, redirects)
         }
@@ -534,7 +506,7 @@ macro_rules! impl_builder_body {
         fn case_command(
             &mut self,
             fragments: CaseFragments<Self::Word, Self::Command>,
-            redirects: Vec<Self::Redirect>,
+            redirects: Vec<Redirect<Self::Word>>,
         ) -> Self::CompoundCommand {
             (**self).case_command(fragments, redirects)
         }
@@ -561,10 +533,6 @@ macro_rules! impl_builder_body {
 
         fn word(&mut self, kind: ComplexWordKind<Self::Command>) -> Self::Word {
             (**self).word(kind)
-        }
-
-        fn redirect(&mut self, kind: RedirectKind<Self::Word>) -> Self::Redirect {
-            (**self).redirect(kind)
         }
     };
 }

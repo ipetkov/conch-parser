@@ -48,7 +48,7 @@ where
 {
     fn peek(&mut self) -> Option<&Self::Item> {
         if self.done {
-            return None
+            return None;
         };
 
         match self.iter.peek() {
@@ -92,7 +92,7 @@ where
 
 impl<I> Multipeek for Delimited<'_, I>
 where
-    I: ?Sized + Multipeek<Item = Token>
+    I: ?Sized + Multipeek<Item = Token>,
 {
     fn advance_peek(&mut self) -> Option<&Self::Item> {
         if self.done || self.multipeek_done {
@@ -103,7 +103,7 @@ where
             Some(t) if *t == self.delimiter => {
                 self.multipeek_done = true;
                 None
-            },
+            }
             Some(t) => Some(t),
             None => None,
         }
@@ -119,9 +119,8 @@ where
 mod test {
     use super::*;
     use crate::iter::PositionIterator;
-    use crate::parse::SourcePos;
     use crate::parse::iter::TokenIter;
-
+    use crate::parse::SourcePos;
 
     #[test]
     fn does_not_yield_or_peek_past_delimiter() {

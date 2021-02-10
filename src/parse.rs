@@ -12,7 +12,7 @@ use self::iter::{TokenIter, TokenIterWrapper};
 use crate::ast::builder::ComplexWordKind::{self, Concat, Single};
 use crate::ast::builder::WordKind::{self, DoubleQuoted, Simple, SingleQuoted};
 use crate::ast::builder::{self, Builder, SimpleWordKind};
-use crate::ast::{self, DefaultParameter};
+use crate::ast::{self, DefaultParameter, Redirect};
 use crate::error::{ParseError, UnmatchedError};
 use crate::iter::{BacktickBackslashRemover, Balanced, PeekableIterator, PositionIterator};
 use crate::parse2::{arith_subst, combinators, parse_fn};
@@ -508,7 +508,7 @@ where
     /// Parses a continuous list of redirections and will error if any words
     /// that are not valid file descriptors are found. Essentially used for
     /// parsing redirection lists after a compound command like `while` or `if`.
-    pub fn redirect_list(&mut self) -> ParseResult<Vec<B::Redirect>> {
+    pub fn redirect_list(&mut self) -> ParseResult<Vec<Redirect<B::Word>>> {
         let mut list = Vec::new();
         loop {
             combinators::skip_whitespace(&mut *self.iter);
@@ -540,7 +540,7 @@ where
     /// redirect or word if either is found. In other words, `Ok(Some(Ok(redirect)))`
     /// will result if a redirect is found, `Ok(Some(Err(word)))` if a word is found,
     /// or `Ok(None)` if neither is found.
-    pub fn redirect(&mut self) -> ParseResult<Option<Result<B::Redirect, B::Word>>> {
+    pub fn redirect(&mut self) -> ParseResult<Option<Result<Redirect<B::Word>, B::Word>>> {
         fn could_be_numeric<C>(word: &WordKind<C>) -> bool {
             let simple_could_be_numeric = |word: &SimpleWordKind<C>| match *word {
                 SimpleWordKind::Star
@@ -608,32 +608,26 @@ where
         let ret = redirect.map(|redirect| match redirect {
             ast::RedirectOrCmdWord::Redirect(r) => {
                 let kind = match r {
-                    ast::Redirect::Append(fd, w) => {
-                        builder::RedirectKind::Append(fd, self.builder.word(w))
-                    }
+                    ast::Redirect::Append(fd, w) => ast::Redirect::Append(fd, self.builder.word(w)),
                     ast::Redirect::Clobber(fd, w) => {
-                        builder::RedirectKind::Clobber(fd, self.builder.word(w))
+                        ast::Redirect::Clobber(fd, self.builder.word(w))
                     }
-                    ast::Redirect::Read(fd, w) => {
-                        builder::RedirectKind::Read(fd, self.builder.word(w))
-                    }
+                    ast::Redirect::Read(fd, w) => ast::Redirect::Read(fd, self.builder.word(w)),
                     ast::Redirect::ReadWrite(fd, w) => {
-                        builder::RedirectKind::ReadWrite(fd, self.builder.word(w))
+                        ast::Redirect::ReadWrite(fd, self.builder.word(w))
                     }
-                    ast::Redirect::Write(fd, w) => {
-                        builder::RedirectKind::Write(fd, self.builder.word(w))
-                    }
+                    ast::Redirect::Write(fd, w) => ast::Redirect::Write(fd, self.builder.word(w)),
                     ast::Redirect::Heredoc(fd, w) => {
-                        builder::RedirectKind::Heredoc(fd, self.builder.word(w))
+                        ast::Redirect::Heredoc(fd, self.builder.word(w))
                     }
                     ast::Redirect::DupRead(fd, w) => {
-                        builder::RedirectKind::DupRead(fd, self.builder.word(w))
+                        ast::Redirect::DupRead(fd, self.builder.word(w))
                     }
                     ast::Redirect::DupWrite(fd, w) => {
-                        builder::RedirectKind::DupWrite(fd, self.builder.word(w))
+                        ast::Redirect::DupWrite(fd, self.builder.word(w))
                     }
                 };
-                Ok(self.builder.redirect(kind))
+                Ok(kind)
             }
             ast::RedirectOrCmdWord::CmdWord(w) => Err(self.builder.word(w)),
         });
