@@ -7,10 +7,62 @@ use crate::iter::{MultipeekIterator, PositionIterator};
 use crate::parse2::{combinators, parse_fn, Parser};
 use crate::token::Token;
 
+/// Parses a parameters such as `$$`, `$1`, `$foo`, etc, or
+/// parameter substitutions such as `$(cmd)`, `${param-word}`, etc.
+///
+/// Since it is possible that a leading `$` is not followed by a valid
+/// parameter, the `$` should be treated as a literal. Thus this method
+/// returns an `Word`, which will capture both cases where a literal or
+/// parameter is parsed.
+pub fn parameter<I, C, PA, PS, PW>(
+    iter: &mut I,
+    arith_subst: PA,
+    subshell: PS,
+    word: PW,
+) -> Result<SimpleWordKind<C>, ParseError>
+where
+    I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
+    PA: Parser<I, Output = Arithmetic<String>, Error = ParseError>,
+    PS: Parser<I, Output = CommandGroup<C>, Error = ParseError>,
+    PW: Parser<I, Output = Option<ComplexWordKind<C>>, Error = ParseError>,
+{
+    eat!(iter, {
+        Token::ParamPositional(p) => {
+            let param = Parameter::Positional(p as u32);
+            Ok(SimpleWordKind::Param(param))
+        },
+
+        Token::Dollar => {
+            let mut mp = iter.multipeek();
+            match mp.peek_next() {
+                Some(Token::Star)     |
+                Some(Token::Pound)    |
+                Some(Token::Question) |
+                Some(Token::Dollar)   |
+                Some(Token::Bang)     |
+                Some(Token::Dash)     |
+                Some(Token::At)       |
+                Some(Token::Name(_)) => {
+                    drop(mp);
+                    Ok(SimpleWordKind::Param(param_inner(iter)?))
+                },
+
+                Some(Token::ParenOpen) |
+                Some(Token::CurlyOpen) => {
+                    drop(mp);
+                    param_subst(iter, arith_subst, subshell, word)
+                },
+
+                _ => Ok(SimpleWordKind::Literal(Token::Dollar.to_string())),
+            }
+        },
+    })
+}
+
 /// Parses a parameter substitution in the form of `${...}`, `$(...)`, or `$((...))`.
 ///
 /// Caller is responsible for parsing the opening `$`.
-pub fn param_subst<I, C, PA, PS, PW>(
+fn param_subst<I, C, PA, PS, PW>(
     iter: &mut I,
     mut arith_subst: PA,
     mut subshell: PS,
@@ -30,16 +82,18 @@ where
 
     let mut mp = iter.multipeek();
     let ty = match mp.peek_next() {
-        Some(Token::ParenOpen) => if matches!(mp.peek_next(), Some(Token::ParenOpen)) {
-            SubstType::Arith
-        } else {
-            SubstType::Subshell
-        },
+        Some(Token::ParenOpen) => {
+            if matches!(mp.peek_next(), Some(Token::ParenOpen)) {
+                SubstType::Arith
+            } else {
+                SubstType::Subshell
+            }
+        }
         Some(Token::CurlyOpen) => SubstType::Regular,
         _ => {
             drop(mp);
             return Err(combinators::make_unexpected_err(iter));
-        },
+        }
     };
     drop(mp);
 
@@ -69,7 +123,7 @@ where
             eat!(iter, { Token::ParenClose => {}, });
 
             ParameterSubstitutionKind::Arith(arith)
-        },
+        }
         SubstType::Subshell => ParameterSubstitutionKind::Command(subshell.parse(iter)?),
         SubstType::Regular => {
             let curly_open_pos = iter.pos();
@@ -161,7 +215,7 @@ where
             });
 
             ret
-        },
+        }
     };
 
     Ok(SimpleWordKind::Subst(Box::new(subst)))
@@ -347,7 +401,7 @@ where
 }
 
 /// Parses a valid parameter that can appear inside a set of curly braces.
-pub fn param_inner<I>(iter: &mut I) -> Result<Parameter<String>, ParseError>
+fn param_inner<I>(iter: &mut I) -> Result<Parameter<String>, ParseError>
 where
     I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
 {

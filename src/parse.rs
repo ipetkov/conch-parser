@@ -1230,33 +1230,8 @@ where
 
     /// Identical to `Parser::parameter()` but does not pass the result to the AST builder.
     fn parameter_raw(&mut self) -> ParseResult<SimpleWordKind<B::Command>> {
-        use crate::ast::Parameter;
-
-        let start_pos = self.iter.pos();
-        match self.iter.next() {
-            Some(ParamPositional(p)) => Ok(SimpleWordKind::Param(Parameter::Positional(p as u32))),
-
-            Some(Dollar) => match self.iter.peek() {
-                Some(&Star) | Some(&Pound) | Some(&Question) | Some(&Dollar) | Some(&Bang)
-                | Some(&Dash) | Some(&At) | Some(&Name(_)) => Ok(SimpleWordKind::Param(
-                    combinators::param_inner(&mut *self.iter)?,
-                )),
-
-                Some(&ParenOpen) | Some(&CurlyOpen) => self.parameter_substitution_raw(),
-
-                _ => Ok(SimpleWordKind::Literal(Dollar.to_string())),
-            },
-
-            Some(t) => Err(ParseError::Unexpected(t, start_pos)),
-            None => Err(ParseError::UnexpectedEOF),
-        }
-    }
-
-    /// Parses a parameter substitution in the form of `${...}`, `$(...)`, or `$((...))`.
-    /// Nothing is passed to the builder.
-    fn parameter_substitution_raw(&mut self) -> ParseResult<SimpleWordKind<B::Command>> {
         let builder = self.builder.clone();
-        combinators::param_subst(
+        combinators::parameter(
             &mut *self.iter,
             parse_fn(arith_subst),
             parse_fn(|iter| Parser::borrowed(iter, builder.clone()).subshell_internal(true)),
