@@ -11,7 +11,7 @@ use self::iter::{TokenIter, TokenIterWrapper};
 use crate::ast::builder::ComplexWordKind::{self, Concat, Single};
 use crate::ast::builder::WordKind::{self, DoubleQuoted, Simple, SingleQuoted};
 use crate::ast::builder::{self, Builder, SimpleWordKind};
-use crate::ast::{self, DefaultParameter, Redirect};
+use crate::ast::{self, Redirect};
 use crate::error::{ParseError, UnmatchedError};
 use crate::iter::{BacktickBackslashRemover, Balanced, PeekableIterator, PositionIterator};
 use crate::parse2::{arith_subst, combinators, parse_fn};
@@ -1252,177 +1252,19 @@ where
         }
     }
 
-    /// Parses the word part of a parameter substitution, up to and including
-    /// the closing curly brace.
-    ///
-    /// All tokens that normally cannot be part of a word will be treated
-    /// as literals.
-    fn parameter_substitution_word_raw(
-        &mut self,
-    ) -> ParseResult<Option<ComplexWordKind<B::Command>>> {
+    /// Parses a parameter substitution in the form of `${...}`, `$(...)`, or `$((...))`.
+    /// Nothing is passed to the builder.
+    fn parameter_substitution_raw(&mut self) -> ParseResult<SimpleWordKind<B::Command>> {
         let builder = self.builder.clone();
-        combinators::param_subst_word(
+        combinators::param_subst(
             &mut *self.iter,
+            parse_fn(arith_subst),
+            parse_fn(|iter| Parser::borrowed(iter, builder.clone()).subshell_internal(true)),
             parse_fn(|iter| {
                 Parser::borrowed(iter, builder.clone())
                     .word_preserve_trailing_whitespace_raw_with_delim(Some(CurlyClose))
             }),
         )
-    }
-
-    /// Parses everything that comes after the parameter in a parameter substitution.
-    ///
-    /// For example, given `${<param><colon><operator><word>}`, this function will consume
-    /// the colon, operator, word, and closing curly.
-    ///
-    /// Nothing is passed to the builder.
-    fn parameter_substitution_body_raw(
-        &mut self,
-        param: DefaultParameter,
-    ) -> ParseResult<SimpleWordKind<B::Command>> {
-        let builder = self.builder.clone();
-        combinators::param_subst_body(
-            &mut *self.iter,
-            parse_fn(|_| Ok(param.clone())),
-            parse_fn(|iter| {
-                Parser::borrowed(iter, builder.clone()).parameter_substitution_word_raw()
-            }),
-        )
-    }
-
-    /// Parses a parameter substitution in the form of `${...}`, `$(...)`, or `$((...))`.
-    /// Nothing is passed to the builder.
-    fn parameter_substitution_raw(&mut self) -> ParseResult<SimpleWordKind<B::Command>> {
-        use crate::ast::builder::ParameterSubstitutionKind::*;
-        use crate::ast::Parameter;
-
-        let start_pos = self.iter.pos();
-        match self.iter.peek() {
-            Some(&ParenOpen) => {
-                let is_arith = {
-                    let mut peeked = self.iter.multipeek();
-                    peeked.peek_next(); // Skip first ParenOpen
-                    Some(&ParenOpen) == peeked.peek_next()
-                };
-
-                let subst = if is_arith {
-                    eat!(self, { ParenOpen => {} });
-                    eat!(self, { ParenOpen => {} });
-
-                    // If we hit a paren right off the bat either the body is empty
-                    // or there is a stray paren which will result in an error either
-                    // when we look for the closing parens or sometime after.
-                    combinators::skip_whitespace(&mut *self.iter);
-                    let subst = if let Some(&ParenClose) = self.iter.peek() {
-                        None
-                    } else {
-                        Some(arith_subst(&mut *self.iter)?)
-                    };
-
-                    // Some shells allow the closing parens to have whitespace in between
-                    combinators::skip_whitespace(&mut *self.iter);
-                    eat!(self, { ParenClose => {} });
-                    combinators::skip_whitespace(&mut *self.iter);
-                    eat!(self, { ParenClose => {} });
-
-                    Arith(subst)
-                } else {
-                    Command(self.subshell_internal(true)?)
-                };
-
-                Ok(SimpleWordKind::Subst(Box::new(subst)))
-            }
-
-            Some(&CurlyOpen) => {
-                let curly_open_pos = start_pos;
-                self.iter.next();
-
-                let param = combinators::param_inner(&mut *self.iter)?;
-                let subst = match self.iter.peek() {
-                    Some(&Percent) => {
-                        self.iter.next();
-                        eat_maybe!(self, {
-                            Percent => {
-                                let word = self.parameter_substitution_word_raw();
-                                RemoveLargestSuffix(param, word?)
-                            };
-                            _ => {
-                                let word = self.parameter_substitution_word_raw();
-                                RemoveSmallestSuffix(param, word?)
-                            }
-                        })
-                    }
-
-                    Some(&Pound) => {
-                        self.iter.next();
-                        eat_maybe!(self, {
-                            Pound => {
-                                let word = self.parameter_substitution_word_raw();
-                                RemoveLargestPrefix(param, word?)
-                            };
-                            _ => {
-                                match self.parameter_substitution_word_raw()? {
-                                    // Handle ${##} case
-                                    None if Parameter::Pound == param => Len(Parameter::Pound),
-                                    w => RemoveSmallestPrefix(param, w),
-                                }
-                            }
-                        })
-                    }
-
-                    // In this case the found # is the parameter itself
-                    Some(&Colon) | Some(&Dash) | Some(&Equals) | Some(&Question) | Some(&Plus)
-                    | Some(&CurlyClose)
-                        if Parameter::Pound == param =>
-                    {
-                        let ret = self.parameter_substitution_body_raw(param);
-                        let pos = self.iter.pos();
-                        match self.iter.next() {
-                            Some(CurlyClose) => return ret,
-                            Some(t) => return Err(ParseError::BadSubst(t, pos)),
-                            None => {
-                                return Err(UnmatchedError {
-                                    token: CurlyOpen,
-                                    pos: curly_open_pos,
-                                }
-                                .into())
-                            }
-                        }
-                    }
-
-                    // Otherwise we must have ${#param}
-                    _ if Parameter::Pound == param => {
-                        let param = combinators::param_inner(&mut *self.iter)?;
-                        Len(param)
-                    }
-
-                    _ => {
-                        let ret = self.parameter_substitution_body_raw(param);
-                        let pos = self.iter.pos();
-                        match self.iter.next() {
-                            Some(CurlyClose) => return ret,
-                            Some(t) => return Err(ParseError::BadSubst(t, pos)),
-                            None => {
-                                return Err(UnmatchedError {
-                                    token: CurlyOpen,
-                                    pos: curly_open_pos,
-                                }
-                                .into())
-                            }
-                        }
-                    }
-                };
-
-                eat_maybe!(self, {
-                    CurlyClose => {};
-                    _ => { return Err(UnmatchedError{ token: CurlyOpen, pos: curly_open_pos }.into()); }
-                });
-
-                Ok(SimpleWordKind::Subst(Box::new(subst)))
-            }
-
-            _ => Err(self.make_unexpected_err()),
-        }
     }
 
     /// Parses any number of sequential commands between the `do` and `done`

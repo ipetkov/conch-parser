@@ -1,23 +1,184 @@
-use crate::ast::builder::{ComplexWordKind, SimpleWordKind, WordKind};
-use crate::ast::Parameter;
-use crate::error::ParseError;
+use crate::ast::builder::{
+    CommandGroup, ComplexWordKind, ParameterSubstitutionKind, SimpleWordKind, WordKind,
+};
+use crate::ast::{Arithmetic, Parameter};
+use crate::error::{ParseError, UnmatchedError};
 use crate::iter::{MultipeekIterator, PositionIterator};
-use crate::parse2::Parser;
+use crate::parse2::{combinators, parse_fn, Parser};
 use crate::token::Token;
+
+/// Parses a parameter substitution in the form of `${...}`, `$(...)`, or `$((...))`.
+///
+/// Caller is responsible for parsing the opening `$`.
+pub fn param_subst<I, C, PA, PS, PW>(
+    iter: &mut I,
+    mut arith_subst: PA,
+    mut subshell: PS,
+    mut word: PW,
+) -> Result<SimpleWordKind<C>, ParseError>
+where
+    I: ?Sized + MultipeekIterator<Item = Token> + PositionIterator,
+    PA: Parser<I, Output = Arithmetic<String>, Error = ParseError>,
+    PS: Parser<I, Output = CommandGroup<C>, Error = ParseError>,
+    PW: Parser<I, Output = Option<ComplexWordKind<C>>, Error = ParseError>,
+{
+    enum SubstType {
+        Arith,
+        Subshell,
+        Regular,
+    };
+
+    let mut mp = iter.multipeek();
+    let ty = match mp.peek_next() {
+        Some(Token::ParenOpen) => if matches!(mp.peek_next(), Some(Token::ParenOpen)) {
+            SubstType::Arith
+        } else {
+            SubstType::Subshell
+        },
+        Some(Token::CurlyOpen) => SubstType::Regular,
+        _ => {
+            drop(mp);
+            return Err(combinators::make_unexpected_err(iter));
+        },
+    };
+    drop(mp);
+
+    let parse_param_subst_word = parse_fn(|iter| param_subst_word(iter, &mut word));
+
+    let subst = match ty {
+        SubstType::Arith => {
+            iter.next(); // Skip past ParenOpen
+            iter.next(); // Skip past ParenOpen
+
+            // If we hit a paren right off the bat either the body is empty
+            // or there is a stray paren which will result in an error either
+            // when we look for the closing parens or sometime after.
+            combinators::skip_whitespace(iter);
+            let arith = eat_maybe!(iter, {
+                Token::ParenClose => None;
+                _ => {
+                    let ret = Some(arith_subst.parse(iter)?);
+                    combinators::skip_whitespace(iter);
+                    eat!(iter, { Token::ParenClose => {}, });
+                    ret
+                },
+            });
+
+            // Some shells allow the closing parens to have whitespace in between
+            combinators::skip_whitespace(iter);
+            eat!(iter, { Token::ParenClose => {}, });
+
+            ParameterSubstitutionKind::Arith(arith)
+        },
+        SubstType::Subshell => ParameterSubstitutionKind::Command(subshell.parse(iter)?),
+        SubstType::Regular => {
+            let curly_open_pos = iter.pos();
+            iter.next(); // Skip the CurlyOpen
+
+            let param = param_inner(iter)?;
+            let param_is_pound = matches!(param, Parameter::Pound);
+
+            let ret = eat_maybe!(iter, {
+                Token::Percent => eat_maybe!(iter, {
+                    Token::Percent => {
+                        let word = param_subst_word(iter, parse_param_subst_word)?;
+                        ParameterSubstitutionKind::RemoveLargestSuffix(param, word)
+                    };
+                    _ => {
+                        let word = param_subst_word(iter, parse_param_subst_word)?;
+                        ParameterSubstitutionKind::RemoveSmallestSuffix(param, word)
+                    },
+                }),
+
+                Token::Pound => eat_maybe!(iter, {
+                    Token::Pound => {
+                        let word = param_subst_word(iter, parse_param_subst_word)?;
+                        ParameterSubstitutionKind::RemoveLargestPrefix(param, word)
+                    };
+                    _ => {
+                        let word = param_subst_word(iter, parse_param_subst_word)?;
+                        if word.is_none() && param_is_pound {
+                            // Handle ${##} case
+                            ParameterSubstitutionKind::Len(Parameter::Pound)
+                        } else {
+                            ParameterSubstitutionKind::RemoveSmallestPrefix(param, word)
+                        }
+                    },
+                });
+
+                _ => {
+                    if param_is_pound {
+                        let mut mp = iter.multipeek();
+                        match mp.peek_next() {
+                            Some(Token::Colon)    |
+                            Some(Token::Dash)     |
+                            Some(Token::Equals)   |
+                            Some(Token::Question) |
+                            Some(Token::Plus)     |
+                            Some(Token::CurlyClose) => {
+                                drop(mp);
+                                let ret = param_subst_body(iter, param, parse_param_subst_word)?;
+                                let pos = iter.pos();
+                                match iter.next() {
+                                    Some(Token::CurlyClose) => return Ok(ret),
+                                    Some(t) => return Err(ParseError::BadSubst(t, pos)),
+                                    None => return Err(ParseError::from(UnmatchedError {
+                                        token: Token::CurlyOpen,
+                                        pos: curly_open_pos,
+                                    })),
+                                };
+                            },
+
+                            // Otherwise we must have ${#param}
+                            _ => {
+                                drop(mp);
+                                let param = param_inner(iter)?;
+                                ParameterSubstitutionKind::Len(param)
+                            }
+                        }
+                    } else {
+                        // Otherwise we have ${param...}
+                        let ret = param_subst_body(iter, param, parse_param_subst_word)?;
+                        let pos = iter.pos();
+                        match iter.next() {
+                            Some(Token::CurlyClose) => return Ok(ret),
+                            Some(t) => return Err(ParseError::BadSubst(t, pos)),
+                            None => return Err(ParseError::from(UnmatchedError {
+                                token: Token::CurlyOpen,
+                                pos: curly_open_pos,
+                            })),
+                        };
+                    }
+                },
+            });
+
+            eat_maybe!(iter, {
+                Token::CurlyClose => {};
+                _ => return Err(ParseError::from(UnmatchedError{
+                    token: Token::CurlyOpen,
+                    pos: curly_open_pos
+                })),
+            });
+
+            ret
+        },
+    };
+
+    Ok(SimpleWordKind::Subst(Box::new(subst)))
+}
 
 /// Parses everything between the curly braces of a parameter substitution.
 ///
 /// For example, given `${<param><colon><operator><word>}`, this function will consume
 /// the parameter, colon, operator, and word.
-pub fn param_subst_body<I, C, PP, PS>(
+fn param_subst_body<I, C, P>(
     iter: &mut I,
-    mut param: PP,
-    mut param_subst_word: PS,
+    param: Parameter<String>,
+    mut param_subst_word: P,
 ) -> Result<SimpleWordKind<C>, ParseError>
 where
     I: ?Sized + MultipeekIterator<Item = Token>,
-    PP: Parser<I, Output = Parameter<String>, Error = ParseError>,
-    PS: Parser<I, Output = Option<ComplexWordKind<C>>, Error = ParseError>,
+    P: Parser<I, Output = Option<ComplexWordKind<C>>, Error = ParseError>,
 {
     use crate::ast::builder::ParameterSubstitutionKind as PSK;
     enum DashOrQuestion {
@@ -26,9 +187,7 @@ where
         None,
     }
 
-    let param = param.parse(iter)?;
     let has_colon = eat_maybe!(iter, {
-
         Token::Colon => true;
         _ => false,
     });
@@ -74,7 +233,7 @@ where
 ///
 /// All tokens that normally cannot be part of a word will be treated
 /// as literals.
-pub fn param_subst_word<I, C, P>(
+fn param_subst_word<I, C, P>(
     iter: &mut I,
     mut word: P,
 ) -> Result<Option<ComplexWordKind<C>>, ParseError>
