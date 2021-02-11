@@ -1259,111 +1259,15 @@ where
     /// as literals.
     fn parameter_substitution_word_raw(
         &mut self,
-        curly_open_pos: SourcePos,
     ) -> ParseResult<Option<ComplexWordKind<B::Command>>> {
-        let mut words = Vec::new();
-        'capture_words: loop {
-            'capture_literals: loop {
-                let found_backslash = match self.iter.peek() {
-                    None | Some(&CurlyClose) => break 'capture_words,
-
-                    Some(&Backslash) => true,
-
-                    // Tokens that are normally skipped or ignored either always or at the
-                    // start of a word (e.g. #), we want to make sure we capture these ourselves.
-                    Some(t @ &Pound)
-                    | Some(t @ &ParenOpen)
-                    | Some(t @ &ParenClose)
-                    | Some(t @ &Semi)
-                    | Some(t @ &Amp)
-                    | Some(t @ &Pipe)
-                    | Some(t @ &AndIf)
-                    | Some(t @ &OrIf)
-                    | Some(t @ &DSemi)
-                    | Some(t @ &Less)
-                    | Some(t @ &Great)
-                    | Some(t @ &DLess)
-                    | Some(t @ &DGreat)
-                    | Some(t @ &GreatAnd)
-                    | Some(t @ &LessAnd)
-                    | Some(t @ &DLessDash)
-                    | Some(t @ &Clobber)
-                    | Some(t @ &LessGreat)
-                    | Some(t @ &Whitespace(_))
-                    | Some(t @ &Newline) => {
-                        words.push(Simple(SimpleWordKind::Literal(t.as_str().to_owned())));
-                        false
-                    }
-
-                    // Tokens that are always part of a word,
-                    // don't have to handle them differently.
-                    Some(&CurlyOpen)
-                    | Some(&SquareOpen)
-                    | Some(&SquareClose)
-                    | Some(&SingleQuote)
-                    | Some(&DoubleQuote)
-                    | Some(&Star)
-                    | Some(&Question)
-                    | Some(&Tilde)
-                    | Some(&Bang)
-                    | Some(&Percent)
-                    | Some(&Dash)
-                    | Some(&Equals)
-                    | Some(&Plus)
-                    | Some(&Colon)
-                    | Some(&At)
-                    | Some(&Caret)
-                    | Some(&Slash)
-                    | Some(&Comma)
-                    | Some(&Name(_))
-                    | Some(&Literal(_))
-                    | Some(&Backtick)
-                    | Some(&Dollar)
-                    | Some(&ParamPositional(_)) => break 'capture_literals,
-                };
-
-                // Escaped newlines are considered whitespace and usually ignored,
-                // so we have to manually capture here.
-                let skip_twice = if found_backslash {
-                    let mut peek = self.iter.multipeek();
-                    peek.peek_next(); // Skip past the Backslash
-                    if let Some(t @ &Newline) = peek.peek_next() {
-                        words.push(Simple(SimpleWordKind::Escaped(t.as_str().to_owned())));
-                        true
-                    } else {
-                        // Backslash is escaping something other than newline,
-                        // capture it like a regular word.
-                        break 'capture_literals;
-                    }
-                } else {
-                    false
-                };
-
-                self.iter.next(); // Skip the first token that was peeked above
-                if skip_twice {
-                    self.iter.next();
-                }
-            }
-
-            match self.word_preserve_trailing_whitespace_raw_with_delim(Some(CurlyClose))? {
-                Some(Single(w)) => words.push(w),
-                Some(Concat(ws)) => words.extend(ws),
-                None => break 'capture_words,
-            }
-        }
-
-        eat_maybe!(self, {
-            CurlyClose => {};
-            _ => { return Err(UnmatchedError{ token: CurlyOpen, pos: curly_open_pos }.into()); }
-        });
-
-        if words.is_empty() {
-            Ok(None)
-        } else if words.len() == 1 {
-            Ok(Some(Single(words.pop().unwrap())))
-        } else {
-            Ok(Some(Concat(words)))
-        }
+        let builder = self.builder.clone();
+        combinators::param_subst_word(
+            &mut *self.iter,
+            parse_fn(|iter| {
+                Parser::borrowed(iter, builder.clone())
+                    .word_preserve_trailing_whitespace_raw_with_delim(Some(CurlyClose))
+            }),
+        )
     }
 
     /// Parses everything that comes after the parameter in a parameter substitution.
@@ -1375,7 +1279,6 @@ where
     fn parameter_substitution_body_raw(
         &mut self,
         param: DefaultParameter,
-        curly_open_pos: SourcePos,
     ) -> ParseResult<SimpleWordKind<B::Command>> {
         use crate::ast::builder::ParameterSubstitutionKind::*;
         use crate::ast::Parameter;
@@ -1385,23 +1288,16 @@ where
             _ => { false },
         });
 
-        let op_pos = self.iter.pos();
-        let op = match self.iter.next() {
-            Some(tok @ Dash) | Some(tok @ Equals) | Some(tok @ Question) | Some(tok @ Plus) => tok,
+        let op = eat_maybe!(self, {
+            Dash => { Dash },
+            Equals => { Equals },
+            Question => { Question },
+            Plus => { Plus };
 
-            Some(CurlyClose) => return Ok(SimpleWordKind::Param(param)),
+            _ => { return Ok(SimpleWordKind::Param(param)); },
+        });
 
-            Some(t) => return Err(ParseError::BadSubst(t, op_pos)),
-            None => {
-                return Err(UnmatchedError {
-                    token: CurlyOpen,
-                    pos: curly_open_pos,
-                }
-                .into())
-            }
-        };
-
-        let word = self.parameter_substitution_word_raw(curly_open_pos)?;
+        let word = self.parameter_substitution_word_raw()?;
         let maybe_len = param == Parameter::Pound && !has_colon && word.is_none();
 
         // We must carefully check if we get ${#-} or ${#?}, in which case
@@ -1475,11 +1371,11 @@ where
                         self.iter.next();
                         eat_maybe!(self, {
                             Percent => {
-                                let word = self.parameter_substitution_word_raw(curly_open_pos);
+                                let word = self.parameter_substitution_word_raw();
                                 RemoveLargestSuffix(param, word?)
                             };
                             _ => {
-                                let word = self.parameter_substitution_word_raw(curly_open_pos);
+                                let word = self.parameter_substitution_word_raw();
                                 RemoveSmallestSuffix(param, word?)
                             }
                         })
@@ -1489,11 +1385,11 @@ where
                         self.iter.next();
                         eat_maybe!(self, {
                             Pound => {
-                                let word = self.parameter_substitution_word_raw(curly_open_pos);
+                                let word = self.parameter_substitution_word_raw();
                                 RemoveLargestPrefix(param, word?)
                             };
                             _ => {
-                                match self.parameter_substitution_word_raw(curly_open_pos)? {
+                                match self.parameter_substitution_word_raw()? {
                                     // Handle ${##} case
                                     None if Parameter::Pound == param => Len(Parameter::Pound),
                                     w => RemoveSmallestPrefix(param, w),
@@ -1507,17 +1403,48 @@ where
                     | Some(&CurlyClose)
                         if Parameter::Pound == param =>
                     {
-                        return self.parameter_substitution_body_raw(param, curly_open_pos)
+                        let ret = self.parameter_substitution_body_raw(param);
+                        let pos = self.iter.pos();
+                        match self.iter.next() {
+                            Some(CurlyClose) => return ret,
+                            Some(t) => return Err(ParseError::BadSubst(t, pos)),
+                            None => {
+                                return Err(UnmatchedError {
+                                    token: CurlyOpen,
+                                    pos: curly_open_pos,
+                                }
+                                .into())
+                            }
+                        }
                     }
 
                     // Otherwise we must have ${#param}
                     _ if Parameter::Pound == param => {
                         let param = combinators::param_inner(&mut *self.iter)?;
-                        eat!(self, { CurlyClose => { Len(param) } })
+                        Len(param)
                     }
 
-                    _ => return self.parameter_substitution_body_raw(param, curly_open_pos),
+                    _ => {
+                        let ret = self.parameter_substitution_body_raw(param);
+                        let pos = self.iter.pos();
+                        match self.iter.next() {
+                            Some(CurlyClose) => return ret,
+                            Some(t) => return Err(ParseError::BadSubst(t, pos)),
+                            None => {
+                                return Err(UnmatchedError {
+                                    token: CurlyOpen,
+                                    pos: curly_open_pos,
+                                }
+                                .into())
+                            }
+                        }
+                    }
                 };
+
+                eat_maybe!(self, {
+                    CurlyClose => {};
+                    _ => { return Err(UnmatchedError{ token: CurlyOpen, pos: curly_open_pos }.into()); }
+                });
 
                 Ok(SimpleWordKind::Subst(Box::new(subst)))
             }
