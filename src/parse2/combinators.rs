@@ -8,21 +8,21 @@ use crate::token::Token;
 /// default expression is run.
 macro_rules! eat_maybe {
     ($iter:ident, {
-        $($tok:pat $(if $if_expr:expr)? => $body:expr),+,
+        $($($tok:pat)|+ $(if $if_expr:expr)? => $body:expr),+,
     }) => {
         eat_maybe!($iter, {
-            $($tok $(if $if_expr)? => $body),+;
+            $($($tok)|+ $(if $if_expr)? => $body),+;
             _ => {},
         })
     };
 
     ($iter:ident, {
-        $($tok:pat $(if $if_expr:expr)? => $body:expr),+;
+        $($($tok:pat)|+ $(if $if_expr:expr)? => $body:expr),+;
         _ => $default:expr,
     }) => {{
         let mut mp = $crate::iter::MultipeekIterator::multipeek($iter);
         match mp.peek_next() {
-            $(Some($tok) $(if $if_expr)? => {
+            $($(Some($tok))|+ $(if $if_expr)? => {
                 drop(mp);
                 $iter.next();
                 $body
@@ -40,11 +40,11 @@ macro_rules! eat_maybe {
 /// or it will construct and return an appropriate Unexpected error.
 macro_rules! eat {
     ($iter:ident, {
-        $($tok:pat $(if $if_expr:expr)? => $body:expr),+,
+        $($($tok:pat)|+ $(if $if_expr:expr)? => $body:expr),+,
     }) => {{
         let pos = $iter.pos();
         match $iter.next() {
-            $(Some($tok) $(if $if_expr)? => $body),+,
+            $($(Some($tok))|+ $(if $if_expr)? => $body),+,
             t => return Err($crate::parse2::combinators::make_unexpected_err_parts(pos, t).into()),
         }
     }};
@@ -67,7 +67,7 @@ pub use self::arith::{
     arith_shift, arith_subst, arith_ternary, arith_unary_op, arith_var,
 };
 pub use self::linebreak::{linebreak, newline};
-pub use self::parameter::{param_inner, param_subst_word};
+pub use self::parameter::{param_inner, param_subst_body, param_subst_word};
 pub use self::pipeline::{pipeline, Pipeline};
 pub use self::redirect::{redirect, redirect_list};
 pub use self::simple_command::simple_command;

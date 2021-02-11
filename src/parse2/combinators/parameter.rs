@@ -5,6 +5,70 @@ use crate::iter::{MultipeekIterator, PositionIterator};
 use crate::parse2::Parser;
 use crate::token::Token;
 
+/// Parses everything between the curly braces of a parameter substitution.
+///
+/// For example, given `${<param><colon><operator><word>}`, this function will consume
+/// the parameter, colon, operator, and word.
+pub fn param_subst_body<I, C, PP, PS>(
+    iter: &mut I,
+    mut param: PP,
+    mut param_subst_word: PS,
+) -> Result<SimpleWordKind<C>, ParseError>
+where
+    I: ?Sized + MultipeekIterator<Item = Token>,
+    PP: Parser<I, Output = Parameter<String>, Error = ParseError>,
+    PS: Parser<I, Output = Option<ComplexWordKind<C>>, Error = ParseError>,
+{
+    use crate::ast::builder::ParameterSubstitutionKind as PSK;
+    enum DashOrQuestion {
+        Dash,
+        Question,
+        None,
+    }
+
+    let param = param.parse(iter)?;
+    let has_colon = eat_maybe!(iter, {
+
+        Token::Colon => true;
+        _ => false,
+    });
+
+    let dash_or_question;
+    let constructor = eat_maybe!(iter, {
+        Token::Dash => {
+            dash_or_question = DashOrQuestion::Dash;
+            PSK::Default
+        },
+        Token::Equals => {
+            dash_or_question = DashOrQuestion::None;
+            PSK::Assign
+        },
+        Token::Question => {
+            dash_or_question = DashOrQuestion::Question;
+            PSK::Error
+        },
+        Token::Plus => {
+            dash_or_question = DashOrQuestion::None;
+            PSK::Alternative
+        };
+
+        _ => return Ok(SimpleWordKind::Param(param)),
+    });
+
+    let word = param_subst_word.parse(iter)?;
+    let maybe_len = !has_colon && word.is_none() && matches!(param, Parameter::Pound);
+
+    let ret = match dash_or_question {
+        // We must carefully check if we get ${#-} or ${#?}, in which case
+        // we have parsed a Len substitution and not something else
+        DashOrQuestion::Dash if maybe_len => PSK::Len(Parameter::Dash),
+        DashOrQuestion::Question if maybe_len => PSK::Len(Parameter::Question),
+        _ => constructor(has_colon, param, word),
+    };
+
+    Ok(SimpleWordKind::Subst(Box::new(ret)))
+}
+
 /// Parses the word part of a parameter substitution, up to but not
 /// including the closing curly brace.
 ///

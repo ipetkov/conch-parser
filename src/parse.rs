@@ -1280,42 +1280,14 @@ where
         &mut self,
         param: DefaultParameter,
     ) -> ParseResult<SimpleWordKind<B::Command>> {
-        use crate::ast::builder::ParameterSubstitutionKind::*;
-        use crate::ast::Parameter;
-
-        let has_colon = eat_maybe!(self, {
-            Colon => { true };
-            _ => { false },
-        });
-
-        let op = eat_maybe!(self, {
-            Dash => { Dash },
-            Equals => { Equals },
-            Question => { Question },
-            Plus => { Plus };
-
-            _ => { return Ok(SimpleWordKind::Param(param)); },
-        });
-
-        let word = self.parameter_substitution_word_raw()?;
-        let maybe_len = param == Parameter::Pound && !has_colon && word.is_none();
-
-        // We must carefully check if we get ${#-} or ${#?}, in which case
-        // we have parsed a Len substitution and not something else
-        let ret = if maybe_len && op == Dash {
-            Len(Parameter::Dash)
-        } else if maybe_len && op == Question {
-            Len(Parameter::Question)
-        } else {
-            match op {
-                Dash => Default(has_colon, param, word),
-                Equals => Assign(has_colon, param, word),
-                Question => Error(has_colon, param, word),
-                Plus => Alternative(has_colon, param, word),
-                _ => unreachable!(),
-            }
-        };
-        Ok(SimpleWordKind::Subst(Box::new(ret)))
+        let builder = self.builder.clone();
+        combinators::param_subst_body(
+            &mut *self.iter,
+            parse_fn(|_| Ok(param.clone())),
+            parse_fn(|iter| {
+                Parser::borrowed(iter, builder.clone()).parameter_substitution_word_raw()
+            }),
+        )
     }
 
     /// Parses a parameter substitution in the form of `${...}`, `$(...)`, or `$((...))`.
