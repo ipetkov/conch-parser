@@ -1247,19 +1247,20 @@ where
     /// quoted or concatenated.
     pub fn do_group(&mut self) -> ParseResult<builder::CommandGroup<B::Command>> {
         let start_pos = self.iter.pos();
-        self.reserved_word(&[DO])
-            .map_err(|_| self.make_unexpected_err())?;
+        combinators::reserved_word(&mut *self.iter, &[DO])
+            .ok_or_else(|| self.make_unexpected_err())?;
         let result = self.command_group(CommandGroupDelimiters {
             reserved_words: &[DONE],
             ..Default::default()
         })?;
-        self.reserved_word(&[DONE])
-            .map_err(|()| ParseError::IncompleteCmd {
+        combinators::reserved_word(&mut *self.iter, &[DONE]).ok_or_else(|| {
+            ParseError::IncompleteCmd {
                 cmd: DO,
                 cmd_pos: start_pos,
                 kw: DONE,
                 kw_pos: self.iter.pos(),
-            })?;
+            }
+        })?;
         Ok(result)
     }
 
@@ -1269,16 +1270,17 @@ where
         // CurlyClose must be encountered as a stand alone word,
         // even though it is represented as its own token
         let start_pos = self.iter.pos();
-        self.reserved_token(&[CurlyOpen])?;
+        combinators::reserved_token(&mut *self.iter, &[CurlyOpen])?;
         let cmds = self.command_group(CommandGroupDelimiters {
             reserved_tokens: &[CurlyClose],
             ..Default::default()
         })?;
-        self.reserved_token(&[CurlyClose])
-            .map_err(|_| UnmatchedError {
+        combinators::reserved_token(&mut *self.iter, &[CurlyClose]).map_err(|_| {
+            UnmatchedError {
                 token: CurlyOpen,
                 pos: start_pos,
-            })?;
+            }
+        })?;
         Ok(cmds)
     }
 
@@ -1415,9 +1417,8 @@ where
         &mut self,
     ) -> ParseResult<(builder::LoopKind, builder::GuardBodyPairGroup<B::Command>)> {
         let start_pos = self.iter.pos();
-        let kind = match self
-            .reserved_word(&[WHILE, UNTIL])
-            .map_err(|_| self.make_unexpected_err())?
+        let kind = match combinators::reserved_word(&mut *self.iter, &[WHILE, UNTIL])
+            .ok_or_else(|| self.make_unexpected_err())?
         {
             WHILE => builder::LoopKind::While,
             UNTIL => builder::LoopKind::Until,
@@ -1451,12 +1452,12 @@ where
     /// AST node, it so that the caller can do so with redirections.
     pub fn if_command(&mut self) -> ParseResult<builder::IfFragments<B::Command>> {
         let start_pos = self.iter.pos();
-        self.reserved_word(&[IF])
-            .map_err(|_| self.make_unexpected_err())?;
+        combinators::reserved_word(&mut *self.iter, &[IF])
+            .ok_or_else(|| self.make_unexpected_err())?;
 
         macro_rules! missing_fi {
             () => {
-                |_| ParseError::IncompleteCmd {
+                || ParseError::IncompleteCmd {
                     cmd: IF,
                     cmd_pos: start_pos,
                     kw: FI,
@@ -1467,7 +1468,7 @@ where
 
         macro_rules! missing_then {
             () => {
-                |_| ParseError::IncompleteCmd {
+                || ParseError::IncompleteCmd {
                     cmd: IF,
                     cmd_pos: start_pos,
                     kw: THEN,
@@ -1482,7 +1483,7 @@ where
                 reserved_words: &[THEN],
                 ..Default::default()
             })?;
-            self.reserved_word(&[THEN]).map_err(missing_then!())?;
+            combinators::reserved_word(&mut *self.iter, &[THEN]).ok_or_else(missing_then!())?;
 
             let body = self.command_group(CommandGroupDelimiters {
                 reserved_words: &[ELIF, ELSE, FI],
@@ -1490,9 +1491,8 @@ where
             })?;
             conditionals.push(builder::GuardBodyPairGroup { guard, body });
 
-            let els = match self
-                .reserved_word(&[ELIF, ELSE, FI])
-                .map_err(missing_fi!())?
+            let els = match combinators::reserved_word(&mut *self.iter, &[ELIF, ELSE, FI])
+                .ok_or_else(missing_fi!())?
             {
                 ELIF => continue,
                 ELSE => {
@@ -1500,7 +1500,7 @@ where
                         reserved_words: &[FI],
                         ..Default::default()
                     })?;
-                    self.reserved_word(&[FI]).map_err(missing_fi!())?;
+                    combinators::reserved_word(&mut *self.iter, &[FI]).ok_or_else(missing_fi!())?;
                     Some(els)
                 }
                 FI => None,
@@ -1521,8 +1521,8 @@ where
     /// AST node, it so that the caller can do so with redirections.
     pub fn for_command(&mut self) -> ParseResult<builder::ForFragments<B::Word, B::Command>> {
         let start_pos = self.iter.pos();
-        self.reserved_word(&[FOR])
-            .map_err(|_| self.make_unexpected_err())?;
+        combinators::reserved_word(&mut *self.iter, &[FOR])
+            .ok_or_else(|| self.make_unexpected_err())?;
 
         combinators::skip_whitespace(&mut *self.iter);
 
@@ -1545,11 +1545,9 @@ where
         // `for name [\n*] [in [word*]] [;\n* | \n+] do_group`
         // Below we'll disambiguate what situation we have as we move along.
         let (words, pre_body_comments) =
-            if combinators::peek_reserved_word(&mut *self.iter, &[IN]).is_some() {
+            if combinators::reserved_word(&mut *self.iter, &[IN]).is_some() {
                 // Found `in` keyword, therefore we're looking at something like
                 // `for name \n* in [words*] [;\n* | \n+] do_group`
-                self.reserved_word(&[IN]).unwrap();
-
                 let mut words = Vec::new();
                 while let Some(w) = self.word()? {
                     words.push(w);
@@ -1619,7 +1617,7 @@ where
 
         macro_rules! missing_in {
             () => {
-                |_| ParseError::IncompleteCmd {
+                || ParseError::IncompleteCmd {
                     cmd: CASE,
                     cmd_pos: start_pos,
                     kw: IN,
@@ -1630,7 +1628,7 @@ where
 
         macro_rules! missing_esac {
             () => {
-                |_| ParseError::IncompleteCmd {
+                || ParseError::IncompleteCmd {
                     cmd: CASE,
                     cmd_pos: start_pos,
                     kw: ESAC,
@@ -1639,8 +1637,8 @@ where
             };
         }
 
-        self.reserved_word(&[CASE])
-            .map_err(|_| self.make_unexpected_err())?;
+        combinators::reserved_word(&mut *self.iter, &[CASE])
+            .ok_or_else(|| self.make_unexpected_err())?;
 
         let word = match self.word()? {
             Some(w) => w,
@@ -1648,7 +1646,7 @@ where
         };
 
         let post_word_comments = combinators::linebreak(&mut *self.iter);
-        self.reserved_word(&[IN]).map_err(missing_in!())?;
+        combinators::reserved_word(&mut *self.iter, &[IN]).ok_or_else(missing_in!())?;
         let in_comment = combinators::newline(&mut *self.iter);
 
         let mut pre_esac_comments = None;
@@ -1669,7 +1667,7 @@ where
             // Make sure we check for missing `esac` here, otherwise if we have EOF
             // trying to parse a word will result in an `UnexpectedEOF` error
             if self.iter.peek().is_none() {
-                Err(()).map_err(missing_esac!())?;
+                return Err(missing_esac!()());
             }
 
             let mut patterns = Vec::new();
@@ -1693,7 +1691,7 @@ where
 
                     // Make sure we check for missing `esac` here, otherwise if we have EOF
                     // trying to parse a word will result in an `UnexpectedEOF` error
-                    None => Err(()).map_err(missing_esac!())?,
+                    None => return Err(missing_esac!()())?,
                     _ => return Err(self.make_unexpected_err()),
                 }
             }
@@ -1736,7 +1734,7 @@ where
             None => remaining_comments,
         };
 
-        self.reserved_word(&[ESAC]).map_err(missing_esac!())?;
+        combinators::reserved_word(&mut *self.iter, &[ESAC]).ok_or_else(missing_esac!())?;
 
         Ok(builder::CaseFragments {
             word,
@@ -1857,43 +1855,6 @@ where
         };
 
         Ok((name, post_name_comments, body))
-    }
-
-    /// Checks that one of the specified tokens appears as a reserved word
-    /// and consumes it, returning the token it matched in case the caller
-    /// cares which specific reserved word was found.
-    pub fn reserved_token(&mut self, tokens: &[Token]) -> ParseResult<Token> {
-        match combinators::peek_reserved_token(&mut *self.iter, tokens) {
-            Some(_) => Ok(self.iter.next().unwrap()),
-            None => {
-                // If the desired token is next, but we failed to find a reserved
-                // token (because the token after it isn't a valid delimeter)
-                // then the following token is the unexpected culprit, so we should
-                // skip the upcoming one before forming the error.
-                let skip_one = {
-                    let peeked = self.iter.peek();
-                    tokens.iter().any(|t| Some(t) == peeked)
-                };
-
-                if skip_one {
-                    self.iter.next();
-                }
-                Err(self.make_unexpected_err())
-            }
-        }
-    }
-
-    /// Checks that one of the specified strings appears as a reserved word
-    /// and consumes it, returning the string it matched in case the caller
-    /// cares which specific reserved word was found.
-    pub fn reserved_word(&mut self, words: &[&'static str]) -> Result<&'static str, ()> {
-        match combinators::peek_reserved_word(&mut *self.iter, words) {
-            Some(s) => {
-                self.iter.next();
-                Ok(s)
-            }
-            None => Err(()),
-        }
     }
 
     /// Parses commands until a configured delimeter (or EOF)

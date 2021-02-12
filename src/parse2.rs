@@ -11,7 +11,6 @@ pub trait Parser<I: ?Sized> {
     fn parse(&mut self, cx: &mut I) -> Result<Self::Output, Self::Error>;
 }
 
-// FIXME: maybe need a mkfn combinator or something to avoid writing |iter: '_ mut _|
 impl<I, P> Parser<I> for &'_ mut P
 where
     I: ?Sized,

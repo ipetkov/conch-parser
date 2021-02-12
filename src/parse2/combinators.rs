@@ -1,5 +1,5 @@
 use crate::error::ParseError;
-use crate::iter::{MultipeekIterator, PositionIterator};
+use crate::iter::PositionIterator;
 use crate::parse::SourcePos;
 use crate::token::Token;
 
@@ -56,6 +56,7 @@ mod linebreak;
 mod parameter;
 mod pipeline;
 mod redirect;
+mod reserved;
 mod simple_command;
 mod skip_whitespace;
 mod word;
@@ -70,6 +71,7 @@ pub use self::linebreak::{linebreak, newline};
 pub use self::parameter::parameter;
 pub use self::pipeline::{pipeline, Pipeline};
 pub use self::redirect::{redirect, redirect_list};
+pub use self::reserved::{peek_reserved_token, peek_reserved_word, reserved_token, reserved_word};
 pub use self::simple_command::simple_command;
 pub use self::skip_whitespace::skip_whitespace;
 pub use self::word::word;
@@ -85,57 +87,4 @@ fn make_unexpected_err_parts(pos: SourcePos, tok: Option<Token>) -> ParseError {
     tok.map_or(ParseError::UnexpectedEOF, |t| {
         ParseError::Unexpected(t, pos)
     })
-}
-
-/// Checks that one of the specified tokens appears as a reserved word.
-///
-/// The token must be followed by a token which delimits a word when it is
-/// unquoted/unescaped.
-///
-/// If a reserved word is found, the token which it matches will be
-/// returned in case the caller cares which specific reserved word was found.
-pub(crate) fn peek_reserved_token<'a, I>(iter: &mut I, tokens: &'a [Token]) -> Option<&'a Token>
-where
-    I: ?Sized + MultipeekIterator<Item = Token>,
-{
-    debug_assert!(!tokens.is_empty());
-
-    skip_whitespace(iter);
-
-    let mut mp = iter.multipeek();
-    mp.peek_next()
-        .and_then(|tok| tokens.iter().find(|&t| t == tok))
-        .filter(|_| match mp.peek_next() {
-            Some(delim) => delim.is_word_delimiter(),
-            None => true, // EOF is also a valid delimeter
-        })
-}
-
-/// Checks that one of the specified strings appears as a reserved word.
-///
-/// The word must appear as a single token, unquoted and unescaped, and
-/// must be followed by a token which delimits a word when it is
-/// unquoted/unescaped. The reserved word may appear as a `Token::Name`
-/// or a `Token::Literal`.
-///
-/// If a reserved word is found, the string which it matches will be
-/// returned in case the caller cares which specific reserved word was found.
-pub(crate) fn peek_reserved_word<I>(iter: &mut I, words: &[&'static str]) -> Option<&'static str>
-where
-    I: ?Sized + MultipeekIterator<Item = Token>,
-{
-    debug_assert!(!words.is_empty());
-
-    skip_whitespace(iter);
-
-    let mut mp = iter.multipeek();
-    mp.peek_next()
-        .and_then(|tok| match tok {
-            Token::Name(kw) | Token::Literal(kw) => words.iter().find(|&w| w == kw).copied(),
-            _ => None,
-        })
-        .filter(|_| match mp.peek_next() {
-            Some(delim) => delim.is_word_delimiter(),
-            None => true, // EOF is also a valid delimeter
-        })
 }
