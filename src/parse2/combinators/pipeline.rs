@@ -1,4 +1,3 @@
-use crate::ast::builder;
 use crate::error::ParseError;
 use crate::iter::{MultipeekIterator, PositionIterator};
 use crate::parse2::combinators;
@@ -8,7 +7,7 @@ use crate::token::Token;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pipeline<T> {
     pub invert_status: bool,
-    pub cmds: Vec<(Vec<builder::Newline>, T)>,
+    pub cmds: Vec<T>,
 }
 
 /// Parses either a single command or a pipeline of commands.
@@ -36,17 +35,13 @@ where
             return Err(P::Error::from(combinators::make_unexpected_err(iter)));
         }
 
-        let cmd = command_parser.parse(iter)?;
+        cmds.push(command_parser.parse(iter)?);
 
         combinators::skip_whitespace(iter);
 
         eat_maybe!(iter, {
-            Token::Pipe => {
-                let comments = combinators::linebreak(iter);
-                cmds.push((comments, cmd));
-            };
+            Token::Pipe => {};
             _ => {
-                cmds.push((Vec::new(), cmd));
                 return Ok(Pipeline {
                     invert_status,
                     cmds,

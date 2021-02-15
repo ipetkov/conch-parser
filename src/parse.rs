@@ -445,11 +445,7 @@ where
         let builder = self.builder.clone();
         combinators::and_or_list(
             &mut *self.iter,
-            parse_fn(|iter| {
-                let _ = combinators::linebreak(iter);
-
-                Parser::borrowed(iter, builder.clone()).pipeline()
-            }),
+            parse_fn(|iter| Parser::borrowed(iter, builder.clone()).pipeline()),
         )
     }
 
@@ -464,12 +460,9 @@ where
         )?;
 
         let ret = if pipeline.invert_status || pipeline.cmds.len() > 1 {
-            ast::ListableCommand::Pipe(
-                pipeline.invert_status,
-                pipeline.cmds.into_iter().map(|(_, c)| c).collect(),
-            )
+            ast::ListableCommand::Pipe(pipeline.invert_status, pipeline.cmds)
         } else {
-            ast::ListableCommand::Single(pipeline.cmds.pop().unwrap().1)
+            ast::ListableCommand::Single(pipeline.cmds.pop().unwrap())
         };
 
         Ok(ret)
@@ -477,6 +470,7 @@ where
 
     /// Parses any compound or individual command.
     pub fn command(&mut self) -> ParseResult<B::PipeableCommand> {
+        let _ = combinators::linebreak(&mut *self.iter);
         if let Some(kw) = self.next_compound_command_type() {
             let compound = self.compound_command_internal(Some(kw))?;
             Ok(self.builder.compound_command_into_pipeable(compound))
