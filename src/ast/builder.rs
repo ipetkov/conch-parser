@@ -10,8 +10,8 @@
 //! struct to the parser if you wish to use the default AST implementation.
 
 use crate::ast::{
-    AndOrList, DefaultArithmetic, DefaultParameter, ListableCommand, Redirect,
-    RedirectOrCmdWord, RedirectOrEnvVar,
+    AndOrList, DefaultArithmetic, DefaultParameter, ListableCommand, Redirect, RedirectOrCmdWord,
+    RedirectOrEnvVar,
 };
 
 mod default_builder;
@@ -373,14 +373,6 @@ pub trait Builder {
         body: Self::CompoundCommand,
     ) -> Self::PipeableCommand;
 
-    /// Invoked when only comments are parsed with no commands following.
-    /// This can occur if an entire shell script is commented out or if there
-    /// are comments present at the end of the script.
-    ///
-    /// # Arguments
-    /// * comments: the parsed comments
-    fn comments(&mut self, comments: Vec<Newline>);
-
     /// Invoked when a word is parsed.
     ///
     /// # Arguments
@@ -476,10 +468,6 @@ macro_rules! impl_builder_body {
             body: Self::CompoundCommand,
         ) -> Self::PipeableCommand {
             (**self).function_declaration(name, post_name_comments, body)
-        }
-
-        fn comments(&mut self, comments: Vec<Newline>) {
-            (**self).comments(comments)
         }
 
         fn word(&mut self, kind: ComplexWordKind<Self::Command>) -> Self::Word {

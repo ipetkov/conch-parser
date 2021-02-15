@@ -405,9 +405,6 @@ where
                 pre_cmd_comments,
             )?))
         } else {
-            if !pre_cmd_comments.is_empty() {
-                self.builder.comments(pre_cmd_comments);
-            }
             Ok(None)
         }
     }

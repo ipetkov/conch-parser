@@ -147,13 +147,6 @@ macro_rules! default_builder {
                 self.0.function_declaration(name, post_name_comments, body)
             }
 
-            fn comments(&mut self,
-                        comments: Vec<Newline>)
-                -> ()
-            {
-                self.0.comments(comments)
-            }
-
             fn word(&mut self,
                     kind: ComplexWordKind<Self::Command>)
                 -> Self::Word
@@ -467,9 +460,6 @@ where
     ) -> Self::PipeableCommand {
         PipeableCommand::FunctionDef(name.into(), body.into())
     }
-
-    /// Ignored by the builder.
-    fn comments(&mut self, _comments: Vec<Newline>) {}
 
     /// Constructs a `ast::Word` from the provided input.
     fn word(&mut self, kind: ComplexWordKind<Self::Command>) -> Self::Word {
