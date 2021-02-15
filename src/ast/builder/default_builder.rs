@@ -59,8 +59,7 @@ macro_rules! default_builder {
 
         impl<T: From<String>> Builder for $Builder<T> {
             type Command         = $Cmd<T>;
-            type CommandList     = AndOrList<Self::ListableCommand>;
-            type ListableCommand = ListableCommand<Self::PipeableCommand>;
+            type CommandList     = AndOrList<ListableCommand<Self::PipeableCommand>>;
             type PipeableCommand = $PipeableCmd<T, Self::Word, Self::Command>;
             type CompoundCommand = ShellCompoundCommand<T, Self::Word, Self::Command>;
             type Word            = $Word<T>;
@@ -76,19 +75,11 @@ macro_rules! default_builder {
             }
 
             fn and_or_list(&mut self,
-                      first: Self::ListableCommand,
-                      rest: Vec<(Vec<Newline>, AndOr<Self::ListableCommand>)>)
+                      first: ListableCommand<Self::PipeableCommand>,
+                      rest: Vec<(Vec<Newline>, AndOr<ListableCommand<Self::PipeableCommand>>)>)
                 -> Self::CommandList
             {
                 self.0.and_or_list(first, rest)
-            }
-
-            fn pipeline(&mut self,
-                        bang: bool,
-                        cmds: Vec<(Vec<Newline>, Self::PipeableCommand)>)
-                -> Self::ListableCommand
-            {
-                self.0.pipeline(bang, cmds)
             }
 
             fn simple_command(
@@ -267,8 +258,7 @@ where
     F: From<ShellCompoundCommand<T, W, C>>,
 {
     type Command = C;
-    type CommandList = AndOrList<Self::ListableCommand>;
-    type ListableCommand = ListableCommand<Self::PipeableCommand>;
+    type CommandList = AndOrList<ListableCommand<Self::PipeableCommand>>;
     type PipeableCommand = BuilderPipeableCommand<T, W, C, F>;
     type CompoundCommand = ShellCompoundCommand<T, Self::Word, Self::Command>;
     type Word = W;
@@ -295,33 +285,12 @@ where
     /// Constructs a `Command::List` node with the provided inputs.
     fn and_or_list(
         &mut self,
-        first: Self::ListableCommand,
-        rest: Vec<(Vec<Newline>, AndOr<Self::ListableCommand>)>,
+        first: ListableCommand<Self::PipeableCommand>,
+        rest: Vec<(Vec<Newline>, AndOr<ListableCommand<Self::PipeableCommand>>)>,
     ) -> Self::CommandList {
         AndOrList {
             first,
             rest: rest.into_iter().map(|(_, c)| c).collect(),
-        }
-    }
-
-    /// Constructs a `Command::Pipe` node with the provided inputs or a `Command::Simple`
-    /// node if only a single command with no status inversion is supplied.
-    fn pipeline(
-        &mut self,
-        bang: bool,
-        cmds: Vec<(Vec<Newline>, Self::PipeableCommand)>,
-    ) -> Self::ListableCommand {
-        debug_assert_eq!(cmds.is_empty(), false);
-        let mut cmds: Vec<_> = cmds.into_iter().map(|(_, c)| c).collect();
-
-        // Pipe is the only AST node which allows for a status
-        // negation, so we are forced to use it even if we have a single
-        // command. Otherwise there is no need to wrap it further.
-        if bang || cmds.len() > 1 {
-            cmds.shrink_to_fit();
-            ListableCommand::Pipe(bang, cmds)
-        } else {
-            ListableCommand::Single(cmds.pop().unwrap())
         }
     }
 

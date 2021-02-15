@@ -455,14 +455,23 @@ where
     /// Parses either a single command or a pipeline of commands.
     ///
     /// For example `[!] foo | bar`.
-    pub fn pipeline(&mut self) -> ParseResult<B::ListableCommand> {
+    pub fn pipeline(&mut self) -> ParseResult<ast::ListableCommand<B::PipeableCommand>> {
         let builder = self.builder.clone();
-        let pipeline = combinators::pipeline(
+        let mut pipeline = combinators::pipeline(
             &mut *self.iter,
             parse_fn(|iter| Parser::borrowed(iter, builder.clone()).command()),
         )?;
 
-        Ok(self.builder.pipeline(pipeline.invert_status, pipeline.cmds))
+        let ret = if pipeline.invert_status || pipeline.cmds.len() > 1 {
+            ast::ListableCommand::Pipe(
+                pipeline.invert_status,
+                pipeline.cmds.into_iter().map(|(_, c)| c).collect(),
+            )
+        } else {
+            ast::ListableCommand::Single(pipeline.cmds.pop().unwrap().1)
+        };
+
+        Ok(ret)
     }
 
     /// Parses any compound or individual command.

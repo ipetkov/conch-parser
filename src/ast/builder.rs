@@ -10,7 +10,8 @@
 //! struct to the parser if you wish to use the default AST implementation.
 
 use crate::ast::{
-    AndOr, DefaultArithmetic, DefaultParameter, Redirect, RedirectOrCmdWord, RedirectOrEnvVar,
+    AndOr, DefaultArithmetic, DefaultParameter, ListableCommand, Redirect, RedirectOrCmdWord,
+    RedirectOrEnvVar,
 };
 
 mod default_builder;
@@ -235,8 +236,6 @@ pub trait Builder {
     type Command;
     /// The type which represents an and/or list of commands.
     type CommandList;
-    /// The type which represents a command that can be used in an and/or command list.
-    type ListableCommand;
     /// The type which represents a command that can be used in a pipeline.
     type PipeableCommand;
     /// The type which represents compound commands like `if`, `case`, `for`, etc.
@@ -269,24 +268,9 @@ pub trait Builder {
     /// * rest: A collection of comments after the last separator and the next command.
     fn and_or_list(
         &mut self,
-        first: Self::ListableCommand,
-        rest: Vec<(Vec<Newline>, AndOr<Self::ListableCommand>)>,
+        first: ListableCommand<Self::PipeableCommand>,
+        rest: Vec<(Vec<Newline>, AndOr<ListableCommand<Self::PipeableCommand>>)>,
     ) -> Self::CommandList;
-
-    /// Invoked when a pipeline of commands is parsed.
-    /// A pipeline is one or more commands where the standard output of the previous
-    /// typically becomes the standard input of the next.
-    ///
-    /// # Arguments
-    /// * bang: the presence of a `!` at the start of the pipeline, typically indicating
-    /// that the pipeline's exit status should be logically inverted.
-    /// * cmds: a collection of tuples which are any comments appearing after a pipe token, followed
-    /// by the command itself, all in the order they were parsed
-    fn pipeline(
-        &mut self,
-        bang: bool,
-        cmds: Vec<(Vec<Newline>, Self::PipeableCommand)>,
-    ) -> Self::ListableCommand;
 
     /// Invoked when the "simplest" possible command is parsed: an executable with arguments.
     ///
@@ -423,7 +407,6 @@ macro_rules! impl_builder_body {
     ($T:ident) => {
         type Command = $T::Command;
         type CommandList = $T::CommandList;
-        type ListableCommand = $T::ListableCommand;
         type PipeableCommand = $T::PipeableCommand;
         type CompoundCommand = $T::CompoundCommand;
         type Word = $T::Word;
@@ -440,18 +423,10 @@ macro_rules! impl_builder_body {
 
         fn and_or_list(
             &mut self,
-            first: Self::ListableCommand,
-            rest: Vec<(Vec<Newline>, AndOr<Self::ListableCommand>)>,
+            first: ListableCommand<Self::PipeableCommand>,
+            rest: Vec<(Vec<Newline>, AndOr<ListableCommand<Self::PipeableCommand>>)>,
         ) -> Self::CommandList {
             (**self).and_or_list(first, rest)
-        }
-
-        fn pipeline(
-            &mut self,
-            bang: bool,
-            cmds: Vec<(Vec<Newline>, Self::PipeableCommand)>,
-        ) -> Self::ListableCommand {
-            (**self).pipeline(bang, cmds)
         }
 
         fn simple_command(
