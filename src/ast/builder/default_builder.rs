@@ -59,27 +59,18 @@ macro_rules! default_builder {
 
         impl<T: From<String>> Builder for $Builder<T> {
             type Command         = $Cmd<T>;
-            type CommandList     = AndOrList<ListableCommand<Self::PipeableCommand>>;
             type PipeableCommand = $PipeableCmd<T, Self::Word, Self::Command>;
             type CompoundCommand = ShellCompoundCommand<T, Self::Word, Self::Command>;
             type Word            = $Word<T>;
 
             fn complete_command(&mut self,
                                 pre_cmd_comments: Vec<Newline>,
-                                list: Self::CommandList,
+                                list: AndOrList<ListableCommand<Self::PipeableCommand>>,
                                 separator: SeparatorKind,
                                 cmd_comment: Option<Newline>)
                 -> Self::Command
             {
                 self.0.complete_command(pre_cmd_comments, list, separator, cmd_comment)
-            }
-
-            fn and_or_list(&mut self,
-                      first: ListableCommand<Self::PipeableCommand>,
-                      rest: Vec<(Vec<Newline>, AndOr<ListableCommand<Self::PipeableCommand>>)>)
-                -> Self::CommandList
-            {
-                self.0.and_or_list(first, rest)
             }
 
             fn simple_command(
@@ -258,7 +249,6 @@ where
     F: From<ShellCompoundCommand<T, W, C>>,
 {
     type Command = C;
-    type CommandList = AndOrList<ListableCommand<Self::PipeableCommand>>;
     type PipeableCommand = BuilderPipeableCommand<T, W, C, F>;
     type CompoundCommand = ShellCompoundCommand<T, Self::Word, Self::Command>;
     type Word = W;
@@ -268,7 +258,7 @@ where
     fn complete_command(
         &mut self,
         _pre_cmd_comments: Vec<Newline>,
-        list: Self::CommandList,
+        list: AndOrList<ListableCommand<Self::PipeableCommand>>,
         separator: SeparatorKind,
         _cmd_comment: Option<Newline>,
     ) -> Self::Command {
@@ -280,18 +270,6 @@ where
         };
 
         cmd.into()
-    }
-
-    /// Constructs a `Command::List` node with the provided inputs.
-    fn and_or_list(
-        &mut self,
-        first: ListableCommand<Self::PipeableCommand>,
-        rest: Vec<(Vec<Newline>, AndOr<ListableCommand<Self::PipeableCommand>>)>,
-    ) -> Self::CommandList {
-        AndOrList {
-            first,
-            rest: rest.into_iter().map(|(_, c)| c).collect(),
-        }
     }
 
     /// Constructs a `Command::Simple` node with the provided inputs.

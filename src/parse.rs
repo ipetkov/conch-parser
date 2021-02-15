@@ -442,14 +442,19 @@ where
     ///
     /// Commands are left associative. For example `foo || bar && baz`
     /// parses to `And(Or(foo, bar), baz)`.
-    pub fn and_or_list(&mut self) -> ParseResult<B::CommandList> {
+    pub fn and_or_list(
+        &mut self,
+    ) -> ParseResult<ast::AndOrList<ast::ListableCommand<B::PipeableCommand>>> {
         let builder = self.builder.clone();
         let list = combinators::and_or_list(
             &mut *self.iter,
             parse_fn(|iter| Parser::borrowed(iter, builder.clone()).pipeline()),
         )?;
 
-        Ok(self.builder.and_or_list(list.first, list.rest))
+        Ok(ast::AndOrList {
+            first: list.first,
+            rest: list.rest.into_iter().map(|(_, c)| c).collect(),
+        })
     }
 
     /// Parses either a single command or a pipeline of commands.

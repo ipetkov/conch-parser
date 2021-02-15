@@ -10,8 +10,8 @@
 //! struct to the parser if you wish to use the default AST implementation.
 
 use crate::ast::{
-    AndOr, DefaultArithmetic, DefaultParameter, ListableCommand, Redirect, RedirectOrCmdWord,
-    RedirectOrEnvVar,
+    AndOrList, DefaultArithmetic, DefaultParameter, ListableCommand, Redirect,
+    RedirectOrCmdWord, RedirectOrEnvVar,
 };
 
 mod default_builder;
@@ -234,8 +234,6 @@ pub struct Newline(pub Option<String>);
 pub trait Builder {
     /// The type which represents a complete, top-level command.
     type Command;
-    /// The type which represents an and/or list of commands.
-    type CommandList;
     /// The type which represents a command that can be used in a pipeline.
     type PipeableCommand;
     /// The type which represents compound commands like `if`, `case`, `for`, etc.
@@ -254,23 +252,10 @@ pub trait Builder {
     fn complete_command(
         &mut self,
         pre_cmd_comments: Vec<Newline>,
-        list: Self::CommandList,
+        list: AndOrList<ListableCommand<Self::PipeableCommand>>,
         separator: SeparatorKind,
         cmd_comment: Option<Newline>,
     ) -> Self::Command;
-
-    /// Invoked when multiple commands are parsed which are separated by `&&` or `||`.
-    /// Typically after the first command is run, each of the following commands may or
-    /// may not be executed, depending on the exit status of the previously executed command.
-    ///
-    /// # Arguments
-    /// * first: the first command before any `&&` or `||` separator
-    /// * rest: A collection of comments after the last separator and the next command.
-    fn and_or_list(
-        &mut self,
-        first: ListableCommand<Self::PipeableCommand>,
-        rest: Vec<(Vec<Newline>, AndOr<ListableCommand<Self::PipeableCommand>>)>,
-    ) -> Self::CommandList;
 
     /// Invoked when the "simplest" possible command is parsed: an executable with arguments.
     ///
@@ -406,7 +391,6 @@ pub trait Builder {
 macro_rules! impl_builder_body {
     ($T:ident) => {
         type Command = $T::Command;
-        type CommandList = $T::CommandList;
         type PipeableCommand = $T::PipeableCommand;
         type CompoundCommand = $T::CompoundCommand;
         type Word = $T::Word;
@@ -414,19 +398,11 @@ macro_rules! impl_builder_body {
         fn complete_command(
             &mut self,
             pre_cmd_comments: Vec<Newline>,
-            list: Self::CommandList,
+            list: AndOrList<ListableCommand<Self::PipeableCommand>>,
             separator: SeparatorKind,
             cmd_comment: Option<Newline>,
         ) -> Self::Command {
             (**self).complete_command(pre_cmd_comments, list, separator, cmd_comment)
-        }
-
-        fn and_or_list(
-            &mut self,
-            first: ListableCommand<Self::PipeableCommand>,
-            rest: Vec<(Vec<Newline>, AndOr<ListableCommand<Self::PipeableCommand>>)>,
-        ) -> Self::CommandList {
-            (**self).and_or_list(first, rest)
         }
 
         fn simple_command(
