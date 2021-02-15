@@ -61,7 +61,7 @@ mod simple_command;
 mod skip_whitespace;
 mod word;
 
-pub use self::and_or::{and_or_list, AndOrList};
+pub use self::and_or::and_or_list;
 pub use self::arith::{
     arith_add, arith_assig, arith_bitwise_and, arith_bitwise_or, arith_bitwise_xor, arith_eq,
     arith_ineq, arith_logical_and, arith_logical_or, arith_mult, arith_post_incr, arith_pow,

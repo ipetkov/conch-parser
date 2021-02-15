@@ -443,15 +443,14 @@ where
         &mut self,
     ) -> ParseResult<ast::AndOrList<ast::ListableCommand<B::PipeableCommand>>> {
         let builder = self.builder.clone();
-        let list = combinators::and_or_list(
+        combinators::and_or_list(
             &mut *self.iter,
-            parse_fn(|iter| Parser::borrowed(iter, builder.clone()).pipeline()),
-        )?;
+            parse_fn(|iter| {
+                let _ = combinators::linebreak(iter);
 
-        Ok(ast::AndOrList {
-            first: list.first,
-            rest: list.rest.into_iter().map(|(_, c)| c).collect(),
-        })
+                Parser::borrowed(iter, builder.clone()).pipeline()
+            }),
+        )
     }
 
     /// Parses either a single command or a pipeline of commands.
