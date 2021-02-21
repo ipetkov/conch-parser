@@ -59,6 +59,7 @@ mod redirect;
 mod reserved;
 mod simple_command;
 mod skip_whitespace;
+mod subshell;
 mod word;
 
 pub use self::and_or::and_or_list;
@@ -75,6 +76,12 @@ pub use self::reserved::{peek_reserved_token, peek_reserved_word, reserved_token
 pub use self::simple_command::simple_command;
 pub use self::skip_whitespace::skip_whitespace;
 pub use self::word::word;
+pub use self::subshell::{subshell, Subshell};
+
+pub struct LeadingComments<C, T> {
+    pub leading_comments: C,
+    pub item: T,
+}
 
 fn make_unexpected_err<I>(iter: &mut I) -> ParseError
 where

@@ -1301,27 +1301,22 @@ where
         &mut self,
         empty_body_ok: bool,
     ) -> ParseResult<builder::CommandGroup<B::Command>> {
-        let start_pos = self.iter.pos();
-        eat!(self, { ParenOpen => {} });
+        let builder = self.builder.clone();
 
-        // Parens are always special tokens
-        let body = self.command_group_internal(CommandGroupDelimiters {
-            exact_tokens: &[ParenClose],
-            ..Default::default()
-        })?;
+        let result = combinators::subshell(
+            empty_body_ok,
+            &mut *self.iter,
+            parse_fn(|iter| Ok(combinators::linebreak(iter))),
+            parse_fn(|iter| {
+                Parser::borrowed(iter, builder.clone())
+                    .complete_command_with_leading_comments(Vec::new())
+            }),
+        )?;
 
-        match self.iter.peek() {
-            Some(&ParenClose) if empty_body_ok || !body.commands.is_empty() => {
-                self.iter.next();
-                Ok(body)
-            }
-            Some(_) => Err(self.make_unexpected_err()),
-            None => Err(UnmatchedError {
-                token: ParenOpen,
-                pos: start_pos,
-            }
-            .into()),
-        }
+        Ok(builder::CommandGroup {
+            trailing_comments: result.trailing_comments,
+            commands: result.body.into_iter().map(|lc| lc.item).collect(),
+        })
     }
 
     /// Peeks at the next token (after skipping whitespace) to determine
