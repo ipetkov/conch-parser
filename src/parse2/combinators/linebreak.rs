@@ -15,10 +15,35 @@ where
     lines
 }
 
+/// Efficiently skips past zero or more `Token::Newline`s, any leading
+/// whitespace or preceeding comments.
+pub fn skip_linebreak<I>(iter: &mut I)
+where
+    I: ?Sized + MultipeekIterator<Item = Token>,
+{
+    while parse_newline(iter, |_| {}).is_some() {}
+}
+
 /// Tries to parse a `Token::Newline` (or a comment) after skipping leading whitespace.
 pub fn newline<I>(iter: &mut I) -> Option<builder::Newline>
 where
     I: ?Sized + MultipeekIterator<Item = Token>,
+{
+    let mut comment = String::new();
+    parse_newline(iter, |t| comment.push_str(t.as_str())).map(|()| {
+        let body = if comment.is_empty() {
+            None
+        } else {
+            Some(comment)
+        };
+        builder::Newline(body)
+    })
+}
+
+fn parse_newline<I, F>(iter: &mut I, mut capture: F) -> Option<()>
+where
+    I: ?Sized + MultipeekIterator<Item = Token>,
+    F: FnMut(Token),
 {
     combinators::skip_whitespace(iter);
 
@@ -27,18 +52,17 @@ where
         Some(Token::Pound) => {
             drop(mp);
 
-            let mut comment = String::new();
             for t in iter.take_while(|t| *t != Token::Newline) {
-                comment.push_str(t.as_str())
+                capture(t);
             }
 
-            Some(builder::Newline(Some(comment)))
+            Some(())
         }
 
         Some(Token::Newline) => {
             drop(mp);
             iter.next();
-            Some(builder::Newline(None))
+            Some(())
         }
 
         _ => None,
@@ -54,9 +78,12 @@ mod test {
     fn test(mut start: Vec<Token>, remaining: &[Token]) -> Vec<builder::Newline> {
         start.extend_from_slice(remaining);
 
+        let mut iter = TokenIter::new(start.clone());
+        super::skip_linebreak(&mut iter);
+        assert_eq!(remaining, iter.collect::<Vec<_>>());
+
         let mut iter = TokenIter::new(start);
         let ret = super::linebreak(&mut iter);
-
         assert_eq!(remaining, iter.collect::<Vec<_>>());
         ret
     }

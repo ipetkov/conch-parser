@@ -67,7 +67,7 @@ pub use self::arith::{
     arith_ineq, arith_logical_and, arith_logical_or, arith_mult, arith_post_incr, arith_pow,
     arith_shift, arith_subst, arith_ternary, arith_unary_op, arith_var,
 };
-pub use self::linebreak::{linebreak, newline};
+pub use self::linebreak::{linebreak, newline, skip_linebreak};
 pub use self::parameter::parameter;
 pub use self::pipeline::{pipeline, Pipeline};
 pub use self::redirect::{redirect, redirect_list};
