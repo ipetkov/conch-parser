@@ -64,7 +64,7 @@ where
 ///
 /// If a reserved word is found, the string which it matches will be
 /// returned in case the caller cares which specific reserved word was found.
-pub fn peek_reserved_word<I>(iter: &mut I, words: &[&'static str]) -> Option<&'static str>
+pub fn peek_reserved_word<'a, I>(iter: &mut I, words: &[&'a str]) -> Option<&'a str>
 where
     I: ?Sized + MultipeekIterator<Item = Token>,
 {
@@ -87,7 +87,7 @@ where
 /// Checks that one of the specified strings appears as a reserved word
 /// and consumes it, returning the string it matched in case the caller
 /// cares which specific reserved word was found.
-pub fn reserved_word<I>(iter: &mut I, words: &[&'static str]) -> Option<&'static str>
+pub fn reserved_word<'a, I>(iter: &mut I, words: &[&'a str]) -> Option<&'a str>
 where
     I: ?Sized + MultipeekIterator<Item = Token>,
 {

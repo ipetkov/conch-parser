@@ -52,6 +52,7 @@ macro_rules! eat {
 
 mod and_or;
 mod arith;
+mod command;
 mod linebreak;
 mod parameter;
 mod pipeline;
@@ -68,6 +69,7 @@ pub use self::arith::{
     arith_ineq, arith_logical_and, arith_logical_or, arith_mult, arith_post_incr, arith_pow,
     arith_shift, arith_subst, arith_ternary, arith_unary_op, arith_var,
 };
+pub use self::command::command_group;
 pub use self::linebreak::{linebreak, newline, skip_linebreak};
 pub use self::parameter::parameter;
 pub use self::pipeline::{pipeline, Pipeline};
@@ -75,12 +77,17 @@ pub use self::redirect::{redirect, redirect_list};
 pub use self::reserved::{peek_reserved_token, peek_reserved_word, reserved_token, reserved_word};
 pub use self::simple_command::simple_command;
 pub use self::skip_whitespace::skip_whitespace;
-pub use self::word::word;
 pub use self::subshell::{subshell, Subshell};
+pub use self::word::word;
 
 pub struct LeadingComments<C, T> {
     pub leading_comments: C,
     pub item: T,
+}
+
+pub struct TrailingComments<T, C> {
+    pub item: T,
+    pub trailing_comments: C,
 }
 
 fn make_unexpected_err<I>(iter: &mut I) -> ParseError

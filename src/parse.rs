@@ -114,29 +114,6 @@ enum CompoundCmdKeyword {
     Subshell,
 }
 
-/// Used to configure when `Parser::command_group` stops parsing commands.
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct CommandGroupDelimiters<'a, 'b, 'c> {
-    /// Any token which appears after a complete command separator (e.g. `;`, `&`, or a
-    /// newline) will be considered a delimeter for the command group.
-    pub reserved_tokens: &'a [Token],
-    /// Any `Literal` or `Name` token that matches any of these entries completely
-    /// *and* appear after a complete command will be considered a delimeter.
-    pub reserved_words: &'b [&'static str],
-    /// Any token which matches this provided set will be considered a delimeter.
-    pub exact_tokens: &'c [Token],
-}
-
-impl Default for CommandGroupDelimiters<'static, 'static, 'static> {
-    fn default() -> Self {
-        CommandGroupDelimiters {
-            reserved_tokens: &[],
-            reserved_words: &[],
-            exact_tokens: &[],
-        }
-    }
-}
-
 /// An `Iterator` adapter around a `Parser`.
 ///
 /// This iterator is `fused`, that is, if the underlying parser either yields
@@ -1214,10 +1191,27 @@ where
         let mut tok_backup = TokenIterWrapper::Buffered(tok_iter);
 
         mem::swap(&mut *self.iter, &mut tok_backup);
-        let cmd_subst = self.command_group_internal(CommandGroupDelimiters::default());
+
+        let mut commands = Vec::new();
+        let trailing_comments = loop {
+            let leading_comments = combinators::linebreak(&mut *self.iter);
+            if self.iter.peek().is_none() {
+                break Ok(leading_comments);
+            }
+
+            match self.complete_command_with_leading_comments(leading_comments) {
+                Ok(cmd) => commands.push(cmd),
+                Err(e) => break Err(e),
+            }
+        };
+
         let _ = mem::replace(&mut *self.iter, tok_backup);
 
-        Ok(SimpleWordKind::CommandSubst(cmd_subst?))
+        let trailing_comments = trailing_comments?;
+        Ok(SimpleWordKind::CommandSubst(builder::CommandGroup {
+            commands,
+            trailing_comments,
+        }))
     }
 
     /// Parses a parameters such as `$$`, `$1`, `$foo`, etc, or
@@ -1253,10 +1247,9 @@ where
         let start_pos = self.iter.pos();
         combinators::reserved_word(&mut *self.iter, &[DO])
             .ok_or_else(|| self.make_unexpected_err())?;
-        let result = self.command_group(CommandGroupDelimiters {
-            reserved_words: &[DONE],
-            ..Default::default()
-        })?;
+
+        let result = self.command_group(&[DONE])?;
+
         combinators::reserved_word(&mut *self.iter, &[DONE]).ok_or_else(|| {
             ParseError::IncompleteCmd {
                 cmd: DO,
@@ -1265,6 +1258,7 @@ where
                 kw_pos: self.iter.pos(),
             }
         })?;
+
         Ok(result)
     }
 
@@ -1275,17 +1269,35 @@ where
         // even though it is represented as its own token
         let start_pos = self.iter.pos();
         combinators::reserved_token(&mut *self.iter, &[CurlyOpen])?;
-        let cmds = self.command_group(CommandGroupDelimiters {
-            reserved_tokens: &[CurlyClose],
-            ..Default::default()
-        })?;
+
+        let mut commands = Vec::new();
+        let trailing_comments = loop {
+            let leading_comments = combinators::linebreak(&mut *self.iter);
+
+            if combinators::peek_reserved_token(&mut *self.iter, &[CurlyClose]).is_some()
+                || self.iter.peek().is_none()
+            {
+                break leading_comments;
+            }
+
+            commands.push(self.complete_command_with_leading_comments(leading_comments)?);
+        };
+
+        if commands.is_empty() {
+            return Err(self.make_unexpected_err());
+        }
+
         combinators::reserved_token(&mut *self.iter, &[CurlyClose]).map_err(|_| {
             UnmatchedError {
                 token: CurlyOpen,
                 pos: start_pos,
             }
         })?;
-        Ok(cmds)
+
+        Ok(builder::CommandGroup {
+            commands,
+            trailing_comments,
+        })
     }
 
     /// Parses any number of sequential commands between balanced `(` and `)`.
@@ -1423,10 +1435,9 @@ where
             UNTIL => builder::LoopKind::Until,
             _ => unreachable!(),
         };
-        let guard = self.command_group(CommandGroupDelimiters {
-            reserved_words: &[DO],
-            ..Default::default()
-        })?;
+
+        let guard = self.command_group(&[DO])?;
+
         match combinators::peek_reserved_word(&mut *self.iter, &[DO]) {
             Some(_) => Ok((
                 kind,
@@ -1478,16 +1489,10 @@ where
 
         let mut conditionals = Vec::new();
         loop {
-            let guard = self.command_group(CommandGroupDelimiters {
-                reserved_words: &[THEN],
-                ..Default::default()
-            })?;
+            let guard = self.command_group(&[THEN])?;
             combinators::reserved_word(&mut *self.iter, &[THEN]).ok_or_else(missing_then!())?;
 
-            let body = self.command_group(CommandGroupDelimiters {
-                reserved_words: &[ELIF, ELSE, FI],
-                ..Default::default()
-            })?;
+            let body = self.command_group(&[ELIF, ELSE, FI])?;
             conditionals.push(builder::GuardBodyPairGroup { guard, body });
 
             let els = match combinators::reserved_word(&mut *self.iter, &[ELIF, ELSE, FI])
@@ -1495,10 +1500,7 @@ where
             {
                 ELIF => continue,
                 ELSE => {
-                    let els = self.command_group(CommandGroupDelimiters {
-                        reserved_words: &[FI],
-                        ..Default::default()
-                    })?;
+                    let els = self.command_group(&[FI])?;
                     combinators::reserved_word(&mut *self.iter, &[FI]).ok_or_else(missing_fi!())?;
                     Some(els)
                 }
@@ -1696,11 +1698,17 @@ where
             }
 
             let pattern_comment = combinators::newline(&mut *self.iter);
-            let body = self.command_group_internal(CommandGroupDelimiters {
-                reserved_words: &[ESAC],
-                reserved_tokens: &[],
-                exact_tokens: &[DSemi],
-            })?;
+            let mut cmds = Vec::new();
+            let trailing_comments = loop {
+                let leading_comments = combinators::linebreak(&mut *self.iter);
+                if self.iter.peek() == Some(&DSemi)
+                    || combinators::peek_reserved_word(&mut *self.iter, &[ESAC]).is_some()
+                {
+                    break leading_comments;
+                }
+
+                cmds.push(self.complete_command_with_leading_comments(Vec::new())?);
+            };
 
             let (no_more_arms, arm_comment) = if Some(&DSemi) == self.iter.peek() {
                 self.iter.next();
@@ -1715,7 +1723,10 @@ where
                     pattern_alternatives: patterns,
                     pattern_comment,
                 },
-                body,
+                body: builder::CommandGroup {
+                    commands: cmds,
+                    trailing_comments,
+                },
                 arm_comment,
             });
 
@@ -1856,66 +1867,28 @@ where
         Ok((name, post_name_comments, body))
     }
 
-    /// Parses commands until a configured delimeter (or EOF)
-    /// is reached, without consuming the token or reserved word.
-    ///
-    /// Any reserved word/token **must** appear after a complete command
-    /// separator (e.g. `;`, `&`, or a newline), otherwise it will be
-    /// parsed as part of the command.
-    ///
-    /// It is considered an error if no commands are present.
-    pub fn command_group(
+    fn command_group(
         &mut self,
-        cfg: CommandGroupDelimiters<'_, '_, '_>,
+        reserved_words: &[&str],
     ) -> ParseResult<builder::CommandGroup<B::Command>> {
-        let group = self.command_group_internal(cfg)?;
-        if group.commands.is_empty() {
-            Err(self.make_unexpected_err())
-        } else {
-            Ok(group)
+        let builder = self.builder.clone();
+        let result = combinators::command_group(
+            &mut *self.iter,
+            reserved_words,
+            parse_fn(|iter| ParseResult::Ok(combinators::linebreak(iter))),
+            parse_fn(|iter| {
+                Parser::borrowed(iter, builder.clone())
+                    .complete_command_with_leading_comments(Vec::new())
+            }),
+        )?;
+
+        if result.item.is_empty() {
+            return Err(self.make_unexpected_err());
         }
-    }
-
-    /// Like `compound_list`, but allows for the list of commands to be empty.
-    fn command_group_internal(
-        &mut self,
-        cfg: CommandGroupDelimiters<'_, '_, '_>,
-    ) -> ParseResult<builder::CommandGroup<B::Command>> {
-        let found_delim = |slf: &mut Parser<'_, _, _>| {
-            let found_exact = !cfg.exact_tokens.is_empty()
-                && slf
-                    .iter
-                    .peek()
-                    .map(|peeked| cfg.exact_tokens.iter().any(|tok| tok == peeked))
-                    .unwrap_or(false);
-
-            found_exact
-                || (!cfg.reserved_words.is_empty()
-                    && combinators::peek_reserved_word(&mut *slf.iter, cfg.reserved_words)
-                        .is_some())
-                || (!cfg.reserved_tokens.is_empty()
-                    && combinators::peek_reserved_token(&mut *slf.iter, cfg.reserved_tokens)
-                        .is_some())
-        };
-
-        let mut cmds = Vec::new();
-        let trailing_comments = loop {
-            if found_delim(self) {
-                break Vec::new();
-            }
-
-            let leading_comments = combinators::linebreak(&mut *self.iter);
-
-            if found_delim(self) || self.iter.peek().is_none() {
-                break leading_comments;
-            }
-
-            cmds.push(self.complete_command_with_leading_comments(leading_comments)?);
-        };
 
         Ok(builder::CommandGroup {
-            commands: cmds,
-            trailing_comments,
+            trailing_comments: result.trailing_comments,
+            commands: result.item.into_iter().map(|lc| lc.item).collect(),
         })
     }
 }
