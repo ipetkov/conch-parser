@@ -22,7 +22,6 @@ pub(crate) mod iter;
 
 const CASE: &str = "case";
 const DO: &str = "do";
-const DONE: &str = "done";
 const ELIF: &str = "elif";
 const ELSE: &str = "else";
 const ESAC: &str = "esac";
@@ -1244,22 +1243,20 @@ where
     /// reserved words. Each of the reserved words must be a literal token, and cannot be
     /// quoted or concatenated.
     pub fn do_group(&mut self) -> ParseResult<builder::CommandGroup<B::Command>> {
-        let start_pos = self.iter.pos();
-        combinators::reserved_word(&mut *self.iter, &[DO])
-            .ok_or_else(|| self.make_unexpected_err())?;
+        let builder = self.builder.clone();
+        let result = combinators::do_group(
+            &mut *self.iter,
+            parse_fn(|iter| Ok(combinators::linebreak(iter))),
+            parse_fn(|iter| {
+                Parser::borrowed(iter, builder.clone())
+                    .complete_command_with_leading_comments(Vec::new())
+            }),
+        )?;
 
-        let result = self.command_group(&[DONE])?;
-
-        combinators::reserved_word(&mut *self.iter, &[DONE]).ok_or_else(|| {
-            ParseError::IncompleteCmd {
-                cmd: DO,
-                cmd_pos: start_pos,
-                kw: DONE,
-                kw_pos: self.iter.pos(),
-            }
-        })?;
-
-        Ok(result)
+        Ok(builder::CommandGroup {
+            trailing_comments: result.trailing_comments,
+            commands: result.item.into_iter().map(|lc| lc.item).collect(),
+        })
     }
 
     /// Parses any number of sequential commands between balanced `{` and `}`
